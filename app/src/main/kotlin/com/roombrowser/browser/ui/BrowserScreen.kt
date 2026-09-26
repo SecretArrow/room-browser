@@ -57,6 +57,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -94,6 +95,8 @@ sealed interface BrowserRoute {
     data object PrivacyDashboard : BrowserRoute
     data object Settings : BrowserRoute
     data object ProfileSettings : BrowserRoute
+    data object AgentSettings : BrowserRoute
+    data object AgentSessions : BrowserRoute
     data object About : BrowserRoute
 }
 
@@ -109,6 +112,7 @@ fun BrowserScreen(
     onSwitchProfile: (targetProfileId: ProfileId) -> Unit
 ) {
     var route by remember { mutableStateOf<BrowserRoute>(BrowserRoute.Browser) }
+    var agentPanelExpanded by rememberSaveable { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val message by viewModel.snackbar.collectAsState()
@@ -117,6 +121,14 @@ fun BrowserScreen(
         message?.let {
             snackbarHostState.showSnackbar(it)
             viewModel.snackbar.value = null
+        }
+    }
+
+    val agentMessage by viewModel.agent.messages.collectAsState()
+    LaunchedEffect(agentMessage) {
+        agentMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.agent.messages.value = null
         }
     }
 
@@ -195,7 +207,31 @@ fun BrowserScreen(
                 BrowserRoute.PrivacyDashboard -> PrivacyDashboardScreen(viewModel = viewModel, onClose = { route = BrowserRoute.Browser })
                 BrowserRoute.Settings -> BrowserSettingsScreen(viewModel = viewModel, onClose = { route = BrowserRoute.Browser })
                 BrowserRoute.ProfileSettings -> ProfileSettingsScreen(viewModel = viewModel, onClose = { route = BrowserRoute.Settings })
+                BrowserRoute.AgentSettings -> com.roombrowser.agent.ui.AgentSettingsScreen(
+                    viewModel = viewModel,
+                    onClose = { route = BrowserRoute.Browser }
+                )
+                BrowserRoute.AgentSessions -> com.roombrowser.agent.ui.AgentSessionsScreen(
+                    viewModel = viewModel,
+                    onClose = { route = BrowserRoute.Browser },
+                    onOpenSession = { id ->
+                        viewModel.agent.openSession(id)
+                        route = BrowserRoute.Browser
+                        agentPanelExpanded = true
+                    }
+                )
                 BrowserRoute.About -> AboutScreen(onClose = { route = BrowserRoute.Settings })
+            }
+
+            // The floating AI agent panel lives above the browsing surface.
+            if (route == BrowserRoute.Browser && viewModel.customView == null) {
+                com.roombrowser.agent.ui.AgentPanelHost(
+                    viewModel = viewModel,
+                    expanded = agentPanelExpanded,
+                    onExpandedChange = { agentPanelExpanded = it },
+                    onOpenSettings = { route = BrowserRoute.AgentSettings },
+                    onOpenSessions = { route = BrowserRoute.AgentSessions }
+                )
             }
 
             // Fullscreen media view
@@ -227,7 +263,10 @@ fun BrowserScreen(
             onShowQr = { showQrDialog = true; showPageActions = false },
             onOpenSettings = { route = BrowserRoute.Settings; showPageActions = false },
             onOpenProfileSettings = { route = BrowserRoute.ProfileSettings; showPageActions = false },
-            onOpenAbout = { route = BrowserRoute.About; showPageActions = false }
+            onOpenAbout = { route = BrowserRoute.About; showPageActions = false },
+            onOpenAgent = { agentPanelExpanded = true; showPageActions = false },
+            onOpenAgentSettings = { route = BrowserRoute.AgentSettings; showPageActions = false },
+            onOpenAgentSessions = { route = BrowserRoute.AgentSessions; showPageActions = false }
         )
     }
 

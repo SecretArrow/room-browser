@@ -37,6 +37,14 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
   optional search suggestions, QR scan, voice input.
 - **Reader mode, find-in-page, translate, desktop mode, save page as PDF,
   add-to-home-screen, share sheets**.
+- **AI Agents (autonomous browsing)** — Room Agent drives the real browser
+  for you: navigate, read pages, click, fill forms and manage tabs while
+  you watch. Chat panel with streaming answers, tool-step cards, session
+  history and Allow/Deny action approvals. Any OpenAI-compatible provider
+  works (Z.ai, OpenAI, OpenRouter, Groq, DeepSeek, Mistral, Together,
+  Ollama, LM Studio or custom) with **manual provider input** and
+  **model lists fetched live from the provider's `/models` endpoint**.
+  API keys are encrypted with AndroidKeyStore. See `docs/AI_AGENTS.md`.
 - **Biometric profile lock** — fingerprint/face or device credential.
 - **Material 3 UI** — light/dark/AMOLED themes, per-profile accent colors,
   error pages, empty states, accessibility semantics.

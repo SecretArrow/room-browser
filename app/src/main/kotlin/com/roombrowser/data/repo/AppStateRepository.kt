@@ -20,7 +20,21 @@ object AppStateKeys {
     const val IP_CACHE = "network_ip_cache"
     const val EXTERNAL_URL = "external_url"
     const val SESSION_ID = "browser_session_id"
+    const val AGENT_SETTINGS = "agent_settings"
 }
+
+/** AI agent behavior settings (app-global, stored as JSON in app_state). */
+@Serializable
+data class AgentSettings(
+    val enabled: Boolean = true,
+    val defaultProviderId: Long? = null,
+    val defaultModel: String? = null,
+    val temperature: Double = 0.2,
+    val maxSteps: Int = 25,
+    val confirmActions: Boolean = false,
+    val includePageContext: Boolean = true,
+    val systemPromptOverride: String? = null
+)
 
 @Serializable
 data class IpCache(val ip: String?, val checkedAt: Long)
@@ -99,6 +113,23 @@ class AppStateRepository(private val dao: AppStateDao) {
     }
 
     suspend fun sessionId(): String? = dao.get(AppStateKeys.SESSION_ID)
+
+    // ---------- AI agent settings ----------
+
+    val agentSettings: Flow<AgentSettings> =
+        dao.observe(AppStateKeys.AGENT_SETTINGS).map { raw ->
+            raw?.let { runCatching { json.decodeFromString(AgentSettings.serializer(), it) }.getOrNull() }
+                ?: AgentSettings()
+        }
+
+    suspend fun agentSettingsSnapshot(): AgentSettings =
+        dao.get(AppStateKeys.AGENT_SETTINGS)?.let {
+            runCatching { json.decodeFromString(AgentSettings.serializer(), it) }.getOrNull()
+        } ?: AgentSettings()
+
+    suspend fun saveAgentSettings(settings: AgentSettings) {
+        dao.put(AppStateEntity(AppStateKeys.AGENT_SETTINGS, json.encodeToString(AgentSettings.serializer(), settings)))
+    }
 
     private fun serializeSet(values: Set<String>): String =
         json.encodeToString(ListSerializer(String.serializer()), values.toList())

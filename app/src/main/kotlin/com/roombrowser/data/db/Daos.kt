@@ -269,3 +269,77 @@ interface AppStateDao {
     @Query("DELETE FROM app_state WHERE `key` = :key")
     suspend fun remove(key: String)
 }
+
+// =========================================================================
+// AI AGENT
+// =========================================================================
+
+@Dao
+interface AgentDao {
+
+    // ---------- Providers ----------
+
+    @Query("SELECT * FROM agent_providers ORDER BY created_at ASC")
+    fun observeProviders(): Flow<List<AgentProviderEntity>>
+
+    @Query("SELECT * FROM agent_providers ORDER BY created_at ASC")
+    suspend fun providers(): List<AgentProviderEntity>
+
+    @Query("SELECT * FROM agent_providers WHERE id = :id")
+    suspend fun provider(id: Long): AgentProviderEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertProvider(entity: AgentProviderEntity): Long
+
+    @Query("DELETE FROM agent_providers WHERE id = :id")
+    suspend fun deleteProvider(id: Long)
+
+    @Query("DELETE FROM agent_providers")
+    suspend fun deleteAllProviders()
+
+    // ---------- Sessions ----------
+
+    @Query("SELECT * FROM agent_sessions WHERE profile_id = :profileId ORDER BY updated_at DESC")
+    fun observeSessions(profileId: String): Flow<List<AgentSessionEntity>>
+
+    @Query("SELECT * FROM agent_sessions WHERE profile_id = :profileId ORDER BY updated_at DESC")
+    suspend fun sessions(profileId: String): List<AgentSessionEntity>
+
+    @Query("SELECT * FROM agent_sessions WHERE id = :id")
+    suspend fun session(id: Long): AgentSessionEntity?
+
+    @Insert
+    suspend fun insertSession(entity: AgentSessionEntity): Long
+
+    @Query("UPDATE agent_sessions SET title = :title, updated_at = :ts WHERE id = :id")
+    suspend fun updateTitle(id: Long, title: String, ts: Long)
+
+    @Query("UPDATE agent_sessions SET updated_at = :ts WHERE id = :id")
+    suspend fun touch(id: Long, ts: Long)
+
+    @Query("DELETE FROM agent_sessions WHERE id = :id")
+    suspend fun deleteSession(id: Long)
+
+    @Query("DELETE FROM agent_sessions WHERE profile_id = :profileId")
+    suspend fun deleteSessionsFor(profileId: String)
+
+    @Query("DELETE FROM agent_sessions")
+    suspend fun deleteAllSessions()
+
+    // ---------- Messages ----------
+
+    @Query("SELECT * FROM agent_messages WHERE session_id = :sessionId ORDER BY id ASC")
+    suspend fun messages(sessionId: Long): List<AgentMessageEntity>
+
+    @Insert
+    suspend fun insertMessage(entity: AgentMessageEntity): Long
+
+    @Query("SELECT COUNT(*) FROM agent_messages WHERE session_id = :sessionId")
+    suspend fun messageCount(sessionId: Long): Int
+
+    @Query("DELETE FROM agent_messages WHERE session_id = :sessionId")
+    suspend fun deleteMessagesFor(sessionId: Long)
+
+    @Query("DELETE FROM agent_messages")
+    suspend fun deleteAllMessages()
+}

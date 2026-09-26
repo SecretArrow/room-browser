@@ -175,6 +175,7 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.truth)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)
 
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.junit)
@@ -182,4 +183,5 @@ dependencies {
     androidTestImplementation(libs.androidx.uiautomator)
     androidTestImplementation(libs.androidx.room.testing)
     androidTestImplementation(libs.truth)
+    androidTestImplementation(libs.okhttp.mockwebserver)
 }

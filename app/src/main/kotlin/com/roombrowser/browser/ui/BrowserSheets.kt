@@ -20,9 +20,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.FindInPage
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MenuBook
@@ -31,6 +33,7 @@ import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.SafetyCheck
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material.icons.filled.Add
@@ -144,7 +147,10 @@ fun PageActionsSheet(
     onShowQr: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenProfileSettings: () -> Unit,
-    onOpenAbout: () -> Unit
+    onOpenAbout: () -> Unit,
+    onOpenAgent: () -> Unit,
+    onOpenAgentSettings: () -> Unit,
+    onOpenAgentSessions: () -> Unit
 ) {
     val context = LocalContext.current
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -202,6 +208,9 @@ fun PageActionsSheet(
                 addShortcutToHomeScreen(context, viewModel)
                 onDismiss()
             }
+            SheetAction(Icons.Filled.AutoAwesome, "AI Agent (autonomous browsing)") { onOpenAgent() }
+            SheetAction(Icons.Filled.SmartToy, "AI Agent settings (providers & models)") { onOpenAgentSettings() }
+            SheetAction(Icons.Filled.History, "AI Agent chats") { onOpenAgentSessions() }
             SheetAction(Icons.Filled.Settings, "Browser settings") { onOpenSettings() }
             SheetAction(Icons.Filled.Settings, "Profile settings") { onOpenProfileSettings() }
             SheetAction(Icons.Filled.Settings, "About Room Browser") { onOpenAbout() }

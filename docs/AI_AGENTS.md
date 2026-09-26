@@ -1,0 +1,142 @@
+# AI Agents — Autonomous Browsing (Room Agent)
+
+Room Browser ships **Room Agent**, an autonomous browsing assistant inspired
+by the agent-mode experience of chat.z.ai and the provider flexibility of
+opencode: you type a task, the agent drives the real browser — navigating,
+reading pages, clicking, filling forms and managing tabs — while you watch
+it happen behind the chat panel.
+
+```
+┌───────────────────────────────┐
+│  (the live web page)          │
+│  … the agent clicks/types …   │
+├───────────────────────────────┤
+│ ✨ Room Agent    [z.ai·glm-4.6]│
+│ ┌───────────────────────────┐ │
+│ │ you: open example.com and │ │
+│ │      summarize it         │ │
+│ │ ⚙ Open https://example… ✓ │ │
+│ │ 📖 Read current page … ✓  │ │
+│ │ agent: The page says…     │ │
+│ └───────────────────────────┘ │
+│ [Include page] [Ask…    (➤)] │
+└───────────────────────────────┘
+```
+
+## Where to find it
+
+| Entry point | Action |
+|---|---|
+| Floating pill (bottom-right of the browser) | Tap to expand the agent panel; collapsed it streams live progress ("clicking [12] Sign in…") |
+| Menu (⚙) → **AI Agent (autonomous browsing)** | Expands the panel |
+| Menu → **AI Agent settings (providers & models)** | Provider + behavior settings |
+| Menu → **AI Agent chats** | Per-profile chat history |
+| Panel header | Model picker (provider · model), new chat, history, settings |
+
+## Providers & models (manual input, like opencode)
+
+Any **OpenAI-compatible** endpoint works. In *AI Agent settings → Add
+provider*:
+
+1. **Pick a preset or type a custom base URL** — Z.ai, OpenAI, OpenRouter,
+   Groq, DeepSeek, Mistral, Together, Ollama (`http://localhost:11434/v1`),
+   LM Studio (`http://localhost:1234/v1`) or any custom gateway.
+2. **Paste your API key** (optional for local servers). Keys are encrypted
+   with an **AndroidKeyStore AES-256-GCM** key and stored only on this
+   device.
+3. **Fetch models** — the model list is retrieved live from the provider's
+   `GET {baseUrl}/models` endpoint and shown as selectable chips. If a
+   provider doesn't expose `/models`, type the model id manually (always
+   available).
+4. **Save** — the provider becomes selectable in the panel's model picker.
+
+Wire protocol used: `POST {baseUrl}/chat/completions` with
+`tools` (function calling) and `stream: true` (SSE), including
+`reasoning_content` passthrough for reasoning models. Non-streaming JSON
+responses are accepted as a fallback automatically.
+
+## What the agent can do (tool catalogue)
+
+| Tool | Effect |
+|---|---|
+| `navigate(url)` | Load a URL in the current tab (waits for page finish) |
+| `search_web(query)` | Runs the profile's search engine |
+| `read_page()` | Extracts URL, title, visible text and every interactive element with a `[ref]` number |
+| `click(ref)` | Clicks element `[ref]` (scrolls it into view first) |
+| `fill_input(ref, text)` | Types into inputs/textareas — uses the native value setter so React/Vue forms register it |
+| `press_enter(ref?)` | Submits the focused / given form |
+| `scroll(direction, amount?)` | Scrolls the page |
+| `go_back()` | History back |
+| `open_new_tab(url?)`, `list_tabs()`, `switch_tab(index)`, `close_tab()` | Tab management |
+
+Element interaction uses the numbered-reference model (every visible
+interactive element is tagged `data-agent-ref` by injected JS — the same
+family of techniques used by WebVoyager-style browser agents, adapted to
+Android WebView).
+
+## Agent settings
+
+* **Confirm actions** — require Allow/Deny approval before every click,
+  type or submit (off by default = fully autonomous within the step budget).
+* **Include current page by default** — attaches a page snapshot to the
+  first message of each turn.
+* **Temperature** (0–1) and **max steps per turn** (5–50, default 25) —
+  the step budget bounds cost and runaway loops; when exhausted the agent
+  is asked once more, without tools, to produce a final answer.
+* **System prompt override** — replace the built-in browsing-agent prompt.
+* **Data & privacy** — delete all agent sessions.
+
+## Privacy model (honest)
+
+* Agent requests go **directly** from the device to the configured
+  provider. Room Browser adds **no proxy, no telemetry, no analytics**.
+* API keys are encrypted at rest (AndroidKeyStore) and are only ever sent
+  as the `Authorization: Bearer` header **to the provider you configured**.
+* Chat history is stored locally in Room, **scoped to the profile** that
+  produced it (switching profiles switches agent history too).
+* Page snapshots sent to the provider contain visible page text and links —
+  decide for yourself whether that is acceptable for the sites you visit.
+* The agent inherits the profile's ad/tracker blocking: blocked requests
+  never reach the provider or the page.
+
+## Architecture
+
+```
+core:domain (pure JVM, 100% unit-tested)
+├── AgentDtos          OpenAI-compatible DTOs + ModelListParser
+├── SseParser          line-oriented SSE parsing
+├── AgentTools         tool catalogue + JSON schemas + snapshot formatter
+├── AgentPrompts       built-in system prompt
+└── AgentLoop          plan → act → observe → repeat (bounded by maxSteps)
+
+app (:browser process — owns the WebView)
+├── OkHttpAgentGateway     SSE streaming, tool-call delta assembly, /models
+├── PageInjector           JS: element tagging, snapshot, click, fill, enter
+├── AgentToolExecutor      tools against the live BrowserViewModel engine
+├── BrowserAgentController chat state, sessions, approvals, persistence
+├── KeyStoreCrypto         AES-256-GCM for API keys
+└── agent/ui/*             AgentPanel (pill + chat), Settings, Sessions
+```
+
+Room schema **v2** adds `agent_providers`, `agent_sessions`,
+`agent_messages` (lossless additive migration from v1). Sessions are
+profile-scoped; providers are app-global credentials.
+
+## Tests
+
+* **Domain (JVM)**: `AgentLoopTest` (loop semantics, tool failures, step
+  limit, history trimming), `SseParserTest`, `AgentDtosTest`
+  (wire format, model-list shapes, snapshot formatting).
+* **App (JVM)**: `AgentGatewayTest` — real MockWebServer round-trips for
+  SSE streaming, tool-call delta assembly, reasoning passthrough,
+  non-stream fallback, auth headers, `/models` shapes and error mapping.
+* **E2E (emulator)**: `AgentSettingsE2eTest` — drives the real app UI
+  across both processes, adds a provider pointing at a local MockWebServer,
+  fetches its model list and verifies the saved selection.
+
+## Tips
+
+* Start with cheap/fast models (e.g. `glm-4-flash`, `groq/llama-3.1-8b-instant`,
+  local Ollama models) — autonomous browsing spends many turns.
+* Enable **Confirm actions** the first time you let it log in anywhere.
+* Ask for sources — the built-in prompt requires the agent to cite URLs.

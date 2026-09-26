@@ -1,0 +1,173 @@
+package com.roombrowser.domain.agent
+
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+
+/**
+ * The browsing agent's tool catalogue — the actions it can take on the
+ * live WebView. Element interaction uses numbered references ([ref]) that
+ * the page snapshot assigns to every visible interactive element.
+ */
+object AgentTools {
+
+    const val NAVIGATE = "navigate"
+    const val SEARCH_WEB = "search_web"
+    const val READ_PAGE = "read_page"
+    const val CLICK = "click"
+    const val FILL_INPUT = "fill_input"
+    const val PRESS_ENTER = "press_enter"
+    const val SCROLL = "scroll"
+    const val GO_BACK = "go_back"
+    const val OPEN_NEW_TAB = "open_new_tab"
+    const val LIST_TABS = "list_tabs"
+    const val SWITCH_TAB = "switch_tab"
+    const val CLOSE_TAB = "close_tab"
+
+    private const val OBJ = """{"type":"object"}"""
+
+    private val SCHEMA_NAVIGATE = """{"type":"object","properties":{"url":{"type":"string","description":"Full URL, e.g. https://example.com/path"}},"required":["url"]}"""
+    private val SCHEMA_SEARCH = """{"type":"object","properties":{"query":{"type":"string","description":"Search query text"}},"required":["query"]}"""
+    private val SCHEMA_NO_PARAMS = OBJ
+    private val SCHEMA_REF = """{"type":"object","properties":{"ref":{"type":"integer","description":"Element reference number from read_page"}},"required":["ref"]}"""
+    private val SCHEMA_FILL = """{"type":"object","properties":{"ref":{"type":"integer","description":"Input element reference number from read_page"},"text":{"type":"string","description":"Text to type"}},"required":["ref","text"]}"""
+    private val SCHEMA_ENTER = """{"type":"object","properties":{"ref":{"type":"integer","description":"Optional element reference to focus before pressing Enter"}}}"""
+    private val SCHEMA_SCROLL = """{"type":"object","properties":{"direction":{"type":"string","enum":["up","down"]},"amount":{"type":"integer","description":"Optional percentage of viewport height, default 80"}},"required":["direction"]}"""
+    private val SCHEMA_NEW_TAB = """{"type":"object","properties":{"url":{"type":"string","description":"Optional URL to open, defaults to the start page"}}}"""
+    private val SCHEMA_TAB_INDEX = """{"type":"object","properties":{"index":{"type":"integer","description":"Tab index from list_tabs"}},"required":["index"]}"""
+
+    /** Tool names whose execution may require user confirmation. */
+    val INTERACTIVE_TOOLS = setOf(CLICK, FILL_INPUT, PRESS_ENTER)
+
+    /** OpenAI `tools` array for the chat request. */
+    fun toolDefs(): List<ToolDef> = listOf(
+        def(NAVIGATE, "Navigate the current tab to a URL. Use complete URLs (https://...).", SCHEMA_NAVIGATE),
+        def(SEARCH_WEB, "Search the web with the browser's search engine and show results.", SCHEMA_SEARCH),
+        def(READ_PAGE, "Read the current page: URL, title, visible text and all interactive elements with [ref] numbers. Always call this after navigating or before interacting with the page.", SCHEMA_NO_PARAMS),
+        def(CLICK, "Click an interactive element identified by its [ref] number from read_page.", SCHEMA_REF),
+        def(FILL_INPUT, "Type text into an input/textarea field identified by its [ref] number from read_page.", SCHEMA_FILL),
+        def(PRESS_ENTER, "Press Enter (submit the focused form or the given [ref] element).", SCHEMA_ENTER),
+        def(SCROLL, "Scroll the page up or down.", SCHEMA_SCROLL),
+        def(GO_BACK, "Go back one step in the browsing history.", SCHEMA_NO_PARAMS),
+        def(OPEN_NEW_TAB, "Open a new tab and optionally navigate it to a URL.", SCHEMA_NEW_TAB),
+        def(LIST_TABS, "List the open tabs with their indices.", SCHEMA_NO_PARAMS),
+        def(SWITCH_TAB, "Switch to the tab with the given index (see list_tabs).", SCHEMA_TAB_INDEX),
+        def(CLOSE_TAB, "Close the current tab.", SCHEMA_NO_PARAMS)
+    )
+
+    private fun def(name: String, description: String, schema: String): ToolDef =
+        ToolDef(
+            function = ToolFunction(
+                name = name,
+                description = description,
+                parameters = AgentJson.parseToJsonElement(schema).jsonObject
+            )
+        )
+
+    /**
+     * Human-readable one-line label for a tool invocation, used by the chat
+     * UI cards. Parses the arguments leniently — never throws.
+     */
+    fun describeTool(name: String, argsJson: String?): String = try {
+        val args: JsonObject = when {
+            argsJson.isNullOrBlank() -> JsonObject(emptyMap())
+            else -> AgentJson.parseToJsonElement(argsJson).let { it as? JsonObject } ?: JsonObject(emptyMap())
+        }
+        fun str(key: String): String? =
+            (args[key] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+        fun int(key: String): Int? =
+            (args[key] as? JsonPrimitive)?.intOrNull
+
+        when (name) {
+            NAVIGATE -> "Open ${str("url") ?: "page"}"
+            SEARCH_WEB -> "Search \"${str("query") ?: ""}\""
+            READ_PAGE -> "Read current page"
+            CLICK -> "Click [${int("ref") ?: "?"}]"
+            FILL_INPUT -> "Type into [${int("ref") ?: "?"}]"
+            PRESS_ENTER -> "Press Enter"
+            SCROLL -> "Scroll ${str("direction") ?: "down"}"
+            GO_BACK -> "Go back"
+            OPEN_NEW_TAB -> "New tab${str("url")?.let { ": $it" } ?: ""}"
+            LIST_TABS -> "List tabs"
+            SWITCH_TAB -> "Switch to tab [${int("index") ?: "?"}]"
+            CLOSE_TAB -> "Close current tab"
+            else -> name
+        }
+    } catch (_: Exception) {
+        name
+    }
+}
+
+// ---------- Page snapshot (produced by JS injection in the WebView) ----------
+
+@Serializable
+data class PageSnapshotDto(
+    val url: String = "",
+    val title: String = "",
+    val text: String = "",
+    val scrollY: Int = 0,
+    val maxScrollY: Int = 0,
+    val elements: List<SnapElement> = emptyList()
+)
+
+@Serializable
+data class SnapElement(
+    val ref: Int = 0,
+    val tag: String = "",
+    val label: String = "",
+    val viewport: Boolean = false,
+    val href: String? = null,
+    val type: String? = null,
+    val checked: Boolean? = null,
+    val disabled: Boolean? = null
+)
+
+/**
+ * Formats a page snapshot into the compact text representation given to
+ * the model. Text and elements are capped so a huge page cannot blow up
+ * the context window.
+ */
+object PageSnapshotFormatter {
+
+    const val MAX_TEXT_CHARS = 6000
+    const val MAX_ELEMENTS = 120
+
+    fun format(s: PageSnapshotDto): String = buildString {
+        appendLine("URL: ${s.url}")
+        appendLine("TITLE: ${s.title.ifBlank { "(untitled)" }}")
+        appendLine("SCROLL: ${s.scrollY}/${s.maxScrollY}")
+        appendLine()
+        appendLine("PAGE TEXT (truncated):")
+        if (s.text.isBlank()) {
+            appendLine("(no visible text — the page may still be loading or render via canvas)")
+        } else if (s.text.length <= MAX_TEXT_CHARS) {
+            appendLine(s.text)
+        } else {
+            appendLine(s.text.take(MAX_TEXT_CHARS / 2))
+            appendLine("…[middle omitted]…")
+            appendLine(s.text.takeLast(MAX_TEXT_CHARS / 4))
+        }
+        appendLine()
+        appendLine("INTERACTIVE ELEMENTS (use [ref] numbers):")
+        val elements = s.elements.take(MAX_ELEMENTS)
+        if (elements.isEmpty()) {
+            appendLine("(no interactive elements found)")
+        } else {
+            elements.forEach { e ->
+                append("[${e.ref}] <${e.tag}")
+                e.type?.let { append(" type=$it") }
+                if (e.disabled == true) append(" disabled")
+                append(">")
+                if (e.label.isNotBlank()) append(" \"${e.label.take(80)}\"")
+                e.href?.let { append(" -> ${it.take(120)}") }
+                append(if (e.viewport) "  (in viewport)" else "")
+                appendLine()
+            }
+        }
+    }
+}

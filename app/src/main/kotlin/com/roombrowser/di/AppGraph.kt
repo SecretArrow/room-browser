@@ -26,6 +26,10 @@ class AppGraph(context: Context) {
 
     val browserRepo: BrowserRepository by lazy { BrowserRepository(database) }
 
+    val agentRepo: com.roombrowser.data.repo.AgentRepository by lazy {
+        com.roombrowser.data.repo.AgentRepository(database)
+    }
+
     val profileManager: ProfileManager by lazy { ProfileManager(profileRepo) }
 
     val filterEngine: FilterEngine by lazy { FilterListLoader.load(appContext) }

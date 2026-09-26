@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 /**
  * Room Browser metadata database.
@@ -27,9 +29,12 @@ import androidx.room.RoomDatabase
         SiteSettingEntity::class,
         IpHistoryEntity::class,
         BlockEventEntity::class,
-        AppStateEntity::class
+        AppStateEntity::class,
+        AgentProviderEntity::class,
+        AgentSessionEntity::class,
+        AgentMessageEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -42,9 +47,58 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun ipHistoryDao(): IpHistoryDao
     abstract fun statsDao(): StatsDao
     abstract fun appStateDao(): AppStateDao
+    abstract fun agentDao(): AgentDao
 
     companion object {
         const val NAME = "room-browser.db"
+
+        /**
+         * v1 → v2: adds the AI agent tables (providers / sessions /
+         * messages). Pure additive CREATE TABLE + INDEX statements — no
+         * existing table is touched, so the migration is lossless.
+         */
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `agent_providers` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`name` TEXT NOT NULL, " +
+                        "`base_url` TEXT NOT NULL, " +
+                        "`api_key_enc` TEXT NOT NULL, " +
+                        "`default_model` TEXT NOT NULL, " +
+                        "`created_at` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `agent_sessions` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`profile_id` TEXT NOT NULL, " +
+                        "`title` TEXT NOT NULL, " +
+                        "`provider_id` INTEGER NOT NULL, " +
+                        "`model` TEXT NOT NULL, " +
+                        "`created_at` INTEGER NOT NULL, " +
+                        "`updated_at` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_agent_sessions_profile_id` " +
+                        "ON `agent_sessions` (`profile_id`)"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `agent_messages` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`session_id` INTEGER NOT NULL, " +
+                        "`role` TEXT NOT NULL, " +
+                        "`content` TEXT NOT NULL, " +
+                        "`tool_name` TEXT, " +
+                        "`tool_args` TEXT, " +
+                        "`tool_result` TEXT, " +
+                        "`created_at` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_agent_messages_session_id` " +
+                        "ON `agent_messages` (`session_id`)"
+                )
+            }
+        }
 
         @Volatile
         private var instance: AppDatabase? = null
@@ -57,6 +111,7 @@ abstract class AppDatabase : RoomDatabase() {
         private fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, NAME)
                 .enableMultiInstanceInvalidation()
+                .addMigrations(MIGRATION_1_2)
                 .build()
     }
 }

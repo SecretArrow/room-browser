@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.net.Uri
 import android.net.http.SslError
+import android.os.SystemClock
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
@@ -16,6 +17,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.roombrowser.RoomBrowserApp
+import com.roombrowser.agent.BrowserAgentController
 import com.roombrowser.browser.engine.DnsMonitor
 import com.roombrowser.browser.engine.DownloadEngine
 import com.roombrowser.browser.engine.NetworkIdentity
@@ -60,6 +62,12 @@ sealed interface PageError {
     data class Ssl(val url: String, val message: String) : PageError
     data class DnsFailure(val url: String) : PageError
     data class Generic(val url: String, val message: String?) : PageError
+}
+
+/** Navigation lifecycle events (consumed by the AI agent to await loads). */
+sealed interface PageEvent {
+    data class Started(val url: String, val at: Long) : PageEvent
+    data class Finished(val url: String, val title: String, val at: Long) : PageEvent
 }
 
 /** Site-shield snapshot for the current page. */
@@ -134,6 +142,16 @@ class BrowserViewModel(
     var activeWebView: WebView? = null
         private set
 
+    /** Latest page-load event (see [PageEvent]) — for the agent's nav waiting. */
+    @Volatile
+    var lastPageEvent: PageEvent? = null
+        private set
+
+    /** AI agent controller (chat + autonomous browsing) for this profile. */
+    val agent: BrowserAgentController = BrowserAgentController(
+        application, profileId, this, OkHttpClient()
+    )
+
     /** Site-settings snapshot for the interception thread (thread-safe). */
     @Volatile
     private var siteSettingsSnapshot: Map<String, SiteSettingEntity> = emptyMap()
@@ -191,10 +209,12 @@ class BrowserViewModel(
             emitMessage("Caution: ${signals.joinToString()}")
         }
         override fun onPageStarted(url: String) {
+            lastPageEvent = PageEvent.Started(url, SystemClock.elapsedRealtime())
             pageError = null
             pageState = pageState.copy(url = url, loading = true, progress = 5, isHomepage = false)
         }
         override fun onPageFinished(url: String, title: String) {
+            lastPageEvent = PageEvent.Finished(url, title, SystemClock.elapsedRealtime())
             pageState = pageState.copy(
                 url = url,
                 title = title,
@@ -293,6 +313,8 @@ class BrowserViewModel(
         webChromeClient = RoomWebChromeClient(profile, chromeCallbacks)
         globalSettings = appState.globalSettingsSnapshot()
         httpClient = dnsMonitor.apply(globalSettings, profile)
+        agent.updateClient(httpClient)
+        agent.start()
         downloadEngine = DownloadEngine(getApplication(), browserRepo, httpClient)
         downloadEngine.ensureChannels()
         appState.setActiveProfile(profileId.value)
@@ -838,6 +860,7 @@ class BrowserViewModel(
         profile = profile.copy(settings = newSettings)
         activeWebView?.let { ProfileEngine.configure(it, profile) }
         httpClient = dnsMonitor.apply(globalSettings, profile)
+        agent.updateClient(httpClient)
         val profiles = graph.profileRepo.profiles()
         networkIdentity.checkOnOpen(httpClient, profile, globalSettings, profiles)
     }
@@ -846,6 +869,7 @@ class BrowserViewModel(
         appState.saveGlobalSettings(newGlobal)
         globalSettings = newGlobal
         httpClient = dnsMonitor.apply(newGlobal, profile)
+        agent.updateClient(httpClient)
     }
 
     fun profileSettings(): ProfileSettings = profile.settings
@@ -921,6 +945,7 @@ class BrowserViewModel(
     }
 
     override fun onCleared() {
+        runCatching { agent.shutdown() }
         runCatching { activeWebView?.destroy() }
         if (::downloadEngine.isInitialized) downloadEngine.shutdown()
         super.onCleared()

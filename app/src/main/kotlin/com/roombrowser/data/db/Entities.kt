@@ -144,3 +144,58 @@ data class AppStateEntity(
     @PrimaryKey @ColumnInfo(name = "key") val key: String,
     @ColumnInfo(name = "value") val value: String
 )
+
+// =========================================================================
+// AI AGENT (autonomous browsing assistant) — schema v2
+// =========================================================================
+
+/**
+ * A user-configured OpenAI-compatible provider (Z.ai, OpenAI, OpenRouter,
+ * Groq, DeepSeek, Ollama, LM Studio, custom...). The API key is stored
+ * ENCRYPTED with an AndroidKeyStore AES-GCM key (never in plaintext).
+ */
+@Entity(tableName = "agent_providers")
+data class AgentProviderEntity(
+    @PrimaryKey(autoGenerate = true) @ColumnInfo(name = "id") val id: Long = 0,
+    @ColumnInfo(name = "name") val name: String,
+    @ColumnInfo(name = "base_url") val baseUrl: String,
+    @ColumnInfo(name = "api_key_enc") val apiKeyEnc: String, // "" = no key (local servers)
+    @ColumnInfo(name = "default_model") val defaultModel: String,
+    @ColumnInfo(name = "created_at") val createdAt: Long
+)
+
+/** One agent chat session, scoped to a profile. */
+@Entity(
+    tableName = "agent_sessions",
+    indices = [Index("profile_id")]
+)
+data class AgentSessionEntity(
+    @PrimaryKey(autoGenerate = true) @ColumnInfo(name = "id") val id: Long = 0,
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    @ColumnInfo(name = "title") val title: String,
+    @ColumnInfo(name = "provider_id") val providerId: Long,
+    @ColumnInfo(name = "model") val model: String,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long
+)
+
+/**
+ * One message row of an agent session. Roles: "user", "assistant", "tool".
+ * Tool rows carry the tool name/args/result for display in the chat UI;
+ * on session continuation only user/assistant rows are replayed to the
+ * provider (tool-call linkage is only valid within a single turn).
+ */
+@Entity(
+    tableName = "agent_messages",
+    indices = [Index("session_id")]
+)
+data class AgentMessageEntity(
+    @PrimaryKey(autoGenerate = true) @ColumnInfo(name = "id") val id: Long = 0,
+    @ColumnInfo(name = "session_id") val sessionId: Long,
+    @ColumnInfo(name = "role") val role: String,
+    @ColumnInfo(name = "content") val content: String,
+    @ColumnInfo(name = "tool_name") val toolName: String? = null,
+    @ColumnInfo(name = "tool_args") val toolArgs: String? = null,
+    @ColumnInfo(name = "tool_result") val toolResult: String? = null,
+    @ColumnInfo(name = "created_at") val createdAt: Long
+)
