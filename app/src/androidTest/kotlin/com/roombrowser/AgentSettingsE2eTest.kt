@@ -359,22 +359,26 @@ class AgentSettingsE2eTest {
         // ---- 6. Back to the browser: the panel shows the model -------------
         assertTrue("Settings close button must work", clickDesc("Close", 8_000))
         assertTrue("Engine UI must be back", engineUiUp(15_000))
-        assertTrue("Agent pill must still be present", hasDesc("AI Agent", 10_000))
-        var reopened = false
-        for (attempt in 1..3) {
-            clickDesc("AI Agent", 4_000)
-            if (hasDesc("agent_model", 2_000) || hasText("Room Agent", 2_000)) {
-                reopened = true
-                break
+        // The panel may STILL be expanded from step 2 (rememberSaveable) —
+        // in that case there is no pill to click and none is needed.
+        var reopened = hasDesc("agent_model", 2_000) || hasText("Room Agent", 2_000)
+        if (!reopened) {
+            assertTrue("Agent pill must still be present", hasDesc("AI Agent", 10_000))
+            for (attempt in 1..3) {
+                clickDesc("AI Agent", 4_000)
+                if (hasDesc("agent_model", 2_000) || hasText("Room Agent", 2_000)) {
+                    reopened = true
+                    break
+                }
             }
-        }
-        if (!reopened && clickDesc("Page actions and settings", 5_000)) {
-            if (clickText("AI Agent (autonomous browsing)", 5_000)) {
-                reopened = hasDesc("agent_model", 3_000) || hasText("Room Agent", 3_000)
+            if (!reopened && clickDesc("Page actions and settings", 5_000)) {
+                if (clickText("AI Agent (autonomous browsing)", 5_000)) {
+                    reopened = hasDesc("agent_model", 3_000) || hasText("Room Agent", 3_000)
+                }
             }
         }
         if (!reopened) {
-            throw AssertionError("Agent panel must reopen; UI:\n" + uiTree())
+            throw AssertionError("Agent panel must be reachable; UI:\n" + uiTree())
         }
         if (!device.wait(Until.hasObject(By.textContains("mock-model-a")), 15_000)) {
             throw AssertionError(
