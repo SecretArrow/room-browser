@@ -256,7 +256,7 @@ class AgentToolExecutor(
     }
 
     private suspend fun waitTool(ms: Int?): ToolResult {
-        val bounded = (ms ?: 1500).coerceIn(200, 20_000)
+        val bounded: Long = (ms ?: 1500).coerceIn(200, 20_000).toLong()
         delay(bounded)
         return ToolResult(true, "waited ${bounded}ms")
     }
