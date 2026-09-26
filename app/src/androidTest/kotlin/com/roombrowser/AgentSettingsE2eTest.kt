@@ -168,11 +168,46 @@ class AgentSettingsE2eTest {
 
     /** Types text into the editor field with the given content description. */
     private fun typeIntoField(desc: String, text: String): Boolean {
-        val field = device.wait(Until.findObject(By.desc(desc)), 8_000) ?: return false
+        hideImeIfNeeded()
+        var field = device.wait(Until.findObject(By.desc(desc)), 4_000)
+        if (field == null) {
+            // scroll the editor content up so lower fields come into view
+            swipeEditorUp()
+            field = device.wait(Until.findObject(By.desc(desc)), 4_000) ?: return false
+        }
+        // if the field sits below the fold, scroll it into view before tapping
+        runCatching {
+            val b = field.visibleBounds
+            if (b.bottom > device.displayHeight - 80) swipeEditorUp()
+        }
         clickCenter(field)
         device.executeShellCommand("input text '$text'")
         device.waitForIdle(1_000)
         return true
+    }
+
+    private fun swipeEditorUp() {
+        device.swipe(
+            device.displayWidth / 2, device.displayHeight * 3 / 4,
+            device.displayWidth / 2, device.displayHeight / 4, 40
+        )
+        device.waitForIdle(800)
+    }
+
+    /** The IME is a separate accessibility window that can shadow node
+     *  lookups — close it before searching for the next field/button. */
+    private fun imeShown(): Boolean = try {
+        device.executeShellCommand("dumpsys input_method | grep mInputShown")
+            .contains("mInputShown=true")
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun hideImeIfNeeded() {
+        if (imeShown()) {
+            device.pressBack()
+            device.waitForIdle(600)
+        }
     }
 
     @Test
@@ -271,6 +306,7 @@ class AgentSettingsE2eTest {
         assertTrue("API key field must be typeable", typeIntoField("provider_key_field", "test-key-123"))
 
         // ---- 4. Fetch models from the MockWebServer ------------------------
+        hideImeIfNeeded()
         assertTrue("Fetch models button must be clickable", clickText("Fetch models", 8_000))
         assertTrue(
             "Model chips from /models must appear",
@@ -279,6 +315,7 @@ class AgentSettingsE2eTest {
         assertTrue("mock-model-a chip must be selectable", clickText("mock-model-a", 8_000))
 
         // ---- 5. Save --------------------------------------------------------
+        hideImeIfNeeded()
         assertTrue("Save provider must be clickable", clickText("Save provider", 8_000))
         assertTrue(
             "Settings screen must list the saved provider",
