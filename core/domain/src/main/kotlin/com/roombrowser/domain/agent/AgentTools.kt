@@ -91,10 +91,13 @@ object AgentTools {
      * UI cards. Parses the arguments leniently — never throws.
      */
     fun describeTool(name: String, argsJson: String?): String = try {
-        val args: JsonObject = when {
-            argsJson.isNullOrBlank() -> JsonObject(emptyMap())
-            else -> AgentJson.parseToJsonElement(argsJson).let { it as? JsonObject } ?: JsonObject(emptyMap())
-        }
+        val args: JsonObject = runCatching {
+            when {
+                argsJson.isNullOrBlank() -> JsonObject(emptyMap())
+                else -> AgentJson.parseToJsonElement(argsJson).let { it as? JsonObject }
+                    ?: JsonObject(emptyMap())
+            }
+        }.getOrDefault(JsonObject(emptyMap()))
         fun str(key: String): String? =
             (args[key] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
         fun int(key: String): Int? =
