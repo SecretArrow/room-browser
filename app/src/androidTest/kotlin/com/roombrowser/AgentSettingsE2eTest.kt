@@ -130,17 +130,30 @@ class AgentSettingsE2eTest {
             || hasText("Privacy Dashboard", 10_000)
             || hasText("trackers blocked", 5_000)
 
-    /** Dumps the current window hierarchy into the failure message. */
-    private fun uiSnapshot(): String = try {
-        val activity = device.executeShellCommand(
-            "dumpsys activity activities | grep -E 'topResumedActivity|mFocusedApp' | head -2"
-        ).trim()
-        val xml = device.executeShellCommand(
-            "uiautomator dump /sdcard/rb_ui.xml >/dev/null 2>&1; cat /sdcard/rb_ui.xml"
-        )
-        "ACTIVITY: $activity\nHIERARCHY: ${xml.take(5000)}"
-    } catch (_: Exception) {
-        "(snapshot failed)"
+    /** Dumps the live accessibility tree (works during instrumentation,
+     *  unlike `uiautomator dump` which conflicts with UiAutomation). */
+    private fun uiTree(): String = try {
+        val sb = StringBuilder()
+        for (w in device.windows) {
+            sb.append("WINDOW pkg=").append(w.pkg).append(" active=").append(w.isActive).append('\n')
+            fun walk(node: UiObject2?, depth: Int) {
+                if (node == null || depth > 14) return
+                val txt = runCatching { node.text }.getOrNull()
+                val dsc = runCatching { node.contentDescription }.getOrNull()
+                val clk = runCatching { node.isClickable }.getOrDefault(false)
+                if (txt != null || dsc != null || clk) {
+                    sb.append("  ".repeat(depth))
+                        .append("cls=").append(node.className)
+                        .append(" txt='").append(txt).append("' desc='").append(dsc)
+                        .append("' clk=").append(clk).append('\n')
+                }
+                for (c in node.children) walk(c, depth + 1)
+            }
+            walk(w.root, 0)
+        }
+        sb.toString().take(9000)
+    } catch (t: Throwable) {
+        "tree dump failed: $t"
     }
 
     /** Types text into the editor field with the given content description. */
@@ -195,10 +208,16 @@ class AgentSettingsE2eTest {
             "AI Agent pill must be visible (content-desc 'AI Agent')",
             hasDesc("AI Agent", 20_000)
         )
+        fun panelUp(timeout: Long): Boolean =
+            hasText("Configure providers", 2_000)
+                || hasText("No provider configured", 1_000)
+                || hasText("Room Agent", 1_000)
+                || hasDesc("Agent settings", 1_000)
+
         var panelOpen = false
         for (attempt in 1..3) {
             clickDesc("AI Agent", 5_000)
-            if (hasText("Configure providers", 4_000)) {
+            if (panelUp(4_000)) {
                 panelOpen = true
                 break
             }
@@ -213,14 +232,21 @@ class AgentSettingsE2eTest {
             // Alternate entry: omnibox "Page actions and settings" → sheet item
             if (clickDesc("Page actions and settings", 5_000)) {
                 if (clickText("AI Agent (autonomous browsing)", 5_000)) {
-                    panelOpen = hasText("Configure providers", 6_000)
+                    panelOpen = panelUp(6_000)
                 }
             }
         }
         if (!panelOpen) {
-            throw AssertionError("Empty-state 'Configure providers' must appear; UI:\n" + uiSnapshot())
+            throw AssertionError("Agent panel must open; UI:\n" + uiTree())
         }
-        assertTrue("Configure button must be clickable", clickDesc("agent_configure", 8_000))
+        // Reach provider settings: empty-state button, or the header gear
+        // (when a default provider already exists the empty state is skipped).
+        if (!clickDesc("agent_configure", 6_000)) {
+            assertTrue(
+                "Agent settings (gear) must be clickable",
+                clickDesc("Agent settings", 6_000)
+            )
+        }
 
         // ---- 3. Add a provider ---------------------------------------------
         assertTrue("Add provider button must appear", hasText("Add provider", 10_000))
