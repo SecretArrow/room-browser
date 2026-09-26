@@ -96,18 +96,24 @@ class AgentSettingsE2eTest {
      * Clicks via the accessibility ACTION_CLICK (immune to overlays like the
      * IME or sheets covering the node), walking up to the nearest clickable
      * ancestor for Compose text-inside-button nodes; falls back to a
-     * coordinate tap.
+     * coordinate tap. NB: UiObject2.click() returns Unit.
      */
     private fun clickSmart(node: UiObject2): Boolean {
         var current: UiObject2? = node
         var hops = 0
         while (current != null && hops < 8) {
-            try {
-                if (current.click()) {
+            val clickable = try {
+                current.isClickable
+            } catch (_: Exception) {
+                false
+            }
+            if (clickable) {
+                try {
+                    current.click()
                     device.waitForIdle(1_000)
                     return true
+                } catch (_: Exception) {
                 }
-            } catch (_: Exception) {
             }
             current = try {
                 current.parent
