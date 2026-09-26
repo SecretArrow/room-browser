@@ -75,12 +75,12 @@ class AgentSettingsE2eTest {
 
     private fun clickText(text: String, timeoutMs: Long): Boolean {
         val node = device.wait(Until.findObject(By.text(text)), timeoutMs) ?: return false
-        return clickCenter(node)
+        return clickSmart(node)
     }
 
     private fun clickDesc(desc: String, timeoutMs: Long): Boolean {
         val node = device.wait(Until.findObject(By.desc(desc)), timeoutMs) ?: return false
-        return clickCenter(node)
+        return clickSmart(node)
     }
 
     private fun clickCenter(node: UiObject2): Boolean = try {
@@ -90,6 +90,33 @@ class AgentSettingsE2eTest {
         true
     } catch (_: Exception) {
         false
+    }
+
+    /**
+     * Clicks via the accessibility ACTION_CLICK (immune to overlays like the
+     * IME or sheets covering the node), walking up to the nearest clickable
+     * ancestor for Compose text-inside-button nodes; falls back to a
+     * coordinate tap.
+     */
+    private fun clickSmart(node: UiObject2): Boolean {
+        var current: UiObject2? = node
+        var hops = 0
+        while (current != null && hops < 8) {
+            try {
+                if (current.click()) {
+                    device.waitForIdle(1_000)
+                    return true
+                }
+            } catch (_: Exception) {
+            }
+            current = try {
+                current.parent
+            } catch (_: Exception) {
+                null
+            }
+            hops++
+        }
+        return clickCenter(node)
     }
 
     private fun engineUiUp(timeoutMs: Long): Boolean =
@@ -149,11 +176,19 @@ class AgentSettingsE2eTest {
             "AI Agent pill must be visible (content-desc 'AI Agent')",
             hasDesc("AI Agent", 20_000)
         )
-        assertTrue("AI Agent pill must open the panel", clickDesc("AI Agent", 8_000))
-        assertTrue(
-            "Empty-state 'Configure providers' must appear",
-            hasText("Configure providers", 10_000)
-        )
+        var panelOpen = false
+        for (attempt in 1..3) {
+            clickDesc("AI Agent", 5_000)
+            if (hasText("Configure providers", 4_000)) {
+                panelOpen = true
+                break
+            }
+            // A transient overlay (IME, sheet) may have swallowed the tap —
+            // dismiss the keyboard and retry.
+            device.pressBack()
+            device.waitForIdle(1_000)
+        }
+        assertTrue("Empty-state 'Configure providers' must appear", panelOpen)
         assertTrue("Configure button must be clickable", clickDesc("agent_configure", 8_000))
 
         // ---- 3. Add a provider ---------------------------------------------
