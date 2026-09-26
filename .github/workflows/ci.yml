@@ -38,9 +38,6 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v4
 
@@ -90,9 +87,6 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v4
 
@@ -141,9 +135,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
 
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -199,9 +190,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
 
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v4
