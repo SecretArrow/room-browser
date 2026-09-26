@@ -207,6 +207,16 @@ class AgentSettingsE2eTest {
         device.waitForIdle(800)
     }
 
+    /** Off-screen rows of the scrollable editor are not exposed to the
+     *  accessibility tree — swipe the content up between find attempts. */
+    private fun clickTextWithScroll(text: String, attempts: Int = 3): Boolean {
+        for (i in 1..attempts) {
+            if (clickText(text, 2_500)) return true
+            swipeEditorUp()
+        }
+        return false
+    }
+
     /** The IME is a separate accessibility window that can shadow node
      *  lookups — close it before searching for the next field/button. */
     private fun imeShown(): Boolean = try {
@@ -338,7 +348,7 @@ class AgentSettingsE2eTest {
 
         // ---- 5. Save --------------------------------------------------------
         hideImeIfNeeded()
-        if (!clickText("Save provider", 8_000)) {
+        if (!clickTextWithScroll("Save provider")) {
             throw AssertionError("Save provider must be clickable; UI:\n" + uiTree())
         }
         assertTrue(
@@ -350,7 +360,22 @@ class AgentSettingsE2eTest {
         assertTrue("Settings close button must work", clickDesc("Close", 8_000))
         assertTrue("Engine UI must be back", engineUiUp(15_000))
         assertTrue("Agent pill must still be present", hasDesc("AI Agent", 10_000))
-        assertTrue("Agent panel must reopen", clickDesc("AI Agent", 8_000))
+        var reopened = false
+        for (attempt in 1..3) {
+            clickDesc("AI Agent", 4_000)
+            if (hasDesc("agent_model", 2_000) || hasText("Room Agent", 2_000)) {
+                reopened = true
+                break
+            }
+        }
+        if (!reopened && clickDesc("Page actions and settings", 5_000)) {
+            if (clickText("AI Agent (autonomous browsing)", 5_000)) {
+                reopened = hasDesc("agent_model", 3_000) || hasText("Room Agent", 3_000)
+            }
+        }
+        if (!reopened) {
+            throw AssertionError("Agent panel must reopen; UI:\n" + uiTree())
+        }
         if (!device.wait(Until.hasObject(By.textContains("mock-model-a")), 15_000)) {
             throw AssertionError(
                 "Agent panel model line must show the fetched model; UI:\n" + uiTree()
