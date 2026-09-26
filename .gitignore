@@ -1,0 +1,33 @@
+# Built artifacts
+build/
+*/build/
+*/*/build/
+app/build/
+core/domain/build/
+
+# Gradle
+.gradle/
+local.properties
+.cxx/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Secrets and signing — NEVER commit
+*.jks
+*.keystore
+keystore.properties
+secrets.properties
+*.pem
+*.p12
+
+# Reports
+captures/
+*.hprof
+
+# Kotlin daemon session artifacts
+.kotlin/
+release-out/

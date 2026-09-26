@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Room Browser stores isolated per-profile browsing state that must NEVER
+     be included in cloud backups or device transfers. -->
+<full-backup-content>
+    <exclude domain="database" path="room-browser.db" />
+    <exclude domain="database" path="room-browser.db-wal" />
+    <exclude domain="database" path="room-browser.db-shm" />
+    <exclude domain="file" path="profiles/" />
+    <exclude domain="file" path="datastore/" />
+    <exclude domain="external" path="RoomBrowser/" />
+</full-backup-content>

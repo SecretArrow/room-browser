@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Room Browser — Profile Isolation Test</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; background: #fbfbfe; color: #1b1b24; }
+  h1 { font-size: 18px; }
+  h2 { font-size: 14px; margin-top: 20px; color: #5c6bc0; }
+  table { border-collapse: collapse; width: 100%; margin-top: 6px; }
+  td, th { border: 1px solid #d0ccc8; padding: 6px 8px; font-size: 13px; text-align: left; }
+  th { background: #eeedf3; }
+  button { padding: 10px 14px; margin: 6px 6px 0 0; font-size: 14px; border: 0; border-radius: 8px; background: #6750a4; color: #fff; }
+  .label { font-weight: 600; }
+  pre { background: #26262f; color: #7cffb2; padding: 10px; border-radius: 8px; font-size: 12px; overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>Room Browser — Profile Isolation Test Page</h1>
+<p>This page writes and reads state through every browser storage API. Open it in one profile, press <b>Set test data</b>, then open it again in another profile and press <b>Inspect test data</b>. All values must be empty/unset in the second profile.</p>
+
+<button onclick="setAll()">Set test data</button>
+<button onclick="readAll()">Inspect test data</button>
+<button onclick="clearAll()">Clear test data</button>
+
+<h2>Results</h2>
+<table id="results">
+  <tr><th>Storage</th><th>Value</th><th>Status</th></tr>
+</table>
+
+<h2>Details</h2>
+<pre id="log">waiting…</pre>
+
+<script>
+(function () {
+  var HOST = location.hostname;
+  var MARK = "rb-isolation-" + HOST;
+  var logEl = document.getElementById("log");
+  var log = [];
+  function note(msg) { log.push(new Date().toISOString() + "  " + msg); logEl.textContent = log.join("\n"); }
+
+  function setRow(storage, value, status) {
+    var table = document.getElementById("results");
+    var row = table.insertRow(-1);
+    row.insertCell(0).textContent = storage;
+    row.insertCell(1).textContent = value;
+    row.insertCell(2).textContent = status;
+  }
+
+  function idbOpen() {
+    return new Promise(function (resolve, reject) {
+      var req = indexedDB.open("rb_isolation_db", 1);
+      req.onupgradeneeded = function () { req.result.createObjectStore("kv"); };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    });
+  }
+  function idbSet(db, value) {
+    return new Promise(function (resolve, reject) {
+      var tx = db.transaction("kv", "readwrite");
+      tx.objectStore("kv").put(value, MARK);
+      tx.oncomplete = resolve;
+      tx.onerror = function () { reject(tx.error); };
+    });
+  }
+  function idbGet(db) {
+    return new Promise(function (resolve, reject) {
+      var tx = db.transaction("kv", "readonly");
+      var req = tx.objectStore("kv").get(MARK);
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    });
+  }
+
+  window.setAll = async function () {
+    note("writing test data…");
+    document.cookie = MARK + "=profile-A; path=/; max-age=86400";
+    document.cookie = MARK + "_session=alive; path=/";           // session cookie
+    localStorage.setItem(MARK, "localStorage-A");
+    sessionStorage.setItem(MARK, "sessionStorage-A");
+    try {
+      var db = await idbOpen();
+      await idbSet(db, "indexedDB-A");
+      note("indexedDB written");
+    } catch (e) { note("indexedDB error: " + e); }
+    if ("caches" in window) {
+      try {
+        var cache = await caches.open("rb_isolation_cache");
+        await cache.put("/rb-isolation-probe", new Response("cacheStorage-A"));
+        note("cache storage written");
+      } catch (e) { note("cache storage error: " + e); }
+    }
+    if ("serviceWorker" in navigator) {
+      try {
+        var swSrc = "data:text/javascript,console.log('rb isolation sw')";
+        await navigator.serviceWorker.register(swSrc).catch(function (e) { note("sw register unsupported for data URL: " + e); });
+        note("service worker registration attempted");
+      } catch (e) { note("service worker error: " + e); }
+    }
+    note("done — switch profile and press Inspect");
+  };
+
+  window.readAll = async function () {
+    log = []; note("inspecting…");
+    var table = document.getElementById("results");
+    while (table.rows.length > 1) table.deleteRow(-1);
+
+    var cookie = document.cookie.split("; ").find(function (c) { return c.indexOf(MARK + "=") === 0; });
+    setRow("Cookie", cookie ? cookie.split("=")[1] : "(empty)", cookie ? "PRESENT" : "isolated");
+    var session = document.cookie.split("; ").find(function (c) { return c.indexOf(MARK + "_session=") === 0; });
+    setRow("Session cookie", session ? session.split("=")[1] : "(empty)", session ? "PRESENT" : "isolated");
+    var ls = localStorage.getItem(MARK);
+    setRow("LocalStorage", ls || "(empty)", ls ? "PRESENT" : "isolated");
+    var ss = sessionStorage.getItem(MARK);
+    setRow("SessionStorage", ss || "(empty)", ss ? "PRESENT" : "isolated");
+    try {
+      var db = await idbOpen();
+      var idb = await idbGet(db);
+      setRow("IndexedDB", idb || "(empty)", idb ? "PRESENT" : "isolated");
+    } catch (e) { setRow("IndexedDB", "error: " + e, "-"); }
+    if ("caches" in window) {
+      try {
+        var cache = await caches.open("rb_isolation_cache");
+        var resp = await cache.match("/rb-isolation-probe");
+        var text = resp ? await resp.text() : null;
+        setRow("CacheStorage", text || "(empty)", text ? "PRESENT" : "isolated");
+      } catch (e) { setRow("CacheStorage", "error: " + e, "-"); }
+    }
+    if ("serviceWorker" in navigator) {
+      var regs = await navigator.serviceWorker.getRegistrations();
+      var mine = regs.length ? "registered (" + regs.length + ")" : "(none)";
+      setRow("ServiceWorker", mine, regs.length ? "check scope" : "isolated");
+    }
+    note("inspection complete — every row must read isolated/empty in a fresh profile");
+  };
+
+  window.clearAll = async function () {
+    document.cookie = MARK + "=; path=/; max-age=0";
+    document.cookie = MARK + "_session=; path=/; max-age=0";
+    localStorage.removeItem(MARK);
+    sessionStorage.removeItem(MARK);
+    try {
+      var db = await idbOpen();
+      var tx = db.transaction("kv", "readwrite");
+      tx.objectStore("kv").delete(MARK);
+    } catch (e) {}
+    if ("caches" in window) { try { await caches.delete("rb_isolation_cache"); } catch (e) {} }
+    note("cleared in THIS profile only");
+    await window.readAll();
+  };
+
+  note("ready — press Set test data or Inspect test data");
+})();
+</script>
+</body>
+</html>

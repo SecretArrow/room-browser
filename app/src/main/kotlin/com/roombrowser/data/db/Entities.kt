@@ -1,0 +1,146 @@
+package com.roombrowser.data.db
+
+import androidx.room.ColumnInfo
+import androidx.room.Entity
+import androidx.room.Index
+import androidx.room.PrimaryKey
+
+/** Profile identity + settings (settings serialized as JSON). */
+@Entity(tableName = "profiles")
+data class ProfileEntity(
+    @PrimaryKey @ColumnInfo(name = "id") val id: String, // immutable UUID
+    @ColumnInfo(name = "name") val name: String,
+    @ColumnInfo(name = "icon") val icon: String,
+    @ColumnInfo(name = "color_argb") val colorArgb: Long,
+    @ColumnInfo(name = "is_locked") val isLocked: Boolean,
+    @ColumnInfo(name = "is_default") val isDefault: Boolean,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+    @ColumnInfo(name = "last_active_at") val lastActiveAt: Long,
+    @ColumnInfo(name = "settings_json") val settingsJson: String
+)
+
+@Entity(
+    tableName = "tabs",
+    indices = [Index("profile_id"), Index("profile_id", "position")]
+)
+data class TabEntity(
+    @PrimaryKey @ColumnInfo(name = "id") val id: String,
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    @ColumnInfo(name = "position") val position: Int,
+    @ColumnInfo(name = "title") val title: String,
+    @ColumnInfo(name = "url") val url: String,
+    @ColumnInfo(name = "is_private") val isPrivate: Boolean,
+    @ColumnInfo(name = "is_pinned") val isPinned: Boolean = false,
+    @ColumnInfo(name = "group_name") val groupName: String? = null,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+    @ColumnInfo(name = "last_viewed_at") val lastViewedAt: Long,
+    @ColumnInfo(name = "closed_at") val closedAt: Long? = null // reopen-closed-tab support
+)
+
+@Entity(
+    tableName = "bookmarks",
+    indices = [Index("profile_id"), Index("profile_id", "folder")]
+)
+data class BookmarkEntity(
+    @PrimaryKey(autoGenerate = true) @ColumnInfo(name = "id") val id: Long = 0,
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    @ColumnInfo(name = "url") val url: String,
+    @ColumnInfo(name = "title") val title: String,
+    @ColumnInfo(name = "folder") val folder: String? = null,
+    @ColumnInfo(name = "position") val position: Int = 0,
+    @ColumnInfo(name = "created_at") val createdAt: Long
+)
+
+@Entity(
+    tableName = "history",
+    indices = [Index("profile_id"), Index("profile_id", "visited_at")]
+)
+data class HistoryEntity(
+    @PrimaryKey(autoGenerate = true) @ColumnInfo(name = "id") val id: Long = 0,
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    @ColumnInfo(name = "url") val url: String,
+    @ColumnInfo(name = "title") val title: String,
+    @ColumnInfo(name = "visited_at") val visitedAt: Long
+)
+
+@Entity(
+    tableName = "downloads",
+    indices = [Index("profile_id"), Index("status")]
+)
+data class DownloadEntity(
+    @PrimaryKey(autoGenerate = true) @ColumnInfo(name = "id") val id: Long = 0,
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    @ColumnInfo(name = "url") val url: String,
+    @ColumnInfo(name = "file_name") val fileName: String,
+    @ColumnInfo(name = "mime_type") val mimeType: String,
+    @ColumnInfo(name = "destination") val destination: String, // content uri or file path
+    @ColumnInfo(name = "total_bytes") val totalBytes: Long,
+    @ColumnInfo(name = "downloaded_bytes") val downloadedBytes: Long,
+    @ColumnInfo(name = "status") val status: String, // DownloadStatus.name
+    @ColumnInfo(name = "error") val error: String? = null,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+    @ColumnInfo(name = "completed_at") val completedAt: Long? = null
+)
+
+/** Per-profile, per-site permission decisions. */
+@Entity(
+    tableName = "site_permissions",
+    primaryKeys = ["profile_id", "host", "permission"],
+    indices = [Index("profile_id")]
+)
+data class SitePermissionEntity(
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    @ColumnInfo(name = "host") val host: String,
+    @ColumnInfo(name = "permission") val permission: String, // PermissionKind name
+    @ColumnInfo(name = "decision") val decision: String // PermissionDecision name
+)
+
+/** Per-profile, per-site content settings. Null value = inherit profile setting. */
+@Entity(
+    tableName = "site_settings",
+    primaryKeys = ["profile_id", "host"],
+    indices = [Index("profile_id")]
+)
+data class SiteSettingEntity(
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    @ColumnInfo(name = "host") val host: String,
+    @ColumnInfo(name = "shields_disabled") val shieldsDisabled: Boolean? = null,
+    @ColumnInfo(name = "js_enabled") val jsEnabled: Boolean? = null,
+    @ColumnInfo(name = "cookies_blocked") val cookiesBlocked: Boolean? = null,
+    @ColumnInfo(name = "desktop_mode") val desktopMode: Boolean? = null,
+    @ColumnInfo(name = "autoplay_blocked") val autoplayBlocked: Boolean? = null,
+    @ColumnInfo(name = "popup_blocked") val popupBlocked: Boolean? = null
+)
+
+/** profile_network_history (spec section 6 / 74). */
+@Entity(
+    tableName = "ip_history",
+    indices = [Index("profile_id"), Index("ip"), Index("last_seen_at")]
+)
+data class IpHistoryEntity(
+    @PrimaryKey(autoGenerate = true) @ColumnInfo(name = "id") val id: Long = 0,
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    @ColumnInfo(name = "ip") val ip: String,
+    @ColumnInfo(name = "first_seen_at") val firstSeenAt: Long,
+    @ColumnInfo(name = "last_seen_at") val lastSeenAt: Long
+)
+
+/** Real blocking events power the privacy dashboard (no fake statistics). */
+@Entity(
+    tableName = "block_events",
+    indices = [Index("profile_id", "ts"), Index("profile_id", "host")]
+)
+data class BlockEventEntity(
+    @PrimaryKey(autoGenerate = true) @ColumnInfo(name = "id") val id: Long = 0,
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    @ColumnInfo(name = "host") val host: String, // host only — never full URLs
+    @ColumnInfo(name = "category") val category: String,
+    @ColumnInfo(name = "ts") val ts: Long
+)
+
+/** Cross-process app state KV (active profile, global settings JSON, ...). */
+@Entity(tableName = "app_state")
+data class AppStateEntity(
+    @PrimaryKey @ColumnInfo(name = "key") val key: String,
+    @ColumnInfo(name = "value") val value: String
+)

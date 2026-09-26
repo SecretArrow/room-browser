@@ -1,0 +1,285 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.console=plain
+
+jobs:
+  # ---------------------------------------------------------------------
+  # AUTO-FIX: runs lintFix first; if it auto-corrects anything, the fixes
+  # are committed & pushed (PAT_TOKEN re-triggers a clean pipeline run).
+  # ---------------------------------------------------------------------
+  autofix:
+    name: Auto-fix (lintFix)
+    runs-on: ubuntu-latest
+    outputs:
+      pushed_with_pat: ${{ steps.push.outputs.pushed_with_pat }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Apply automatic lint fixes
+        run: ./gradlew lintFix --console=plain --continue
+
+      - name: Commit and push fixes (if any)
+        id: push
+        run: |
+          git config user.name  "room-browser-autofix"
+          git config user.email "actions@users.noreply.github.com"
+          if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "Nothing to auto-fix."
+            echo "pushed_with_pat=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git add -A
+          git commit -m "chore(ci): auto-fix lint findings [skip ci]"
+          # Prefer PAT_TOKEN: pushes with it re-trigger the workflow so the
+          # fixed tree gets a full clean pipeline run (GITHUB_TOKEN would not).
+          if [ -n "${{ secrets.PAT_TOKEN }}" ]; then
+            git push "https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git" HEAD:${{ github.ref_name }}
+            echo "pushed_with_pat=true" >> "$GITHUB_OUTPUT"
+            echo "Auto-fixes pushed with PAT — a fresh CI run now validates the fixed tree."
+          else
+            git push "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:${{ github.ref_name }}
+            echo "pushed_with_pat=false" >> "$GITHUB_OUTPUT"
+            echo "WARN: PAT_TOKEN secret not set — pushed with GITHUB_TOKEN (no re-trigger)."
+          fi
+
+  # ---------------------------------------------------------------------
+  # QUALITY GATE: lint + unit tests + debug build on JVM only.
+  # Skipped when auto-fix already pushed (fresh run is on its way).
+  # ---------------------------------------------------------------------
+  quality:
+    name: Lint + unit tests + debug build
+    needs: autofix
+    if: needs.autofix.outputs.pushed_with_pat != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Static analysis (Android Lint)
+        run: ./gradlew lintDebug --console=plain
+
+      - name: Unit tests (domain + app)
+        run: ./gradlew testDebugUnitTest :core:domain:test --console=plain
+
+      - name: Debug build (all ABIs)
+        run: ./gradlew assembleDebug --console=plain
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            app/build/reports/tests/
+            core/domain/build/reports/tests/
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------
+  # E2E / INSTRUMENTED TESTS on a real emulator:
+  # profile CRUD, cross-process browsing flow, DB isolation, WebView
+  # data-directory binding (spec sections 59/60).
+  # ---------------------------------------------------------------------
+  e2e:
+    name: E2E instrumented tests (emulator)
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run instrumented tests on emulator (API 30, x86_64)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          target: default
+          disk-size: 4096M
+          cmdline-options: -noaudio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -wipe-data
+          script: |
+            adb shell settings put global window_animation_scale 0
+            adb shell settings put global transition_animation_scale 0
+            adb shell settings put global animator_duration_scale 0
+            ./gradlew connectedDebugAndroidTest --console=plain
+
+      - name: Upload instrumented test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-reports
+          path: app/build/outputs/androidTest-results/
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------
+  # AUTO-RELEASE: on every green main push AND on v* tags.
+  # Produces signed per-ABI APKs + universal + AAB, checksums, and a
+  # GitHub Release (spec section 57: ABI releases).
+  # ---------------------------------------------------------------------
+  release:
+    name: Auto-release (signed APKs per ABI)
+    needs: [ quality, e2e ]
+    if: >-
+      !cancelled() &&
+      needs.quality.result == 'success' &&
+      needs.e2e.result == 'success' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Compute release tag
+        id: tag
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "tag=${GITHUB_REF_NAME}"                  >> "$GITHUB_OUTPUT"
+            echo "prerelease=false"                        >> "$GITHUB_OUTPUT"
+            echo "name=Room Browser ${GITHUB_REF_NAME}"    >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v1.0.${{ github.run_number }}"       >> "$GITHUB_OUTPUT"
+            echo "prerelease=true"                         >> "$GITHUB_OUTPUT"
+            echo "name=Room Browser v1.0.${{ github.run_number }} (main)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Decode signing keystore (from repository secrets)
+        run: |
+          if [ -n "${{ secrets.ROOMBROWSER_KEYSTORE_B64 }}" ]; then
+            echo "${{ secrets.ROOMBROWSER_KEYSTORE_B64 }}" | base64 -d > $HOME/room-browser-release.jks
+            echo "ROOMBROWSER_KEYSTORE=$HOME/room-browser-release.jks"      >> $GITHUB_ENV
+            echo "ROOMBROWSER_STORE_PASSWORD=${{ secrets.ROOMBROWSER_STORE_PASSWORD }}" >> $GITHUB_ENV
+            echo "ROOMBROWSER_KEY_ALIAS=${{ secrets.ROOMBROWSER_KEY_ALIAS }}"           >> $GITHUB_ENV
+            echo "ROOMBROWSER_KEY_PASSWORD=${{ secrets.ROOMBROWSER_KEY_PASSWORD }}"     >> $GITHUB_ENV
+            echo "SIGNING_MODE=release-keyed" >> $GITHUB_ENV
+          else
+            echo "SIGNING_MODE=debug-fallback" >> $GITHUB_ENV
+            echo "No signing secrets found — building with debug-signing fallback. See RELEASE.md." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Build signed release APKs (ABI splits + universal)
+        run: ./gradlew assembleRelease --console=plain
+
+      - name: Build Android App Bundle
+        run: ./gradlew bundleRelease --console=plain
+
+      - name: Collect artifacts and checksums
+        run: |
+          mkdir -p release-out
+          cp app/build/outputs/apk/release/*.apk release-out/
+          cp app/build/outputs/bundle/release/*.aab release-out/ || true
+          cd release-out && sha256sum * > checksums.sha256 && cd ..
+          ls -lh release-out/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apks
+          path: release-out/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.name }}
+          draft: false
+          prerelease: ${{ steps.tag.outputs.prerelease }}
+          generate_release_notes: true
+          files: release-out/*
+          body: |
+            ## Room Browser ${{ steps.tag.outputs.tag }}
+
+            **Signed per-ABI release APKs + universal + AAB.**
+
+            | Artifact | Target |
+            |---|---|
+            | `arm64-v8a` | modern 64-bit ARM devices (recommended) |
+            | `armeabi-v7a` | older 32-bit ARM devices |
+            | `x86_64` / `x86` | emulators, x86 devices |
+            | `universal` | all ABIs (larger download) |
+            | `.aab` | Play Store upload |
+
+            Verify integrity with `sha256sum -c checksums.sha256`.
+
+            ### CI gates passed
+            - Android Lint (with auto-fix stage)
+            - Unit tests (domain + app)
+            - E2E instrumented tests on emulator (profile CRUD, cross-process browsing, storage isolation)
+
+            ${{ env.SIGNING_MODE == 'debug-fallback' && '⚠️ Built with fallback debug signing — configure repository secrets (see RELEASE.md) for production signing.' || '✅ Signed with the release keystore.' }}
