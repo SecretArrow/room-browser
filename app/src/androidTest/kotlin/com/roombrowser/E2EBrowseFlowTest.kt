@@ -19,14 +19,14 @@ import org.junit.runner.RunWith
  *
  *   MainActivity (default process)
  *     -> first-run welcome
- *     -> create profile via dialog
- *     -> tap OPEN
+ *     -> create profile via dialog (first profile AUTO-OPENS the engine)
+ *        or tap OPEN on an existing profile card
  *   BrowserActivity (':browser' process, own WebView data dir)
  *     -> omnibox / homepage is visible
  *
  * Compose nodes are clicked by COORDINATE (center of the text node's
- * bounds) — this is the most robust strategy across the Compose
- * accessibility bridge, independent of the 'clickable' flag mapping.
+ * bounds) — the most robust strategy across the Compose accessibility
+ * bridge, independent of the 'clickable' flag mapping.
  */
 @RunWith(AndroidJUnit4::class)
 class E2EBrowseFlowTest {
@@ -48,6 +48,16 @@ class E2EBrowseFlowTest {
     private fun hasText(text: String, timeoutMs: Long): Boolean =
         device.wait(Until.hasObject(By.text(text)), timeoutMs)
 
+    /** Polls until no node shows [text] anymore (dialog closed). */
+    private fun waitGone(text: String, timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (device.findObjects(By.text(text)).isEmpty()) return true
+            Thread.sleep(250)
+        }
+        return device.findObjects(By.text(text)).isEmpty()
+    }
+
     /** Clicks the center of the first node showing [text]. */
     private fun clickText(text: String, timeoutMs: Long): Boolean {
         val node = device.wait(Until.findObject(By.text(text)), timeoutMs) ?: return false
@@ -63,6 +73,12 @@ class E2EBrowseFlowTest {
         false
     }
 
+    /** The engine UI is up when the omnibox placeholder or homepage shows. */
+    private fun engineUiUp(timeoutMs: Long): Boolean =
+        hasText("Search or type URL", timeoutMs)
+            || hasText("Privacy Dashboard", 10_000)
+            || hasText("trackers blocked", 5_000)
+
     @Test
     fun first_run_create_profile_and_open_browser_engine() {
         // ---- 1. Cold start into the launcher activity ------------------------
@@ -74,10 +90,11 @@ class E2EBrowseFlowTest {
             hasText("Create Profile", 20_000) || hasText("OPEN", 10_000)
         )
 
-        // ---- 2. Create a profile through the real dialog --------------------
-        if (device.findObjects(By.text("OPEN")).isEmpty()) {
-            // Welcome screen -> open the Create Profile dialog. 'Cancel' only
-            // exists inside the dialog, so it is a reliable open-signal.
+        val alreadyHasProfile = device.findObjects(By.text("OPEN")).isNotEmpty()
+
+        if (!alreadyHasProfile) {
+            // ---- 2a. Create the first profile through the real dialog -------
+            // 'Cancel' only exists inside the dialog: reliable open-signal.
             var dialogOpen = false
             for (attempt in 1..2) {
                 assertTrue("Welcome 'Create Profile' button must be visible", clickText("Create Profile", 5_000))
@@ -91,11 +108,21 @@ class E2EBrowseFlowTest {
             val field = device.wait(Until.findObject(By.clazz("android.widget.EditText")), 5_000)
                 ?: device.wait(Until.findObject(By.text("Name")), 5_000)
             assertTrue("Name text field must be visible", field != null)
-            clickCenter(field!!)
-            device.executeShellCommand("input text E2E_Profile")
-            device.waitForIdle(1_000)
 
-            // Confirm button: sits in the SAME row as 'Cancel', to its right.
+            // Type the profile name — verified, with one retry.
+            var typed = false
+            for (attempt in 1..2) {
+                clickCenter(field!!)
+                device.executeShellCommand("input text E2E_Profile")
+                device.waitForIdle(1_500)
+                if (device.findObjects(By.textContains("E2E")).isNotEmpty()) {
+                    typed = true
+                    break
+                }
+            }
+            assertTrue("Profile name must be typed into the field", typed)
+
+            // Confirm button: same row as 'Cancel', to its right.
             val cancel = device.findObjects(By.text("Cancel")).minByOrNull { it.visibleBounds.top }
             val confirm = device.findObjects(By.text("Create Profile"))
                 .filter { c ->
@@ -107,24 +134,34 @@ class E2EBrowseFlowTest {
             assertTrue("Dialog confirm button must be found", confirm != null)
             clickCenter(confirm!!)
 
-            // Wait until the profile card with the OPEN button appears.
+            // The dialog must close — proves the create callback fired (a
+            // blank name would leave the dialog open).
             assertTrue(
-                "Profile card with OPEN must appear after creation",
-                hasText("OPEN", 15_000)
+                "Create dialog should close after confirm",
+                waitGone("Cancel", 8_000)
             )
+
+            // ---- 3. First-run creation AUTO-OPENS the :browser engine -------
+            // (MainScreen's onCreate callback calls onOpenProfile directly.)
+            // Older/alternative flows land on the profile list with OPEN.
+            if (!engineUiUp(30_000)) {
+                assertTrue(
+                    "Profile card with OPEN must appear after creation",
+                    hasText("OPEN", 10_000)
+                )
+                assertTrue("OPEN button must be clickable", clickText("OPEN", 5_000))
+            }
+        } else {
+            // ---- 2b. Existing profile: straight to the engine ---------------
+            assertTrue("OPEN button must be clickable", clickText("OPEN", 5_000))
         }
 
-        // ---- 3. Open the engine process (:browser) --------------------------
-        assertTrue("OPEN button must be clickable", clickText("OPEN", 5_000))
-
-        // The omnibox lives in the separate ':browser' process; UiAutomator
-        // addresses the whole device, so this also proves the engine started.
-        val engineUp = hasText("Search or type URL", 30_000)
-            || hasText("Privacy Dashboard", 10_000)
-            || hasText("trackers blocked", 5_000)
+        // ---- 4. The engine UI runs in the separate ':browser' process -------
+        // UiAutomator addresses the whole device, so this also proves the
+        // engine process booted with its own WebView data directory.
         assertTrue(
             "Browser UI (omnibox / homepage) must appear in the :browser process",
-            engineUp
+            engineUiUp(30_000)
         )
     }
 }
