@@ -75,8 +75,7 @@
         <!-- QR scanner (camera) — separate process keeps camera off the engine process -->
         <activity
             android:name=".qr.QrScannerActivity"
-            android:exported="false"
-            android:screenOrientation="portrait" />
+            android:exported="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

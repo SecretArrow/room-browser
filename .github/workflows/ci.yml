@@ -42,7 +42,23 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Apply automatic lint fixes
-        run: ./gradlew lintFix --console=plain --continue
+        run: |
+          set +e
+          ./gradlew lintFix --console=plain --continue
+          rc=$?
+          set -e
+          # AGP lintFix exits 1 BY DESIGN when it applied quickfixes
+          # ("Aborting build since sources were modified..."). That is the
+          # success path here: fixes land via the commit step below.
+          if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "No auto-fixes were applied (lintFix exit code: $rc)."
+            if [ $rc -ne 0 ]; then
+              echo "lintFix failed without applying fixes — surfacing real lint errors."
+              exit $rc
+            fi
+          else
+            echo "lintFix applied changes to the working tree."
+          fi
 
       - name: Commit and push fixes (if any)
         id: push
