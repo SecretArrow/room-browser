@@ -179,20 +179,21 @@ fun AgentSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             title = "Confirm actions",
             subtitle = "Ask for Allow/Deny before the agent clicks, types or submits",
             checked = agent.settings.confirmActions,
-            onCheckedChange = { agent.updateSettings { it.copy(confirmActions = it) } }
+            onCheckedChange = { checked -> agent.updateSettings { s -> s.copy(confirmActions = checked) } }
         )
         SettingSwitchRow(
             title = "Include current page by default",
             subtitle = "Attach a page snapshot to the first message of each turn",
             checked = agent.settings.includePageContext,
-            onCheckedChange = { agent.updateSettings { it.copy(includePageContext = it) } }
+            onCheckedChange = { checked -> agent.updateSettings { s -> s.copy(includePageContext = checked) } }
         )
 
         SliderRow(
             label = "Temperature",
             value = agent.settings.temperature.toFloat(),
             valueLabel = agent.settings.temperature.toString(),
-            valueRange = 0f..1f,
+            rangeStart = 0f,
+            rangeEnd = 1f,
             steps = 9,
             onCommit = { agent.updateSettings { s -> s.copy(temperature = (it * 10).toInt() / 10.0) } }
         )
@@ -200,7 +201,8 @@ fun AgentSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             label = "Max steps per turn",
             value = agent.settings.maxSteps.toFloat(),
             valueLabel = agent.settings.maxSteps.toString(),
-            valueRange = 5f..50f,
+            rangeStart = 5f,
+            rangeEnd = 50f,
             steps = 8,
             onCommit = { agent.updateSettings { s -> s.copy(maxSteps = it.toInt()) } }
         )
@@ -262,7 +264,8 @@ private fun SliderRow(
     label: String,
     value: Float,
     valueLabel: String,
-    valueRange: androidx.compose.ui.unit.ClosedFloatingPointRange<Float>,
+    rangeStart: Float,
+    rangeEnd: Float,
     steps: Int,
     onCommit: (Float) -> Unit
 ) {
@@ -276,7 +279,7 @@ private fun SliderRow(
             value = local,
             onValueChange = { local = it },
             onValueChangeFinished = { onCommit(local) },
-            valueRange = valueRange,
+            valueRange = rangeStart..rangeEnd,
             steps = steps
         )
     }
