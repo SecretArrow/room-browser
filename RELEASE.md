@@ -4,15 +4,16 @@
 
 The repository ships CI/CD in `.github/workflows/ci.yml`:
 
-- **Every push / PR** → `gradle lintDebug testDebugUnitTest assembleDebug`
-  (quality gate; reports uploaded as artifacts).
-- **Every tag `v*`** → full release pipeline:
-  1. quality gate (lint + unit tests)
-  2. signed release build of **per-ABI APKs + universal APK + AAB**
-  3. SHA-256 checksums
-  4. automatic **GitHub Release** with all artifacts attached
+1. **auto-fix** — `lintFix` quickfixes are committed & pushed automatically.
+2. **quality gate (every push / PR)** — lint + unit tests + debug build.
+3. **e2e gate** — instrumented tests + cross-process E2E flow on an emulator.
+4. **auto-release** — after quality + e2e are green:
+   - **every push to `main`** → pre-release tagged `v1.0.<run_number>`
+   - **every tag `v*`** → stable release with the exact tag name
+   - signed **per-ABI APKs + universal APK + AAB** + SHA-256 checksums
+   - automatic **GitHub Release** with all artifacts attached
 
-Creating a release:
+Creating a stable release:
 
 ```bash
 git tag v1.0.0
