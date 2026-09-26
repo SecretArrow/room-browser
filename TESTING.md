@@ -7,7 +7,7 @@
 | Domain unit tests (72) | `./gradlew :core:domain:test` | JVM | ✅ run in CI and locally |
 | App logic unit tests | `./gradlew :app:testDebugUnitTest` | JVM | ✅ run in CI and locally |
 | Android Lint | `./gradlew lintDebug` | JVM | ✅ run in CI and locally |
-| Instrumented tests | `./gradlew connectedDebugAndroidTest` | device/emulator | written; requires hardware |
+| Instrumented tests (DB + engine + E2E UI) | `./gradlew connectedDebugAndroidTest` | emulator | ✅ automated in CI (API 30 x86_64 emulator) |
 | Profile isolation E2E | manual/CI procedure below | device/emulator | procedure + tooling provided |
 
 ## What the unit tests cover (spec section 59)
@@ -26,7 +26,7 @@
 
 ## The critical profile-isolation test (spec section 60)
 
-### Automated parts (device required)
+### Automated parts (run in CI on every push)
 
 `app/src/androidTest/kotlin/com/roombrowser/ProfileIsolationTest.kt`
 - distinct suffixes per profile UUID
@@ -37,6 +37,10 @@
 - tabs/bookmarks/history scoped per profile
 - delete cascades only within one profile
 - rename keeps storage identity
+
+`E2EBrowseFlowTest.kt` (UiAutomator, cross-process)
+- cold start → first-run welcome → create profile via the real dialog
+- tap OPEN → the separate `:browser` engine process boots → omnibox visible
 
 ### End-to-end storage isolation (the full spec procedure)
 
@@ -72,8 +76,16 @@ adb shell cmd uiautomator dump   # verify UI after each kill
 Configuration changes: rotate the device, split-screen, dark-mode toggle —
 the activity handles config changes without recreating engine state.
 
-## CI quality gate
+## CI quality gate & auto-release
 
-`.github/workflows/ci.yml` runs lint + unit tests + debug build on every push
-and the full signed release matrix on tags. Failures block merging and
-releasing.
+`.github/workflows/ci.yml` runs on every push to `main` (and `v*` tags):
+
+1. **auto-fix** — `lintFix` quickfixes are committed and pushed automatically
+   (the PAT_TOKEN secret re-triggers a clean pipeline run on the fixed tree)
+2. **quality** — Android Lint + unit tests (domain + app) + debug build
+3. **e2e** — instrumented tests + cross-process E2E flow on a real emulator
+   (API 30, x86_64, KVM)
+4. **auto-release** — after quality + e2e are green on `main`: signed per-ABI
+   APKs (arm64-v8a, armeabi-v7a, x86_64, x86, universal) + AAB + checksums
+   are published as a GitHub Release (tag `v1.0.<run_number>`; `v*` tags get
+   stable releases). Failures block merging and releasing.
