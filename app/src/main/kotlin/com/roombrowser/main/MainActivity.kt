@@ -1,8 +1,13 @@
 package com.roombrowser.main
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.ViewModelProvider
 import com.roombrowser.browser.BrowserActivity
@@ -21,10 +26,14 @@ class MainActivity : FragmentActivity() {
 
     private lateinit var viewModel: MainViewModel
 
+    // Notifications (API 33+): agent progress + download completions.
+    private val notifPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         viewModel = ViewModelProvider(this)[MainViewModel::class.java]
-
+        requestNotificationPermissionIfNeeded()
         // Route external links (VIEW intent from other apps) through the
         // "Open with profile" chooser — never silently open the wrong profile.
         intent?.dataString?.let { handleExternalUrl(it) }
@@ -58,6 +67,17 @@ class MainActivity : FragmentActivity() {
         val url = raw.trim()
         if (url.startsWith("http://") || url.startsWith("https://")) {
             viewModel.submitExternalUrl(url)
+        }
+    }
+
+    /** Requests POST_NOTIFICATIONS once on API 33+ so the agent's background
+     *  progress notification (and download alerts) are visible. */
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            runCatching { notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
         }
     }
 

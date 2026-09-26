@@ -57,6 +57,11 @@ class AgentToolExecutor(
                     AgentTools.LIST_TABS -> listTabs()
                     AgentTools.SWITCH_TAB -> switchTab(int(args, "index"))
                     AgentTools.CLOSE_TAB -> closeTab()
+                    AgentTools.AUTO_LIKE -> autoLike()
+                    AgentTools.AUTO_REPOST -> autoRepost()
+                    AgentTools.AUTO_REPLY -> autoReply(str(args, "text"))
+                    AgentTools.AUTO_POST -> autoPost(str(args, "text"))
+                    AgentTools.WAIT -> waitTool(intOrNull(args, "ms"))
                     else -> ToolResult(false, "unknown tool: $name")
                 }
             } catch (ce: CancellationException) {
@@ -200,6 +205,60 @@ class AgentToolExecutor(
         val id = vm.activeTabId ?: return ToolResult(false, "no open tab")
         vm.closeTab(id)
         return ToolResult(true, "closed the current tab")
+    }
+
+    // ------------------------------------------------------------- social automation
+
+    private suspend fun autoLike(): ToolResult = socialAction(
+        AgentTools.AUTO_LIKE, "like the visible posts"
+    ) { webView -> evaluateJs(webView, PageInjector.autoLikeJs()) }
+
+    private suspend fun autoRepost(): ToolResult = socialAction(
+        AgentTools.AUTO_REPOST, "repost the visible posts"
+    ) { webView -> evaluateJs(webView, PageInjector.autoRepostJs()) }
+
+    private suspend fun autoReply(text: String?): ToolResult {
+        if (text == null) return ToolResult(false, "missing 'text' argument")
+        return socialAction(
+            AgentTools.AUTO_REPLY, "reply with \"" + text.replace('\n', ' ').take(40) + "\"", 900L
+        ) { webView ->
+            val jsonText = AgentJson.encodeToString(String.serializer(), text)
+            evaluateJs(webView, PageInjector.autoReplyJs(jsonText))
+        }
+    }
+
+    private suspend fun autoPost(text: String?): ToolResult {
+        if (text == null) return ToolResult(false, "missing 'text' argument")
+        return socialAction(
+            AgentTools.AUTO_POST, "post \"" + text.replace('\n', ' ').take(40) + "\"", 2400L
+        ) { webView ->
+            val jsonText = AgentJson.encodeToString(String.serializer(), text)
+            evaluateJs(webView, PageInjector.autoPostJs(jsonText))
+        }
+    }
+
+    /** Runs one heuristic social action: confirm → JS → settle → result. */
+    private suspend fun socialAction(
+        name: String,
+        label: String,
+        settleMs: Long = 0L,
+        js: suspend (WebView) -> String?
+    ): ToolResult {
+        if (!allow(name, label)) return ToolResult(false, "the user denied this action")
+        val webView = currentWebView()
+            ?: return ToolResult(false, "no page is loaded — navigate to the site first")
+        val triggerAt = SystemClock.elapsedRealtime()
+        val jsResult = js(webView)
+            ?: return ToolResult(false, "$name failed (JavaScript error or page still loading)")
+        awaitPageSettle(triggerAt)
+        if (settleMs > 0) delay(settleMs)
+        return ToolResult(true, unquote(jsResult))
+    }
+
+    private suspend fun waitTool(ms: Int?): ToolResult {
+        val bounded = (ms ?: 1500).coerceIn(200, 20_000)
+        delay(bounded)
+        return ToolResult(true, "waited ${bounded}ms")
     }
 
     // ------------------------------------------------------------- helpers

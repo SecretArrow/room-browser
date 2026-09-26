@@ -132,4 +132,206 @@ object PageInjector {
             Math.round(Math.max(document.documentElement.scrollHeight - window.innerHeight, 0));
         })()
     """.trimIndent()
+
+    // ------------------------------------------------------------------
+    //  Social automation (auto like / repost / reply / post)
+    //  Heuristic label matching (EN + ID) over visible buttons; multi-site
+    //  by design (X, Facebook, Reddit, Tumblr, LinkedIn, ...). No template
+    //  literals and no dollar signs — safe for Kotlin raw strings.
+    // ------------------------------------------------------------------
+
+    /** Likes/upvotes up to [limit] visible social posts. */
+    fun autoLikeJs(limit: Int = 20): String = socialClickJs(
+        verb = "like",
+        limit = limit,
+        matchRegex = "/(like|suka|favorit|favorite|heart|love this|upvote|vote up|approve)/i",
+        excludeRegex = "/(unlike|liked|dislike|sudah suka|batal|undo|remove|un-?heart)/i"
+    )
+
+    /** Reposts/retweets/reblogs up to [limit] visible social posts. */
+    fun autoRepostJs(limit: Int = 15): String = socialClickJs(
+        verb = "repost",
+        limit = limit,
+        matchRegex = "/(repost|retweet|reblog|bagikan ulang|share post|boost|re-?share)/i",
+        excludeRegex = "/(undo|batalkan|batal|remove repost|unrepost|unretweet|quote)/i"
+    )
+
+    private fun socialClickJs(verb: String, limit: Int, matchRegex: String, excludeRegex: String): String = """
+        (function(){
+          function vis(el){ try { var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch (e) { return false; } }
+          function norm(s){ return (s || '').replace(/\s+/g, ' ').trim().toLowerCase(); }
+          function label(el){
+            var s = '';
+            try {
+              s = (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '') +
+                ' ' + (el.innerText || '') + ' ' + (el.value || '');
+            } catch (e) {}
+            return norm(s);
+          }
+          var nodes = document.querySelectorAll('button, [role="button"], a, [aria-label]');
+          var match = $matchRegex;
+          var exclude = $excludeRegex;
+          var n = 0;
+          var failed = 0;
+          for (var i = 0; i < nodes.length; i++) {
+            if (n >= $limit) break;
+            var el = nodes[i];
+            if (!vis(el) || el.disabled) continue;
+            var lb = label(el);
+            if (!lb) continue;
+            if (exclude.test(lb)) continue;
+            if (!match.test(lb)) continue;
+            try { el.scrollIntoView({block: 'center'}); } catch (e) {}
+            try { el.click(); n++; } catch (e) { failed++; }
+          }
+          var msg = 'clicked ' + n + ' visible ' + '$verb' + ' buttons';
+          if (failed) msg += ' (' + failed + ' failed)';
+          if (n === 0) msg += ' — none matched on screen; scroll or read_page to check the page';
+          return msg;
+        })()
+    """.trimIndent()
+
+    /**
+     * Types [jsonText] (a JSON-encoded string) into the visible reply box
+     * and clicks the matching submit button. [jsonText] MUST be produced by
+     * Json.encodeToString(String.serializer(), ...).
+     */
+    fun autoReplyJs(jsonText: String): String = """
+        (function(){
+          function vis(el){ try { var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch (e) { return false; } }
+          function norm(s){ return (s || '').replace(/\s+/g, ' ').trim().toLowerCase(); }
+          function setVal(el, text){
+            el.focus();
+            if (el.isContentEditable) {
+              try { document.execCommand('selectAll', false, null); } catch (e) {}
+              return document.execCommand('insertText', false, text);
+            }
+            var proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+            var d = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (d && d.set) d.set.call(el, text); else el.value = text;
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+            return true;
+          }
+          function findComposer(){
+            var sels = document.querySelectorAll('[contenteditable="true"], [role="textbox"], textarea');
+            for (var i = 0; i < sels.length; i++) { if (vis(sels[i])) return sels[i]; }
+            return null;
+          }
+          function findSubmit(){
+            var btns = document.querySelectorAll('button, [role="button"], input[type="submit"]');
+            var best = null; var bestLen = 1e9;
+            for (var i = 0; i < btns.length; i++) {
+              var el = btns[i];
+              if (!vis(el) || el.disabled) continue;
+              var lb = norm((el.getAttribute('aria-label') || '') + ' ' + (el.innerText || '') + ' ' + (el.getAttribute('value') || ''));
+              if (!lb) continue;
+              if (/(cancel|batal|edit|delete|hapus|close|tutup|attach|photo|image|gif|poll|emoji|schedule|draft|thread)/i.test(lb)) continue;
+              if (/(reply|balas|post|tweet|send|kirim|publish|submit|tambah|share|bagikan)/i.test(lb)) {
+                if (lb.length < bestLen) { best = el; bestLen = lb.length; }
+              }
+            }
+            return best;
+          }
+          var c = findComposer();
+          if (!c) return 'no visible reply box found - open the post/thread first (click its Reply button), then retry';
+          try { c.scrollIntoView({block: 'center'}); } catch (e) {}
+          if (!setVal(c, $jsonText)) return 'could not type into the reply box';
+          var b = findSubmit();
+          if (b) {
+            try { b.click(); return 'typed the reply and clicked submit'; } catch (e) {}
+          }
+          var form = c.closest ? c.closest('form') : null;
+          if (form) {
+            try {
+              if (form.requestSubmit) form.requestSubmit(); else form.submit();
+              return 'typed the reply and submitted the form';
+            } catch (e) {}
+          }
+          return 'typed the reply but no submit button found - read_page, then click the submit [ref]';
+        })()
+    """.trimIndent()
+
+    /**
+     * Publishes a new post: opens the composer when needed, then types and
+     * submits. Typing/submission happen asynchronously (setTimeout) because
+     * the composer appears after the opener click.
+     */
+    fun autoPostJs(jsonText: String): String = """
+        (function(){
+          function vis(el){ try { var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch (e) { return false; } }
+          function norm(s){ return (s || '').replace(/\s+/g, ' ').trim().toLowerCase(); }
+          function label(el){
+            var s = '';
+            try {
+              s = (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '') + ' ' + (el.innerText || '');
+            } catch (e) {}
+            return norm(s);
+          }
+          function setVal(el, text){
+            el.focus();
+            if (el.isContentEditable) {
+              try { document.execCommand('selectAll', false, null); } catch (e) {}
+              return document.execCommand('insertText', false, text);
+            }
+            var proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+            var d = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (d && d.set) d.set.call(el, text); else el.value = text;
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+            return true;
+          }
+          function composer(){
+            var sels = document.querySelectorAll('[contenteditable="true"], [role="textbox"], textarea');
+            for (var i = 0; i < sels.length; i++) { if (vis(sels[i])) return sels[i]; }
+            return null;
+          }
+          function submitBtn(){
+            var btns = document.querySelectorAll('button, [role="button"]');
+            var best = null; var bestLen = 1e9;
+            for (var i = 0; i < btns.length; i++) {
+              var el = btns[i];
+              if (!vis(el) || el.disabled) continue;
+              var lb = label(el);
+              if (!lb) continue;
+              if (/(cancel|batal|edit|delete|hapus|close|tutup|attach|photo|image|gif|poll|emoji|schedule|draft|next|back|thread)/i.test(lb)) continue;
+              if (/(post|tweet|publish|kirim|send|submit|bagikan|tambah)/i.test(lb)) {
+                if (lb.length < bestLen) { best = el; bestLen = lb.length; }
+              }
+            }
+            return best;
+          }
+          var opened = false;
+          var nodes = document.querySelectorAll('button, [role="button"], a');
+          for (var i = 0; i < nodes.length; i++) {
+            var el = nodes[i];
+            if (!vis(el)) continue;
+            var lb = label(el);
+            if (!lb) continue;
+            if (lb === 'post' || lb === 'tweet' ||
+                /(new post|new tweet|compose|create post|post baru|buat posting|tulis posting|start a post|mulai postingan|what.?s on your mind|apa yang sedang terjadi|share an update)/i.test(lb)) {
+              try { el.click(); opened = true; } catch (e) {}
+              break;
+            }
+          }
+          var hadComposer = !!composer();
+          var delay = (opened && !hadComposer) ? 1200 : 150;
+          window.setTimeout(function(){
+            var c = composer();
+            if (!c) return;
+            try { c.scrollIntoView({block: 'center'}); } catch (e) {}
+            setVal(c, $jsonText);
+            window.setTimeout(function(){
+              var b = submitBtn();
+              if (b) { try { b.click(); } catch (e) {} }
+              else {
+                var form = c.closest ? c.closest('form') : null;
+                if (form) { try { if (form.requestSubmit) form.requestSubmit(); else form.submit(); } catch (e) {} }
+              }
+            }, 900);
+          }, delay);
+          var state = opened ? 'opened the composer' : (hadComposer ? 'composer already open' : 'no composer found - type into the page manually');
+          return state + '; typing and submitting - call wait (~2s) then read_page to verify';
+        })()
+    """.trimIndent()
 }

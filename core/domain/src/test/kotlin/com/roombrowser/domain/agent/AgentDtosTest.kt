@@ -131,6 +131,29 @@ class AgentDtosTest {
     }
 
     @Test
+    fun `tool defs cover the social automation catalogue`() {
+        val defs = AgentTools.toolDefs().associate { it.function.name to it.function }
+        assertThat(defs.keys).containsAtLeast(
+            AgentTools.AUTO_LIKE, AgentTools.AUTO_REPOST, AgentTools.AUTO_REPLY,
+            AgentTools.AUTO_POST, AgentTools.WAIT
+        )
+        // automation tools with parameters must declare a required text arg
+        listOf(AgentTools.AUTO_REPLY, AgentTools.AUTO_POST).forEach { name ->
+            val params = defs.getValue(name).parameters
+            val required = params["required"]?.let { it.toString() }
+            assertThat(required).contains("text")
+        }
+        // every automation tool needs a non-blank description
+        defs.values.forEach { fn ->
+            assertThat(fn.description.isNotBlank()).isTrue()
+        }
+        // automation tools participate in the confirmation gate
+        assertThat(AgentTools.INTERACTIVE_TOOLS).containsAtLeast(
+            AgentTools.AUTO_LIKE, AgentTools.AUTO_REPOST, AgentTools.AUTO_REPLY, AgentTools.AUTO_POST
+        )
+    }
+
+    @Test
     fun `snapshot formatting truncates text and lists elements`() {
         val snapshot = PageSnapshotDto(
             url = "https://example.com",
@@ -161,6 +184,26 @@ class AgentDtosTest {
             .isEqualTo("Type into [?]")
         assertThat(AgentTools.describeTool(AgentTools.READ_PAGE, null))
             .isEqualTo("Read current page")
+        assertThat(AgentTools.describeTool(AgentTools.AUTO_LIKE, "{}"))
+            .isEqualTo("Like visible posts")
+        assertThat(AgentTools.describeTool(AgentTools.AUTO_REPOST, null))
+            .isEqualTo("Repost visible posts")
+        assertThat(AgentTools.describeTool(AgentTools.AUTO_REPLY, """{"text":"thanks!"}"""))
+            .isEqualTo("Reply \"thanks!\"")
+        assertThat(AgentTools.describeTool(AgentTools.AUTO_POST, "not json"))
+            .isEqualTo("Post \"\"")
+        assertThat(AgentTools.describeTool(AgentTools.WAIT, """{"ms":2000}"""))
+            .isEqualTo("Wait 2000ms")
+        assertThat(AgentTools.describeTool(AgentTools.WAIT, null))
+            .isEqualTo("Wait 1500ms")
+    }
+
+    @Test
+    fun `prompt teaches the automation tools`() {
+        assertThat(AgentPrompts.DEFAULT).contains("auto_like")
+        assertThat(AgentPrompts.DEFAULT).contains("auto_repost")
+        assertThat(AgentPrompts.DEFAULT).contains("auto_reply")
+        assertThat(AgentPrompts.DEFAULT).contains("auto_post")
     }
 
     @Test

@@ -76,6 +76,7 @@ class BrowserAgentController(
 ) {
 
     private val graph = (application as RoomBrowserApp).graph
+    private val appContext: android.content.Context = application.applicationContext
     private val repo = graph.agentRepo
     private val appState = graph.appState
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -145,6 +146,8 @@ class BrowserAgentController(
 
     fun shutdown() {
         turnJob?.cancel()
+        AgentForeground.stopCurrentTurn = null
+        AgentForeground.finish()
         scope.cancel()
     }
 
@@ -354,7 +357,12 @@ class BrowserAgentController(
 
     private suspend fun runTurn(text: String, includePage: Boolean, provider: AgentProviderEntity, model: String) {
         running = true
-        statusLine = null
+        // Background mode: foreground service + wake lock so the turn keeps
+        // running when the user leaves the app or the screen turns off.
+        AgentForeground.stopCurrentTurn = { stop() }
+        AgentForeground.begin(appContext)
+        AgentForeground.status("Working: " + text.take(60))
+        setStatus(null)
         entries = entries + AgentEntry.User(text, System.currentTimeMillis())
         var streamingIndex = -1
         try {
@@ -396,11 +404,11 @@ class BrowserAgentController(
                 when (event) {
                     is AgentEvent.AssistantText -> {
                         streamingIndex = upsertStreamingAssistant(streamingIndex, event.text, null)
-                        statusLine = "Writing…"
+                        setStatus("Writing…")
                     }
                     is AgentEvent.AssistantThinking -> {
                         streamingIndex = upsertStreamingAssistant(streamingIndex, "", event.text)
-                        statusLine = "Thinking…"
+                        setStatus("Thinking…")
                     }
                     is AgentEvent.ToolStarted -> {
                         streamingIndex = finalizeAssistant(streamingIndex)
@@ -413,11 +421,11 @@ class BrowserAgentController(
                             summary = "",
                             at = System.currentTimeMillis()
                         )
-                        statusLine = AgentTools.describeTool(event.name, event.argsJson)
+                        setStatus(AgentTools.describeTool(event.name, event.argsJson))
                     }
                     is AgentEvent.ToolFinished -> {
                         updateToolEntry(event.id) { it.copy(running = false, ok = event.ok, summary = event.summary) }
-                        statusLine = "Step done"
+                        setStatus("Step done")
                         repo.addMessage(
                             sessionId, "tool",
                             (if (event.ok) "" else "ERROR: ") + event.summary,
@@ -435,7 +443,7 @@ class BrowserAgentController(
                         )
                         repo.addMessage(sessionId, "assistant", event.text)
                         repo.touchSession(sessionId)
-                        statusLine = null
+                        setStatus(null)
                     }
                     is AgentEvent.AgentError -> {
                         streamingIndex = finalizeAssistant(streamingIndex)
@@ -445,7 +453,7 @@ class BrowserAgentController(
                             at = System.currentTimeMillis()
                         )
                         repo.addMessage(sessionId, "assistant", "⚠ error: ${event.message}")
-                        statusLine = null
+                        setStatus(null)
                     }
                     is AgentEvent.Notice -> {
                         entries = entries + AgentEntry.Notice(event.text, error = false, at = System.currentTimeMillis())
@@ -463,8 +471,10 @@ class BrowserAgentController(
             )
         } finally {
             running = false
-            statusLine = null
+            setStatus(null)
             approval = null
+            AgentForeground.stopCurrentTurn = null
+            AgentForeground.finish()
         }
     }
 
@@ -507,9 +517,15 @@ class BrowserAgentController(
 
     // ------------------------------------------------------------- approvals
 
+    /** Sets the in-app status line and mirrors it to the background notification. */
+    private fun setStatus(text: String?) {
+        statusLine = text
+        AgentForeground.status(text ?: "Working…")
+    }
+
     private suspend fun requestApproval(name: String, label: String): Boolean {
         if (!settings.confirmActions) return true
-        statusLine = "Approve? $label"
+        setStatus("Approve? $label")
         return try {
             withTimeout(APPROVAL_TIMEOUT_MS) {
                 suspendCancellableCoroutine { continuation ->

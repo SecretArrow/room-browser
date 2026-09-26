@@ -14,6 +14,7 @@
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.fingerprint" android:required="false" />
@@ -76,6 +77,19 @@
         <activity
             android:name=".qr.QrScannerActivity"
             android:exported="false" />
+
+        <!--
+          AI agent background execution: while an agent turn runs, this
+          dataSync foreground service keeps the ':browser' process alive and
+          holds a partial wake lock, so tasks continue with the app in the
+          background or the screen off. It also shows the agent's progress
+          notification (with a Stop action).
+        -->
+        <service
+            android:name=".agent.AgentKeepAliveService"
+            android:process=":browser"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -29,6 +29,13 @@ object AgentTools {
     const val SWITCH_TAB = "switch_tab"
     const val CLOSE_TAB = "close_tab"
 
+    // ---- social automation (auto reply / like / repost / post) ----
+    const val AUTO_LIKE = "auto_like"
+    const val AUTO_REPOST = "auto_repost"
+    const val AUTO_REPLY = "auto_reply"
+    const val AUTO_POST = "auto_post"
+    const val WAIT = "wait"
+
     private const val OBJ = """{"type":"object"}"""
 
     private val SCHEMA_NAVIGATE = """{"type":"object","properties":{"url":{"type":"string","description":"Full URL, e.g. https://example.com/path"}},"required":["url"]}"""
@@ -40,9 +47,14 @@ object AgentTools {
     private val SCHEMA_SCROLL = """{"type":"object","properties":{"direction":{"type":"string","enum":["up","down"]},"amount":{"type":"integer","description":"Optional percentage of viewport height, default 80"}},"required":["direction"]}"""
     private val SCHEMA_NEW_TAB = """{"type":"object","properties":{"url":{"type":"string","description":"Optional URL to open, defaults to the start page"}}}"""
     private val SCHEMA_TAB_INDEX = """{"type":"object","properties":{"index":{"type":"integer","description":"Tab index from list_tabs"}},"required":["index"]}"""
+    private val SCHEMA_TEXT = """{"type":"object","properties":{"text":{"type":"string","description":"Text to send"}},"required":["text"]}"""
+    private val SCHEMA_WAIT = """{"type":"object","properties":{"ms":{"type":"integer","description":"Milliseconds to wait, 200-20000, default 1500"}}}"""
 
     /** Tool names whose execution may require user confirmation. */
-    val INTERACTIVE_TOOLS = setOf(CLICK, FILL_INPUT, PRESS_ENTER)
+    val INTERACTIVE_TOOLS = setOf(
+        CLICK, FILL_INPUT, PRESS_ENTER,
+        AUTO_LIKE, AUTO_REPOST, AUTO_REPLY, AUTO_POST
+    )
 
     /** OpenAI `tools` array for the chat request. */
     fun toolDefs(): List<ToolDef> = listOf(
@@ -57,7 +69,12 @@ object AgentTools {
         def(OPEN_NEW_TAB, "Open a new tab and optionally navigate it to a URL.", SCHEMA_NEW_TAB),
         def(LIST_TABS, "List the open tabs with their indices.", SCHEMA_NO_PARAMS),
         def(SWITCH_TAB, "Switch to the tab with the given index (see list_tabs).", SCHEMA_TAB_INDEX),
-        def(CLOSE_TAB, "Close the current tab.", SCHEMA_NO_PARAMS)
+        def(CLOSE_TAB, "Close the current tab.", SCHEMA_NO_PARAMS),
+        def(AUTO_LIKE, "Like/upvote the posts currently visible on the page (works on social feeds: X, Facebook, Reddit, etc.). Likes up to 20 visible items. Scroll first, then call again to continue down the feed.", SCHEMA_NO_PARAMS),
+        def(AUTO_REPOST, "Repost/retweet/reblog/share the posts currently visible on the page. Reposts up to 15 visible items. Scroll first, then call again to continue.", SCHEMA_NO_PARAMS),
+        def(AUTO_REPLY, "Reply to the open post/thread: types the given text into the visible reply box and submits it. Returns immediately; call wait then read_page to verify.", SCHEMA_TEXT),
+        def(AUTO_POST, "Create a new post/status/tweet with the given text: opens the composer, types, and submits. Call wait then read_page to verify.", SCHEMA_TEXT),
+        def(WAIT, "Wait for a page update (post-submit animations, infinite scroll loading) before reading again.", SCHEMA_WAIT)
     )
 
     private fun def(name: String, description: String, schema: String): ToolDef =
@@ -96,6 +113,11 @@ object AgentTools {
             LIST_TABS -> "List tabs"
             SWITCH_TAB -> "Switch to tab [${int("index") ?: "?"}]"
             CLOSE_TAB -> "Close current tab"
+            AUTO_LIKE -> "Like visible posts"
+            AUTO_REPOST -> "Repost visible posts"
+            AUTO_REPLY -> "Reply \"${(str("text") ?: "").take(30)}\""
+            AUTO_POST -> "Post \"${(str("text") ?: "").take(30)}\""
+            WAIT -> "Wait ${int("ms") ?: 1500}ms"
             else -> name
         }
     } catch (_: Exception) {

@@ -308,7 +308,7 @@ private fun AgentConversation(
                 }
             } else {
                 Text(
-                    "Ask the agent to browse autonomously — e.g.\n\"Open example.com and summarize it\" or \"Search for Kotlin coroutines and open the top result\"",
+                    "Ask the agent to browse autonomously — e.g.\n\"Open example.com and summarize it\", \"Search for Kotlin coroutines and open the top result\",\nor \"Like the visible posts about AI on this feed\", \"Reply to this thread: thanks!\", \"Post: hello world\".\nTasks keep running in the background (see the notification) when you leave the app.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

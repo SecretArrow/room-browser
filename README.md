@@ -40,7 +40,12 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
 - **AI Agents (autonomous browsing)** — Room Agent drives the real browser
   for you: navigate, read pages, click, fill forms and manage tabs while
   you watch. Chat panel with streaming answers, tool-step cards, session
-  history and Allow/Deny action approvals. Any OpenAI-compatible provider
+  history and Allow/Deny action approvals. **Social automation tools**
+  (`auto_like`, `auto_repost`, `auto_reply`, `auto_post`) complete
+  like/repost/reply/post tasks on any social feed, and turns **keep
+  running in the background** (foreground service + wake lock, with a
+  progress notification and Stop action) when you leave the app or turn
+  the screen off. Any OpenAI-compatible provider
   works (Z.ai, OpenAI, OpenRouter, Groq, DeepSeek, Mistral, Together,
   Ollama, LM Studio or custom) with **manual provider input** and
   **model lists fetched live from the provider's `/models` endpoint**.

@@ -68,11 +68,41 @@ responses are accepted as a fallback automatically.
 | `scroll(direction, amount?)` | Scrolls the page |
 | `go_back()` | History back |
 | `open_new_tab(url?)`, `list_tabs()`, `switch_tab(index)`, `close_tab()` | Tab management |
+| `auto_like()` | Likes/upvotes the posts **currently visible** on the page (X, Facebook, Reddit, Tumblr, LinkedIn…) — up to 20 per call; scroll then repeat to continue |
+| `auto_repost()` | Reposts/retweets/reblogs/shares the visible posts — up to 15 per call |
+| `auto_reply(text)` | Types the text into the visible reply box and submits it |
+| `auto_post(text)` | Opens the composer, types a new post/status/tweet and submits it |
+| `wait(ms)` | Waits for post-submit animations / infinite-scroll loading before reading again |
 
 Element interaction uses the numbered-reference model (every visible
 interactive element is tagged `data-agent-ref` by injected JS — the same
 family of techniques used by WebVoyager-style browser agents, adapted to
 Android WebView).
+
+### Social automation ("auto selesaikan task")
+
+The four `auto_*` tools are heuristics that work across social sites by
+matching visible button labels (EN + ID: *like/suka, repost/bagikan ulang,
+reply/balas, post/tweet…*) and typing into the visible composer with the
+React/Vue-safe native value setter. Anything they cannot solve directly,
+the model still solves with the generic tools (`read_page` → `click` →
+`fill_input` → `press_enter`) — so phrased tasks like *"balas semua DM
+yang bilang halo"* or *"like 50 post tentang AI"* get decomposed into
+scroll → `auto_like` → verify loops. Automation tools are part of the
+**Confirm actions** gate, so you can require an Allow/Deny tap before the
+agent likes/posts anything.
+
+### Background execution
+
+Agent turns keep running when you leave the app or turn the screen off:
+while a turn is active, `AgentKeepAliveService` (a `dataSync` foreground
+service in the `:browser` process) holds a partial wake lock and shows an
+ongoing progress notification (current step + a **Stop** action). The
+service starts when you hit Send and stops itself when the turn finishes.
+Note the honest limits: swiping the app away from Recents kills the
+process (standard Android behaviour), and the system caps `dataSync`
+services at ~6 hours per day on Android 14+ — far beyond any realistic
+agent task.
 
 ## Agent settings
 
