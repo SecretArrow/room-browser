@@ -1,6 +1,6 @@
-package com.roombrowser.agent.ui
-
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
+package com.roombrowser.agent.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column

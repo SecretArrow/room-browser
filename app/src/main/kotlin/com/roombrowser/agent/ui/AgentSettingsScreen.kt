@@ -1,6 +1,6 @@
-package com.roombrowser.agent.ui
-
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
+package com.roombrowser.agent.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -90,6 +90,7 @@ val PROVIDER_PRESETS: List<Pair<String, String>> = listOf(
 @Composable
 fun AgentSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
     val agent = viewModel.agent
+    val scope = rememberCoroutineScope()
     var editing by remember { mutableStateOf<AgentProviderEntity?>(null) }
     var adding by remember { mutableStateOf(false) }
 
@@ -141,7 +142,7 @@ fun AgentSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                     modifier = Modifier.semantics { contentDescription = "edit_provider_${provider.id}" }
                 ) { Icon(Icons.Filled.Edit, contentDescription = null) }
                 IconButton(
-                    onClick = { agent.deleteProvider(provider.id) },
+                    onClick = { scope.launch { agent.deleteProvider(provider.id) } },
                     modifier = Modifier.semantics { contentDescription = "delete_provider_${provider.id}" }
                 ) { Icon(Icons.Filled.Delete, contentDescription = "Delete provider") }
             }

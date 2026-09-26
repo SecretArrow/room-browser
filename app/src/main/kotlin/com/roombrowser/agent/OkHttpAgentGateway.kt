@@ -178,7 +178,7 @@ class OkHttpAgentGateway(
 
     // ---------------------------------------------------------------- models
 
-    override suspend fun listModels(): List<String {
+    override suspend fun listModels(): List<String> {
         val builder = Request.Builder()
             .url("$base/models")
             .get()
