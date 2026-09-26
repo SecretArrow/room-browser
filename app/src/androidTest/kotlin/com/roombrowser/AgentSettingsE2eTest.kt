@@ -191,7 +191,10 @@ class AgentSettingsE2eTest {
             if (b.bottom > device.displayHeight - 80) swipeEditorUp()
         }
         clickCenter(field)
-        device.executeShellCommand("input text '$text'")
+        // NB: executeShellCommand does not interpret shell quoting — a quoted
+        // argument would type the quotes into the field. Values here contain
+        // no spaces or shell metacharacters, so pass them bare.
+        device.executeShellCommand("input text $text")
         device.waitForIdle(1_000)
         return true
     }
