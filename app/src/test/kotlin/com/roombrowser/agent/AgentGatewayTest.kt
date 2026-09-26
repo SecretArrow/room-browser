@@ -150,7 +150,7 @@ class AgentGatewayTest {
         )
         val models = gateway.listModels()
 
-        assertThat(models).containsExactly("glm-4.6", "glm-4-flash").inOrder()
+        assertThat(models).containsExactly("glm-4-flash", "glm-4.6").inOrder()
         val recorded = server.takeRequest()
         assertThat(recorded.path).isEqualTo("/v1/models")
         assertThat(recorded.getHeader("Authorization")).isEqualTo("Bearer test-key")

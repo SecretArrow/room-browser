@@ -138,16 +138,20 @@ class AgentLoopTest {
             role = "assistant",
             toolCalls = listOf(ToolCall(id = "c", function = FunctionCall(AgentTools.READ_PAGE, "{}")))
         )
-        val gateway = FakeGateway(listOf(loopTurn, ChatMessage(role = "assistant", content = "Final summary.")))
-        val loop = AgentLoop(gateway, FakeExecutor(), config(maxSteps = 1))
+        val gateway = FakeGateway(
+            listOf(loopTurn, loopTurn, ChatMessage(role = "assistant", content = "Final summary."))
+        )
+        val loop = AgentLoop(gateway, FakeExecutor(), config(maxSteps = 2))
         val history = mutableListOf(ChatMessage(role = "user", content = "go"))
         val events = mutableListOf<AgentEvent>()
 
         loop.runTurn(history) { events.add(it) }
 
-        // maxSteps=1 → the single planned call carried tools, the forced final had none.
+        // maxSteps=2 → step 1 carried tools; the last in-loop attempt (step 2)
+        // and the forced final request had none.
         assertThat(gateway.requests[0].tools).isNotNull()
         assertThat(gateway.requests[1].tools).isNull()
+        assertThat(gateway.requests[2].tools).isNull()
         assertThat(events.filterIsInstance<AgentEvent.Notice>()).isNotEmpty()
         assertThat(events.last()).isInstanceOf(AgentEvent.FinalAnswer::class.java)
     }

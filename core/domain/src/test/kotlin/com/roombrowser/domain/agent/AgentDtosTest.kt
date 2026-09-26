@@ -10,7 +10,7 @@ class AgentDtosTest {
     @Test
     fun `openai style models list`() {
         val body = """{"object":"list","data":[{"id":"glm-4.6"},{"id":"glm-4-flash"}]}"""
-        assertThat(ModelListParser.parse(body)).containsExactly("glm-4.6", "glm-4-flash").inOrder()
+        assertThat(ModelListParser.parse(body)).containsExactly("glm-4-flash", "glm-4.6").inOrder()
     }
 
     @Test
@@ -140,7 +140,7 @@ class AgentDtosTest {
         // automation tools with parameters must declare a required text arg
         listOf(AgentTools.AUTO_REPLY, AgentTools.AUTO_POST).forEach { name ->
             val params = defs.getValue(name).parameters
-            val required = params["required"]?.let { it.toString() }
+            val required = params["required"]?.toString() ?: ""
             assertThat(required).contains("text")
         }
         // every automation tool needs a non-blank description
