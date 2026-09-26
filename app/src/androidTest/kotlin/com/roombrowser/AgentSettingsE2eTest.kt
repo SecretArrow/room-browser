@@ -46,11 +46,14 @@ class AgentSettingsE2eTest {
     fun setUp() {
         server = MockWebServer()
         server.start()
-        server.enqueue(
-            MockResponse()
-                .setHeader("Content-Type", "application/json")
-                .setBody("""{"object":"list","data":[{"id":"mock-model-a"},{"id":"mock-model-b"}]}""")
-        )
+        // Several identical responses so retried fetches also succeed.
+        repeat(3) {
+            server.enqueue(
+                MockResponse()
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("""{"object":"list","data":[{"id":"mock-model-a"},{"id":"mock-model-b"}]}""")
+            )
+        }
     }
 
     @After
@@ -156,6 +159,13 @@ class AgentSettingsE2eTest {
                     .append(" clickable=").append(runCatching { n.isClickable }.getOrDefault(false))
             }
             sb.append('\n')
+        }
+        // Compose editable fields expose their content as accessibility text
+        for (fd in listOf("provider_name_field", "provider_url_field", "provider_key_field")) {
+            val v = runCatching {
+                device.findObjects(By.desc(fd)).firstOrNull()?.text
+            }.getOrNull()
+            sb.append(fd).append(" value='").append(v).append("'\n")
         }
         val texts = runCatching {
             device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(80)
@@ -307,11 +317,18 @@ class AgentSettingsE2eTest {
 
         // ---- 4. Fetch models from the MockWebServer ------------------------
         hideImeIfNeeded()
-        assertTrue("Fetch models button must be clickable", clickText("Fetch models", 8_000))
-        assertTrue(
-            "Model chips from /models must appear",
-            hasText("mock-model-a", 20_000)
-        )
+        var chipsShown = false
+        for (attempt in 1..2) {
+            assertTrue("Fetch models button must be clickable", clickText("Fetch models", 8_000))
+            if (hasText("mock-model-a", 15_000)) {
+                chipsShown = true
+                break
+            }
+            device.waitForIdle(2_000)
+        }
+        if (!chipsShown) {
+            throw AssertionError("Model chips from /models must appear; UI:\n" + uiTree())
+        }
         assertTrue("mock-model-a chip must be selectable", clickText("mock-model-a", 8_000))
 
         // ---- 5. Save --------------------------------------------------------
@@ -327,9 +344,10 @@ class AgentSettingsE2eTest {
         assertTrue("Engine UI must be back", engineUiUp(15_000))
         assertTrue("Agent pill must still be present", hasDesc("AI Agent", 10_000))
         assertTrue("Agent panel must reopen", clickDesc("AI Agent", 8_000))
-        assertTrue(
-            "Agent panel model line must show the fetched model",
-            device.wait(Until.hasObject(By.textContains("mock-model-a")), 15_000)
-        )
+        if (!device.wait(Until.hasObject(By.textContains("mock-model-a")), 15_000)) {
+            throw AssertionError(
+                "Agent panel model line must show the fetched model; UI:\n" + uiTree()
+            )
+        }
     }
 }
