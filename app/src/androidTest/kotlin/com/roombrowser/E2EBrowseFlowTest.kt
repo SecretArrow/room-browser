@@ -55,7 +55,8 @@ class E2EBrowseFlowTest {
         val nodes = device.findObjects(By.text(text).clickable(true))
         if (nodes.isEmpty()) return false
         val top = nodes.minByOrNull { it.visibleBounds.centerY() } ?: return false
-        return top.click()
+        top.click()
+        return true
     }
 
     @Test
