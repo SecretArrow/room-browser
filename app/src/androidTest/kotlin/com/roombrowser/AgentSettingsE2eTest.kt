@@ -5,6 +5,7 @@ import android.content.Intent
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
+import androidx.test.uiautomator.BySelector
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
@@ -130,30 +131,39 @@ class AgentSettingsE2eTest {
             || hasText("Privacy Dashboard", 10_000)
             || hasText("trackers blocked", 5_000)
 
-    /** Dumps the live accessibility tree (works during instrumentation,
-     *  unlike `uiautomator dump` which conflicts with UiAutomation). */
+    /** Probes the live accessibility tree for the nodes we care about and
+     *  lists every visible text — goes into the failure message (readable
+     *  from the e2e-reports artifact). */
     private fun uiTree(): String = try {
         val sb = StringBuilder()
-        for (w in device.windows) {
-            sb.append("WINDOW pkg=").append(w.pkg).append(" active=").append(w.isActive).append('\n')
-            fun walk(node: UiObject2?, depth: Int) {
-                if (node == null || depth > 14) return
-                val txt = runCatching { node.text }.getOrNull()
-                val dsc = runCatching { node.contentDescription }.getOrNull()
-                val clk = runCatching { node.isClickable }.getOrDefault(false)
-                if (txt != null || dsc != null || clk) {
-                    sb.append("  ".repeat(depth))
-                        .append("cls=").append(node.className)
-                        .append(" txt='").append(txt).append("' desc='").append(dsc)
-                        .append("' clk=").append(clk).append('\n')
-                }
-                for (c in node.children) walk(c, depth + 1)
+        val probes: List<Pair<String, BySelector>> = listOf(
+            "pill(AI Agent desc)" to By.desc("AI Agent"),
+            "agent_configure desc" to By.desc("agent_configure"),
+            "'Configure providers' text" to By.text("Configure providers"),
+            "'No AI provider configured'" to By.text("No AI provider configured"),
+            "'Room Agent' text" to By.text("Room Agent"),
+            "Agent settings gear" to By.desc("Agent settings"),
+            "agent_model line" to By.desc("agent_model"),
+            "Page actions button" to By.desc("Page actions and settings"),
+            "'Add provider' text" to By.text("Add provider"),
+            "agent hint text" to By.textContains("Ask the agent")
+        )
+        for ((label, selector) in probes) {
+            val nodes = runCatching { device.findObjects(selector) }.getOrDefault(emptyList())
+            sb.append(label).append(": count=").append(nodes.size)
+            nodes.take(2).forEach { n ->
+                sb.append(" bounds=").append(runCatching { n.visibleBounds }.getOrNull())
+                    .append(" clickable=").append(runCatching { n.isClickable }.getOrDefault(false))
             }
-            walk(w.root, 0)
+            sb.append('\n')
         }
+        val texts = runCatching {
+            device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(80)
+        }.getOrDefault(emptyList())
+        sb.append("VISIBLE TEXTS: ").append(texts).append('\n')
         sb.toString().take(9000)
     } catch (t: Throwable) {
-        "tree dump failed: $t"
+        "probe dump failed: $t"
     }
 
     /** Types text into the editor field with the given content description. */
