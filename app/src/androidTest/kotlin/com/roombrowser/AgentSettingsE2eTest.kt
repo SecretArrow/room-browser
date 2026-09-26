@@ -332,11 +332,15 @@ class AgentSettingsE2eTest {
         if (!chipsShown) {
             throw AssertionError("Model chips from /models must appear; UI:\n" + uiTree())
         }
-        assertTrue("mock-model-a chip must be selectable", clickText("mock-model-a", 8_000))
+        if (!clickText("mock-model-a", 8_000)) {
+            throw AssertionError("mock-model-a chip must be selectable; UI:\n" + uiTree())
+        }
 
         // ---- 5. Save --------------------------------------------------------
         hideImeIfNeeded()
-        assertTrue("Save provider must be clickable", clickText("Save provider", 8_000))
+        if (!clickText("Save provider", 8_000)) {
+            throw AssertionError("Save provider must be clickable; UI:\n" + uiTree())
+        }
         assertTrue(
             "Settings screen must list the saved provider",
             hasText("MockLLM", 15_000)
