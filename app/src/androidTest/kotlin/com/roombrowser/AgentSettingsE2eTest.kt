@@ -130,6 +130,19 @@ class AgentSettingsE2eTest {
             || hasText("Privacy Dashboard", 10_000)
             || hasText("trackers blocked", 5_000)
 
+    /** Dumps the current window hierarchy into the failure message. */
+    private fun uiSnapshot(): String = try {
+        val activity = device.executeShellCommand(
+            "dumpsys activity activities | grep -E 'topResumedActivity|mFocusedApp' | head -2"
+        ).trim()
+        val xml = device.executeShellCommand(
+            "uiautomator dump /sdcard/rb_ui.xml >/dev/null 2>&1; cat /sdcard/rb_ui.xml"
+        )
+        "ACTIVITY: $activity\nHIERARCHY: ${xml.take(5000)}"
+    } catch (_: Exception) {
+        "(snapshot failed)"
+    }
+
     /** Types text into the editor field with the given content description. */
     private fun typeIntoField(desc: String, text: String): Boolean {
         val field = device.wait(Until.findObject(By.desc(desc)), 8_000) ?: return false
@@ -189,12 +202,24 @@ class AgentSettingsE2eTest {
                 panelOpen = true
                 break
             }
-            // A transient overlay (IME, sheet) may have swallowed the tap —
-            // dismiss the keyboard and retry.
-            device.pressBack()
-            device.waitForIdle(1_000)
+            // Only dismiss a keyboard if the pill is still showing — i.e. the
+            // panel stayed collapsed; never back out of the browser itself.
+            if (hasDesc("AI Agent", 1_000)) {
+                device.pressBack()
+                device.waitForIdle(1_000)
+            }
         }
-        assertTrue("Empty-state 'Configure providers' must appear", panelOpen)
+        if (!panelOpen) {
+            // Alternate entry: omnibox "Page actions and settings" → sheet item
+            if (clickDesc("Page actions and settings", 5_000)) {
+                if (clickText("AI Agent (autonomous browsing)", 5_000)) {
+                    panelOpen = hasText("Configure providers", 6_000)
+                }
+            }
+        }
+        if (!panelOpen) {
+            throw AssertionError("Empty-state 'Configure providers' must appear; UI:\n" + uiSnapshot())
+        }
         assertTrue("Configure button must be clickable", clickDesc("agent_configure", 8_000))
 
         // ---- 3. Add a provider ---------------------------------------------
