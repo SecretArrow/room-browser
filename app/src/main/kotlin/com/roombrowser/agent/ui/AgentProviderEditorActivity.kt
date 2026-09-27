@@ -169,7 +169,8 @@ private fun ProviderEditorRoot(
         // above the keyboard.
         modifier = Modifier.imePadding(),
         // Insets are applied EXPLICITLY below (TopAppBar handles the status
-        // bar itself) — deterministic on every API level.
+        // bar itself; the sticky save row pads itself above the nav bar) —
+        // deterministic on every API level.
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
@@ -180,18 +181,96 @@ private fun ProviderEditorRoot(
                     }
                 }
             )
+        },
+        // STICKY SAVE ROW — pinned above the navigation bar, always fully
+        // visible and reachable. CI evidence (run 36313948566): when the
+        // save buttons lived at the END of the scrollable form, the small
+        // CI screen scrolled them under the system navigation bar — the
+        // tap landed at y=619 inside the nav-bar zone and the click never
+        // reached the button. A pinned bottom bar also saves users from
+        // scrolling a long form just to confirm.
+        bottomBar = {
+            Column(Modifier.fillMaxWidth()) {
+                // saveError surfaces right above the sticky row (always visible).
+                saveError?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp)
+                    )
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .windowInsetsPadding(
+                            WindowInsets.systemBars
+                                .union(WindowInsets.displayCutout)
+                                .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
+                        )
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            // App-level dispatch (Main.immediate starts the body
+                            // SYNCHRONOUSLY inside this click handler) + the
+                            // persistence primitives are internally NonCancellable
+                            // (AgentProviderStore.save / saveAgentSettings):
+                            // finishing this editor at ANY moment — user taps Back,
+                            // the window is torn down, a UI test clicks Close
+                            // milliseconds after Save — can no longer abort the
+                            // DB writes.
+                            kotlinx.coroutines.GlobalScope.launch(
+                                kotlinx.coroutines.Dispatchers.Main.immediate
+                            ) {
+                                android.util.Log.d(
+                                    "RoomAgent",
+                                    "save start: name=$name model=$model url=$baseUrl"
+                                )
+                                val result = controller.saveProvider(
+                                    id = editing?.id,
+                                    name = name,
+                                    baseUrl = baseUrl,
+                                    apiKey = apiKey,
+                                    defaultModel = model,
+                                    protocol = protocol
+                                )
+                                result.fold(
+                                    onSuccess = { provider ->
+                                        android.util.Log.d(
+                                            "RoomAgent",
+                                            "save ok: provider=${provider.id} ${provider.name}"
+                                        )
+                                        // Make the freshly saved provider the default.
+                                        controller.setDefaultNow(provider, provider.defaultModel)
+                                        onDone()
+                                    },
+                                    onFailure = {
+                                        android.util.Log.e("RoomAgent", "save failed", it)
+                                        saveError = it.message ?: "could not save"
+                                    }
+                                )
+                            }
+                        },
+                        enabled = name.isNotBlank() && baseUrl.isNotBlank() && model.isNotBlank(),
+                        modifier = Modifier.weight(1f)
+                    ) { Text(if (editing == null) "Save provider" else "Save changes") }
+                    OutlinedButton(onClick = onDone) { Text("Cancel") }
+                }
+            }
         }
     ) { padding ->
         Column(
             Modifier
                 .fillMaxSize()
                 .padding(padding)
-                // Above the navigation bar (3-button Back/Home/Recents or
-                // gesture hint) and beside display cutouts in landscape.
+                // Beside display cutouts in landscape; the bottom is already
+                // reserved by the sticky save row (Scaffold content padding).
                 .windowInsetsPadding(
                     WindowInsets.systemBars
                         .union(WindowInsets.displayCutout)
-                        .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
+                        .only(WindowInsetsSides.Horizontal)
                 )
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp)
@@ -409,63 +488,9 @@ private fun ProviderEditorRoot(
                     .semantics { contentDescription = "provider_model_field" }
             )
 
-            saveError?.let {
-                Spacer(Modifier.height(8.dp))
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            }
-
-            Spacer(Modifier.height(16.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = {
-                        // App-level dispatch (Main.immediate starts the body
-                        // SYNCHRONOUSLY inside this click handler) + the
-                        // persistence primitives are internally NonCancellable
-                        // (AgentProviderStore.save / saveAgentSettings):
-                        // finishing this editor at ANY moment — user taps Back,
-                        // the window is torn down, a UI test clicks Close
-                        // milliseconds after Save — can no longer abort the
-                        // DB writes. CI evidence runs 36311518130/36312695165:
-                        // the composition scope was cancelled before the posted
-                        // save coroutine even started, and the provider vanished.
-                        kotlinx.coroutines.GlobalScope.launch(
-                            kotlinx.coroutines.Dispatchers.Main.immediate
-                        ) {
-                            android.util.Log.d(
-                                "RoomAgent",
-                                "save start: name=$name model=$model url=$baseUrl"
-                            )
-                            val result = controller.saveProvider(
-                                id = editing?.id,
-                                name = name,
-                                baseUrl = baseUrl,
-                                apiKey = apiKey,
-                                defaultModel = model,
-                                protocol = protocol
-                            )
-                            result.fold(
-                                onSuccess = { provider ->
-                                    android.util.Log.d(
-                                        "RoomAgent",
-                                        "save ok: provider=${provider.id} ${provider.name}"
-                                    )
-                                    // Make the freshly saved provider the default.
-                                    controller.setDefaultNow(provider, provider.defaultModel)
-                                    onDone()
-                                },
-                                onFailure = {
-                                    android.util.Log.e("RoomAgent", "save failed", it)
-                                    saveError = it.message ?: "could not save"
-                                }
-                            )
-                        }
-                    },
-                    enabled = name.isNotBlank() && baseUrl.isNotBlank() && model.isNotBlank()
-                ) { Text(if (editing == null) "Save provider" else "Save changes") }
-                OutlinedButton(onClick = onDone) { Text("Cancel") }
-            }
-
-            Spacer(Modifier.height(40.dp))
+            // (The Save / Cancel row is the Scaffold's sticky bottomBar —
+            // always visible above the navigation bar. saveError shows there.)
+            Spacer(Modifier.height(24.dp))
         }
     }
 }
