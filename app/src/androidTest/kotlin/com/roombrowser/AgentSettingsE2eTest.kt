@@ -255,16 +255,27 @@ class AgentSettingsE2eTest {
         }
     }
 
-    /** Finds and clicks a node by partial content description, scrolling the
-     *  current screen between attempts — settings rows (e.g. the AI Agent
-     *  section) sit BELOW THE FOLD of the scrollable settings column. */
-    private fun clickDescContainsWithScroll(part: String, attempts: Int = 12): Boolean {
-        for (i in 1..attempts) {
-            val node = device.wait(Until.findObject(By.descContains(part)), 1_500)
-            if (node != null && clickSmart(node)) return true
+    /** Scrolls to the switch row, flips it and VERIFIES the state label
+     *  actually flipped. CI evidence (run 36292517214): an a11y ACTION_CLICK
+     *  can silently no-op, so every click is followed by a state check and a
+     *  coordinate-tap fallback on the same row. */
+    private fun flipSwitch(title: String, wantOn: Boolean): Boolean {
+        val want = "$title switch, ${if (wantOn) "on" else "off"}"
+        val from = "$title switch, ${if (wantOn) "off" else "on"}"
+        for (i in 1..12) {
+            // Already in the wanted state (e.g. dirty-device rerun)?
+            if (hasDesc(want, 500)) return true
+            val node = device.wait(Until.findObject(By.desc(from)), 1_500)
+            if (node != null) {
+                clickSmart(node)
+                if (hasDesc(want, 4_000)) return true
+                runCatching { clickCenter(node) }
+                if (hasDesc(want, 4_000)) return true
+            }
+            // The row sits at the bottom of the settings column — scroll.
             dragUpQuarter()
         }
-        return false
+        return hasDesc(want, 2_000)
     }
 
     /** Opens a page-actions sheet entry by its content description and
@@ -459,14 +470,8 @@ class AgentSettingsE2eTest {
             openSheetEntry("Browser settings") { hasText("Browser Settings", 6_000) }
         )
         assertTrue(
-            "Show AI Agent button switch must be clickable",
-            clickDescContainsWithScroll("Show AI Agent button")
-        )
-        // The switch state comes from the Room-backed flow — waiting for the
-        // "on" label proves the write landed BEFORE we check the pill.
-        assertTrue(
-            "Switch must flip ON",
-            hasDesc("Show AI Agent button switch, on", 8_000)
+            "Show AI Agent button switch must flip ON",
+            flipSwitch("Show AI Agent button", wantOn = true)
         )
         // Leave settings via system Back — after scrolling, the top-bar Close
         // button has scrolled out of the viewport.
@@ -483,12 +488,8 @@ class AgentSettingsE2eTest {
             openSheetEntry("Browser settings") { hasText("Browser Settings", 6_000) }
         )
         assertTrue(
-            "Show AI Agent button switch must be clickable (2nd)",
-            clickDescContainsWithScroll("Show AI Agent button")
-        )
-        assertTrue(
-            "Switch must flip OFF",
-            hasDesc("Show AI Agent button switch, off", 8_000)
+            "Show AI Agent button switch must flip OFF",
+            flipSwitch("Show AI Agent button", wantOn = false)
         )
         device.pressBack()
         device.waitForIdle(1_000)
