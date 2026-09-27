@@ -158,6 +158,10 @@ class AgentSettingsE2eTest {
             "Agent settings gear" to By.desc("Agent settings"),
             "agent_model line" to By.desc("agent_model"),
             "Page actions button" to By.desc("Page actions and settings"),
+            "'Page Actions' sheet title" to By.text("Page Actions"),
+            "'AI Agent (autonomous browsing)' entry" to By.text("AI Agent (autonomous browsing)"),
+            "'Browser settings' entry" to By.text("Browser settings"),
+            "'AI Agent chats' entry" to By.text("AI Agent chats"),
             "'Add provider' text" to By.text("Add provider"),
             "'AI Agent Settings' title" to By.text("AI Agent Settings"),
             "'Show AI Agent button' switch" to By.descContains("Show AI Agent button"),
@@ -194,13 +198,13 @@ class AgentSettingsE2eTest {
         var field = device.wait(Until.findObject(By.desc(desc)), 4_000)
         if (field == null) {
             // scroll the editor content up so lower fields come into view
-            swipeEditorUp()
+            dragUpQuarter()
             field = device.wait(Until.findObject(By.desc(desc)), 4_000) ?: return false
         }
         // if the field sits below the fold, scroll it into view before tapping
         runCatching {
             val b = field.visibleBounds
-            if (b.bottom > device.displayHeight - 80) swipeEditorUp()
+            if (b.bottom > device.displayHeight - 80) dragUpQuarter()
         }
         clickCenter(field)
         // NB: executeShellCommand does not interpret shell quoting — a quoted
@@ -211,20 +215,26 @@ class AgentSettingsE2eTest {
         return true
     }
 
-    private fun swipeEditorUp() {
+    /** SLOW drag (100 steps ≈ no fling momentum) that scrolls ~1/4 of the
+     *  screen — deterministic: a fast fling overshoots past the target row
+     * in scrollable sheets (observed in CI: "AI Agent (autonomous
+     * browsing)" never became visible after 4 fling attempts). A slow drag
+     * also fully expands a half-expanded ModalBottomSheet. */
+    private fun dragUpQuarter() {
         device.swipe(
-            device.displayWidth / 2, device.displayHeight * 3 / 4,
-            device.displayWidth / 2, device.displayHeight / 4, 40
+            device.displayWidth / 2, device.displayHeight * 5 / 8,
+            device.displayWidth / 2, device.displayHeight * 3 / 8, 100
         )
-        device.waitForIdle(800)
+        device.waitForIdle(600)
     }
 
-    /** Off-screen rows of the scrollable editor are not exposed to the
-     *  accessibility tree — swipe the content up between find attempts. */
-    private fun clickTextWithScroll(text: String, attempts: Int = 3): Boolean {
+    /** Off-screen rows of a scrollable container are not exposed to the
+     *  accessibility tree — advance the viewport with SMALL deterministic
+     *  drags between find attempts (no fling overshoot). */
+    private fun clickTextWithScroll(text: String, attempts: Int = 12): Boolean {
         for (i in 1..attempts) {
-            if (clickText(text, 2_500)) return true
-            swipeEditorUp()
+            if (clickText(text, 1_500)) return true
+            dragUpQuarter()
         }
         return false
     }
@@ -247,11 +257,22 @@ class AgentSettingsE2eTest {
 
     /** Opens the floating agent panel from the page-actions menu — the
      *  always-available entry (the pill is hidden by default). The sheet is
-     *  scrollable and the agent rows sit low in the list, so click+swipe. */
+     *  scrollable and the agent rows sit low in the list, so click+drag. */
     private fun openAgentPanelFromMenu(): Boolean {
-        if (!clickDesc("Page actions and settings", 6_000)) return false
-        if (!clickTextWithScroll("AI Agent (autonomous browsing)", attempts = 4)) return false
-        return panelUp(8_000)
+        // Direct pill tap when visible (e.g. reruns on a dirty device where
+        // the show-button toggle was left on).
+        if (hasDesc("AI Agent", 1_000)) {
+            for (attempt in 1..2) {
+                clickDesc("AI Agent", 3_000)
+                if (panelUp(4_000)) return true
+            }
+        }
+        for (round in 1..2) {
+            if (!clickDesc("Page actions and settings", 6_000)) continue
+            if (!clickTextWithScroll("AI Agent (autonomous browsing)")) continue
+            if (panelUp(8_000)) return true
+        }
+        return false
     }
 
     private fun panelUp(timeout: Long): Boolean =
@@ -306,10 +327,9 @@ class AgentSettingsE2eTest {
             "Floating agent pill must be hidden by default",
             !hasDesc("AI Agent", 3_000)
         )
-        assertTrue(
-            "Agent panel must open from the page menu",
-            openAgentPanelFromMenu()
-        )
+        if (!openAgentPanelFromMenu()) {
+            throw AssertionError("Agent panel must open from the page menu; UI:\n" + uiTree())
+        }
 
         // Reach provider settings: empty-state button, or the header gear
         // (when a default provider already exists the empty state is skipped).
@@ -388,7 +408,6 @@ class AgentSettingsE2eTest {
                 "Agent panel model line must show the fetched model; UI:\n" + uiTree()
             )
         }
-
         // ---- 8. Show/hide the floating agent button ------------------------
         // Collapse the panel first (system Back collapses it — see the
         // BackHandler priority chain) so the pill area is observable.
