@@ -1,5 +1,7 @@
 package com.roombrowser.browser.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,6 +48,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.browser.BrowserViewModel
@@ -59,9 +62,10 @@ import com.roombrowser.ui.common.StatTile
 @Composable
 fun TabGridScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
     val tabs = viewModel.tabs
+    val extras = com.roombrowser.ui.common.LocalRoomExtras.current
     val grid = viewModel.profileSettings().tabLayout ==
         com.roombrowser.domain.model.TabLayout.GRID
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().background(extras.background)) {
         TopAppBar(
             title = { Text("Tabs (${tabs.size})") },
             navigationIcon = {
@@ -81,10 +85,10 @@ fun TabGridScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             EmptyState("No open tabs", "Tabs are saved per profile and restored after restarts.")
         } else if (grid) {
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(140.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                columns = GridCells.Adaptive(150.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 gridItems(tabs, key = { it.id }) { tab ->
                     TabCard(
@@ -108,8 +112,16 @@ fun TabGridScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                     Row(
                         Modifier
                             .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 4.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(extras.surface)
+                            .border(
+                                0.5.dp,
+                                if (tab.id == viewModel.activeTabId) extras.primary else extras.border,
+                                RoundedCornerShape(16.dp)
+                            )
                             .clickable { viewModel.selectTab(tab.id); onClose() }
-                            .padding(16.dp),
+                            .padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(Modifier.weight(1f)) {
@@ -117,21 +129,22 @@ fun TabGridScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                                 tab.title.ifBlank { tab.url },
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.bodyLarge
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = extras.textPrimary
                             )
                             Text(
                                 tab.url,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = extras.textSecondary
                             )
                         }
                         if (tab.isPrivate) {
-                            Icon(Icons.Filled.Lock, contentDescription = "Private tab", modifier = Modifier.size(16.dp))
+                            Icon(Icons.Filled.Lock, contentDescription = "Private tab", modifier = Modifier.size(16.dp), tint = extras.primary)
                         }
                         IconButton(onClick = { viewModel.closeTab(tab.id) }) {
-                            Icon(Icons.Filled.Close, contentDescription = "Close tab")
+                            Icon(Icons.Filled.Close, contentDescription = "Close tab", tint = extras.icon)
                         }
                     }
                 }
@@ -155,70 +168,131 @@ private fun TabCard(
     onGroup: (String?) -> Unit
 ) {
     var menuOpen by remember { mutableStateOf(false) }
-    Card(
-        modifier = Modifier
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(12.dp)
+    val extras = com.roombrowser.ui.common.LocalRoomExtras.current
+    val shape = RoundedCornerShape((extras.radius * 0.9f).dp)
+    Column(
+        Modifier
+            .clip(shape)
+            .background(extras.surface)
+            .border(
+                if (isActive) 1.5.dp else 0.5.dp,
+                if (isActive) extras.primary else extras.border,
+                shape
+            )
+            .clickable(onClick = onClick)
     ) {
-        Column(Modifier.padding(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (isPrivate) {
-                    Icon(Icons.Filled.Lock, contentDescription = "Private tab", modifier = Modifier.size(14.dp))
-                    Spacer(Modifier.width(4.dp))
+        // Preview area: soft gradient placeholder + status chips
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(84.dp)
+                .background(
+                    androidx.compose.ui.graphics.Brush.verticalGradient(
+                        listOf(
+                            extras.primary.copy(alpha = if (isPrivate) 0.30f else 0.16f),
+                            extras.surfaceAlt
+                        )
+                    )
+                )
+        ) {
+            Text(
+                title.take(1).uppercase().ifBlank { "\u2022" },
+                style = MaterialTheme.typography.headlineMedium,
+                color = extras.primary.copy(alpha = 0.75f),
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(4.dp)
+            )
+            if (isPrivate) {
+                Row(
+                    Modifier
+                        .align(Alignment.TopStart)
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(extras.primary.copy(alpha = 0.85f))
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Filled.Lock, contentDescription = null, modifier = Modifier.size(11.dp), tint = extras.onButton)
+                    Spacer(Modifier.width(3.dp))
+                    Text("Private", style = MaterialTheme.typography.labelSmall, color = extras.onButton)
                 }
-                if (isPinned) {
-                    Icon(Icons.Filled.Lock, contentDescription = "Pinned tab", modifier = Modifier.size(14.dp))
-                    Spacer(Modifier.width(4.dp))
+            }
+            if (isPinned) {
+                Icon(
+                    Icons.Filled.Lock,
+                    contentDescription = "Pinned tab",
+                    tint = extras.primary,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp)
+                        .size(14.dp)
+                )
+            }
+            Box(Modifier.align(Alignment.BottomEnd)) {
+                IconButton(
+                    onClick = { menuOpen = true },
+                    modifier = Modifier
+                        .padding(4.dp)
+                        .size(26.dp)
+                        .background(extras.background.copy(alpha = 0.5f), RoundedCornerShape(9.dp))
+                ) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "Tab actions", modifier = Modifier.size(15.dp), tint = extras.icon)
                 }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text(if (isPinned) "Unpin" else "Pin") },
+                        onClick = { menuOpen = false; onPin() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Duplicate") },
+                        onClick = { menuOpen = false; onDuplicate() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Group: Shopping") },
+                        onClick = { menuOpen = false; onGroup("Shopping") }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Ungroup") },
+                        onClick = { menuOpen = false; onGroup(null) }
+                    )
+                }
+            }
+        }
+        // Info area
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
                 Text(
                     title,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.labelLarge
+                    style = MaterialTheme.typography.labelLarge,
+                    color = extras.textPrimary
                 )
-                Box(Modifier.weight(1f))
-                Box {
-                    IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(24.dp)) {
-                        Icon(Icons.Filled.MoreVert, contentDescription = "Tab actions")
-                    }
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(
-                            text = { Text(if (isPinned) "Unpin" else "Pin") },
-                            onClick = { menuOpen = false; onPin() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Duplicate") },
-                            onClick = { menuOpen = false; onDuplicate() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Group: Shopping") },
-                            onClick = { menuOpen = false; onGroup("Shopping") }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Ungroup") },
-                            onClick = { menuOpen = false; onGroup(null) }
-                        )
-                    }
-                }
-                IconButton(onClick = onClose, modifier = Modifier.size(24.dp)) {
-                    Icon(Icons.Filled.Close, contentDescription = "Close tab")
-                }
-            }
-            Spacer(Modifier.height(6.dp))
-            Text(
-                url,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            if (group != null) {
                 Text(
-                    "Group: $group",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
+                    url,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = extras.textSecondary
                 )
             }
+            IconButton(onClick = onClose, modifier = Modifier.size(28.dp)) {
+                Icon(Icons.Filled.Close, contentDescription = "Close tab", tint = extras.icon, modifier = Modifier.size(16.dp))
+            }
+        }
+        if (group != null) {
+            Text(
+                "Group: $group",
+                style = MaterialTheme.typography.labelSmall,
+                color = extras.primary,
+                modifier = Modifier.padding(start = 10.dp, bottom = 8.dp)
+            )
         }
     }
 }

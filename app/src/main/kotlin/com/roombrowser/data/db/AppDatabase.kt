@@ -30,11 +30,12 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         IpHistoryEntity::class,
         BlockEventEntity::class,
         AppStateEntity::class,
+        CustomThemeEntity::class,
         AgentProviderEntity::class,
         AgentSessionEntity::class,
         AgentMessageEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -47,6 +48,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun ipHistoryDao(): IpHistoryDao
     abstract fun statsDao(): StatsDao
     abstract fun appStateDao(): AppStateDao
+    abstract fun themeDao(): ThemeDao
     abstract fun agentDao(): AgentDao
 
     companion object {
@@ -113,6 +115,28 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v3 → v4: per-profile theme system. Adds `profiles.theme_json`
+         * (full RoomThemeSpec snapshot; "" = built-in default theme) and the
+         * `themes` gallery table for user-saved custom themes. Purely
+         * additive — no existing data is touched. Lossless.
+         */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `profiles` ADD COLUMN `theme_json` TEXT NOT NULL DEFAULT ''"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `themes` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`name` TEXT NOT NULL, " +
+                        "`spec_json` TEXT NOT NULL, " +
+                        "`created_at` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+            }
+        }
+
         @Volatile
         private var instance: AppDatabase? = null
 
@@ -124,7 +148,7 @@ abstract class AppDatabase : RoomDatabase() {
         private fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, NAME)
                 .enableMultiInstanceInvalidation()
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
     }
 }

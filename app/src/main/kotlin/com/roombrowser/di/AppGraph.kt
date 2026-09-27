@@ -24,6 +24,11 @@ class AppGraph(context: Context) {
 
     val profileRepo: ProfileRepositoryImpl by lazy { ProfileRepositoryImpl(database) }
 
+    /** Per-profile theme snapshots + the user's custom-theme gallery. */
+    val themeRepo: com.roombrowser.data.repo.ThemeRepository by lazy {
+        com.roombrowser.data.repo.ThemeRepository(database)
+    }
+
     val browserRepo: BrowserRepository by lazy { BrowserRepository(database) }
 
     val agentRepo: com.roombrowser.data.repo.AgentRepository by lazy {

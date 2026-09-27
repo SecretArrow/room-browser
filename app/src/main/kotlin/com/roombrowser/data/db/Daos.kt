@@ -27,6 +27,9 @@ interface ProfileDao {
     @Query("UPDATE profiles SET settings_json = :json WHERE id = :id")
     suspend fun updateSettings(id: String, json: String)
 
+    @Query("UPDATE profiles SET theme_json = :json WHERE id = :id")
+    suspend fun updateTheme(id: String, json: String)
+
     @Query("UPDATE profiles SET last_active_at = :ts WHERE id = :id")
     suspend fun touch(id: String, ts: Long)
 
@@ -268,6 +271,31 @@ interface AppStateDao {
 
     @Query("DELETE FROM app_state WHERE `key` = :key")
     suspend fun remove(key: String)
+}
+
+// =========================================================================
+// PER-PROFILE THEMES (gallery of user-saved custom themes)
+// =========================================================================
+
+@Dao
+interface ThemeDao {
+    @Query("SELECT * FROM themes ORDER BY created_at DESC")
+    fun observeAll(): Flow<List<CustomThemeEntity>>
+
+    @Query("SELECT * FROM themes ORDER BY created_at DESC")
+    suspend fun all(): List<CustomThemeEntity>
+
+    @Query("SELECT * FROM themes WHERE id = :id")
+    suspend fun get(id: String): CustomThemeEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(theme: CustomThemeEntity)
+
+    @Query("DELETE FROM themes WHERE id = :id")
+    suspend fun delete(id: String)
+
+    @Query("DELETE FROM themes")
+    suspend fun deleteAll()
 }
 
 // =========================================================================

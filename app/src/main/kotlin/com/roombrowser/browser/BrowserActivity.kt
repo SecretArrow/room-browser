@@ -83,7 +83,10 @@ class BrowserActivity : FragmentActivity() {
         }
         val viewModel = ViewModelProvider(this, factory)[BrowserViewModel::class.java]
         setContent {
-            RoomBrowserTheme(profileAccent = viewModel.profile.colorArgb) {
+            // Whole-engine theming from THIS profile's theme snapshot —
+            // changes live when the Theme Studio (default process) applies a
+            // new theme (Room multi-instance invalidation → observeProfile).
+            RoomBrowserTheme(spec = viewModel.themeSpec) {
                 BrowserScreen(
                     activity = this,
                     viewModel = viewModel,

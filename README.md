@@ -57,8 +57,25 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
   toggle it from Browser Settings → AI Agent → *Show AI Agent button*.
   API keys are encrypted with AndroidKeyStore. See `docs/AI_AGENTS.md`.
 - **Biometric profile lock** — fingerprint/face or device credential.
-- **Material 3 UI** — light/dark/AMOLED themes, per-profile accent colors,
-  error pages, empty states, accessibility semantics.
+- **Material 3 UI (2026 redesign)** — premium Brave-inspired-but-original
+  design language: floating pill omnibox, glass bottom bar with tab-count
+  badge, rounded cards everywhere, modern tab management, smooth
+  animations, responsive layouts and excellent dark-mode support.
+- **Per-profile Theme System** — 18 hand-tuned built-in themes (Obsidian,
+  Arctic, Ocean, Emerald, Midnight, Aurora, Sunset, Cyber, Royal, Sakura,
+  Forest, Aqua, Crimson, Golden, Slate, Lavender, Coffee, Rose), each with
+  light + dark palettes and Light/Dark/AMOLED/Auto modes. The **Theme
+  Studio** (own activity) edits background/surface/accents/text/address
+  bar/tab bar/navigation bar/button/border/icon/selection colors, gradient
+  style + direction, corner radius, transparency, blur and contrast with a
+  **live preview**, plus save/duplicate/rename/reset and JSON
+  import/export. Every profile owns a FULL independent theme snapshot — see
+  `docs/THEMES.md`.
+- **Compatibility-first privacy defaults** — mixed content runs in
+  compatibility mode, third-party cookies are allowed, HTTPS upgrades fall
+  back to http automatically when the secure version is unreachable, and
+  tag-manager domains are not blocked (they gate page render on many
+  sites). Strict modes stay one toggle away in settings.
 - **Proper system-UI integration** — edge-to-edge with explicit
   `WindowInsets` handling: the toolbar, omnibox, sheets and dialogs never
   overlap the 3-button navigation bar (Back / Home / Recents) or the status

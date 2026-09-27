@@ -16,7 +16,9 @@ data class Profile(
     val isDefault: Boolean = false,
     val createdAt: Long,
     val lastActiveAt: Long = createdAt,
-    val settings: ProfileSettings = ProfileSettings()
+    val settings: ProfileSettings = ProfileSettings(),
+    /** Full per-profile theme snapshot (RoomThemeSpec JSON). Blank = default theme. */
+    val themeJson: String = ""
 )
 
 @Serializable
@@ -108,8 +110,16 @@ data class ProfileSettings(
     val blockCrossSiteTrackers: Boolean = true,
     val blockPopups: Boolean = true,
     val blockMalicious: Boolean = true,
+    // HTTPS-First: upgrade http navigations to https, then FALL BACK to the
+    // original http URL automatically when the secure version is unreachable
+    // (HttpsUpgradeFallbackPolicy) — upgrades no longer break http-only sites.
     val httpsUpgrade: Boolean = true,
-    val blockThirdPartyCookies: Boolean = true,
+    // Compatibility defaults (2026-09): third-party cookies are ALLOWED and
+    // mixed content runs in compatibility mode out of the box. The previous
+    // strict defaults blanked login flows and media on many real sites;
+    // users who want the strict behavior can flip both switches in settings.
+    val blockThirdPartyCookies: Boolean = false,
+    val blockMixedContent: Boolean = false,
     val javascriptEnabled: Boolean = true,
     val webRtcPolicy: WebRtcPolicy = WebRtcPolicy.RESTRICT_LOCAL_IP,
     val searchSuggestions: Boolean = false,

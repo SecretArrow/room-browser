@@ -46,7 +46,9 @@ class MainActivity : FragmentActivity() {
             ?.let { handleExternalUrl(it) }
 
         setContent {
-            RoomBrowserTheme {
+            // The picker previews the per-profile theme system: it wears the
+            // DEFAULT profile's theme and restyles live when themes change.
+            RoomBrowserTheme(spec = viewModel.appTheme) {
                 MainScreen(
                     activity = this,
                     viewModel = viewModel,

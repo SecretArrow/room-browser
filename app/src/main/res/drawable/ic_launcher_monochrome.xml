@@ -1,10 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Room Browser 2026 launcher mark — FOREGROUND layer.
-  A bold rounded "R" (Room) with a planetary orbit ring and a satellite dot
-  (private browsing in orbit). Stroke geometry with round caps/joins keeps
-  the glyph friendly and modern at every launcher mask size.
-  Everything lives inside the ~66dp adaptive-icon safe zone.
+  Monochrome layer for Android 13+ themed (Material You) launcher icons:
+  the same R-with-orbit glyph in a single tintable white.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -12,19 +9,16 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- orbit ring (behind the R) -->
     <path
         android:pathData="M76.8,46.6 A24,9 -18 0 1 31.2,61.4 A24,9 -18 0 1 76.8,46.6"
         android:fillColor="#00000000"
-        android:strokeColor="#B9A6FF"
+        android:strokeColor="#FFFFFF"
         android:strokeWidth="3.2" />
 
-    <!-- satellite dot riding the orbit -->
     <path
         android:fillColor="#FFFFFF"
         android:pathData="M76.8,46.6 m-3.4,0 a3.4,3.4 0 1 0 6.8,0 a3.4,3.4 0 1 0 -6.8,0" />
 
-    <!-- the R: stem + bowl + leg (rounded strokes) -->
     <path
         android:pathData="M43,39 L43,69"
         android:fillColor="#00000000"
@@ -44,9 +38,4 @@
         android:strokeColor="#FFFFFF"
         android:strokeWidth="9.5"
         android:strokeLineCap="round" />
-
-    <!-- small room-window cut inside the bowl -->
-    <path
-        android:fillColor="#6D28D9"
-        android:pathData="M50,45.5 h2.6 a4.4,4.4 0 0 1 0,8.8 h-2.6 z" />
 </vector>

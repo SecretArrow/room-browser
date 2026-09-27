@@ -20,6 +20,7 @@ import android.webkit.WebViewClient
 import com.roombrowser.data.db.SiteSettingEntity
 import com.roombrowser.data.repo.PermissionKind
 import com.roombrowser.domain.engine.FilterEngine
+import com.roombrowser.domain.engine.HttpsUpgradeFallbackPolicy
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.model.Profile
 
@@ -37,6 +38,14 @@ class RoomWebViewClient(
     private val filterEngine: FilterEngine,
     private val callbacks: Callbacks
 ) : WebViewClient() {
+
+    /**
+     * HTTPS-First fallback bookkeeping: upgraded navigation -> original http
+     * URL. When the https version fails (connect/timeout/SSL) the original
+     * URL is retried ONCE automatically — upgrades never produce dead error
+     * pages on http-only sites.
+     */
+    private val upgradeFallbacks = HttpsUpgradeFallbackPolicy.Registry()
 
     interface Callbacks {
         /** Host of the currently displayed page (or null). */
@@ -106,10 +115,12 @@ class RoomWebViewClient(
             }
         }
 
-        // HTTPS upgrade for main-frame http navigations
+        // HTTPS upgrade for main-frame http navigations (HTTPS-First with
+        // automatic http fallback — see upgradeFallbacks).
         if (profile.settings.httpsUpgrade && url.startsWith("http://") && host.isNotBlank()) {
             val upgraded = UrlIntelligence.upgrade(url)
             if (upgraded.upgradedToHttps) {
+                upgradeFallbacks.register(upgraded.url, url)
                 callbacks.onHttpsUpgrade(host)
                 callbacks.recordBlockEvent(host, StatCategories.HTTPS_UPGRADE)
                 view.post { view.loadUrl(upgraded.url) }
@@ -135,8 +146,16 @@ class RoomWebViewClient(
         error: WebResourceError
     ) {
         if (request.isForMainFrame) {
+            val failedUrl = request.url.toString()
+            // HTTPS-First fallback: our own upgrade failed → retry the
+            // original http URL once, silently (no error page flash).
+            val original = upgradeFallbacks.consume(failedUrl)
+            if (original != null && HttpsUpgradeFallbackPolicy.isRecoverable(error.errorCode)) {
+                view.post { view.loadUrl(original) }
+                return
+            }
             callbacks.onReceivedError(
-                request.url.toString(),
+                failedUrl,
                 error.errorCode,
                 error.description?.toString()
             )
@@ -144,6 +163,14 @@ class RoomWebViewClient(
     }
 
     override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
+        // HTTPS-First fallback: an https endpoint without a valid TLS setup
+        // behind one of OUR upgrades → retry the original http URL once.
+        val original = upgradeFallbacks.consume(view.url ?: "")
+        if (original != null) {
+            handler.cancel()
+            view.post { view.loadUrl(original) }
+            return
+        }
         // Never proceed automatically — the user decides via the error page.
         handler.cancel()
         callbacks.onSslError(view.url ?: "", error)

@@ -58,9 +58,11 @@ provider*:
    with an **AndroidKeyStore AES-256-GCM** key and stored only on this
    device.
 3. **Fetch models** — the model list is retrieved live from the provider's
-   `GET {baseUrl}/models` endpoint and shown as selectable chips. If a
-   provider doesn't expose `/models`, type the model id manually (always
-   available).
+   `GET {baseUrl}/models` endpoint and shown as selectable chips. A
+   **Search models** field above the chips filters long lists live (type
+   e.g. `glm` or `mini`), shows "N of M models" and can be cleared with one
+   tap. If a provider doesn't expose `/models`, type the model id manually
+   (always available).
 4. **Save** — the provider becomes selectable in the panel's model picker.
 
 Wire protocol used: `POST {baseUrl}/chat/completions` with

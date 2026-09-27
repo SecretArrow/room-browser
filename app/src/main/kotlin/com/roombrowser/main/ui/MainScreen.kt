@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -321,21 +322,32 @@ fun MainScreen(
 
 @Composable
 private fun WelcomeSection(onSkip: () -> Unit, onCreate: () -> Unit) {
+    val extras = com.roombrowser.ui.common.LocalRoomExtras.current
     Column(
         Modifier
             .fillMaxWidth()
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("Your browser.", style = MaterialTheme.typography.headlineSmall)
-        Text("Your profiles.", style = MaterialTheme.typography.headlineSmall)
+        Box(
+            Modifier
+                .size(72.dp)
+                .clip(CircleShape)
+                .background(extras.primary.copy(alpha = 0.16f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("\uD83C\uDFE0", style = MaterialTheme.typography.headlineMedium)
+        }
+        Spacer(Modifier.height(16.dp))
+        Text("Your browser.", style = MaterialTheme.typography.headlineSmall, color = extras.textPrimary)
+        Text("Your profiles.", style = MaterialTheme.typography.headlineSmall, color = extras.primary)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Your data stays separated. Every profile keeps its own cookies, storage, history and settings — like separate browser installations.",
+            "Your data stays separated. Every profile keeps its own cookies, storage, history, settings and THEME — like separate browser installations.",
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = extras.textSecondary
         )
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(18.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onSkip) { Text("Later") }
             Button(onClick = onCreate) { Text("Create Profile") }
@@ -358,30 +370,43 @@ private fun ProfileCard(
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
-    Card(
+    val extras = com.roombrowser.ui.common.LocalRoomExtras.current
+    val accent = androidx.compose.ui.graphics.Color(profile.colorArgb.toInt())
+    com.roombrowser.ui.common.RoomCard(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp),
-        shape = RoundedCornerShape(16.dp)
+            .padding(horizontal = 16.dp, vertical = 6.dp)
     ) {
-        Column(Modifier.padding(16.dp)) {
+        Column {
+            // Accent header strip
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .background(
+                        androidx.compose.ui.graphics.Brush.horizontalGradient(
+                            listOf(accent, extras.primary)
+                        )
+                    )
+            )
+            Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 ProfileAvatar(
                     icon = profile.icon,
                     colorArgb = profile.colorArgb,
-                    size = 44
+                    size = 46
                 )
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(profile.name, style = MaterialTheme.typography.titleMedium)
+                        Text(profile.name, style = MaterialTheme.typography.titleMedium, color = extras.textPrimary)
                         if (profile.isLocked) {
                             Spacer(Modifier.width(6.dp))
                             Icon(
                                 Icons.Filled.Lock,
                                 contentDescription = "Profile locked",
                                 modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.primary
+                                tint = extras.primary
                             )
                         }
                         if (profile.isDefault) {
@@ -390,19 +415,19 @@ private fun ProfileCard(
                                 Icons.Filled.Star,
                                 contentDescription = "Default profile",
                                 modifier = Modifier.size(14.dp),
-                                tint = MaterialTheme.colorScheme.secondary
+                                tint = extras.secondary
                             )
                         }
                     }
                     Text(
                         "$tabCount tabs · Last active ${timeFormat.format(Date(profile.lastActiveAt))}",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = extras.textSecondary
                     )
                 }
                 Box {
                     IconButton(onClick = { menuOpen = true }) {
-                        Icon(Icons.Filled.MoreVert, contentDescription = "Profile actions")
+                        Icon(Icons.Filled.MoreVert, contentDescription = "Profile actions", tint = extras.icon)
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         DropdownMenuItem(
@@ -428,6 +453,17 @@ private fun ProfileCard(
                             onClick = { menuOpen = false; onSetDefault() }
                         )
                         DropdownMenuItem(
+                            text = { Text("Theme studio") },
+                            leadingIcon = { Icon(Icons.Filled.Palette, contentDescription = null) },
+                            onClick = {
+                                menuOpen = false
+                                com.roombrowser.theme.ui.ThemeStudioActivity.launch(
+                                    androidx.compose.ui.platform.LocalContext.current,
+                                    profile.id.value
+                                )
+                            }
+                        )
+                        DropdownMenuItem(
                             text = { Text("Export settings") },
                             onClick = { menuOpen = false; onExport() }
                         )
@@ -443,13 +479,14 @@ private fun ProfileCard(
                     }
                 }
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(14.dp))
             Button(
                 onClick = onOpen,
                 modifier = Modifier
                     .fillMaxWidth()
                     .semantics { contentDescription = "Open profile ${profile.name}" }
             ) { Text("OPEN") }
+            }
         }
     }
 }

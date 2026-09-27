@@ -27,10 +27,13 @@ import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
@@ -154,6 +157,7 @@ private fun ProviderEditorRoot(
     var apiKey by remember(editing) { mutableStateOf("") }
     var keyVisible by remember { mutableStateOf(false) }
     var models by remember(editing) { mutableStateOf<List<String>>(emptyList()) }
+    var modelQuery by remember(editing) { mutableStateOf("") }
     var fetching by remember { mutableStateOf(false) }
     var fetchError by remember { mutableStateOf<String?>(null) }
     var model by remember(editing) { mutableStateOf(editing?.defaultModel ?: "") }
@@ -307,6 +311,7 @@ private fun ProviderEditorRoot(
                             try {
                                 models = controller.fetchModels(baseUrl, apiKey, protocol)
                                 if (models.isNotEmpty() && model !in models) model = models.first()
+                                modelQuery = ""
                             } catch (t: Throwable) {
                                 fetchError = t.message ?: "fetch failed"
                             } finally {
@@ -337,19 +342,59 @@ private fun ProviderEditorRoot(
             }
             if (models.isNotEmpty()) {
                 Spacer(Modifier.height(10.dp))
-                Text("Models returned by the provider:", style = MaterialTheme.typography.labelLarge)
+                Text(
+                    "Models returned by the provider:",
+                    style = MaterialTheme.typography.labelLarge
+                )
                 Spacer(Modifier.height(6.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                    modifier = Modifier.semantics { contentDescription = "provider_models_list" }
-                ) {
-                    models.forEach { candidate ->
-                        FilterChip(
-                            selected = candidate == model,
-                            onClick = { model = candidate },
-                            label = { Text(candidate, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                        )
+                // Model search — providers expose long model lists; typing a
+                // few characters (e.g. "glm" or "mini") filters them live.
+                OutlinedTextField(
+                    value = modelQuery,
+                    onValueChange = { modelQuery = it },
+                    placeholder = { Text("Search models…") },
+                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    trailingIcon = {
+                        if (modelQuery.isNotEmpty()) {
+                            IconButton(onClick = { modelQuery = "" }) {
+                                Icon(Icons.Filled.Close, contentDescription = "Clear model search", modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics { contentDescription = "provider_model_search_field" }
+                )
+                Spacer(Modifier.height(6.dp))
+                val visibleModels = if (modelQuery.isBlank()) models
+                else models.filter { it.contains(modelQuery.trim(), ignoreCase = true) }
+                if (visibleModels.isEmpty()) {
+                    Text(
+                        "No models match “${modelQuery.trim()}” — clear the search to see all ${models.size}.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Text(
+                        "${visibleModels.size} of ${models.size} models",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.semantics { contentDescription = "provider_models_list" }
+                    ) {
+                        visibleModels.forEach { candidate ->
+                            FilterChip(
+                                selected = candidate == model,
+                                onClick = { model = candidate },
+                                label = { Text(candidate, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                            )
+                        }
                     }
                 }
             }

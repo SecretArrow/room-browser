@@ -25,6 +25,7 @@
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
@@ -100,6 +101,17 @@
             android:name=".agent.ui.AgentSessionsActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode" />
+
+        <!--
+          Per-profile Theme Studio — its OWN activity (default process):
+          live preview, 18 presets, full palette/gradient/shape editor,
+          custom theme gallery, JSON import/export.
+        -->
+        <activity
+            android:name=".theme.ui.ThemeStudioActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode"
+            android:windowSoftInputMode="adjustResize" />
 
         <!--
           AI agent background execution: while an agent turn runs, this

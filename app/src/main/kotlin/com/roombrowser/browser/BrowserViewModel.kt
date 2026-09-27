@@ -35,6 +35,9 @@ import com.roombrowser.domain.model.BrowserGlobalSettings
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
+import com.roombrowser.domain.theme.BuiltInThemes
+import com.roombrowser.domain.theme.RoomThemeSpec
+import com.roombrowser.domain.theme.ThemeJson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -94,6 +97,10 @@ class BrowserViewModel(
     private val appState = graph.appState
 
     var profile by mutableStateOf(Profile(id = profileId, name = "", createdAt = 0))
+        private set
+
+    /** This profile's ACTIVE theme — the whole engine UI re-themes from it. */
+    var themeSpec by mutableStateOf(BuiltInThemes.default())
         private set
 
     private val tabManager = TabManager()
@@ -309,6 +316,7 @@ class BrowserViewModel(
 
     private suspend fun initialize() {
         profile = graph.profileRepo.getProfile(profileId) ?: profile
+        themeSpec = BuiltInThemes.resolveOrDefault(profile.themeJson)
         webViewClient = RoomWebViewClient(profile, graph.filterEngine, clientCallbacks)
         webChromeClient = RoomWebChromeClient(profile, chromeCallbacks)
         globalSettings = appState.globalSettingsSnapshot()
@@ -353,6 +361,23 @@ class BrowserViewModel(
     private fun observeFlows() {
         viewModelScope.launch {
             browserRepo.observeTabs(profileId).collect { list -> tabs = list }
+        }
+        viewModelScope.launch {
+            // Live per-profile theming: the Theme Studio (default process)
+            // writes profiles.theme_json; multi-instance invalidation delivers
+            // the change here and the whole browser recomposes.
+            graph.profileRepo.observeProfile(profileId).collect { p ->
+                if (p != null) {
+                    val settingsChanged = p.settings != profile.settings
+                    profile = p
+                    themeSpec = BuiltInThemes.resolveOrDefault(p.themeJson)
+                    if (settingsChanged) {
+                        webViewClient = RoomWebViewClient(profile, graph.filterEngine, clientCallbacks)
+                        webChromeClient = RoomWebChromeClient(profile, chromeCallbacks)
+                        activeWebView?.let { ProfileEngine.configure(it, profile) }
+                    }
+                }
+            }
         }
         viewModelScope.launch {
             browserRepo.observeBookmarks(profileId).collect { bookmarks = it }
@@ -883,6 +908,14 @@ class BrowserViewModel(
         globalSettings = newGlobal
         httpClient = dnsMonitor.apply(newGlobal, profile)
         agent.updateClient(httpClient)
+    }
+
+    /** Apply a new theme to THIS profile (Theme Studio "Apply"). */
+    fun updateTheme(spec: RoomThemeSpec) {
+        themeSpec = spec.sanitized()
+        viewModelScope.launch {
+            graph.profileRepo.updateTheme(profileId, ThemeJson.encode(themeSpec))
+        }
     }
 
     fun profileSettings(): ProfileSettings = profile.settings

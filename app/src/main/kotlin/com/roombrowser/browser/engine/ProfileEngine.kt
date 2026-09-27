@@ -95,7 +95,15 @@ object ProfileEngine {
         s.setSupportMultipleWindows(true) // required for popup control
         s.mediaPlaybackRequiresUserGesture = settings.blockMalicious // autoplay policy follows profile
         s.javaScriptCanOpenWindowsAutomatically = false
-        s.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        // Mixed content: compatibility mode by default (blockMixedContent=false).
+        // NEVER_ALLOW blanked real-world sites that still load some http
+        // sub-resources (legacy CDNs, older image hosts); users who want the
+        // strict behavior can enable "Block mixed content" in settings.
+        s.mixedContentMode = if (settings.blockMixedContent) {
+            WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        } else {
+            WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+        }
         UserAgents.effectiveUserAgent(settings)?.let { s.userAgentString = it }
         s.textZoom = (settings.fontScale * 100f).toInt().coerceIn(50, 200)
 

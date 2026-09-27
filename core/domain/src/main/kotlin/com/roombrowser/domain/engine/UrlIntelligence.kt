@@ -63,8 +63,11 @@ object UrlIntelligence {
         if (PROTOCOL.matches(raw)) {
             val lowered = raw.lowercase()
             if (lowered.startsWith("http://")) {
-                val upgraded = upgrade(raw)
-                return upgraded to upgraded.url
+                // An explicitly typed http:// URL is EXPLICIT USER INTENT —
+                // load it as-is (http-only sites must stay reachable).
+                // Automatic upgrades happen only for link navigations inside
+                // pages, and those carry an automatic http fallback.
+                return Input.Web(raw, upgradedToHttps = false) to raw
             }
             if (lowered.startsWith("https://")) {
                 return Input.Web(raw, upgradedToHttps = false) to raw

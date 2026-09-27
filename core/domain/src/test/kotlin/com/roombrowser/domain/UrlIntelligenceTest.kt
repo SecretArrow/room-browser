@@ -14,9 +14,19 @@ class UrlIntelligenceTest {
     }
 
     @Test
-    fun `http url upgraded to https`() {
-        val (input, _) = UrlIntelligence.classify("http://example.com")
-        assertThat(input).isEqualTo(Input.Web("https://example.com", upgradedToHttps = true))
+    fun `explicitly typed http url stays http - user intent is respected`() {
+        // Compatibility fix: http-only sites must stay reachable when the
+        // user explicitly types the http:// scheme.
+        val (input, url) = UrlIntelligence.classify("http://example.com")
+        assertThat(input).isEqualTo(Input.Web("http://example.com", upgradedToHttps = false))
+        assertThat(url).isEqualTo("http://example.com")
+    }
+
+    @Test
+    fun `upgrade helper still upgrades when called explicitly`() {
+        val upgraded = UrlIntelligence.upgrade("http://example.com")
+        assertThat(upgraded.url).isEqualTo("https://example.com")
+        assertThat(upgraded.upgradedToHttps).isTrue()
     }
 
     @Test

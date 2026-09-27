@@ -16,7 +16,9 @@ data class ProfileEntity(
     @ColumnInfo(name = "is_default") val isDefault: Boolean,
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "last_active_at") val lastActiveAt: Long,
-    @ColumnInfo(name = "settings_json") val settingsJson: String
+    @ColumnInfo(name = "settings_json") val settingsJson: String,
+    /** Full per-profile theme snapshot (RoomThemeSpec JSON); "" = default. */
+    @ColumnInfo(name = "theme_json", defaultValue = "") val themeJson: String = ""
 )
 
 @Entity(
@@ -143,6 +145,24 @@ data class BlockEventEntity(
 data class AppStateEntity(
     @PrimaryKey @ColumnInfo(name = "key") val key: String,
     @ColumnInfo(name = "value") val value: String
+)
+
+// =========================================================================
+// PER-PROFILE THEME SYSTEM — schema v4
+// =========================================================================
+
+/**
+ * A user-saved custom theme in the local gallery ("My themes"). Themes
+ * actually applied to profiles are full snapshots on the profile row
+ * (profiles.theme_json) — the gallery is only a picker source, so editing
+ * one profile never mutates another profile's look.
+ */
+@Entity(tableName = "themes")
+data class CustomThemeEntity(
+    @PrimaryKey @ColumnInfo(name = "id") val id: String,
+    @ColumnInfo(name = "name") val name: String,
+    @ColumnInfo(name = "spec_json") val specJson: String,
+    @ColumnInfo(name = "created_at") val createdAt: Long
 )
 
 // =========================================================================

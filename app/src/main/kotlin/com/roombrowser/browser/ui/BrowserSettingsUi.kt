@@ -11,6 +11,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -37,7 +38,7 @@ import com.roombrowser.domain.model.DnsMode
 import com.roombrowser.domain.model.NetworkRetention
 import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.model.SearchEngines
-import com.roombrowser.domain.model.ThemeMode
+import com.roombrowser.domain.model.TabLayout
 import com.roombrowser.domain.model.UaMode
 import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.domain.model.WarningBehavior
@@ -232,6 +233,7 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
 @Composable
 fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
     var settings by remember { mutableStateOf(viewModel.profileSettings()) }
     LaunchedEffect(viewModel.profile) { settings = viewModel.profileSettings() }
 
@@ -253,27 +255,16 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
         )
 
         SectionHeader("Appearance")
-        ThemeMode.entries.forEach { mode ->
-            RadioRow(
-                label = when (mode) {
-                    ThemeMode.SYSTEM -> "Theme: System"
-                    ThemeMode.LIGHT -> "Theme: Light"
-                    ThemeMode.DARK -> "Theme: Dark"
-                    ThemeMode.AMOLED -> "Theme: AMOLED black"
-                },
-                selected = settings.theme == mode,
-                onSelect = { update(settings.copy(theme = mode)) }
-            )
-        }
-        SettingSwitchRow(
-            title = "High contrast",
-            checked = settings.highContrast,
-            onCheckedChange = { update(settings.copy(highContrast = it)) }
-        )
-        SettingSwitchRow(
-            title = "Reduced motion",
-            checked = settings.reducedMotion,
-            onCheckedChange = { update(settings.copy(reducedMotion = it)) }
+        SettingActionRow(
+            title = "Theme studio",
+            subtitle = "This profile's theme: 18 presets, colors, gradients, corner radius, transparency, blur — fully independent per profile",
+            leadingIcon = Icons.Filled.Palette,
+            value = viewModel.themeSpec.name,
+            onClick = {
+                com.roombrowser.theme.ui.ThemeStudioActivity.launch(
+                    context, viewModel.profileId.value
+                )
+            }
         )
         TabLayout.entries.forEach { layout ->
             RadioRow(
@@ -299,13 +290,29 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
         )
 
         SectionHeader("Privacy & Blocking")
-        SettingSwitchRow(title = "Block ads", checked = settings.blockAds, onCheckedChange = { update(settings.copy(blockAds = it)) })
+        SettingSwitchRow(title = "Block ads", subtitle = "Blocks known ad hosts (bundled offline list)", checked = settings.blockAds, onCheckedChange = { update(settings.copy(blockAds = it)) })
         SettingSwitchRow(title = "Block trackers", checked = settings.blockTrackers, onCheckedChange = { update(settings.copy(blockTrackers = it)) })
         SettingSwitchRow(title = "Block cross-site trackers", checked = settings.blockCrossSiteTrackers, onCheckedChange = { update(settings.copy(blockCrossSiteTrackers = it)) })
         SettingSwitchRow(title = "Block popups", checked = settings.blockPopups, onCheckedChange = { update(settings.copy(blockPopups = it)) })
         SettingSwitchRow(title = "Block malicious websites", checked = settings.blockMalicious, onCheckedChange = { update(settings.copy(blockMalicious = it)) })
-        SettingSwitchRow(title = "HTTPS upgrades", checked = settings.httpsUpgrade, onCheckedChange = { update(settings.copy(httpsUpgrade = it)) })
-        SettingSwitchRow(title = "Block third-party cookies", checked = settings.blockThirdPartyCookies, onCheckedChange = { update(settings.copy(blockThirdPartyCookies = it)) })
+        SettingSwitchRow(
+            title = "HTTPS upgrades",
+            subtitle = "Upgrades http links to https and automatically falls back to http when the secure version is unreachable",
+            checked = settings.httpsUpgrade,
+            onCheckedChange = { update(settings.copy(httpsUpgrade = it)) }
+        )
+        SettingSwitchRow(
+            title = "Block third-party cookies",
+            subtitle = "Off by default for compatibility — many logins and embeds need it",
+            checked = settings.blockThirdPartyCookies,
+            onCheckedChange = { update(settings.copy(blockThirdPartyCookies = it)) }
+        )
+        SettingSwitchRow(
+            title = "Block mixed content",
+            subtitle = "Off by default: https pages may load http images/media so sites render fully. On = strict blocking",
+            checked = settings.blockMixedContent,
+            onCheckedChange = { update(settings.copy(blockMixedContent = it)) }
+        )
         SettingSwitchRow(title = "JavaScript enabled", checked = settings.javascriptEnabled, onCheckedChange = { update(settings.copy(javascriptEnabled = it)) })
 
         SectionHeader("WebRTC (informational)")

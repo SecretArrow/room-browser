@@ -87,6 +87,7 @@ import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.qr.QrCodeGenerator
 import com.roombrowser.qr.QrScannerActivity
 import com.roombrowser.ui.common.LoadingBar
+import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.ProfileAvatar
 import com.roombrowser.ui.common.StatTile
 import kotlinx.coroutines.launch
@@ -201,6 +202,9 @@ fun BrowserScreen(
     }
 
     Scaffold(
+        // Whole-scaffold background follows the profile theme — the glass
+        // bottom bar and every routed screen sit on a cohesive canvas.
+        containerColor = LocalRoomExtras.current.background,
         // Keyboard: same semantics as the previous adjustResize window — the
         // whole browser UI (toolbar included) rides above the IME. IME insets
         // are consumed here so the agent composer's imePadding() never

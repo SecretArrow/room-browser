@@ -15,6 +15,7 @@ import com.roombrowser.domain.profile.CopyOptions
 import com.roombrowser.domain.profile.ProfileManager
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.export.ProfileBackup
+import com.roombrowser.domain.theme.BuiltInThemes
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
@@ -30,6 +31,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val appState: AppStateRepository = graph.appState
 
     var profiles by mutableStateOf<List<Profile>>(emptyList())
+        private set
+
+    /** The picker itself is themed by the DEFAULT profile's theme — a live
+     *  preview of the per-profile theme system. */
+    var appTheme by mutableStateOf(BuiltInThemes.default())
         private set
     var tabCounts by mutableStateOf<Map<String, Int>>(emptyMap())
         private set
@@ -47,6 +53,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repo.observeProfiles().collect { list ->
                 profiles = list
+                appTheme = BuiltInThemes.resolveOrDefault(
+                    (list.firstOrNull { it.isDefault } ?: list.firstOrNull())?.themeJson ?: ""
+                )
                 observeTabCounts(list)
             }
         }

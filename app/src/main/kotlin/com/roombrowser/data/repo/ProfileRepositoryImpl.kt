@@ -97,6 +97,10 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
 
     suspend fun touch(id: ProfileId, ts: Long) = dao.touch(id.value, ts)
 
+    /** Persist a full per-profile theme snapshot (Theme Studio "Apply"). */
+    suspend fun updateTheme(id: ProfileId, themeJson: String) =
+        dao.updateTheme(id.value, themeJson)
+
     private fun ProfileEntity.toDomain(): Profile = Profile(
         id = ProfileId(id),
         name = name,
@@ -108,7 +112,8 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
         lastActiveAt = lastActiveAt,
         settings = runCatching {
             json.decodeFromString(ProfileSettings.serializer(), settingsJson)
-        }.getOrDefault(ProfileSettings())
+        }.getOrDefault(ProfileSettings()),
+        themeJson = themeJson
     )
 
     private fun Profile.toEntity(): ProfileEntity = ProfileEntity(
@@ -120,6 +125,7 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
         isDefault = isDefault,
         createdAt = createdAt,
         lastActiveAt = lastActiveAt,
-        settingsJson = json.encodeToString(ProfileSettings.serializer(), settings)
+        settingsJson = json.encodeToString(ProfileSettings.serializer(), settings),
+        themeJson = themeJson
     )
 }

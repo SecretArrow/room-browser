@@ -1,30 +1,90 @@
 package com.roombrowser.ui.common
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Path
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asComposeRenderEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.layout.height
+import androidx.compose.ui.graphics.RenderEffect as ComposeRenderEffect
+
+/**
+ * Shared design-system components (Room Browser 2026 look):
+ * rounded cards, glass chrome, quiet rows, animated progress.
+ * All colors/shapes come from the per-profile theme via LocalRoomExtras /
+ * MaterialTheme, so every screen restyles itself when the profile theme
+ * changes.
+ */
+
+/** A rounded, bordered card surface with optional theme gradient sheen. */
+@Composable
+fun RoomCard(
+    modifier: Modifier = Modifier,
+    withGradient: Boolean = true,
+    content: @Composable () -> Unit
+) {
+    val extras = LocalRoomExtras.current
+    val gradient = extras.gradient
+    val shape = RoundedCornerShape(extras.radius.dp)
+    Box(
+        modifier = modifier
+            .clip(shape)
+            .background(extras.surface)
+            .border(0.5.dp, extras.border, shape)
+    ) {
+        if (withGradient && gradient != null) {
+            Box(Modifier.matchParentSize().background(gradient))
+        }
+        content()
+    }
+}
+
+/** Section container used by settings screens: soft group card. */
+@Composable
+fun SettingsGroup(
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    RoomCard(modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+        Column(Modifier.padding(vertical = 4.dp)) { content() }
+    }
+}
 
 /** A labeled settings row with a trailing switch (full-width touch target). */
 @Composable
@@ -34,6 +94,7 @@ fun SettingSwitchRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
 ) {
+    val extras = LocalRoomExtras.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -43,16 +104,27 @@ fun SettingSwitchRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(title, style = MaterialTheme.typography.bodyLarge, color = extras.textPrimary)
             if (subtitle != null) {
+                Spacer(Modifier.height(2.dp))
                 Text(
                     subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    style = MaterialTheme.typography.bodySmall,
+                    color = extras.textSecondary
                 )
             }
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Spacer(Modifier.width(12.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedTrackColor = extras.primary,
+                checkedThumbColor = extras.onButton,
+                uncheckedTrackColor = extras.surfaceAlt,
+                uncheckedThumbColor = extras.icon
+            )
+        )
     }
 }
 
@@ -65,6 +137,7 @@ fun SettingActionRow(
     value: String? = null,
     onClick: () -> Unit
 ) {
+    val extras = LocalRoomExtras.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -73,20 +146,25 @@ fun SettingActionRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (leadingIcon != null) {
-            Icon(
-                leadingIcon,
-                contentDescription = null,
-                modifier = Modifier.padding(end = 16.dp),
-                tint = MaterialTheme.colorScheme.primary
-            )
+            Box(
+                Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(extras.primary.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(leadingIcon, contentDescription = null, tint = extras.primary, modifier = Modifier.size(20.dp))
+            }
+            Spacer(Modifier.width(14.dp))
         }
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(title, style = MaterialTheme.typography.bodyLarge, color = extras.textPrimary)
             if (subtitle != null) {
+                Spacer(Modifier.height(2.dp))
                 Text(
                     subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    style = MaterialTheme.typography.bodySmall,
+                    color = extras.textSecondary
                 )
             }
         }
@@ -94,71 +172,122 @@ fun SettingActionRow(
             Text(
                 value,
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = extras.textSecondary
             )
+            Spacer(Modifier.width(6.dp))
         }
+        Chevron()
     }
 }
 
-/** Profile avatar circle with emoji icon + profile color. */
+@Composable
+private fun Chevron() {
+    val extras = LocalRoomExtras.current
+    Canvas(Modifier.size(width = 8.dp, height = 12.dp)) {
+        val w = size.width
+        val h = size.height
+        val path = Path().apply {
+            moveTo(0.4f * w, 0.12f * h)
+            lineTo(0.86f * w, 0.5f * h)
+            lineTo(0.4f * w, 0.88f * h)
+        }
+        drawPath(
+            path,
+            color = extras.icon.copy(alpha = 0.8f),
+            style = Stroke(width = 2.2f, cap = StrokeCap.Round)
+        )
+    }
+}
+
+/** Profile avatar circle with emoji icon + profile color + soft ring. */
 @Composable
 fun ProfileAvatar(icon: String, colorArgb: Long, size: Int = 44) {
+    val extras = LocalRoomExtras.current
     Box(
         modifier = Modifier
             .size(size.dp)
             .clip(CircleShape)
-            .background(Color(colorArgb.toInt())),
+            .background(
+                Brush.linearGradient(
+                    listOf(
+                        Color(colorArgb.toInt()),
+                        mix(Color(colorArgb.toInt()), if (extras.dark) Color.Black else Color.White, 0.25f)
+                    )
+                )
+            )
+            .border(1.5.dp, extras.surface, CircleShape),
         contentAlignment = Alignment.Center
     ) {
         Text(icon, style = MaterialTheme.typography.titleMedium)
     }
 }
 
+private fun mix(a: Color, b: Color, t: Float): Color {
+    val ar = a.toArgb(); val br = b.toArgb()
+    fun ch(shift: Int): Int {
+        val av = (ar shr shift) and 0xFF; val bv = (br shr shift) and 0xFF
+        return (av + ((bv - av) * t).toInt()).coerceIn(0, 255)
+    }
+    return Color((ch(24) shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0))
+}
+
 /** Simple horizontal section header. */
 @Composable
 fun SectionHeader(text: String) {
+    val extras = LocalRoomExtras.current
     Text(
         text,
         style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 6.dp)
+        color = extras.primary,
+        modifier = Modifier.padding(start = 20.dp, top = 20.dp, bottom = 4.dp)
     )
 }
 
 /** Statistic tile used by the privacy dashboard & homepage. */
 @Composable
 fun StatTile(value: String, label: String, modifier: Modifier = Modifier) {
+    val extras = LocalRoomExtras.current
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-            .padding(12.dp),
+            .clip(RoundedCornerShape((extras.radius * 0.7f).dp))
+            .background(extras.surfaceAlt.copy(alpha = 0.75f))
+            .padding(vertical = 14.dp, horizontal = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(value, style = MaterialTheme.typography.titleLarge)
+        Text(
+            value,
+            style = MaterialTheme.typography.titleLarge,
+            color = extras.textPrimary
+        )
         Text(
             label,
             style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = extras.textSecondary
         )
     }
 }
 
-/** Thin progress bar used while pages load. */
+/** Thin animated progress bar used while pages load. */
 @Composable
 fun LoadingBar(visible: Boolean, progress: Int) {
+    val extras = LocalRoomExtras.current
     if (!visible) return
+    val animated by animateFloatAsState(
+        targetValue = progress.coerceIn(1, 100) / 100f,
+        animationSpec = tween(durationMillis = 240),
+        label = "pageProgress"
+    )
     Box(
         Modifier
             .fillMaxWidth()
-            .height(3.dp)
-            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .height(2.5.dp)
+            .background(extras.border.copy(alpha = 0.3f))
     ) {
         Box(
             Modifier
-                .fillMaxWidth(progress.coerceIn(1, 100) / 100f)
-                .height(3.dp)
-                .background(MaterialTheme.colorScheme.primary)
+                .fillMaxWidth(animated)
+                .height(2.5.dp)
+                .background(Brush.horizontalGradient(listOf(extras.primary, extras.secondary)))
         )
     }
 }
@@ -166,6 +295,7 @@ fun LoadingBar(visible: Boolean, progress: Int) {
 /** Empty-state message. */
 @Composable
 fun EmptyState(title: String, subtitle: String? = null) {
+    val extras = LocalRoomExtras.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -173,13 +303,77 @@ fun EmptyState(title: String, subtitle: String? = null) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        Text(title, style = MaterialTheme.typography.titleMedium)
+        Box(
+            Modifier
+                .size(56.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(extras.surfaceAlt.copy(alpha = 0.7f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Filled.MoreVert,
+                contentDescription = null,
+                tint = extras.icon.copy(alpha = 0.6f)
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(title, style = MaterialTheme.typography.titleMedium, color = extras.textPrimary)
         if (subtitle != null) {
             Text(
                 subtitle,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = extras.textSecondary
             )
         }
+    }
+}
+
+/**
+ * Glass chrome bar: the floating navigation-bar look. Uses the theme's
+ * navBar color with its transparency level; on API 31+ a real blur softens
+ * the decorative accent sheen (content is never blurred — only the soft
+ * gradient layer behind it).
+ */
+@Composable
+fun GlassBar(
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    val extras = LocalRoomExtras.current
+    val shape = RoundedCornerShape(extras.radius.dp)
+    val useBlur = android.os.Build.VERSION.SDK_INT >= 31 && extras.blurRadiusPx > 0f
+    val sheenEffect: ComposeRenderEffect? = if (useBlur) {
+        android.graphics.RenderEffect.createBlurEffect(
+            extras.blurRadiusPx, extras.blurRadiusPx, android.graphics.Shader.TileMode.CLAMP
+        )?.asComposeRenderEffect()
+    } else null
+    Box(
+        modifier = modifier
+            .clip(shape)
+            .background(extras.navBar.copy(alpha = extras.chromeAlpha()))
+            .border(0.5.dp, extras.border, shape)
+    ) {
+        if (sheenEffect != null) {
+            // Blurred accent sheen: the only layer the blur touches.
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .graphicsLayer {
+                        clip = true
+                        shape = this@GlassBar.shape
+                        renderEffect = sheenEffect
+                    }
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(
+                                extras.primary.copy(alpha = 0.10f),
+                                Color.Transparent,
+                                extras.secondary.copy(alpha = 0.07f)
+                            )
+                        )
+                    )
+            )
+        }
+        content()
     }
 }

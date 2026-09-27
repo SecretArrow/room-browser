@@ -1,8 +1,8 @@
 package com.roombrowser.browser.ui
 
 import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,10 +23,12 @@ import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DesktopWindows
@@ -35,6 +37,8 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.SafetyCheck
@@ -43,7 +47,6 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Tab
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -63,7 +66,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -72,15 +76,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.roombrowser.browser.BrowserViewModel
-import com.roombrowser.browser.engine.NetworkIdentity
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.qr.QrCodeGenerator
+import com.roombrowser.ui.common.GlassBar
+import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.ProfileAvatar
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** Floating browser bottom toolbar. */
+/**
+ * Modern floating browser bottom toolbar (glass bar, themed navBar color,
+ * tab-count badge) + the redesigned action sheets. All colors follow the
+ * per-profile theme.
+ */
 @Composable
 fun BrowserBottomBar(
     viewModel: BrowserViewModel,
@@ -92,54 +101,83 @@ fun BrowserBottomBar(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    Row(
-        modifier
+    val extras = LocalRoomExtras.current
+    GlassBar(
+        modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = 14.dp, vertical = 8.dp)
     ) {
-        IconButton(
-            onClick = onOpenTabs,
-            modifier = Modifier.semantics { contentDescription = "Open tab grid" }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(Icons.Filled.Tab, contentDescription = null)
-        }
-        IconButton(onClick = onOpenBookmarks) {
-            Icon(
-                androidx.compose.material.icons.Icons.Filled.Star,
-                contentDescription = "Bookmarks"
-            )
-        }
-        IconButton(
-            onClick = {
-                val url = viewModel.pageState.url
-                if (url != "about:home") {
-                    val share = Intent(Intent.ACTION_SEND).apply {
-                        type = "text/plain"
-                        putExtra(Intent.EXTRA_TEXT, url)
+            // Tabs with live count badge
+            Box {
+                IconButton(
+                    onClick = onOpenTabs,
+                    modifier = Modifier.semantics { contentDescription = "Open tab grid" }
+                ) {
+                    Icon(Icons.Filled.Tab, contentDescription = null, tint = extras.icon)
+                }
+                if (viewModel.tabs.isNotEmpty()) {
+                    Box(
+                        Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 4.dp, end = 4.dp)
+                            .size(16.dp)
+                            .clip(CircleShape)
+                            .background(extras.primary),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            viewModel.tabs.size.coerceAtMost(99).toString(),
+                            fontSize = 9.sp,
+                            color = extras.onButton,
+                            style = MaterialTheme.typography.labelSmall
+                        )
                     }
-                    context.startActivity(Intent.createChooser(share, "Share link"))
                 }
             }
-        ) {
-            Icon(Icons.Filled.Share, contentDescription = "Share page")
-        }
-        IconButton(
-            onClick = onShowQuickSwitcher,
-            modifier = Modifier.semantics { contentDescription = "Switch profile" }
-        ) {
-            ProfileAvatar(
-                icon = viewModel.profile.icon.ifBlank { "\uD83D\uDC64" },
-                colorArgb = viewModel.profile.colorArgb,
-                size = 32
-            )
-        }
-        IconButton(
-            onClick = onShowPageActions,
-            modifier = Modifier.semantics { contentDescription = "Page actions and settings" }
-        ) {
-            Icon(Icons.Filled.Settings, contentDescription = null)
+            IconButton(
+                onClick = onOpenBookmarks,
+                modifier = Modifier.semantics { contentDescription = "Bookmarks" }
+            ) {
+                Icon(Icons.Filled.Star, contentDescription = null, tint = extras.icon)
+            }
+            IconButton(
+                onClick = {
+                    val url = viewModel.pageState.url
+                    if (url != "about:home") {
+                        val share = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, url)
+                        }
+                        context.startActivity(Intent.createChooser(share, "Share link"))
+                    }
+                },
+                modifier = Modifier.semantics { contentDescription = "Share page" }
+            ) {
+                Icon(Icons.Filled.Share, contentDescription = null, tint = extras.icon)
+            }
+            IconButton(
+                onClick = onShowQuickSwitcher,
+                modifier = Modifier.semantics { contentDescription = "Switch profile" }
+            ) {
+                ProfileAvatar(
+                    icon = viewModel.profile.icon.ifBlank { "\uD83D\uDC64" },
+                    colorArgb = viewModel.profile.colorArgb,
+                    size = 30
+                )
+            }
+            IconButton(
+                onClick = onShowPageActions,
+                modifier = Modifier.semantics { contentDescription = "Page actions and settings" }
+            ) {
+                Icon(Icons.Filled.MoreHoriz, contentDescription = null, tint = extras.icon)
+            }
         }
     }
 }
@@ -164,13 +202,11 @@ fun PageActionsSheet(
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             Modifier
-                .padding(16.dp)
+                .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            Text("Page Actions", style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.height(12.dp))
+            SheetHeader("Page Actions")
             SheetAction(Icons.Filled.ArrowBack, "Back") { viewModel.goBack(); onDismiss() }
-            SheetAction(Icons.Filled.Close, "Forward") { viewModel.goForward(); onDismiss() }
             SheetAction(Icons.Filled.Add, "New tab") { viewModel.loadUrl("about:home", newTab = true); onDismiss() }
             SheetAction(Icons.Filled.Lock, "New private tab") { viewModel.startPrivateTab(); onDismiss() }
             SheetAction(Icons.Filled.SafetyCheck, "Shields") { onDismiss(); viewModel.setSiteSetting { it } }
@@ -181,7 +217,7 @@ fun PageActionsSheet(
             }
             SheetAction(Icons.Filled.MenuBook, "Reader mode") { viewModel.enterReaderMode(); onDismiss() }
             SheetAction(
-                androidx.compose.material.icons.Icons.Filled.Star,
+                Icons.Filled.Star,
                 if (viewModel.bookmarks.any { it.url == viewModel.pageState.url }) "Remove bookmark" else "Add bookmark"
             ) { viewModel.toggleBookmark(); onDismiss() }
             SheetAction(Icons.Filled.PictureAsPdf, "Save page as PDF") {
@@ -216,9 +252,21 @@ fun PageActionsSheet(
                 addShortcutToHomeScreen(context, viewModel)
                 onDismiss()
             }
+
+            SheetSectionLabel("Appearance")
+            SheetAction(Icons.Filled.Palette, "Theme studio") {
+                com.roombrowser.theme.ui.ThemeStudioActivity.launch(
+                    context, viewModel.profileId.value
+                )
+                onDismiss()
+            }
+
+            SheetSectionLabel("AI Agent")
             SheetAction(Icons.Filled.AutoAwesome, "AI Agent (autonomous browsing)") { onOpenAgent() }
             SheetAction(Icons.Filled.SmartToy, "AI Agent settings (providers & models)") { onOpenAgentSettings() }
             SheetAction(Icons.Filled.History, "AI Agent chats") { onOpenAgentSessions() }
+
+            SheetSectionLabel("Settings")
             SheetAction(Icons.Filled.Settings, "Browser settings") { onOpenSettings() }
             SheetAction(Icons.Filled.Settings, "Profile settings") { onOpenProfileSettings() }
             SheetAction(Icons.Filled.Settings, "About Room Browser") { onOpenAbout() }
@@ -249,25 +297,67 @@ private fun addShortcutToHomeScreen(context: android.content.Context, viewModel:
 }
 
 @Composable
+private fun SheetHeader(title: String) {
+    val extras = LocalRoomExtras.current
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(bottom = 10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            Modifier
+                .width(36.dp)
+                .height(4.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(extras.icon.copy(alpha = 0.35f))
+        )
+    }
+    Text(title, style = MaterialTheme.typography.titleLarge, color = extras.textPrimary)
+    Spacer(Modifier.height(8.dp))
+}
+
+@Composable
+private fun SheetSectionLabel(text: String) {
+    val extras = LocalRoomExtras.current
+    Text(
+        text,
+        style = MaterialTheme.typography.labelMedium,
+        color = extras.primary,
+        modifier = Modifier.padding(start = 8.dp, top = 12.dp, bottom = 2.dp)
+    )
+}
+
+@Composable
 private fun SheetAction(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    icon: ImageVector,
     label: String,
     onClick: () -> Unit
 ) {
+    val extras = LocalRoomExtras.current
     Row(
         Modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape((extras.radius * 0.7f).dp))
             .clickable(onClick = onClick)
             // Addressable + announced as one action (TalkBack reads the
             // label instead of raw child texts; UI tests target the row
             // itself, which carries the click action).
             .semantics { contentDescription = label }
-            .padding(vertical = 14.dp),
+            .padding(horizontal = 8.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-        Spacer(Modifier.width(16.dp))
-        Text(label, style = MaterialTheme.typography.bodyLarge)
+        Box(
+            Modifier
+                .size(32.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(extras.primary.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = null, tint = extras.primary, modifier = Modifier.size(18.dp))
+        }
+        Spacer(Modifier.width(14.dp))
+        Text(label, style = MaterialTheme.typography.bodyLarge, color = extras.textPrimary)
     }
 }
 
@@ -279,13 +369,18 @@ fun ProfileQuickSwitcherSheet(
     onDismiss: () -> Unit,
     onSwitch: (ProfileId) -> Unit
 ) {
+    val extras = LocalRoomExtras.current
     ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.padding(16.dp)) {
-            Text("Switch Profile", style = MaterialTheme.typography.titleLarge)
+        Column(
+            Modifier
+                .padding(horizontal = 16.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            SheetHeader("Switch Profile")
             Text(
                 "Switching closes the current browsing context completely before opening the next profile.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = extras.textSecondary
             )
             Spacer(Modifier.height(12.dp))
             viewModel.allProfiles.forEach { profile ->
@@ -293,21 +388,23 @@ fun ProfileQuickSwitcherSheet(
                 Row(
                     Modifier
                         .fillMaxWidth()
+                        .clip(RoundedCornerShape((extras.radius * 0.7f).dp))
                         .clickable(enabled = !current) { onSwitch(profile.id) }
-                        .padding(vertical = 12.dp),
+                        .padding(horizontal = 8.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    ProfileAvatar(profile.icon, profile.colorArgb, size = 36)
+                    ProfileAvatar(profile.icon, profile.colorArgb, size = 38)
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text(
                             profile.name + if (current) "  (current)" else "",
-                            style = MaterialTheme.typography.bodyLarge
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = if (current) extras.primary else extras.textPrimary
                         )
                         Text(
                             "${viewModel.tabs.size} tabs in current profile",
                             style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = extras.textSecondary
                         )
                     }
                 }
@@ -322,13 +419,21 @@ fun ProfileQuickSwitcherSheet(
 @Composable
 fun ShieldsSheet(viewModel: BrowserViewModel, onDismiss: () -> Unit) {
     val shields = viewModel.shieldsState
+    val extras = LocalRoomExtras.current
     ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.padding(16.dp)) {
-            Text(shields.host.ifBlank { "Privacy Shield" }, style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.height(12.dp))
-            Text("Ads blocked: ${shields.adsBlocked}", style = MaterialTheme.typography.bodyLarge)
-            Text("Trackers blocked: ${shields.trackersBlocked}", style = MaterialTheme.typography.bodyLarge)
-            Text("HTTPS upgrades: ${shields.httpsUpgrades}", style = MaterialTheme.typography.bodyLarge)
+        Column(
+            Modifier
+                .padding(horizontal = 16.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            SheetHeader(shields.host.ifBlank { "Privacy Shield" })
+            com.roombrowser.ui.common.RoomCard {
+                Column(Modifier.padding(14.dp)) {
+                    ShieldStat("Ads blocked", shields.adsBlocked)
+                    ShieldStat("Trackers blocked", shields.trackersBlocked)
+                    ShieldStat("HTTPS upgrades", shields.httpsUpgrades)
+                }
+            }
             Spacer(Modifier.height(12.dp))
             TextButton(onClick = { viewModel.toggleShieldsForSite(!shields.shieldsDisabled) }) {
                 Text(if (shields.shieldsDisabled) "Enable protection for this site" else "Disable protection for this site")
@@ -336,11 +441,11 @@ fun ShieldsSheet(viewModel: BrowserViewModel, onDismiss: () -> Unit) {
             TextButton(onClick = { viewModel.clearSiteDataForCurrentSite() }) {
                 Text("Clear site data")
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
             Text(
                 "JavaScript: ${if (viewModel.profileSettings().javascriptEnabled) "allowed by profile settings" else "blocked by profile settings"}",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = extras.textSecondary
             )
             TextButton(onClick = {
                 viewModel.setSiteSetting { it.copy(jsEnabled = !(it.jsEnabled ?: viewModel.profileSettings().javascriptEnabled)) }
@@ -353,6 +458,20 @@ fun ShieldsSheet(viewModel: BrowserViewModel, onDismiss: () -> Unit) {
     }
 }
 
+@Composable
+private fun ShieldStat(label: String, value: Int) {
+    val extras = LocalRoomExtras.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = extras.textSecondary, modifier = Modifier.weight(1f))
+        Text("$value", style = MaterialTheme.typography.titleMedium, color = extras.primary)
+    }
+}
+
 /** Find-in-page bar. */
 @Composable
 fun FindInPageBar(
@@ -361,8 +480,9 @@ fun FindInPageBar(
     onPrevious: (String) -> Unit,
     onClose: () -> Unit
 ) {
+    val extras = LocalRoomExtras.current
     var query by remember { mutableStateOf("") }
-    Row(
+    Column(
         Modifier
             .fillMaxWidth()
             // Rendered at window top level (over the browser shell): stay
@@ -372,23 +492,25 @@ fun FindInPageBar(
                     .union(WindowInsets.displayCutout)
                     .only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
             )
-            .background(MaterialTheme.colorScheme.surfaceContainerHighest)
-            .padding(8.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .background(extras.surface.copy(alpha = 0.97f))
+            .padding(8.dp)
     ) {
-        OutlinedTextField(
-            value = query,
-            onValueChange = {
-                query = it
-                onFind(it)
-            },
-            placeholder = { Text("Find in page") },
-            singleLine = true,
-            modifier = Modifier.weight(1f)
-        )
-        IconButton(onClick = { onPrevious(query) }) { Icon(Icons.Filled.ArrowBack, contentDescription = "Previous match") }
-        IconButton(onClick = { onNext(query) }) { Icon(Icons.Filled.Close, contentDescription = "Next match") }
-        IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close find bar") }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = {
+                    query = it
+                    onFind(it)
+                },
+                placeholder = { Text("Find in page") },
+                singleLine = true,
+                shape = RoundedCornerShape((extras.radius * 0.75f).dp),
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = { onPrevious(query) }) { Icon(Icons.Filled.ArrowBack, contentDescription = "Previous match", tint = extras.icon) }
+            IconButton(onClick = { onNext(query) }) { Icon(Icons.Filled.Close, contentDescription = "Next match", tint = extras.icon) }
+            IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close find bar", tint = extras.icon) }
+        }
     }
 }
 
@@ -463,7 +585,7 @@ fun ReaderScreen(
     var fontSize by remember { mutableFloatStateOf(16f) }
     var dark by remember { mutableStateOf(false) }
     var lineSpacing by remember { mutableFloatStateOf(1.4f) }
-    Box(
+    androidx.compose.foundation.layout.Box(
         Modifier
             .fillMaxSize()
             .background(if (dark) androidx.compose.ui.graphics.Color(0xFF101014) else androidx.compose.ui.graphics.Color(0xFFFCF8F0))
@@ -523,7 +645,7 @@ fun ReaderScreen(
 /** Profile Network Warning dialog (spec sections 6 / 74). */
 @Composable
 fun IpWarningDialog(
-    conflict: NetworkIdentity.NetState.Conflict,
+    conflict: com.roombrowser.browser.engine.NetworkIdentity.NetState.Conflict,
     showProfileName: Boolean,
     showLastSeen: Boolean,
     onContinue: () -> Unit,
@@ -532,7 +654,6 @@ fun IpWarningDialog(
     onDontWarnAgain: () -> Unit,
     onRecheck: () -> Unit
 ) {
-    val context = LocalContext.current
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     AlertDialog(
         onDismissRequest = onContinue,

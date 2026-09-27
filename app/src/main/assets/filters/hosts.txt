@@ -2,6 +2,13 @@
 # Format: <category>|<host>  (categories: ad, tracker, malicious)
 # Curated from publicly documented blocklist entries. No telemetry,
 # no remote fetch — the list ships inside the APK and never phones home.
+#
+# COMPATIBILITY POLICY (2026-09): tag-management / consent bootstrap domains
+# (googletagmanager.com, adobedtm.com, tags.tiqcdn.com, ...) are NOT blocked.
+# Many news, banking and enterprise sites gate their whole page render
+# behind those loaders, and mainstream default protections (Firefox ETP
+# standard, Chrome) do not block them either. Classic analytics endpoints
+# (google-analytics.com, segment, mixpanel, ...) stay blocked.
 
 ad|2mdn.net
 ad|aax.amazon-adsystem.com
@@ -149,7 +156,6 @@ tracker|2o7.net
 tracker|adcjsprod.com
 tracker|adjust.com
 tracker|admetricspro.com
-tracker|adobedtm.com
 tracker|adtruth.com
 tracker|alexa.com
 tracker|alexametrics.com
@@ -163,7 +169,6 @@ tracker|app.link
 tracker|appconfig.ess.apple.com
 tracker|appsflyer.com
 tracker|appsflyersdk.com
-tracker|assets.adobedtm.com
 tracker|attributionapp.com
 tracker|bat.bing.com
 tracker|branch.io
@@ -189,7 +194,6 @@ tracker|fathomdeluxe.io
 tracker|firebase-settings.crashlytics.com
 tracker|fullstory.com
 tracker|google-analytics.com
-tracker|googletagmanager.com
 tracker|graph.facebook.com
 tracker|heapanalytics.com
 tracker|heapanalytics.net
@@ -247,7 +251,6 @@ tracker|stats.foldable.cat
 tracker|stats.wp.com
 tracker|swissarmyknife.tray.com
 tracker|t.firstpromoter.com
-tracker|tags.tiqcdn.com
 tracker|taps.io
 tracker|tapstream.com
 tracker|tdouble.net
