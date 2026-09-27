@@ -2,6 +2,8 @@ package com.roombrowser.agent
 
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.repo.AgentRepository
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 
 /**
  * Shared provider persistence used by BOTH processes:
@@ -17,6 +19,13 @@ object AgentProviderStore {
      * Validates, normalizes and persists a provider (encrypting the API key
      * with AndroidKeyStore). A blank API key on EDIT keeps the stored
      * ciphertext; a blank key on CREATE stores "" (local servers need none).
+     *
+     * The write itself is NON-CANCELLABLE: this is a persistence primitive —
+     * finishing the calling activity mid-save (user taps Back / the window
+     * is torn down / a UI test clicks Close 80ms after Save) must NEVER
+     * abort the Room transaction. CI evidence (run 36312695165): the save
+     * coroutine was cancelled before it entered the NonCancellable block in
+     * the editor, and the provider vanished with no error shown.
      */
     suspend fun save(
         repo: AgentRepository,
@@ -26,6 +35,18 @@ object AgentProviderStore {
         apiKey: String,
         defaultModel: String,
         protocol: String = AgentProviderEntity.PROTOCOL_OPENAI
+    ): Result<AgentProviderEntity> = withContext(NonCancellable) {
+        saveNow(repo, id, name, baseUrl, apiKey, defaultModel, protocol)
+    }
+
+    private suspend fun saveNow(
+        repo: AgentRepository,
+        id: Long?,
+        name: String,
+        baseUrl: String,
+        apiKey: String,
+        defaultModel: String,
+        protocol: String
     ): Result<AgentProviderEntity> {
         val trimmedName = name.trim()
         val trimmedUrl = OkHttpAgentGateway.normalizeBaseUrl(baseUrl)

@@ -454,15 +454,17 @@ class AgentSettingsE2eTest {
         if (!clickTextWithScroll("Save provider")) {
             throw AssertionError("Save provider must be clickable; UI:\n" + uiTree())
         }
-        // The save is non-cancellable, but the EDITOR must still close ITSELF
-        // (its onDone) — proving the write committed. Waiting for the
-        // editor's "Presets" header to disappear also avoids matching the
-        // provider name in the editor's own text field (CI evidence run
-        // 36311518130: hasText("MockLLM") matched the field content 8ms
-        // after the Save click, before the coroutine had written anything).
+        // The save primitives are non-cancellable (AgentProviderStore.save /
+        // saveAgentSettings survive the editor being finished mid-write), but
+        // the EDITOR must still close ITSELF via its onDone — proving the
+        // write committed. "Add provider" is only visible on the SETTINGS
+        // screen (the editor covers it while open), so it is the unambiguous
+        // editor-closed signal — "Presets" disappearing is NOT (a scroll can
+        // push that header out of the a11y viewport while the editor is
+        // still open; CI evidence run 36312695165).
         assertTrue(
             "Editor must close itself after the save completes",
-            waitGone("Presets", 15_000)
+            hasText("Add provider", 15_000)
         )
         assertTrue(
             "Settings screen must list the saved provider",

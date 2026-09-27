@@ -135,7 +135,12 @@ class AppStateRepository(private val dao: AppStateDao) {
         } ?: AgentSettings()
 
     suspend fun saveAgentSettings(settings: AgentSettings) {
-        dao.put(AppStateEntity(AppStateKeys.AGENT_SETTINGS, json.encodeToString(AgentSettings.serializer(), settings)))
+        // Non-cancellable persistence primitive: finishing the calling
+        // activity mid-write must never lose the agent settings (e.g. the
+        // default provider/model selected right after saving a provider).
+        kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+            dao.put(AppStateEntity(AppStateKeys.AGENT_SETTINGS, json.encodeToString(AgentSettings.serializer(), settings)))
+        }
     }
 
     private fun serializeSet(values: Set<String>): String =
