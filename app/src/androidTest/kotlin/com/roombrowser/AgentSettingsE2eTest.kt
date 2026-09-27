@@ -94,6 +94,18 @@ class AgentSettingsE2eTest {
         return device.findObjects(By.text(text)).isEmpty()
     }
 
+    /** Scroll-aware text wait: small deterministic drags between polls —
+     *  off-screen rows are NOT exposed to the a11y tree (CI evidence run
+     *  36315238139: the fetched chips rendered below the fold behind the
+     *  sticky save row and "mock-model-a" was invisible to By.text). */
+    private fun hasTextWithScroll(text: String, attempts: Int = 10): Boolean {
+        for (i in 1..attempts) {
+            if (hasText(text, 1_500)) return true
+            dragUpQuarter()
+        }
+        return false
+    }
+
     private fun clickText(text: String, timeoutMs: Long): Boolean {
         val node = device.wait(Until.findObject(By.text(text)), timeoutMs) ?: return false
         return clickSmart(node)
@@ -436,7 +448,11 @@ class AgentSettingsE2eTest {
         var chipsShown = false
         for (attempt in 1..2) {
             assertTrue("Fetch models button must be clickable", clickText("Fetch models", 8_000))
-            if (hasText("mock-model-a", 15_000)) {
+            // The chips render below the fold on the small CI screen (the
+            // sticky save row shrinks the scroll viewport) — scroll-aware
+            // polling: "2 of 2 models" proves the fetch; the chip labels
+            // become a11y-visible after a small drag.
+            if (hasTextWithScroll("mock-model-a")) {
                 chipsShown = true
                 break
             }
@@ -445,7 +461,7 @@ class AgentSettingsE2eTest {
         if (!chipsShown) {
             throw AssertionError("Model chips from /models must appear; UI:\n" + uiTree())
         }
-        if (!clickText("mock-model-a", 8_000)) {
+        if (!clickTextWithScroll("mock-model-a")) {
             throw AssertionError("mock-model-a chip must be selectable; UI:\n" + uiTree())
         }
 
