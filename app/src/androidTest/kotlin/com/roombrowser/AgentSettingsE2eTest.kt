@@ -555,19 +555,19 @@ class AgentSettingsE2eTest {
      *  process (a third Room instance on the same file) — proves whether the
      *  saved provider is committed and visible cross-process. */
     private fun dbGroundTruth(): String = runCatching {
-        val db = androidx.room.Room.databaseBuilder(
-            targetContext, com.roombrowser.data.db.AppDatabase::class.java,
-            com.roombrowser.data.db.AppDatabase.NAME
-        ).allowMainThreadQueries().build()
-        try {
-            val providers = db.agentDao().providers()
-            val appStateDao = db.appStateDao()
-            "providers=${providers.map { "${it.name}/${it.defaultModel}" }} " +
-                "defaultProviderId=" + kotlinx.coroutines.runBlocking {
-                    appStateDao.get("agent_settings")
-                }
-        } finally {
-            db.close()
+        kotlinx.coroutines.runBlocking {
+            val db = androidx.room.Room.databaseBuilder(
+                targetContext, com.roombrowser.data.db.AppDatabase::class.java,
+                com.roombrowser.data.db.AppDatabase.NAME
+            ).allowMainThreadQueries().build()
+            try {
+                val providers = db.agentDao().providers()
+                val agentSettings = db.appStateDao().get("agent_settings")
+                "providers=${providers.map { "${it.name}/${it.defaultModel}" }} " +
+                    "agent_settings=$agentSettings"
+            } finally {
+                db.close()
+            }
         }
     }.getOrElse { "db-query-failed: ${it.message}" }
 
