@@ -371,6 +371,7 @@ private fun ProfileCard(
     var menuOpen by remember { mutableStateOf(false) }
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     val extras = com.roombrowser.ui.common.LocalRoomExtras.current
+    val cardContext = androidx.compose.ui.platform.LocalContext.current
     val accent = androidx.compose.ui.graphics.Color(profile.colorArgb.toInt())
     com.roombrowser.ui.common.RoomCard(
         modifier = Modifier
@@ -458,7 +459,7 @@ private fun ProfileCard(
                             onClick = {
                                 menuOpen = false
                                 com.roombrowser.theme.ui.ThemeStudioActivity.launch(
-                                    androidx.compose.ui.platform.LocalContext.current,
+                                    cardContext,
                                     profile.id.value
                                 )
                             }

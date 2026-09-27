@@ -38,13 +38,12 @@ import com.roombrowser.domain.model.DnsMode
 import com.roombrowser.domain.model.NetworkRetention
 import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.model.SearchEngines
-import com.roombrowser.domain.model.TabLayout
 import com.roombrowser.domain.model.UaMode
 import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.domain.model.WarningBehavior
 import com.roombrowser.domain.model.ConflictSeverity
-import com.roombrowser.domain.model.WebRtcPolicy
 import com.roombrowser.domain.model.TabLayout
+import com.roombrowser.domain.model.WebRtcPolicy
 import com.roombrowser.ui.common.SettingActionRow
 import com.roombrowser.ui.common.SettingSwitchRow
 import com.roombrowser.ui.common.SectionHeader

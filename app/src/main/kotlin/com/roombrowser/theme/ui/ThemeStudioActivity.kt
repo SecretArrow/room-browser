@@ -605,16 +605,16 @@ private fun ThemeCard(
         ) {
             // dual palette strip: dark top / light bottom
             Column(Modifier.fillMaxSize()) {
-                Box(Modifier.weight(1f).background(spec.dark.background)) {
+                Box(Modifier.weight(1f).background(Color(spec.dark.background))) {
                     Row(Modifier.padding(6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Box(Modifier.size(9.dp).clip(CircleShape).background(spec.dark.primary))
-                        Box(Modifier.size(9.dp).clip(CircleShape).background(spec.dark.secondary))
+                        Box(Modifier.size(9.dp).clip(CircleShape).background(Color(spec.dark.primary)))
+                        Box(Modifier.size(9.dp).clip(CircleShape).background(Color(spec.dark.secondary)))
                     }
                 }
-                Box(Modifier.weight(1f).background(spec.light.background)) {
+                Box(Modifier.weight(1f).background(Color(spec.light.background))) {
                     Row(Modifier.padding(6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Box(Modifier.size(9.dp).clip(CircleShape).background(spec.light.primary))
-                        Box(Modifier.size(9.dp).clip(CircleShape).background(spec.light.secondary))
+                        Box(Modifier.size(9.dp).clip(CircleShape).background(Color(spec.light.primary)))
+                        Box(Modifier.size(9.dp).clip(CircleShape).background(Color(spec.light.secondary)))
                     }
                 }
             }

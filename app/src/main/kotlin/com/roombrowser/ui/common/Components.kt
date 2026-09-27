@@ -30,9 +30,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Path
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -340,7 +340,7 @@ fun GlassBar(
     content: @Composable () -> Unit
 ) {
     val extras = LocalRoomExtras.current
-    val shape = RoundedCornerShape(extras.radius.dp)
+    val barShape = RoundedCornerShape(extras.radius.dp)
     val useBlur = android.os.Build.VERSION.SDK_INT >= 31 && extras.blurRadiusPx > 0f
     val sheenEffect: ComposeRenderEffect? = if (useBlur) {
         android.graphics.RenderEffect.createBlurEffect(
@@ -349,9 +349,9 @@ fun GlassBar(
     } else null
     Box(
         modifier = modifier
-            .clip(shape)
+            .clip(barShape)
             .background(extras.navBar.copy(alpha = extras.chromeAlpha()))
-            .border(0.5.dp, extras.border, shape)
+            .border(0.5.dp, extras.border, barShape)
     ) {
         if (sheenEffect != null) {
             // Blurred accent sheen: the only layer the blur touches.
@@ -360,7 +360,7 @@ fun GlassBar(
                     .matchParentSize()
                     .graphicsLayer {
                         clip = true
-                        shape = this@GlassBar.shape
+                        shape = barShape
                         renderEffect = sheenEffect
                     }
                     .background(

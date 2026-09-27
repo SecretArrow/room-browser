@@ -206,7 +206,7 @@ fun PageActionsSheet(
                 .verticalScroll(rememberScrollState())
         ) {
             SheetHeader("Page Actions")
-            SheetAction(Icons.Filled.ArrowBack, "Back") { viewModel.goBack(); onDismiss() }
+            SheetAction(Icons.AutoMirrored.Filled.ArrowBack, "Back") { viewModel.goBack(); onDismiss() }
             SheetAction(Icons.Filled.Add, "New tab") { viewModel.loadUrl("about:home", newTab = true); onDismiss() }
             SheetAction(Icons.Filled.Lock, "New private tab") { viewModel.startPrivateTab(); onDismiss() }
             SheetAction(Icons.Filled.SafetyCheck, "Shields") { onDismiss(); viewModel.setSiteSetting { it } }
@@ -507,7 +507,7 @@ fun FindInPageBar(
                 shape = RoundedCornerShape((extras.radius * 0.75f).dp),
                 modifier = Modifier.weight(1f)
             )
-            IconButton(onClick = { onPrevious(query) }) { Icon(Icons.Filled.ArrowBack, contentDescription = "Previous match", tint = extras.icon) }
+            IconButton(onClick = { onPrevious(query) }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Previous match", tint = extras.icon) }
             IconButton(onClick = { onNext(query) }) { Icon(Icons.Filled.Close, contentDescription = "Next match", tint = extras.icon) }
             IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close find bar", tint = extras.icon) }
         }
