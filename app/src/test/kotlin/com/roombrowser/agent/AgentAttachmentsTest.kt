@@ -30,7 +30,7 @@ class AgentAttachmentsTest {
             listOf(AgentAttachment(name = "photo.jpg", mime = "image/jpeg", sizeBytes = 348160L, text = null))
         )
         assertThat(rendered)
-            .contains("[Attached file: photo.jpg — image/jpeg, 340.0 KB — binary file, content not inlined]")
+            .contains("[Attached file: photo.jpg — image/jpeg, 340.0 KB] — binary file, content not inlined")
         assertThat(rendered).doesNotContain("photo.jpg\n") // no content block after the header line
         assertThat(rendered.lines()).hasSize(1)
     }
