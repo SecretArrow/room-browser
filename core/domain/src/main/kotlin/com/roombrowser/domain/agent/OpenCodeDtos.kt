@@ -1,11 +1,12 @@
 package com.roombrowser.domain.agent
 
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.Json
 
 /**
  * OpenCode (opencode serve) wire-format helpers.
@@ -256,7 +257,7 @@ object OpenCodeWire {
     private val wire = Json { encodeDefaults = false }
 
     fun createSessionBody(title: String): String =
-        """{"title":${wire.encodeToString(JsonPrimitive.serializer(), title)}}"""
+        """{"title":${jsonStr(title)}}"""
 
     /**
      * `POST /session/{id}/message`. [modelSpec] is "providerID/modelID"
@@ -273,6 +274,7 @@ object OpenCodeWire {
         return sb.toString()
     }
 
+    /** JSON-encodes [s] as a quoted string (escaping control characters). */
     private fun jsonStr(s: String): String =
-        wire.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(s))
+        wire.encodeToString(String.serializer(), s)
 }

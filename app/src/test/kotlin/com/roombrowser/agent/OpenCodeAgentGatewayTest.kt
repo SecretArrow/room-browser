@@ -47,8 +47,15 @@ class OpenCodeAgentGatewayTest {
     private fun sessionMessagesJson(vararg messages: String): String =
         """{"items":[${messages.joinToString(",")}]}"""
 
-    private fun msg(id: String, role: String, text: String): String =
-        """{"id":"$id","role":"$role","parts":[{"type":"text","text":${kotlinx.serialization.json.JsonPrimitive(text)}}]}"""
+    private fun msg(id: String, role: String, text: String): String {
+        val quoted = text
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+        return """{"id":"$id","role":"$role","parts":[{"type":"text","text":"$quoted"}]}"""
+    }
 
     @Test
     fun `tool call round trip then final answer`() = runTest {
