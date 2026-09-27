@@ -96,10 +96,10 @@ data class RoomThemeSpec(
         // AMOLED: true black background + near-black chrome, accents kept.
         return base.copy(
             background = 0xFF000000,
-            surface = (surface and 0x00FFFFFF) or 0xFF060606,
-            addressBar = (addressBar and 0x00FFFFFF) or 0xFF000000,
-            tabBar = (tabBar and 0x00FFFFFF) or 0xFF000000,
-            navBar = (navBar and 0x00FFFFFF) or 0xFF000000
+            surface = (surface and 0x00FFFFFFL) or 0xFF060606L,
+            addressBar = (addressBar and 0x00FFFFFFL) or 0xFF000000L,
+            tabBar = (tabBar and 0x00FFFFFFL) or 0xFF000000L,
+            navBar = (navBar and 0x00FFFFFFL) or 0xFF000000L
         )
     }
 
@@ -159,7 +159,7 @@ object BuiltInThemes {
         button: Long = primary,
         border: Long,
         icon: Long = text2,
-        selection: Long = (primary and 0x00FFFFFF) or 0x47000000 // 28% primary
+        selection: Long = (primary and 0x00FFFFFFL) or 0x47000000L // 28% primary
     ) = ThemeColors(
         background = bg, surface = surface, surfaceAlt = alt,
         primary = primary, secondary = secondary,

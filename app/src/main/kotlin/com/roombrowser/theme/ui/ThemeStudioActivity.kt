@@ -154,7 +154,7 @@ private fun ThemeStudioRoot(controller: ThemeStudioController, onDone: () -> Uni
     LaunchedEffect(message) {
         message?.let {
             snackbarHostState.showSnackbar(it)
-            controller.message = null
+            controller.clearMessage()
         }
     }
 
@@ -394,7 +394,7 @@ private fun ThemeStudioRoot(controller: ThemeStudioController, onDone: () -> Uni
                 OutlinedButton(
                     onClick = {
                         clipboard.setText(AnnotatedString(controller.exportJson()))
-                        controller.message = "Theme JSON copied to clipboard"
+                        controller.toast("Theme JSON copied to clipboard")
                     }
                 ) {
                     Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -469,7 +469,7 @@ private fun ThemeStudioRoot(controller: ThemeStudioController, onDone: () -> Uni
             onDismiss = { importOpen = false },
             onImport = { raw ->
                 if (!controller.importJson(raw)) {
-                    controller.message = "That text is not a valid Room Browser theme"
+                    controller.toast("That text is not a valid Room Browser theme")
                 }
                 importOpen = false
             }
@@ -798,7 +798,7 @@ private fun ColorRow(label: String, color: Long, onClick: () -> Unit) {
         Spacer(Modifier.width(14.dp))
         Text(label, style = MaterialTheme.typography.bodyLarge, color = extras.textPrimary, modifier = Modifier.weight(1f))
         Text(
-            "#" + java.lang.Long.toHexString(color and 0xFFFFFF).uppercase().padStart(6, '0'),
+            "#" + java.lang.Long.toHexString(color and 0xFFFFFFL).uppercase().padStart(6, '0'),
             style = MaterialTheme.typography.labelMedium,
             color = extras.textSecondary
         )
@@ -834,7 +834,7 @@ private fun ColorPickerDialog(
 ) {
     var hex by remember {
         mutableStateOf(
-            java.lang.Long.toHexString(initial and 0xFFFFFF).uppercase().padStart(6, '0')
+            java.lang.Long.toHexString(initial and 0xFFFFFFL).uppercase().padStart(6, '0')
         )
     }
     AlertDialog(

@@ -48,6 +48,12 @@ class ThemeStudioController(
     var message by mutableStateOf<String?>(null)
         private set
 
+    /** Clear the transient message (called after the snackbar showed it). */
+    fun clearMessage() { message = null }
+
+    /** Show a transient message via the snackbar. */
+    fun toast(text: String) { message = text }
+
     private var initializedWorking = false
 
     fun start() {
