@@ -211,7 +211,17 @@ private fun AgentSettingsRoot(
                     )
                     Spacer(Modifier.width(6.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(provider.name, style = MaterialTheme.typography.bodyLarge)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(provider.name, style = MaterialTheme.typography.bodyLarge)
+                            if (provider.protocol == AgentProviderEntity.PROTOCOL_OPENCODE) {
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    "OpenCode",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
                         Text(
                             "${provider.baseUrl} · ${provider.defaultModel}",
                             style = MaterialTheme.typography.labelMedium,

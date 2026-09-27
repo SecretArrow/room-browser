@@ -119,8 +119,9 @@ class AgentSettingsController(
         name: String,
         baseUrl: String,
         apiKey: String,
-        defaultModel: String
-    ): Result<AgentProviderEntity> = AgentProviderStore.save(repo, id, name, baseUrl, apiKey, defaultModel)
+        defaultModel: String,
+        protocol: String = AgentProviderEntity.PROTOCOL_OPENAI
+    ): Result<AgentProviderEntity> = AgentProviderStore.save(repo, id, name, baseUrl, apiKey, defaultModel, protocol)
 
     fun deleteProvider(id: Long) {
         scope.launch {
@@ -147,11 +148,15 @@ class AgentSettingsController(
     }
 
     /**
-     * Fetches /models for a provider that is still being EDITED (uses the
-     * typed base URL + API key, not stored credentials).
+     * Fetches the model list for a provider that is still being EDITED
+     * (uses the typed base URL + API key, not stored credentials).
      */
-    suspend fun fetchModels(baseUrl: String, apiKey: String): List<String> {
-        val gateway = OkHttpAgentGateway(callFactory, baseUrl, apiKey)
+    suspend fun fetchModels(
+        baseUrl: String,
+        apiKey: String,
+        protocol: String = AgentProviderEntity.PROTOCOL_OPENAI
+    ): List<String> {
+        val gateway = AgentGateways.forProvider(callFactory, baseUrl, apiKey, protocol)
         return gateway.listModels()
     }
 

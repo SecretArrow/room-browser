@@ -150,9 +150,13 @@ data class AppStateEntity(
 // =========================================================================
 
 /**
- * A user-configured OpenAI-compatible provider (Z.ai, OpenAI, OpenRouter,
- * Groq, DeepSeek, Ollama, LM Studio, custom...). The API key is stored
- * ENCRYPTED with an AndroidKeyStore AES-GCM key (never in plaintext).
+ * A user-configured AI agent provider. Two protocols are supported:
+ *  - [PROTOCOL_OPENAI] — any OpenAI-compatible chat/completions API
+ *    (Z.ai, OpenAI, OpenRouter, Groq, DeepSeek, Ollama, LM Studio, custom...)
+ *  - [PROTOCOL_OPENCODE] — an `opencode serve` server (session-based REST
+ *    API on its own machine, bridged by OpenCodeAgentGateway)
+ *
+ * The API key is stored ENCRYPTED with an AndroidKeyStore AES-GCM key.
  */
 @Entity(tableName = "agent_providers")
 data class AgentProviderEntity(
@@ -161,8 +165,14 @@ data class AgentProviderEntity(
     @ColumnInfo(name = "base_url") val baseUrl: String,
     @ColumnInfo(name = "api_key_enc") val apiKeyEnc: String, // "" = no key (local servers)
     @ColumnInfo(name = "default_model") val defaultModel: String,
+    @ColumnInfo(name = "protocol", defaultValue = "OPENAI") val protocol: String = PROTOCOL_OPENAI,
     @ColumnInfo(name = "created_at") val createdAt: Long
-)
+) {
+    companion object {
+        const val PROTOCOL_OPENAI = "OPENAI"
+        const val PROTOCOL_OPENCODE = "OPENCODE"
+    }
+}
 
 /** One agent chat session, scoped to a profile. */
 @Entity(

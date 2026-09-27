@@ -34,7 +34,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         AgentSessionEntity::class,
         AgentMessageEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -100,6 +100,19 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v2 → v3: adds the `protocol` column to agent_providers
+         * (OPENAI = chat/completions, OPENCODE = `opencode serve`). Additive
+         * ALTER TABLE with a default — existing rows stay OPENAI. Lossless.
+         */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `agent_providers` ADD COLUMN `protocol` TEXT NOT NULL DEFAULT 'OPENAI'"
+                )
+            }
+        }
+
         @Volatile
         private var instance: AppDatabase? = null
 
@@ -111,7 +124,7 @@ abstract class AppDatabase : RoomDatabase() {
         private fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, NAME)
                 .enableMultiInstanceInvalidation()
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
     }
 }

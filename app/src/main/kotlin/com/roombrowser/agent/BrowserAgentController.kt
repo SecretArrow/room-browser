@@ -179,9 +179,10 @@ class BrowserAgentController(
         name: String,
         baseUrl: String,
         apiKey: String,
-        defaultModel: String
+        defaultModel: String,
+        protocol: String = AgentProviderEntity.PROTOCOL_OPENAI
     ): Result<AgentProviderEntity> {
-        val result = AgentProviderStore.save(repo, id, name, baseUrl, apiKey, defaultModel)
+        val result = AgentProviderStore.save(repo, id, name, baseUrl, apiKey, defaultModel, protocol)
         if (result.isSuccess && id != null) apiKeyCache.remove(id)
         return result
     }
@@ -202,7 +203,7 @@ class BrowserAgentController(
         modelsError = null
         try {
             val key = apiKeyFor(provider).orEmpty()
-            val gateway = OkHttpAgentGateway(callFactory, provider.baseUrl, key)
+            val gateway = AgentGateways.forProvider(callFactory, provider, key)
             val models = gateway.listModels()
             modelCache[provider.id] = models
             return models
@@ -215,14 +216,18 @@ class BrowserAgentController(
     }
 
     /**
-     * Fetches /models for a provider that is still being EDITED (uses the
-     * typed base URL + API key, not stored credentials).
+     * Fetches the model list for a provider that is still being EDITED
+     * (uses the typed base URL + API key, not stored credentials).
      */
-    suspend fun fetchModels(baseUrl: String, apiKey: String): List<String> {
+    suspend fun fetchModels(
+        baseUrl: String,
+        apiKey: String,
+        protocol: String = AgentProviderEntity.PROTOCOL_OPENAI
+    ): List<String> {
         modelsLoading = true
         modelsError = null
         try {
-            val gateway = OkHttpAgentGateway(callFactory, baseUrl, apiKey)
+            val gateway = AgentGateways.forProvider(callFactory, baseUrl, apiKey, protocol)
             return gateway.listModels()
         } catch (t: Throwable) {
             modelsError = t.friendlyMessage()
@@ -356,7 +361,7 @@ class BrowserAgentController(
 
             val apiKey = apiKeyFor(provider).orEmpty()
             val executor = AgentToolExecutor(vm) { name, label -> requestApproval(name, label) }
-            val gateway = OkHttpAgentGateway(callFactory, provider.baseUrl, apiKey)
+            val gateway = AgentGateways.forProvider(callFactory, provider, apiKey)
             val engine = SearchEngines.byId(vm.profileSettings().searchEngineId).label
             val prompt = settings.systemPromptOverride?.takeIf { it.isNotBlank() }
                 ?: AgentPrompts.render(System.currentTimeMillis(), ZoneId.systemDefault(), engine)

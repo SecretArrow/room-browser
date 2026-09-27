@@ -160,6 +160,7 @@ change is picked up by the running browser instantly.
 ```
 core:domain (pure JVM, 100% unit-tested)
 ├── AgentDtos          OpenAI-compatible DTOs + ModelListParser
+├── OpenCodeDtos       opencode /provider + text tool-call parsers + wire bodies
 ├── SseParser          line-oriented SSE parsing
 ├── AgentTools         tool catalogue + JSON schemas + snapshot formatter
 ├── AgentPrompts       built-in system prompt
@@ -167,6 +168,8 @@ core:domain (pure JVM, 100% unit-tested)
 
 app (:browser process — owns the WebView)
 ├── OkHttpAgentGateway     SSE streaming, tool-call delta assembly, /models
+├── OpenCodeAgentGateway   `opencode serve` bridge (sessions + polling)
+├── AgentGateways          picks the transport from the provider protocol
 ├── PageInjector           JS: element tagging, snapshot, click, fill, enter
 ├── AgentToolExecutor      tools against the live BrowserViewModel engine
 ├── BrowserAgentController chat state, sessions, approvals, persistence
@@ -180,18 +183,25 @@ app (default process — agent settings activities, no WebView)
                           AgentSessionsActivity (own windows)
 ```
 
-Room schema **v2** adds `agent_providers`, `agent_sessions`,
-`agent_messages` (lossless additive migration from v1). Sessions are
-profile-scoped; providers are app-global credentials.
+Room schema **v3** adds the `protocol` column to `agent_providers`
+(`OPENAI` | `OPENCODE`, default `OPENAI`) — lossless additive migrations
+(v1→v2 agent tables, v2→v3 protocol). Sessions are profile-scoped;
+providers are app-global credentials.
 
 ## Tests
 
 * **Domain (JVM)**: `AgentLoopTest` (loop semantics, tool failures, step
   limit, history trimming), `SseParserTest`, `AgentDtosTest`
-  (wire format, model-list shapes, snapshot formatting).
+  (wire format, model-list shapes, snapshot formatting),
+  `OpenCodeParsersTest` (text tool-call extraction: fenced/bare/actions
+  forms, non-tool JSON passthrough; `/provider` model flattening; wire
+  bodies).
 * **App (JVM)**: `AgentGatewayTest` — real MockWebServer round-trips for
   SSE streaming, tool-call delta assembly, reasoning passthrough,
   non-stream fallback, auth headers, `/models` shapes and error mapping.
+  `OpenCodeAgentGatewayTest` — session creation, delta-only messaging,
+  polled assistant replies with tool-call extraction, `/provider` model
+  listing with endpoint fallback, timeout mapping.
 * **E2E (emulator)**: `AgentSettingsE2eTest` — drives the real app UI
   across both processes: opens the agent panel from the page menu (the
   pill is hidden by default), adds a provider via the settings/editor
@@ -206,3 +216,41 @@ profile-scoped; providers are app-global credentials.
   local Ollama models) — autonomous browsing spends many turns.
 * Enable **Confirm actions** the first time you let it log in anywhere.
 * Ask for sources — the built-in prompt requires the agent to cite URLs.
+
+## OpenCode backend (`opencode serve`)
+
+Besides any OpenAI-compatible API, an AI provider can be an **OpenCode
+server**: run `opencode serve` on your own PC/NAS/VPS (default port 4096)
+and add it in *Add AI provider* with type **OpenCode server** (or pick the
+"OpenCode (opencode serve)" preset). The model list is fetched live from
+the server's `GET /provider` endpoint and shown as `providerID/modelID`
+chips (e.g. `anthropic/claude-sonnet-4`).
+
+How the bridge works (`OpenCodeAgentGateway`):
+
+* Each agent turn creates an opencode session (`POST /session`) and posts
+  only the messages not yet sent (`POST /session/{id}/message`) — the
+  server-side session keeps the context, so nothing is re-sent; tool
+  results travel as labelled `TOOL RESULT` messages.
+* Replies are read by polling `GET /session/{id}/message`; newly appearing
+  assistant text is streamed into the chat UI in deltas, so long
+  generations still feel live.
+* opencode has no browser tools, so the first message of a session teaches
+  the model a **text tool-call protocol**: it replies with a fenced JSON
+  block (`{"tool_calls":[...]}`), which the gateway parses into real tool
+  calls — the same `AgentLoop` then executes them against the WebView
+  (navigate/click/fill/…, auto_reply/like/repost/post). One loop, two
+  transports.
+* Endpoint shapes are parsed leniently and fall back across opencode
+  versions (`/provider` → `/config/providers` → `/models`), so minor API
+  drift degrades to a clear error instead of a crash.
+
+Security notes:
+
+* Keep `opencode serve` on a **private LAN or VPN (Tailscale/WireGuard)** —
+  never expose port 4096 directly to the internet.
+* The optional API key is stored encrypted (AndroidKeyStore) and sent as
+  `Authorization: Bearer` to your server only.
+* The agent executes browser actions **on the phone**; opencode's own
+  terminal/file tools run on the machine hosting `opencode serve` — Room
+  Browser never exposes them to the model.

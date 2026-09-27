@@ -63,18 +63,21 @@ import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.ui.common.RoomBrowserTheme
 import kotlinx.coroutines.launch
 
-/** Well-known OpenAI-compatible provider presets (editable after selection). */
-val PROVIDER_PRESETS: List<Pair<String, String>> = listOf(
-    "Z.ai" to "https://api.z.ai/api/paas/v4",
-    "OpenAI" to "https://api.openai.com/v1",
-    "OpenRouter" to "https://openrouter.ai/api/v1",
-    "Groq" to "https://api.groq.com/openai/v1",
-    "DeepSeek" to "https://api.deepseek.com/v1",
-    "Mistral" to "https://api.mistral.ai/v1",
-    "Together" to "https://api.together.xyz/v1",
-    "Ollama (this device)" to "http://localhost:11434/v1",
-    "LM Studio (this device)" to "http://localhost:1234/v1",
-    "Custom" to ""
+/** Well-known provider presets (editable after selection). */
+data class ProviderPreset(val label: String, val url: String, val protocol: String)
+
+val PROVIDER_PRESETS: List<ProviderPreset> = listOf(
+    ProviderPreset("Z.ai", "https://api.z.ai/api/paas/v4", "OPENAI"),
+    ProviderPreset("OpenAI", "https://api.openai.com/v1", "OPENAI"),
+    ProviderPreset("OpenRouter", "https://openrouter.ai/api/v1", "OPENAI"),
+    ProviderPreset("Groq", "https://api.groq.com/openai/v1", "OPENAI"),
+    ProviderPreset("DeepSeek", "https://api.deepseek.com/v1", "OPENAI"),
+    ProviderPreset("Mistral", "https://api.mistral.ai/v1", "OPENAI"),
+    ProviderPreset("Together", "https://api.together.xyz/v1", "OPENAI"),
+    ProviderPreset("Ollama (this device)", "http://localhost:11434/v1", "OPENAI"),
+    ProviderPreset("LM Studio (this device)", "http://localhost:1234/v1", "OPENAI"),
+    ProviderPreset("OpenCode (opencode serve)", "http://localhost:4096", "OPENCODE"),
+    ProviderPreset("Custom", "", "OPENAI")
 )
 
 /**
@@ -142,6 +145,12 @@ private fun ProviderEditorRoot(
     val scope = rememberCoroutineScope()
     var name by remember(editing) { mutableStateOf(editing?.name ?: "") }
     var baseUrl by remember(editing) { mutableStateOf(editing?.baseUrl ?: "") }
+    var protocol by remember(editing) {
+        mutableStateOf(
+            if (editing?.protocol == AgentProviderEntity.PROTOCOL_OPENCODE) AgentProviderEntity.PROTOCOL_OPENCODE
+            else AgentProviderEntity.PROTOCOL_OPENAI
+        )
+    }
     var apiKey by remember(editing) { mutableStateOf("") }
     var keyVisible by remember { mutableStateOf(false) }
     var models by remember(editing) { mutableStateOf<List<String>>(emptyList()) }
@@ -183,20 +192,50 @@ private fun ProviderEditorRoot(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp)
         ) {
+            // ---- Provider type ----
+            Text("Provider type", style = MaterialTheme.typography.labelLarge)
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = protocol == AgentProviderEntity.PROTOCOL_OPENAI,
+                    onClick = { protocol = AgentProviderEntity.PROTOCOL_OPENAI; models = emptyList(); fetchError = null },
+                    label = { Text("OpenAI-compatible API") },
+                    modifier = Modifier.semantics { contentDescription = "provider_protocol_openai" }
+                )
+                FilterChip(
+                    selected = protocol == AgentProviderEntity.PROTOCOL_OPENCODE,
+                    onClick = { protocol = AgentProviderEntity.PROTOCOL_OPENCODE; models = emptyList(); fetchError = null },
+                    label = { Text("OpenCode server") },
+                    modifier = Modifier.semantics { contentDescription = "provider_protocol_opencode" }
+                )
+            }
+            if (protocol == AgentProviderEntity.PROTOCOL_OPENCODE) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Run `opencode serve` on your PC/NAS (default port 4096), then point this to it, " +
+                        "e.g. http://192.168.1.10:4096 — keep it on a private LAN or VPN (Tailscale), " +
+                        "never expose the port to the internet. The model list is fetched from GET /provider.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+
             // ---- Presets ----
             Text("Presets", style = MaterialTheme.typography.labelLarge)
             Spacer(Modifier.height(4.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PROVIDER_PRESETS.forEach { (label, presetUrl) ->
+                PROVIDER_PRESETS.forEach { preset ->
                     FilterChip(
-                        selected = presetUrl.isNotBlank() && presetUrl == baseUrl,
+                        selected = preset.url.isNotBlank() && preset.url == baseUrl && preset.protocol == protocol,
                         onClick = {
-                            if (presetUrl.isNotBlank()) {
-                                baseUrl = presetUrl
-                                if (name.isBlank()) name = label.substringBefore(" (")
+                            if (preset.url.isNotBlank()) {
+                                baseUrl = preset.url
+                                protocol = preset.protocol
+                                if (name.isBlank()) name = preset.label.substringBefore(" (")
                             }
                         },
-                        label = { Text(label) }
+                        label = { Text(preset.label) }
                     )
                 }
             }
@@ -216,7 +255,14 @@ private fun ProviderEditorRoot(
             OutlinedTextField(
                 value = baseUrl,
                 onValueChange = { baseUrl = it; models = emptyList(); fetchError = null },
-                label = { Text("Base URL (OpenAI-compatible, e.g. https://api.z.ai/api/paas/v4)") },
+                label = {
+                    Text(
+                        if (protocol == AgentProviderEntity.PROTOCOL_OPENCODE)
+                            "Base URL (opencode serve, e.g. http://192.168.1.10:4096)"
+                        else
+                            "Base URL (OpenAI-compatible, e.g. https://api.z.ai/api/paas/v4)"
+                    )
+                },
                 singleLine = true,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -259,7 +305,7 @@ private fun ProviderEditorRoot(
                             fetching = true
                             fetchError = null
                             try {
-                                models = controller.fetchModels(baseUrl, apiKey)
+                                models = controller.fetchModels(baseUrl, apiKey, protocol)
                                 if (models.isNotEmpty() && model !in models) model = models.first()
                             } catch (t: Throwable) {
                                 fetchError = t.message ?: "fetch failed"
@@ -333,7 +379,8 @@ private fun ProviderEditorRoot(
                                 name = name,
                                 baseUrl = baseUrl,
                                 apiKey = apiKey,
-                                defaultModel = model
+                                defaultModel = model,
+                                protocol = protocol
                             )
                             result.fold(
                                 onSuccess = { provider ->

@@ -48,7 +48,9 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
   the screen off. Any OpenAI-compatible provider
   works (Z.ai, OpenAI, OpenRouter, Groq, DeepSeek, Mistral, Together,
   Ollama, LM Studio or custom) with **manual provider input** and
-  **model lists fetched live from the provider's `/models` endpoint**.
+  **model lists fetched live from the provider's `/models` endpoint** — or
+  point it at your own **OpenCode server** (`opencode serve`, LAN/VPN only)
+  and pick a model from its live `/provider` list.
   Provider management, agent settings and chat history run as **dedicated
   activities** (their own windows with correct insets and keyboard
   handling), and the floating agent button is **hidden by default** —

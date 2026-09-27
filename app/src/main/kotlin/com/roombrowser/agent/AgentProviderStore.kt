@@ -24,10 +24,15 @@ object AgentProviderStore {
         name: String,
         baseUrl: String,
         apiKey: String,
-        defaultModel: String
+        defaultModel: String,
+        protocol: String = AgentProviderEntity.PROTOCOL_OPENAI
     ): Result<AgentProviderEntity> {
         val trimmedName = name.trim()
         val trimmedUrl = OkHttpAgentGateway.normalizeBaseUrl(baseUrl)
+        val proto = when (protocol) {
+            AgentProviderEntity.PROTOCOL_OPENCODE -> AgentProviderEntity.PROTOCOL_OPENCODE
+            else -> AgentProviderEntity.PROTOCOL_OPENAI
+        }
         if (trimmedName.isBlank()) return Result.failure(IllegalArgumentException("provider name is required"))
         if (!trimmedUrl.startsWith("http://") && !trimmedUrl.startsWith("https://")) {
             return Result.failure(IllegalArgumentException("base URL must start with http:// or https://"))
@@ -46,6 +51,7 @@ object AgentProviderStore {
                 baseUrl = trimmedUrl,
                 apiKeyEnc = encKey,
                 defaultModel = defaultModel.trim(),
+                protocol = proto,
                 createdAt = existing?.createdAt ?: System.currentTimeMillis()
             )
             val savedId = repo.saveProvider(entity)
