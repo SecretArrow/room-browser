@@ -255,6 +255,18 @@ class AgentSettingsE2eTest {
         }
     }
 
+    /** Finds and clicks a node by partial content description, scrolling the
+     *  current screen between attempts — settings rows (e.g. the AI Agent
+     *  section) sit BELOW THE FOLD of the scrollable settings column. */
+    private fun clickDescContainsWithScroll(part: String, attempts: Int = 12): Boolean {
+        for (i in 1..attempts) {
+            val node = device.wait(Until.findObject(By.descContains(part)), 1_500)
+            if (node != null && clickSmart(node)) return true
+            dragUpQuarter()
+        }
+        return false
+    }
+
     /** Opens a page-actions sheet entry by its content description and
      *  VERIFIES the effect. Defence in depth (CI evidence: an accessibility
      *  ACTION_CLICK on a text-matched sheet row once silently no-opped):
@@ -438,15 +450,17 @@ class AgentSettingsE2eTest {
         device.pressBack()
         device.waitForIdle(1_000)
 
-        // Turn the toggle ON via Browser settings (the sheet scrolls — the
-        // "Browser settings" row sits low in the list).
+        // Turn the toggle ON via Browser settings. The sheet scrolls (the
+        // "Browser settings" row sits low) and the switch row itself sits
+        // at the BOTTOM of the settings screen (AI Agent section) — both
+        // need scroll-aware clicking.
         assertTrue(
             "Browser settings must open",
             openSheetEntry("Browser settings") { hasText("Browser Settings", 6_000) }
         )
         assertTrue(
             "Show AI Agent button switch must be clickable",
-            clickDescContains("Show AI Agent button", 8_000)
+            clickDescContainsWithScroll("Show AI Agent button")
         )
         // The switch state comes from the Room-backed flow — waiting for the
         // "on" label proves the write landed BEFORE we check the pill.
@@ -454,7 +468,10 @@ class AgentSettingsE2eTest {
             "Switch must flip ON",
             hasDesc("Show AI Agent button switch, on", 8_000)
         )
-        assertTrue("Settings close must work", clickDesc("Close", 8_000))
+        // Leave settings via system Back — after scrolling, the top-bar Close
+        // button has scrolled out of the viewport.
+        device.pressBack()
+        device.waitForIdle(1_000)
         assertTrue(
             "Pill must appear once the toggle is ON",
             hasDesc("AI Agent", 15_000)
@@ -467,13 +484,14 @@ class AgentSettingsE2eTest {
         )
         assertTrue(
             "Show AI Agent button switch must be clickable (2nd)",
-            clickDescContains("Show AI Agent button", 8_000)
+            clickDescContainsWithScroll("Show AI Agent button")
         )
         assertTrue(
             "Switch must flip OFF",
             hasDesc("Show AI Agent button switch, off", 8_000)
         )
-        assertTrue("Settings close must work (2nd)", clickDesc("Close", 8_000))
+        device.pressBack()
+        device.waitForIdle(1_000)
         assertTrue(
             "Pill must be gone after turning the toggle OFF",
             !hasDesc("AI Agent", 4_000)
