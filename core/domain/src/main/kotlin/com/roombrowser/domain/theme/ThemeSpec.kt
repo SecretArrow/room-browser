@@ -93,13 +93,13 @@ data class RoomThemeSpec(
             RoomThemeMode.AUTO -> if (systemDark) dark else light
         }
         if (mode != RoomThemeMode.AMOLED) return base
-        // AMOLED: true black background + near-black chrome, accents kept.
+        // AMOLED: true black background + black chrome, accents kept.
         return base.copy(
             background = 0xFF000000L,
-            surface = (base.surface and 0x00FFFFFFL) or 0xFF060606L,
-            addressBar = (base.addressBar and 0x00FFFFFFL) or 0xFF000000L,
-            tabBar = (base.tabBar and 0x00FFFFFFL) or 0xFF000000L,
-            navBar = (base.navBar and 0x00FFFFFFL) or 0xFF000000L
+            surface = 0xFF060606L,
+            addressBar = 0xFF000000L,
+            tabBar = 0xFF000000L,
+            navBar = 0xFF000000L
         )
     }
 

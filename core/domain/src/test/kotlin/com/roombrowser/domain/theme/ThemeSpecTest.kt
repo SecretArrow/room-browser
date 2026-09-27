@@ -70,10 +70,11 @@ class ThemeSpecTest {
     fun `amoled forces pure black background and bars`() {
         val spec = BuiltInThemes.obsidian.copy(mode = RoomThemeMode.AMOLED)
         val resolved = spec.resolve(systemDark = false)
-        assertThat(resolved.background).isEqualTo(0xFF000000)
-        assertThat(resolved.tabBar).isEqualTo(0xFF000000)
-        assertThat(resolved.navBar).isEqualTo(0xFF000000)
-        assertThat(resolved.addressBar).isEqualTo(0xFF000000)
+        assertThat(resolved.background).isEqualTo(0xFF000000L)
+        assertThat(resolved.tabBar).isEqualTo(0xFF000000L)
+        assertThat(resolved.navBar).isEqualTo(0xFF000000L)
+        assertThat(resolved.addressBar).isEqualTo(0xFF000000L)
+        assertThat(resolved.surface).isEqualTo(0xFF060606L)
         // accents survive
         assertThat(resolved.primary).isEqualTo(spec.dark.primary)
     }
