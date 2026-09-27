@@ -1,0 +1,279 @@
+# Local AI (Ollama) — Model AI di Perangkat Sendiri
+
+Room Browser punya menu **Local AI (Ollama)**: instal, kelola, dan
+ekspor-impor model AI yang berjalan **sepenuhnya di jaringan lokal Anda** —
+di ponsel yang sama (lewat Termux) atau di PC di LAN. Tidak ada cloud, tidak
+ada API key, tidak ada data yang keluar dari jaringan rumah/kantor Anda.
+
+Menu ini diakses dari **AI Agent Settings → Local AI (Ollama)**, atau lewat
+link **Manage local models →** saat menambah/mengedit provider
+**Ollama native**.
+
+## Apa itu Local AI (Ollama)?
+
+[Ollama](https://ollama.com) adalah server model AI lokal yang menjalankan
+model open-source (Llama, Qwen, Gemma, DeepSeek…) langsung di perangkat Anda.
+Room Browser **tidak menjalankan modelnya sendiri** — Room Browser adalah
+**klien manajemen** untuk server Ollama Anda:
+
+- terhubung ke server (cek versi, status online/offline),
+- menampilkan model yang sudah terpasang di server,
+- mengunduh model baru lewat katalog kurasi (dengan pause/resume),
+- menyetel performa (GPU layers, thread CPU, context window, keep-alive),
+- mengekspor/mengimpor *setup* sebagai file JSON kecil.
+
+Setelah model terpasang, tombol **Use in chat** menjadikannya model default
+agent browsing Anda — semua percakapan agent berjalan di server lokal.
+
+## Arsitektur (jujur)
+
+```
+┌──────────────┐   HTTP (LAN / localhost)   ┌─────────────────────┐
+│ Room Browser │ ─────────────────────────→ │ Server Ollama       │
+│ (klien       │   /api/version  /api/tags  │ • Termux di ponsel  │
+│ manajemen)   │   /api/pull     /api/delete│   ini, ATAU         │
+└──────────────┘                            │ • PC di LAN         │
+                                            └─────────────────────┘
+```
+
+Kejujuran teknis yang penting:
+
+- **Model TIDAK dibundel di APK.** File model itu ratusan MB sampai
+  multi-GB — diunduh **ke server Ollama**, bukan ke aplikasi. APK tetap
+  ~6 MB.
+- Room Browser **hanya klien manajemen**: tanpa server Ollama yang
+  berjalan, menu ini hanya menampilkan status offline.
+- **Pause** menghentikan tampilan unduhan di aplikasi ini; server Ollama
+  **menyimpan layer yang sudah terunduh** di blob cache-nya, dan
+  **Resume** menerbitkan ulang `POST /api/pull` yang melewati layer yang
+  sudah selesai — jadi resume tidak pernah mengunduh ulang layer yang
+  sudah ada.
+- Tuning GPU benar-benar dikirim ke server (`num_gpu`, `num_thread`,
+  `num_ctx`, `keep_alive`) lewat protokol **Ollama natif `/api/chat`** —
+  bukan dekoratif.
+
+## Setup — Termux di ponsel ini (cara utama)
+
+1. **Instal Termux** dari F-Droid atau rilis GitHub Termux (versi
+   Play Store sudah lama tidak diperbarui — hindari).
+2. Buka Termux, lalu:
+
+   ```bash
+   pkg update
+   pkg install ollama
+   ```
+
+   `pkg install ollama` tersedia di repo Termux modern. Jika tidak
+   tersedia di repositori Anda, gunakan build komunitas Android Ollama
+   (ikuti dokumentasi proyeknya) — Room Browser tidak peduli build mana,
+   yang penting ada server yang bicara di `http://localhost:11434`.
+3. Jalankan servernya:
+
+   ```bash
+   ollama serve
+   ```
+
+   Biarkan Termux tetap berjalan (matikan optimasi baterai untuk Termux
+   agar Android tidak membunuh prosesnya).
+4. Buka Room Browser → **AI Agent Settings → Local AI (Ollama)** →
+   alamat sudah benar secara default (`http://localhost:11434`) →
+   ketuk **Connect**.
+5. Pilih model dari katalog di bawah → **Install**. Model diunduh
+   langsung ke server Termux (gunakan Wi-Fi — ukurannya ratusan MB
+   sampai GB).
+
+## Setup — Ollama di PC pada LAN
+
+1. Instal Ollama di PC (Windows/macOS/Linux) dari ollama.com.
+2. Jadikan servernya terjangkau dari LAN:
+
+   ```bash
+   # Linux/macOS
+   OLLAMA_HOST=0.0.0.0 ollama serve
+
+   # Windows (PowerShell)
+   $env:OLLAMA_HOST="0.0.0.0"; ollama serve
+   ```
+
+3. Izinkan port **11434** lewat firewall PC ( inbound TCP).
+4. Di Room Browser → Local AI → isi alamat
+   `http://<ip-pc-anda>:11434` (contoh: `http://192.168.1.10:11434`)
+   → **Connect**.
+
+**Keamanan:** server Ollama di LAN tidak punya autentikasi bawaan —
+pastikan PC/ponsel Anda hanya di jaringan tepercaya (Wi-Fi rumah),
+jangan pernah mem-forward port 11434 ke internet. Segmen jaringan
+`usesCleartextTraffic` di aplikasi ini diperlukan karena server LAN
+berbicara HTTP polos.
+
+## Menu Local AI
+
+### Koneksi
+
+Field **Ollama server address** (default `http://localhost:11434` untuk
+Termux di ponsel yang sama; ganti ke IP PC untuk setup LAN) + tombol
+**Connect** yang mengecek `GET /api/version` dan menampilkan status:
+`Connected · Ollama <versi>` atau alasan gagal. Kartu **Setup guide**
+bisa dibuka untuk langkah-langkah singkat di atas.
+
+### Model terpasang (Installed models)
+
+Daftar dari `GET /api/tags`: nama model (`repo:tag`), ukuran on-disk,
+family, jumlah parameter, dan kuantisasi. Tiap baris punya:
+
+- **Use in chat** — menjadikan model ini model default agent (membuat /
+  memilih provider "Local Ollama" berprotokol natif, menunjuk host yang
+   terpasang saat itu);
+- **Delete** — menghapus model dari server (dengan dialog konfirmasi;
+  `DELETE /api/delete`).
+
+### Katalog model — terbaik untuk ponsel
+
+13 preset kurasi, dikelompokkan dalam 4 tier berdasarkan RAM, plus saran
+tier otomatis sesuai RAM perangkat Anda. Ukuran = perkiraan unduhan tag
+q4 default (kuantisasi 4-bit standar).
+
+| Tag | Parameter | Unduhan | RAM min | Konteks | Kelebihan | Tier |
+|---|---|---|---|---|---|---|
+| `smollm2:360m` | 0.4B | ~269 MB | 3 GB | 4096 | Chat koheren meski sangat kecil | Ultra light |
+| `qwen2.5:0.5b` | 0.5B | ~397 MB | 3 GB | 32768 | Pemula tercepat, multibahasa lumayan | Ultra light |
+| `tinyllama` | 1.1B | ~608 MB | 3 GB | 2048 | Model mini klasik — sangat cepat, kualitas dasar | Ultra light |
+| `gemma3:1b` ⭐ | 1.0B | ~815 MB | 3 GB | 32768 | Model terkecil Google — tak lazim kuat untuk ukurannya | Ultra light (rekomendasi) |
+| `qwen2.5:1.5b` ⭐ | 1.5B | ~986 MB | 4 GB | 32768 | Balance kualitas/kecepatan terbaik untuk ponsel | Light (rekomendasi) |
+| `deepseek-r1:1.5b` | 1.5B | ~1113 MB | 4 GB | 32768 | Model reasoning mini dengan chain-of-thought terlihat | Light |
+| `llama3.2:1b` | 1.0B | ~1328 MB | 4 GB | 131072 | Model phone-first Meta, multibahasa bagus | Light |
+| `gemma2:2b` | 2.6B | ~1612 MB | 4 GB | 8192 | Model Google seimbang, prosa bersih | Light |
+| `qwen2.5:3b` ⭐ | 3.1B | ~1900 MB | 6 GB | 32768 | Kualitas terbaik yang realistis di ponsel; tool calling kuat | Balanced (rekomendasi) |
+| `llama3.2:3b` | 3.2B | ~2010 MB | 6 GB | 131072 | Llama 3.2 lebih besar — multibahasa terbaik | Balanced |
+| `phi3.5` | 3.8B | ~2163 MB | 6 GB | 131072 | Model efisien Microsoft dengan konteks panjang | Balanced |
+| `qwen2.5:7b` | 7.1B | ~4720 MB | 8 GB | 32768 | Kualitas flagship — butuh ponsel top + kesabaran | Heavy |
+| `llama3.1:8b` ⭐ | 8.0B | ~4930 MB | 8 GB | 131072 | Kualitas asisten penuh di ponsel flagship | Heavy (rekomendasi) |
+
+⭐ = pilihan kurator tier (badge "Recommended" di UI). Sebagian besar
+preset juga ber-badge **ID-friendly** (cocok untuk tugas browsing
+berbahasa Indonesia — kekuatan bahasa Indonesia model kecil bervariasi).
+
+**Saran RAM konservatif:** Android sendiri makan ~2 GB — ponsel "6 GB"
+berperilaku seperti 4 GB saat LLM dan browser berjalan bersamaan.
+Saran tier: RAM < 4 GB → Ultra light; < 6 GB → Light; < 8 GB →
+Balanced; ≥ 8 GB → Heavy.
+
+### Downloads — pause/resume
+
+Saat menekan **Install**, baris unduhan muncul dengan progres per-layer
+(NDJSON `POST /api/pull`), tombol **Pause / Resume / Cancel**, dan
+baris **Clear** setelah sukses.
+
+Kejujuran tentang pause/resume:
+
+- **Pause** membatalkan coroutine unduhan **di aplikasi ini** — server
+  Ollama tetap menyimpan layer yang sudah selesai di blob cache-nya.
+- **Resume** menerbitkan ulang pull yang sama — server melewati layer
+  yang sudah tersimpan, jadi lanjut dari layer terakhir yang selesai.
+  API Ollama memang tidak punya HTTP Range resume; re-issue inilah
+  mekanisme resume-nya.
+- `receivedBytes` adalah tanda air tinggi (high-water mark) yang bertahan
+  melewati pause, jadi progres di UI tidak pernah mundur setelah resume.
+
+### Import / Export setup
+
+**Export setup** menulis file JSON kecil (SAF) berisi: alamat server,
+tuning performa, dan daftar nama model — **bukan** file model multi-GB.
+**Import setup** membaca manifest itu, memulihkan host + tuning, dan
+mengantri ulang pull untuk model yang belum terpasang. Cocok untuk
+pindah-pindah perangkat atau instal ulang Termux tanpa mengetik ulang.
+
+### Performance (GPU · CPU)
+
+- **GPU layers to offload** (`num_gpu`) — Auto (server menentukan) atau
+  manual 0–99.
+- **CPU threads** (`num_thread`) — Auto atau manual 1–16.
+- **Context window** (`num_ctx`) — 512–16384, kelipatan 512. Catatan:
+  llama.cpp **mengalokasikan RAM untuk SELURUH window di muka** —
+  konteks 16k pada model 3B ≈ +1 GB RAM.
+- **Keep model in memory** (`keep_alive`) — 0–60 menit; 0 berarti model
+  langsung dibongkar dari RAM setelah balasan terakhir.
+
+Catatan jujur GPU: offload GPU mempercepat model **hanya jika build
+Ollama Anda mendukung GPU ponsel** (mis. build Termux dengan
+OpenCL/Adreno). Build standar mengabaikan `num_gpu` dan otomatis jatuh
+ke CPU — tidak ada yang rusak, hanya tidak ada percepatan. Nilai-nilai
+ini diterapkan ke chat **provider Ollama natif**.
+
+## Provider: Ollama natif vs /v1
+
+| | **Ollama native** | **Ollama (OpenAI /v1)** |
+|---|---|---|
+| Protokol | `/api/chat` Ollama asli | endpoint kompatibel OpenAI `/v1` |
+| Tuning Local AI (GPU/thread/konteks/keep-alive) | ✅ diterapkan ke setiap chat | ❌ tidak diterapkan |
+| Daftar model | model terpasang di server (`/api/tags`) | `/v1/models` |
+| Kapan dipakai | ingin tuning performa + integrasi menu Local AI | provider standar OpenAI-compatible (paling kompatibel lintas aplikasi) |
+
+Di **Add AI provider**: pilih chip **Ollama native** (preset
+`http://localhost:11434`, protokol OLLAMA) atau preset **Ollama
+(OpenAI /v1)** (`http://localhost:11434/v1`, protokol OPENAI). Tombol
+**Use in chat** di menu Local AI selalu memakai jalur natif.
+
+## Privasi
+
+- Semua trafik menuju **server lokal Anda** (localhost atau LAN) —
+  tidak ada cloud, tidak ada proxy, tidak ada telemetry dari Room
+  Browser (lihat `PRIVACY.md`).
+- Tidak ada API key yang perlu disimpan untuk server lokal.
+- File export berisi host + tuning + nama model saja — tidak berisi
+  percakapan agent Anda.
+- Model berjalan di perangkat Anda: halaman yang dibaca agent tidak
+  dikirim ke pihak ketiga mana pun.
+
+## Batasan (jujur, tanpa klaim palsu)
+
+- **Unduhan besar** — model 1–5 GB: gunakan Wi-Fi; unduhan berhenti di
+  layer terakhir yang selesai bila koneksi putus (resume melanjutkan).
+- **Pause = tampilan klien + cache layer server** — bukan pause server
+  yang sebenarnya (API Ollama tidak punya Range resume; re-issue pull
+  adalah satu-satunya mekanisme, dan itu cukup efisien karena blob
+  cache).
+- **GPU opsional per build** — hanya build Ollama dengan dukungan GPU
+  ponsel yang memakai `num_gpu`; build lain otomatis CPU.
+- **Kecepatan model kecil di ponsel itu nyata tapi terbatas** — model
+  1B–3B realistis untuk tugas browsing sederhana; model 7B+ butuh
+  ponsel flagship, pendinginan, dan kesabaran.
+- Server Ollama harus **tetap berjalan** (Termux/PC) — kalau mati, agent
+  lokal tidak bisa menjawab.
+
+## Arsitektur kode
+
+```
+core:domain (JVM murni, teruji unit)
+├── OllamaDtos      DTO /api/tags + parser NDJSON /api/pull (lenient)
+├── OllamaModelPresets  katalog 13 preset 4 tier + saran tier per RAM
+├── LocalAiTuning   num_gpu/num_thread/num_ctx/keep_alive + clamp
+└── LocalAiBackup   manifest import/export (encode/decode ketat)
+
+app (proses default — tanpa WebView)
+├── OllamaClient    GET /api/version, /api/tags, POST /api/pull (NDJSON
+│                  streaming, cancel = pause), DELETE /api/delete
+├── LocalAiController  state machine: koneksi, installed, downloads
+│                  (pause = cancel job; resume = re-issue pull),
+│                  tuning, use-in-chat, import/export
+└── agent/ui/LocalAiActivity  layar Compose (activity sendiri)
+
+app (proses :browser)
+└── OllamaAgentGateway  protokol natif /api/chat — mengirim options
+                        tuning Local AI pada setiap chat agent
+```
+
+## Test
+
+- **Domain (JVM)**: `OllamaDtosTest` — parsing tags/NDJSON lenient,
+  katalog, clamp tuning, encode/decode manifest.
+- **App (JVM)**: `OllamaLocalTest` — controller + client melawan
+  MockWebServer nyata: koneksi, daftar model, pull dengan pause/resume
+  (job cancel + re-issue), delete, use-in-chat, import/export.
+- **E2E (emulator)**: `LocalAiE2eTest` — UI nyata: buka Agent Settings →
+  Local AI → connect ke server Ollama palsu (MockWebServer stateful) →
+  model terpasang tampil → instal preset katalog → chip "Installed"
+  muncul setelah pull selesai. Label pause/resume sengaja TIDAK
+  diassert di e2e (body MockWebServer selesai seketika, fase
+  DOWNLOADING terlalu cepat untuk diamati) — semantiknya diuji di
+  `OllamaLocalTest`.

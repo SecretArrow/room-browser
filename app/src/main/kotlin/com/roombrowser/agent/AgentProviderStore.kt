@@ -52,6 +52,7 @@ object AgentProviderStore {
         val trimmedUrl = OkHttpAgentGateway.normalizeBaseUrl(baseUrl)
         val proto = when (protocol) {
             AgentProviderEntity.PROTOCOL_OPENCODE -> AgentProviderEntity.PROTOCOL_OPENCODE
+            AgentProviderEntity.PROTOCOL_OLLAMA -> AgentProviderEntity.PROTOCOL_OLLAMA
             else -> AgentProviderEntity.PROTOCOL_OPENAI
         }
         if (trimmedName.isBlank()) return Result.failure(IllegalArgumentException("provider name is required"))

@@ -103,6 +103,20 @@
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode" />
 
         <!--
+          Local AI (Ollama) manager — its OWN activity (default process, no
+          WebView), exactly like the other agent screens: connecting to an
+          Ollama server, the phone-friendly model catalog with
+          pause/resume downloads, GPU/CPU tuning and setup import/export get
+          a real window with proper back-stack behavior, own IME handling
+          and edge-to-edge insets.
+        -->
+        <activity
+            android:name=".agent.ui.LocalAiActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!--
           Per-profile Theme Studio — its OWN activity (default process):
           live preview, 18 presets, full palette/gradient/shape editor,
           custom theme gallery, JSON import/export.

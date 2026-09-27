@@ -55,6 +55,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -64,6 +65,7 @@ import androidx.compose.ui.unit.dp
 import com.roombrowser.agent.AgentSettingsController
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.ui.common.RoomBrowserTheme
+import com.roombrowser.ui.common.SettingActionRow
 import kotlinx.coroutines.launch
 
 /** Well-known provider presets (editable after selection). */
@@ -77,7 +79,8 @@ val PROVIDER_PRESETS: List<ProviderPreset> = listOf(
     ProviderPreset("DeepSeek", "https://api.deepseek.com/v1", "OPENAI"),
     ProviderPreset("Mistral", "https://api.mistral.ai/v1", "OPENAI"),
     ProviderPreset("Together", "https://api.together.xyz/v1", "OPENAI"),
-    ProviderPreset("Ollama (this device)", "http://localhost:11434/v1", "OPENAI"),
+    ProviderPreset("Ollama (OpenAI /v1)", "http://localhost:11434/v1", "OPENAI"),
+    ProviderPreset("Ollama native", "http://localhost:11434", "OLLAMA"),
     ProviderPreset("LM Studio (this device)", "http://localhost:1234/v1", "OPENAI"),
     ProviderPreset("OpenCode (opencode serve)", "http://localhost:4096", "OPENCODE"),
     ProviderPreset("Custom", "", "OPENAI")
@@ -146,12 +149,19 @@ private fun ProviderEditorRoot(
     onDone: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     var name by remember(editing) { mutableStateOf(editing?.name ?: "") }
     var baseUrl by remember(editing) { mutableStateOf(editing?.baseUrl ?: "") }
     var protocol by remember(editing) {
         mutableStateOf(
-            if (editing?.protocol == AgentProviderEntity.PROTOCOL_OPENCODE) AgentProviderEntity.PROTOCOL_OPENCODE
-            else AgentProviderEntity.PROTOCOL_OPENAI
+            // Explicit mapping — a plain else→OPENAI would silently CORRUPT
+            // an edited Ollama-native provider (its protocol would flip to
+            // the OpenAI transport on open).
+            when (editing?.protocol) {
+                AgentProviderEntity.PROTOCOL_OPENCODE -> AgentProviderEntity.PROTOCOL_OPENCODE
+                AgentProviderEntity.PROTOCOL_OLLAMA -> AgentProviderEntity.PROTOCOL_OLLAMA
+                else -> AgentProviderEntity.PROTOCOL_OPENAI
+            }
         )
     }
     var apiKey by remember(editing) { mutableStateOf("") }
@@ -291,6 +301,12 @@ private fun ProviderEditorRoot(
                     label = { Text("OpenCode server") },
                     modifier = Modifier.semantics { contentDescription = "provider_protocol_opencode" }
                 )
+                FilterChip(
+                    selected = protocol == AgentProviderEntity.PROTOCOL_OLLAMA,
+                    onClick = { protocol = AgentProviderEntity.PROTOCOL_OLLAMA; models = emptyList(); fetchError = null },
+                    label = { Text("Ollama native") },
+                    modifier = Modifier.semantics { contentDescription = "provider_protocol_ollama" }
+                )
             }
             if (protocol == AgentProviderEntity.PROTOCOL_OPENCODE) {
                 Spacer(Modifier.height(6.dp))
@@ -300,6 +316,22 @@ private fun ProviderEditorRoot(
                         "never expose the port to the internet. The model list is fetched from GET /provider.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (protocol == AgentProviderEntity.PROTOCOL_OLLAMA) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Native Ollama protocol (/api/chat): the Local AI performance settings " +
+                        "(GPU layers, threads, context) are applied to every chat, and the model list " +
+                        "comes from the server's installed models. For the OpenAI-compatible /v1 " +
+                        "endpoint use the other Ollama preset.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                SettingActionRow(
+                    title = "Manage local models →",
+                    subtitle = "Open the Local AI menu — install, pause/resume, import/export",
+                    onClick = { LocalAiActivity.launch(context, null) }
                 )
             }
             Spacer(Modifier.height(12.dp))
@@ -340,10 +372,14 @@ private fun ProviderEditorRoot(
                 onValueChange = { baseUrl = it; models = emptyList(); fetchError = null },
                 label = {
                     Text(
-                        if (protocol == AgentProviderEntity.PROTOCOL_OPENCODE)
-                            "Base URL (opencode serve, e.g. http://192.168.1.10:4096)"
-                        else
-                            "Base URL (OpenAI-compatible, e.g. https://api.z.ai/api/paas/v4)"
+                        when (protocol) {
+                            AgentProviderEntity.PROTOCOL_OPENCODE ->
+                                "Base URL (opencode serve, e.g. http://192.168.1.10:4096)"
+                            AgentProviderEntity.PROTOCOL_OLLAMA ->
+                                "Base URL (Ollama server, e.g. http://localhost:11434)"
+                            else ->
+                                "Base URL (OpenAI-compatible, e.g. https://api.z.ai/api/paas/v4)"
+                        }
                     )
                 },
                 singleLine = true,

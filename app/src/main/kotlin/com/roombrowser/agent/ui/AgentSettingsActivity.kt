@@ -34,6 +34,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -55,6 +56,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -269,6 +271,18 @@ private fun AgentSettingsRoot(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp)
+            )
+
+            // ================= Local AI =================
+            // Local AI is app-global (not per-profile): the Ollama server and
+            // its models are shared by every profile's agent chats.
+            SectionHeader("Local AI")
+            val localAiContext = LocalContext.current
+            SettingActionRow(
+                title = "Local AI (Ollama)",
+                subtitle = "Install, import and export on-device models — pause/resume downloads, GPU tuning",
+                leadingIcon = Icons.Filled.Memory,
+                onClick = { LocalAiActivity.launch(localAiContext, null) }
             )
 
             // ================= Behavior =================

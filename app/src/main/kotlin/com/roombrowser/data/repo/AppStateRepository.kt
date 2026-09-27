@@ -2,6 +2,7 @@ package com.roombrowser.data.repo
 
 import com.roombrowser.data.db.AppStateDao
 import com.roombrowser.data.db.AppStateEntity
+import com.roombrowser.domain.agent.LocalAiTuning
 import com.roombrowser.domain.model.BrowserGlobalSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -21,6 +22,7 @@ object AppStateKeys {
     const val EXTERNAL_URL = "external_url"
     const val SESSION_ID = "browser_session_id"
     const val AGENT_SETTINGS = "agent_settings"
+    const val LOCAL_AI_SETTINGS = "local_ai_settings"
 }
 
 /** AI agent behavior settings (app-global, stored as JSON in app_state). */
@@ -140,6 +142,28 @@ class AppStateRepository(private val dao: AppStateDao) {
         // default provider/model selected right after saving a provider).
         kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
             dao.put(AppStateEntity(AppStateKeys.AGENT_SETTINGS, json.encodeToString(AgentSettings.serializer(), settings)))
+        }
+    }
+
+    // ---------- Local AI (Ollama) tuning ----------
+
+    val localAiTuning: Flow<LocalAiTuning> =
+        dao.observe(AppStateKeys.LOCAL_AI_SETTINGS).map { raw ->
+            raw?.let { runCatching { json.decodeFromString(LocalAiTuning.serializer(), it) }.getOrNull() }
+                ?: LocalAiTuning()
+        }
+
+    suspend fun localAiTuningSnapshot(): LocalAiTuning =
+        dao.get(AppStateKeys.LOCAL_AI_SETTINGS)?.let {
+            runCatching { json.decodeFromString(LocalAiTuning.serializer(), it) }.getOrNull()
+        } ?: LocalAiTuning()
+
+    suspend fun saveLocalAiTuning(tuning: LocalAiTuning) {
+        // Same non-cancellable persistence primitive as saveAgentSettings:
+        // a tuning save (or a backup import restoring host + GPU layers)
+        // racing the activity teardown must never write half its intent.
+        kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+            dao.put(AppStateEntity(AppStateKeys.LOCAL_AI_SETTINGS, json.encodeToString(LocalAiTuning.serializer(), tuning)))
         }
     }
 

@@ -17,6 +17,7 @@ import com.roombrowser.domain.agent.AgentLoop
 import com.roombrowser.domain.agent.AgentPrompts
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.ChatMessage
+import com.roombrowser.domain.agent.LocalAiTuning
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.SearchEngines
 import kotlinx.coroutines.CancellationException
@@ -149,6 +150,12 @@ class BrowserAgentController(
         private set
     var settings by mutableStateOf(AgentSettings())
         private set
+    /**
+     * Local AI (Ollama) tuning, live-collected from app_state so /api/chat
+     * options (num_ctx/num_gpu/num_thread/keep_alive) track the Local AI
+     * screen in real time while an agent turn is being built.
+     */
+    private var localAiTuning by mutableStateOf(LocalAiTuning())
     var activeProvider by mutableStateOf<AgentProviderEntity?>(null)
         private set
     var activeModel by mutableStateOf<String?>(null)
@@ -181,6 +188,9 @@ class BrowserAgentController(
                 settings = it
                 refreshSelection()
             }
+        }
+        scope.launch {
+            appState.localAiTuning.collect { localAiTuning = it }
         }
         scope.launch {
             repo.observeSessions(profileId.value).collect { sessions = it }
@@ -447,7 +457,14 @@ class BrowserAgentController(
 
             val apiKey = apiKeyFor(provider).orEmpty()
             val executor = AgentToolExecutor(vm) { name, label -> requestApproval(name, label) }
-            val gateway = AgentGateways.forProvider(callFactory, provider, apiKey)
+            // Only the native Ollama protocol consumes the tuning; the other
+            // gateways ignore it (default null keeps their wire format intact).
+            val gateway = AgentGateways.forProvider(
+                callFactory,
+                provider,
+                apiKey,
+                tuning = localAiTuning.takeIf { provider.protocol == AgentProviderEntity.PROTOCOL_OLLAMA }
+            )
             val engine = SearchEngines.byId(vm.profileSettings().searchEngineId).label
             val prompt = settings.systemPromptOverride?.takeIf { it.isNotBlank() }
                 ?: AgentPrompts.render(System.currentTimeMillis(), ZoneId.systemDefault(), engine)
