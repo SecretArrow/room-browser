@@ -35,6 +35,7 @@ class BrowserActivity : FragmentActivity() {
     private var boundProfileId: ProfileId? = null
     private var initialUrl: String? = null
     private var pendingSwitch = false
+    private var browserViewModel: BrowserViewModel? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,6 +83,7 @@ class BrowserActivity : FragmentActivity() {
             }
         }
         val viewModel = ViewModelProvider(this, factory)[BrowserViewModel::class.java]
+        browserViewModel = viewModel
         setContent {
             // Whole-engine theming from THIS profile's theme snapshot —
             // changes live when the Theme Studio (default process) applies a
@@ -100,6 +102,16 @@ class BrowserActivity : FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Deterministic cross-process re-sync: providers / agent settings
+        // configured in the settings activities (default process) while this
+        // engine was backgrounded become visible immediately — even when
+        // Room's multi-instance invalidation ping is lost on slow
+        // filesystems (observed on the CI emulator).
+        browserViewModel?.agent?.refreshProviders()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

@@ -147,15 +147,24 @@ class BrowserAgentController(
      * ':browser' process within moments, but on slow/emulator filesystems the
      * ping can occasionally be lost — the panel would then keep showing a
      * stale "No provider configured" state. Called whenever the agent panel
-     * is opened/expanded so the freshly configured provider is always picked
-     * up immediately.
+     * is opened/expanded AND from BrowserActivity.onResume so the freshly
+     * configured provider is always picked up immediately.
      */
     fun refreshProviders() {
         scope.launch {
             runCatching {
-                providers = repo.providers()
-                settings = appState.agentSettingsSnapshot()
+                val list = repo.providers()
+                val snap = appState.agentSettingsSnapshot()
+                android.util.Log.d(
+                    "RoomAgent",
+                    "refreshProviders: ${list.size} providers=${list.map { it.name }} " +
+                        "default=${snap.defaultProviderId}/${snap.defaultModel}"
+                )
+                providers = list
+                settings = snap
                 refreshSelection()
+            }.onFailure {
+                android.util.Log.e("RoomAgent", "refreshProviders failed", it)
             }
         }
     }

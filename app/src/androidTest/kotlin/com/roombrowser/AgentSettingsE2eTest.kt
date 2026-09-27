@@ -476,7 +476,10 @@ class AgentSettingsE2eTest {
         }
         if (!device.wait(Until.hasObject(By.textContains("mock-model-a")), 15_000)) {
             throw AssertionError(
-                "Agent panel model line must show the fetched model; UI:\n" + uiTree()
+                "Agent panel model line must show the fetched model; " +
+                    "DB ground truth: " + dbGroundTruth() +
+                    "; agent logcat: " + agentLogTail() +
+                    "; UI:\n" + uiTree()
             )
         }
         // ---- 8. Show/hide the floating agent button ------------------------
@@ -547,4 +550,32 @@ class AgentSettingsE2eTest {
         }
         return engineUiUp(4_000)
     }
+
+    /** Ground truth: reads the providers table from THIS instrumentation
+     *  process (a third Room instance on the same file) — proves whether the
+     *  saved provider is committed and visible cross-process. */
+    private fun dbGroundTruth(): String = runCatching {
+        val db = androidx.room.Room.databaseBuilder(
+            targetContext, com.roombrowser.data.db.AppDatabase::class.java,
+            com.roombrowser.data.db.AppDatabase.NAME
+        ).allowMainThreadQueries().build()
+        try {
+            val providers = db.agentDao().providers()
+            val appStateDao = db.appStateDao()
+            "providers=${providers.map { "${it.name}/${it.defaultModel}" }} " +
+                "defaultProviderId=" + kotlinx.coroutines.runBlocking {
+                    appStateDao.get("agent_settings")
+                }
+        } finally {
+            db.close()
+        }
+    }.getOrElse { "db-query-failed: ${it.message}" }
+
+    /** Last RoomAgent diagnostic lines from the app's logcat. */
+    private fun agentLogTail(): String = runCatching {
+        val logs = device.executeShellCommand(
+            "logcat -d -s RoomAgent:V -t 40"
+        ).trim()
+        if (logs.isBlank()) "(no RoomAgent logs)" else logs.take(1500)
+    }.getOrDefault("(logcat failed)")
 }
