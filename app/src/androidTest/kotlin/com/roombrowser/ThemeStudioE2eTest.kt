@@ -87,10 +87,19 @@ class ThemeStudioE2eTest {
         return clickCenter(node)
     }
 
-    private fun engineUiUp(timeoutMs: Long): Boolean =
-        hasText("Search or type URL", timeoutMs)
-            || hasText("Privacy Dashboard", 10_000)
-            || hasText("trackers blocked", 5_000)
+    private fun engineUiUp(timeoutMs: Long): Boolean {
+        // The address pill ALWAYS carries the desc "Address bar: …" — the
+        // engine is detectable regardless of omnibox placeholder exposure.
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (device.wait(Until.hasObject(By.descContains("Address bar")), 400)) return true
+            if (hasText("Search or type URL", 400)) return true
+            if (hasText("Privacy Dashboard", 400)) return true
+            if (hasText("trackers blocked", 400)) return true
+            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+        }
+        return device.wait(Until.hasObject(By.descContains("Address bar")), 500)
+    }
 
     private fun dragUpQuarter() {
         device.swipe(

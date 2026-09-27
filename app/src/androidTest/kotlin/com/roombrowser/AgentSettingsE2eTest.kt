@@ -81,6 +81,9 @@ class AgentSettingsE2eTest {
     private fun hasDesc(desc: String, timeoutMs: Long): Boolean =
         device.wait(Until.hasObject(By.desc(desc)), timeoutMs)
 
+    private fun hasDescContains(part: String, timeoutMs: Long): Boolean =
+        device.wait(Until.hasObject(By.descContains(part)), timeoutMs)
+
     private fun clickText(text: String, timeoutMs: Long): Boolean {
         val node = device.wait(Until.findObject(By.text(text)), timeoutMs) ?: return false
         return clickSmart(node)
@@ -139,10 +142,23 @@ class AgentSettingsE2eTest {
         return clickCenter(node)
     }
 
-    private fun engineUiUp(timeoutMs: Long): Boolean =
-        hasText("Search or type URL", timeoutMs)
-            || hasText("Privacy Dashboard", 10_000)
-            || hasText("trackers blocked", 5_000)
+    private fun engineUiUp(timeoutMs: Long): Boolean {
+        // The address pill ALWAYS carries the desc "Address bar: …" (its
+        // Row semantics), so the engine is detectable regardless of whether
+        // the omnibox placeholder text is currently exposed (the expanded
+        // agent panel or a non-home tab can hide it). Short poll cadence —
+        // the old hard-coded 10s+5s sub-waits made one failing check take
+        // ~19s and starved the retry loops.
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (hasDescContains("Address bar", 400)) return true
+            if (hasText("Search or type URL", 400)) return true
+            if (hasText("Privacy Dashboard", 400)) return true
+            if (hasText("trackers blocked", 400)) return true
+            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+        }
+        return hasDescContains("Address bar", 500)
+    }
 
     /** Probes the live accessibility tree for the nodes we care about and
      *  lists every visible text — goes into the failure message (readable
@@ -522,7 +538,7 @@ class AgentSettingsE2eTest {
      *  immune to the dying-editor-window Close race (CI evidence run
      *  36306609106: the first desc-Close belonged to the finishing editor). */
     private fun closeUntilEngineBack(): Boolean {
-        for (attempt in 1..3) {
+        for (attempt in 1..4) {
             runCatching { clickDesc("Close", 2_000) }
             if (engineUiUp(4_000)) return true
             device.pressBack()

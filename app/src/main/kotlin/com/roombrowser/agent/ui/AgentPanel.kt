@@ -111,6 +111,24 @@ fun AgentPanelHost(
 ) {
     val agent = viewModel.agent
 
+    // Defensive cross-process re-sync: a provider configured in the settings
+    // activities (default process) must be visible here immediately, even if
+    // Room's multi-instance invalidation ping was lost on a slow filesystem.
+    // Fires BOTH when the panel expands AND when the browser resumes while
+    // the panel is already open (returning from the settings activities).
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    var resumeCount by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(0) }
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) resumeCount++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    androidx.compose.runtime.LaunchedEffect(expanded, resumeCount) {
+        if (expanded) agent.refreshProviders()
+    }
+
     Box(Modifier.fillMaxSize()) {
         if (expanded) {
             BackHandler { onExpandedChange(false) }

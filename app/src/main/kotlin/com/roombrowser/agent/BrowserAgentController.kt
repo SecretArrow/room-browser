@@ -140,6 +140,26 @@ class BrowserAgentController(
         }
     }
 
+    /**
+     * Defensive cross-process re-sync: re-reads providers + agent settings
+     * DIRECTLY from Room. Room's multi-instance invalidation normally
+     * delivers writes from the default process (settings activities) to this
+     * ':browser' process within moments, but on slow/emulator filesystems the
+     * ping can occasionally be lost — the panel would then keep showing a
+     * stale "No provider configured" state. Called whenever the agent panel
+     * is opened/expanded so the freshly configured provider is always picked
+     * up immediately.
+     */
+    fun refreshProviders() {
+        scope.launch {
+            runCatching {
+                providers = repo.providers()
+                settings = appState.agentSettingsSnapshot()
+                refreshSelection()
+            }
+        }
+    }
+
     fun updateClient(client: OkHttpClient) {
         callFactory = tuned(client)
     }
