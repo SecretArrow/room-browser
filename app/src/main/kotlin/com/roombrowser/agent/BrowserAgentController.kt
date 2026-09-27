@@ -50,6 +50,53 @@ sealed interface AgentEntry {
     data class Notice(val text: String, val error: Boolean, val at: Long) : AgentEntry
 }
 
+/** A user-attached file for the agent turn. [text] is the extracted text content (null = binary/metadata-only). */
+data class AgentAttachment(
+    val name: String,
+    val mime: String,
+    val sizeBytes: Long,
+    val text: String?
+)
+
+/** Caps how much attachment text is inlined across ONE turn (~60k chars). */
+private const val ATTACHMENT_INLINE_BUDGET = 60_000
+
+/**
+ * Renders attachments into a prompt block. Text-like files are inlined (with
+ * a header), binaries contribute name/size only. Caps total inline text
+ * (~60k chars) — later text attachments degrade to metadata lines.
+ *
+ * Pure function (no Android deps) so it is unit-testable on the JVM.
+ */
+fun renderAttachments(attachments: List<AgentAttachment>): String {
+    if (attachments.isEmpty()) return ""
+    val sections = mutableListOf<String>()
+    var inlineChars = 0
+    attachments.forEach { attachment ->
+        val header = "[Attached file: ${attachment.name} — ${attachment.mime}, ${formatSize(attachment.sizeBytes)}]"
+        val content = attachment.text
+        when {
+            content == null ->
+                sections.add("$header — binary file, content not inlined")
+            inlineChars + content.length > ATTACHMENT_INLINE_BUDGET ->
+                sections.add("$header — (skipped: attachment budget exceeded)")
+            else -> {
+                inlineChars += content.length
+                sections.add("$header\n$content")
+            }
+        }
+    }
+    return sections.joinToString("\n\n")
+}
+
+/** Formats a byte count as B / KB / MB (1 decimal, dot separator). */
+internal fun formatSize(bytes: Long): String = when {
+    bytes < 0L -> "?"
+    bytes < 1024L -> "$bytes B"
+    bytes < 1024L * 1024L -> String.format(java.util.Locale.ROOT, "%.1f KB", bytes / 1024.0)
+    else -> String.format(java.util.Locale.ROOT, "%.1f MB", bytes / (1024.0 * 1024.0))
+}
+
 /** A pending action that waits for the user's Allow/Deny decision. */
 data class AgentApproval(
     val name: String,
@@ -334,7 +381,7 @@ class BrowserAgentController(
 
     // ------------------------------------------------------------- turn execution
 
-    fun send(text: String, includePage: Boolean) {
+    fun send(text: String, includePage: Boolean, attachments: List<AgentAttachment> = emptyList()) {
         val message = text.trim()
         if (message.isEmpty() || running) return
         val provider = activeProvider ?: run {
@@ -346,7 +393,7 @@ class BrowserAgentController(
             messages.value = "Pick a model for ${provider.name} first"
             return
         }
-        turnJob = scope.launch { runTurn(message, includePage, provider, model) }
+        turnJob = scope.launch { runTurn(message, includePage, attachments, provider, model) }
     }
 
     fun stop() {
@@ -364,7 +411,13 @@ class BrowserAgentController(
         approval = null
     }
 
-    private suspend fun runTurn(text: String, includePage: Boolean, provider: AgentProviderEntity, model: String) {
+    private suspend fun runTurn(
+        text: String,
+        includePage: Boolean,
+        attachments: List<AgentAttachment>,
+        provider: AgentProviderEntity,
+        model: String
+    ) {
         running = true
         // Background mode: foreground service + wake lock so the turn keeps
         // running when the user leaves the app or the screen turns off.
@@ -372,7 +425,11 @@ class BrowserAgentController(
         AgentForeground.begin(appContext)
         AgentForeground.status("Working: " + text.take(60))
         setStatus(null)
-        entries = entries + AgentEntry.User(text, System.currentTimeMillis())
+        // The chat bubble (and the persisted row) mention the attached file
+        // names; the LLM still receives the raw text plus an attachment block.
+        val display = if (attachments.isEmpty()) text
+        else text + "\n📎 " + attachments.joinToString(", ") { it.name }
+        entries = entries + AgentEntry.User(display, System.currentTimeMillis())
         var streamingIndex = -1
         try {
             // "Delete all agent chats" can run in the settings ACTIVITY while
@@ -386,7 +443,7 @@ class BrowserAgentController(
                     providerId = provider.id,
                     model = model
                 ).also { activeSessionId = it }
-            repo.addMessage(sessionId, "user", text)
+            repo.addMessage(sessionId, "user", display)
 
             val apiKey = apiKeyFor(provider).orEmpty()
             val executor = AgentToolExecutor(vm) { name, label -> requestApproval(name, label) }
@@ -410,6 +467,9 @@ class BrowserAgentController(
                 executor.snapshotContext()?.let {
                     history.add(ChatMessage(role = "user", content = "$it\n\n(The user's request follows.)"))
                 }
+            }
+            renderAttachments(attachments).takeIf { it.isNotEmpty() }?.let {
+                history.add(ChatMessage(role = "user", content = it))
             }
             history.add(ChatMessage(role = "user", content = text))
 

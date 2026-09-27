@@ -38,6 +38,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -51,11 +52,13 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -75,6 +78,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -226,28 +230,62 @@ private fun ThemeStudioRoot(controller: ThemeStudioController, onDone: () -> Uni
 
             // ---------- Mode -------------------------------------------------
             SectionHeader("Theme mode")
-            Row(
-                Modifier.padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            var modeMenuOpen by remember { mutableStateOf(false) }
+            ExposedDropdownMenuBox(
+                expanded = modeMenuOpen,
+                onExpandedChange = { modeMenuOpen = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
             ) {
-                RoomThemeMode.entries.forEach { mode ->
-                    FilterChip(
-                        selected = controller.working.mode == mode,
-                        onClick = { controller.update { it.copy(mode = mode) } },
-                        label = {
-                            Text(
-                                when (mode) {
-                                    RoomThemeMode.LIGHT -> "Light"
-                                    RoomThemeMode.DARK -> "Dark"
-                                    RoomThemeMode.AMOLED -> "AMOLED"
-                                    RoomThemeMode.AUTO -> "Auto"
-                                }
-                            )
-                        },
-                        modifier = Modifier.semantics {
-                            contentDescription = "theme_mode_${mode.name.lowercase()}"
-                        }
-                    )
+                OutlinedTextField(
+                    value = when (controller.working.mode) {
+                        RoomThemeMode.LIGHT -> "Light"
+                        RoomThemeMode.DARK -> "Dark"
+                        RoomThemeMode.AMOLED -> "AMOLED"
+                        RoomThemeMode.AUTO -> "Auto"
+                    },
+                    onValueChange = { },
+                    readOnly = true,
+                    singleLine = true,
+                    label = { Text("Mode") },
+                    shape = RoundedCornerShape((LocalRoomExtras.current.radius * 0.6f).dp),
+                    trailingIcon = {
+                        Icon(
+                            Icons.Filled.ArrowDropDown,
+                            contentDescription = null,
+                            modifier = Modifier.rotate(if (modeMenuOpen) 180f else 0f)
+                        )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                )
+                ExposedDropdownMenu(
+                    expanded = modeMenuOpen,
+                    onDismissRequest = { modeMenuOpen = false }
+                ) {
+                    RoomThemeMode.entries.forEach { mode ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    when (mode) {
+                                        RoomThemeMode.LIGHT -> "Light"
+                                        RoomThemeMode.DARK -> "Dark"
+                                        RoomThemeMode.AMOLED -> "AMOLED"
+                                        RoomThemeMode.AUTO -> "Auto"
+                                    }
+                                )
+                            },
+                            onClick = {
+                                controller.update { it.copy(mode = mode) }
+                                modeMenuOpen = false
+                            },
+                            modifier = Modifier.semantics {
+                                contentDescription = "theme_mode_${mode.name.lowercase()}"
+                            }
+                        )
+                    }
                 }
             }
             Text(

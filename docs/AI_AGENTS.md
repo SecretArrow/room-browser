@@ -27,7 +27,7 @@ it happen behind the chat panel.
 
 | Entry point | Action |
 |---|---|
-| Menu (⚙) → **AI Agent (autonomous browsing)** | Expands the agent panel (always available) |
+| Menu (⚙) → **AI Agents** | Expands the agent panel (always available) |
 | Floating pill (bottom-right of the browser) | Opt-in — see **Show AI Agent button** below; once shown, tap to expand the panel, and while a task runs it streams live progress ("clicking [12] Sign in…") |
 | Menu → **AI Agent settings (providers & models)** | Opens the AI settings **activity** (its own window) |
 | Menu → **AI Agent chats** | Opens the per-profile chat history **activity** |
@@ -43,8 +43,7 @@ minimal. Turn it on via either:
 
 While a task is actively running the pill always appears (live progress
 stays visible) and hides again when the turn finishes. The agent itself
-remains reachable at any time from the page menu (⚙) → *AI Agent
-(autonomous browsing)*.
+remains reachable at any time from the page menu (⚙) → *AI Agents*.
 
 ## Providers & models (manual input, like opencode)
 
@@ -118,6 +117,17 @@ Note the honest limits: swiping the app away from Recents kills the
 process (standard Android behaviour), and the system caps `dataSync`
 services at ~6 hours per day on Android 14+ — far beyond any realistic
 agent task.
+
+## File attachments in the composer
+
+Next to the "Include page" toggle there is an attach (📎) button: pick any
+files from the device (SAF picker, multi-select). Text-like files (txt, md,
+json, csv, xml, yaml, html, source files… up to 256 KB each) are read and
+inlined into the turn's prompt (capped at 20 000 chars per file and ~60 000
+chars per turn); binary files contribute name/size metadata only. Attached
+chips can be removed before sending; the user bubble and the persisted chat
+row list the file names. Content-URIs are not persisted across process
+death — attachments live until sent.
 
 ## Agent settings (own activity)
 

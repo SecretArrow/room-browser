@@ -2,9 +2,16 @@
 
 package com.roombrowser.agent.ui
 
+import android.content.ContentResolver
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +31,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -31,6 +39,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -48,13 +57,17 @@ import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.InputChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -66,12 +79,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -83,11 +98,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.roombrowser.agent.AgentAttachment
 import com.roombrowser.agent.AgentEntry
 import com.roombrowser.agent.BrowserAgentController
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.domain.agent.AgentTools
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * The floating AI Agent panel — the agent-mode chat experience layered over
@@ -544,9 +563,39 @@ private fun ApprovalCard(approval: com.roombrowser.agent.AgentApproval, agent: B
 private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Modifier) {
     var input by rememberSaveable { mutableStateOf("") }
     var includePage by rememberSaveable { mutableStateOf(agent.settings.includePageContext) }
+    // Content URIs are not saveable — attachments intentionally reset on
+    // process death (they are re-read and sent with the next turn anyway).
+    var attachments by remember { mutableStateOf<List<AgentAttachment>>(emptyList()) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    val attachLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNullOrEmpty()) return@rememberLauncherForActivityResult
+        scope.launch {
+            val resolved = withContext(Dispatchers.IO) {
+                uris.map { uri ->
+                    // Any hard failure degrades to a metadata-only entry.
+                    runCatching { resolveAttachment(context, uri) }.getOrElse {
+                        AgentAttachment(
+                            name = uri.lastPathSegment ?: "file",
+                            mime = "",
+                            sizeBytes = 0L,
+                            text = null
+                        )
+                    }
+                }
+            }
+            attachments = attachments + resolved
+        }
+    }
 
     Surface(color = MaterialTheme.colorScheme.surface) {
         Column(modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            // Row 1 — controls: "Include page" toggle + file upload. The text
+            // field lives on its own full-width row below, so it now reaches
+            // the panel edges ("lebar sampai ke pinggir layar").
             Row(verticalAlignment = Alignment.CenterVertically) {
                 FilterChip(
                     selected = includePage,
@@ -557,17 +606,66 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
                     }
                 )
                 Spacer(Modifier.width(8.dp))
+                FilledTonalIconButton(
+                    onClick = { attachLauncher.launch(arrayOf("*/*")) },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .semantics { contentDescription = "agent_attach_files" }
+                ) {
+                    BadgedBox(
+                        badge = {
+                            if (attachments.isNotEmpty()) Badge { Text("${attachments.size}") }
+                        }
+                    ) {
+                        Icon(Icons.Filled.AttachFile, contentDescription = null, modifier = Modifier.size(20.dp))
+                    }
+                }
+            }
+
+            // Picked files — removable chips, horizontally scrollable.
+            if (attachments.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    attachments.forEachIndexed { index, attachment ->
+                        InputChip(
+                            selected = false,
+                            onClick = { attachments = attachments.filterIndexed { i, _ -> i != index } },
+                            label = { Text(attachment.name) },
+                            trailingIcon = {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = "agent_remove_attachment",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+
+            // Row 2 — full-width input row.
+            Row(verticalAlignment = Alignment.Bottom) {
                 OutlinedTextField(
                     value = input,
                     onValueChange = { input = it },
                     placeholder = { Text("Ask the agent to browse…") },
-                    maxLines = 3,
+                    maxLines = 4,
                     shape = RoundedCornerShape(22.dp),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(
                         onSend = {
-                            agent.send(input, includePage)
-                            input = ""
+                            if (input.isNotBlank()) {
+                                agent.send(input, includePage, attachments)
+                                input = ""
+                                attachments = emptyList()
+                            }
                         }
                     ),
                     modifier = Modifier.weight(1f)
@@ -583,8 +681,9 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
                 } else {
                     FilledIconButton(
                         onClick = {
-                            agent.send(input, includePage)
+                            agent.send(input, includePage, attachments)
                             input = ""
+                            attachments = emptyList()
                         },
                         enabled = input.isNotBlank(),
                         modifier = Modifier
@@ -595,6 +694,96 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
             }
         }
     }
+}
+
+// ------------------------------------------------------------- attachment IO
+
+/** Max bytes read from one attachment; larger files stay metadata-only. */
+private const val ATTACHMENT_MAX_BYTES = 256L * 1024L
+
+/** Max characters kept per attachment (extraction-side truncation). */
+private const val ATTACHMENT_MAX_CHARS = 20_000
+
+/** MIME types that are textual despite not starting with "text/". */
+private val TEXTUAL_EXTRA_MIMES = setOf(
+    "application/json", "application/xml", "application/javascript",
+    "application/x-yaml", "application/xhtml+xml"
+)
+
+/** File extensions treated as text when the MIME type is unknown or generic. */
+private val TEXTUAL_EXTENSIONS = setOf(
+    "txt", "md", "json", "csv", "xml", "yaml", "yml", "html", "js", "ts",
+    "kt", "java", "py", "sql", "log"
+)
+
+private fun isTextLikeAttachment(mime: String, name: String): Boolean =
+    mime.startsWith("text/") || mime in TEXTUAL_EXTRA_MIMES ||
+        name.substringAfterLast('.', "").lowercase() in TEXTUAL_EXTENSIONS
+
+/**
+ * Resolves one picked [Uri] into an [AgentAttachment]: display name + size
+ * from the content provider, plus extracted text when the file looks textual
+ * and is ≤ 256 KB (UTF-8 decode with malformed bytes replaced, capped at
+ * 20 000 chars). Binary/oversized files — and any IO failure — degrade to a
+ * metadata-only entry.
+ */
+private fun resolveAttachment(context: Context, uri: Uri): AgentAttachment {
+    val resolver = context.contentResolver
+    var name: String? = null
+    var size = 0L
+    runCatching {
+        resolver.query(uri, null, null, null, null)?.use { cursor ->
+            val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+            if (cursor.moveToFirst()) {
+                if (nameIdx >= 0) name = cursor.getString(nameIdx)
+                if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) size = cursor.getLong(sizeIdx)
+            }
+        }
+    }
+    val mime = runCatching { resolver.getType(uri) }.getOrNull().orEmpty()
+    val displayName = (name ?: uri.lastPathSegment ?: "file").substringAfterLast('/')
+
+    var text: String? = null
+    if (size <= ATTACHMENT_MAX_BYTES && isTextLikeAttachment(mime, displayName)) {
+        val extracted = readAttachmentText(resolver, uri)
+        if (extracted != null) {
+            text = extracted.first
+            if (size <= 0L) size = extracted.second
+        }
+    }
+    return AgentAttachment(name = displayName, mime = mime, sizeBytes = size, text = text)
+}
+
+/**
+ * Reads up to [ATTACHMENT_MAX_BYTES] bytes and decodes UTF-8 (malformed
+ * sequences replaced). Returns `(text, bytesRead)` or null when the stream is
+ * empty/unreadable or the file exceeds the byte cap (metadata-only).
+ */
+private fun readAttachmentText(resolver: ContentResolver, uri: Uri): Pair<String, Long>? {
+    return runCatching {
+        resolver.openInputStream(uri)?.use { stream ->
+            val limit = ATTACHMENT_MAX_BYTES.toInt() + 1
+            val buffer = ByteArray(limit)
+            var total = 0
+            while (total < limit) {
+                val n = stream.read(buffer, total, limit - total)
+                if (n < 0) break
+                total += n
+            }
+            when {
+                total <= 0 -> null
+                total > ATTACHMENT_MAX_BYTES -> null // oversize → metadata only
+                else -> {
+                    val decoded = String(buffer, 0, total, Charsets.UTF_8)
+                    val text = if (decoded.length > ATTACHMENT_MAX_CHARS) {
+                        decoded.take(ATTACHMENT_MAX_CHARS) + "\n…[truncated]"
+                    } else decoded
+                    text to total.toLong()
+                }
+            }
+        }
+    }.getOrNull()
 }
 
 // ------------------------------------------------------------------- model picker

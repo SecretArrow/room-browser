@@ -23,7 +23,7 @@ import org.junit.runner.RunWith
  *   MainActivity (default process)
  *     -> first-run welcome / profile list -> engine opens
  *   BrowserActivity (':browser' process)
- *     -> page menu -> "AI Agent (autonomous browsing)" opens the panel
+ *     -> page menu -> "AI Agents" opens the panel
  *     -> Configure providers -> AgentSettingsActivity (own window)
  *     -> Add provider -> AgentProviderEditorActivity (own window)
  *     -> type name + base URL (local MockWebServer) + API key
@@ -197,7 +197,7 @@ class AgentSettingsE2eTest {
             "agent_model line" to By.desc("agent_model"),
             "Page actions button" to By.desc("Page actions and settings"),
             "'Page Actions' sheet title" to By.text("Page Actions"),
-            "'AI Agent (autonomous browsing)' entry" to By.text("AI Agent (autonomous browsing)"),
+            "'AI Agents' entry" to By.text("AI Agents"),
             "'Browser settings' entry" to By.text("Browser settings"),
             "'AI Agent chats' entry" to By.text("AI Agent chats"),
             "'Add provider' text" to By.text("Add provider"),
@@ -255,8 +255,8 @@ class AgentSettingsE2eTest {
 
     /** SLOW drag (100 steps ≈ no fling momentum) that scrolls ~1/4 of the
      *  screen — deterministic: a fast fling overshoots past the target row
-     * in scrollable sheets (observed in CI: "AI Agent (autonomous
-     * browsing)" never became visible after 4 fling attempts). A slow drag
+     * in scrollable sheets (observed in CI: the "AI Agents" sheet entry
+     * never became visible after 4 fling attempts). A slow drag
      * also fully expands a half-expanded ModalBottomSheet. */
     private fun dragUpQuarter() {
         device.swipe(
@@ -357,7 +357,7 @@ class AgentSettingsE2eTest {
                 if (panelUp(4_000)) return true
             }
         }
-        return openSheetEntry("AI Agent (autonomous browsing)") { panelUp(6_000) }
+        return openSheetEntry("AI Agents") { panelUp(6_000) }
     }
 
     private fun panelUp(timeout: Long): Boolean =

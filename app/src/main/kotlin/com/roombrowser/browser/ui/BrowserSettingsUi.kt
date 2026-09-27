@@ -17,14 +17,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
@@ -180,32 +184,36 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
 
         SectionHeader("IP History Retention")
         SettingsGroup {
-            NetworkRetention.entries.forEach { retention ->
-                RadioRow(
-                    label = retention.name.lowercase().replace('_', ' ')
-                        .replaceFirstChar { it.uppercase() },
-                    selected = global.retention == retention,
-                    onSelect = {
-                        global = global.copy(retention = retention)
-                        scope.launch { viewModel.updateGlobalSettings(global) }
-                    }
-                )
-            }
+            DropdownRow(
+                label = "Retention",
+                options = NetworkRetention.entries.map { retention ->
+                    retention.name to retention.name.lowercase().replace('_', ' ')
+                        .replaceFirstChar { it.uppercase() }
+                },
+                selected = global.retention.name,
+                onSelect = { value ->
+                    val retention = NetworkRetention.entries.first { it.name == value }
+                    global = global.copy(retention = retention)
+                    scope.launch { viewModel.updateGlobalSettings(global) }
+                }
+            )
         }
 
         SectionHeader("Warning Behavior")
         SettingsGroup {
-            WarningBehavior.entries.forEach { behavior ->
-                RadioRow(
-                    label = behavior.name.lowercase().replace('_', ' ')
-                        .replaceFirstChar { it.uppercase() },
-                    selected = global.warningBehavior == behavior,
-                    onSelect = {
-                        global = global.copy(warningBehavior = behavior)
-                        scope.launch { viewModel.updateGlobalSettings(global) }
-                    }
-                )
-            }
+            DropdownRow(
+                label = "Behavior",
+                options = WarningBehavior.entries.map { behavior ->
+                    behavior.name to behavior.name.lowercase().replace('_', ' ')
+                        .replaceFirstChar { it.uppercase() }
+                },
+                selected = global.warningBehavior.name,
+                onSelect = { value ->
+                    val behavior = WarningBehavior.entries.first { it.name == value }
+                    global = global.copy(warningBehavior = behavior)
+                    scope.launch { viewModel.updateGlobalSettings(global) }
+                }
+            )
         }
 
         SectionHeader("Conflict Severity")
@@ -225,21 +233,23 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
 
         SectionHeader("Global DNS")
         SettingsGroup {
-            DnsMode.entries.forEach { mode ->
-                RadioRow(
-                    label = when (mode) {
+            DropdownRow(
+                label = "DNS mode",
+                options = DnsMode.entries.map { mode ->
+                    mode.name to when (mode) {
                         DnsMode.SYSTEM -> "System default"
                         DnsMode.AUTO -> "Automatic"
                         DnsMode.DOH -> "DNS-over-HTTPS (app connections)"
                         DnsMode.DOT -> "DNS-over-TLS (validate + use OS Private DNS)"
-                    },
-                    selected = global.dnsMode == mode,
-                    onSelect = {
-                        global = global.copy(dnsMode = mode)
-                        scope.launch { viewModel.updateGlobalSettings(global) }
                     }
-                )
-            }
+                },
+                selected = global.dnsMode.name,
+                onSelect = { value ->
+                    val mode = DnsMode.entries.first { it.name == value }
+                    global = global.copy(dnsMode = mode)
+                    scope.launch { viewModel.updateGlobalSettings(global) }
+                }
+            )
             if (global.dnsMode == DnsMode.DOH) {
                 DnsUrlField(
                     initial = global.dohUrl ?: "",
@@ -272,12 +282,24 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                     scope.launch { viewModel.updateGlobalSettings(global) }
                 }
             )
-            SettingActionRow(
-                title = "Engine",
-                value = ProfileEngine.engineName(context),
-                onClick = { }
+            val engines = remember { ProfileEngine.installedWebViewEngines(context) }
+            var enginePick by remember {
+                mutableStateOf(
+                    engines.firstOrNull { it.isCurrent }?.packageName
+                        ?: engines.firstOrNull()?.packageName ?: ""
+                )
+            }
+            DropdownRow(
+                label = "Engine",
+                options = engines.map { engine ->
+                    engine.packageName to "${engine.packageName} ${engine.versionName}" +
+                        if (engine.isCurrent) " (active)" else ""
+                },
+                selected = enginePick,
+                onSelect = { enginePick = it } // informational only — Android manages the provider
             )
         }
+        InfoNote("Read-only diagnostics — Android decides the active WebView provider; Room Browser cannot switch it.")
 
         // ================= AI Agent =================
         // The floating agent button is hidden by default; this is the global
@@ -353,13 +375,12 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
 
         SectionHeader("Search")
         SettingsGroup {
-            SearchEngines.all.forEach { engine ->
-                RadioRow(
-                    label = engine.label,
-                    selected = settings.searchEngineId == engine.id,
-                    onSelect = { update(settings.copy(searchEngineId = engine.id)) }
-                )
-            }
+            DropdownRow(
+                label = "Search engine",
+                options = SearchEngines.all.map { engine -> engine.id to engine.label },
+                selected = settings.searchEngineId,
+                onSelect = { value -> update(settings.copy(searchEngineId = value)) }
+            )
             SettingSwitchRow(
                 title = "Search suggestions",
                 subtitle = "Sends typed queries to the selected search engine (privacy trade-off)",
@@ -398,41 +419,48 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
 
         SectionHeader("WebRTC (informational)")
         SettingsGroup {
-            WebRtcPolicy.entries.forEach { policy ->
-                RadioRow(
-                    label = when (policy) {
+            DropdownRow(
+                label = "Policy",
+                options = WebRtcPolicy.entries.map { policy ->
+                    policy.name to when (policy) {
                         WebRtcPolicy.DEFAULT -> "WebRTC: Default"
                         WebRtcPolicy.RESTRICT_LOCAL_IP -> "WebRTC: Restrict local IP exposure"
                         WebRtcPolicy.DISABLED -> "WebRTC: Disabled (may break calls)"
-                    },
-                    selected = settings.webRtcPolicy == policy,
-                    onSelect = { update(settings.copy(webRtcPolicy = policy)) }
-                )
-            }
+                    }
+                },
+                selected = settings.webRtcPolicy.name,
+                onSelect = { value ->
+                    update(settings.copy(webRtcPolicy = WebRtcPolicy.entries.first { it.name == value }))
+                }
+            )
         }
         InfoNote("Android WebView does not expose full WebRTC IP-handling control to normal apps. Camera/microphone grants stay under permission control; local IP exposure limits are documented in SECURITY.md.")
 
         SectionHeader("User-Agent")
         SettingsGroup {
-            UaMode.entries.forEach { mode ->
-                RadioRow(
-                    label = when (mode) {
+            DropdownRow(
+                label = "User-Agent",
+                options = UaMode.entries.map { mode ->
+                    mode.name to when (mode) {
                         UaMode.DEFAULT -> "Default (WebView)"
                         UaMode.PRESET -> "Preset"
                         UaMode.CUSTOM -> "Custom"
-                    },
-                    selected = settings.uaMode == mode,
-                    onSelect = { update(settings.copy(uaMode = mode)) }
-                )
-            }
-            if (settings.uaMode == UaMode.PRESET) {
-                UserAgents.all.forEach { preset ->
-                    RadioRow(
-                        label = preset.label + if (preset.isDesktop) "  (desktop)" else "",
-                        selected = settings.uaPresetId == preset.id,
-                        onSelect = { update(settings.copy(uaPresetId = preset.id)) }
-                    )
+                    }
+                },
+                selected = settings.uaMode.name,
+                onSelect = { value ->
+                    update(settings.copy(uaMode = UaMode.entries.first { it.name == value }))
                 }
+            )
+            if (settings.uaMode == UaMode.PRESET) {
+                DropdownRow(
+                    label = "Preset",
+                    options = UserAgents.all.map { preset ->
+                        preset.id to preset.label + if (preset.isDesktop) "  (desktop)" else ""
+                    },
+                    selected = settings.uaPresetId ?: "",
+                    onSelect = { value -> update(settings.copy(uaPresetId = value)) }
+                )
             }
             if (settings.uaMode == UaMode.CUSTOM) {
                 var custom by remember(settings.customUserAgent) { mutableStateOf(settings.customUserAgent ?: "") }
@@ -458,18 +486,21 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
 
         SectionHeader("Profile DNS")
         SettingsGroup {
-            DnsMode.entries.forEach { mode ->
-                RadioRow(
-                    label = when (mode) {
+            DropdownRow(
+                label = "DNS mode",
+                options = DnsMode.entries.map { mode ->
+                    mode.name to when (mode) {
                         DnsMode.SYSTEM -> "System"
                         DnsMode.AUTO -> "Use global browser setting"
                         DnsMode.DOH -> "DNS-over-HTTPS"
                         DnsMode.DOT -> "DNS-over-TLS"
-                    },
-                    selected = settings.dnsMode == mode,
-                    onSelect = { update(settings.copy(dnsMode = mode)) }
-                )
-            }
+                    }
+                },
+                selected = settings.dnsMode.name,
+                onSelect = { value ->
+                    update(settings.copy(dnsMode = DnsMode.entries.first { it.name == value }))
+                }
+            )
             if (settings.dnsMode == DnsMode.DOH) {
                 DnsUrlField(initial = settings.dohUrl ?: "", onCommit = { update(settings.copy(dohUrl = it)) })
             }
@@ -617,6 +648,83 @@ fun RadioRow(label: String, selected: Boolean, onSelect: () -> Unit) {
             color = extras.textPrimary,
             modifier = Modifier.padding(start = 8.dp)
         )
+    }
+}
+
+/**
+ * Compact dropdown row: leading label + read-only select field, matching the
+ * settings-card rhythm. [options] maps raw value -> display text; [selected]
+ * is the raw value to show. Opens on tap; picking an item calls [onSelect]
+ * and closes the menu.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DropdownRow(
+    label: String,
+    options: List<Pair<String, String>>, // value -> display
+    selected: String,
+    onSelect: (String) -> Unit
+) {
+    val extras = LocalRoomExtras.current
+    var expanded by remember { mutableStateOf(false) }
+    val selectedDisplay = options.firstOrNull { it.first == selected }?.second.orEmpty()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = extras.textPrimary,
+            modifier = Modifier.weight(1f)
+        )
+        Spacer(Modifier.width(12.dp))
+        ExposedDropdownMenuBox(
+            expanded = expanded,
+            onExpandedChange = { expanded = it },
+            modifier = Modifier.weight(1.5f)
+        ) {
+            OutlinedTextField(
+                value = selectedDisplay,
+                onValueChange = {},
+                readOnly = true,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = extras.textPrimary),
+                trailingIcon = {
+                    Icon(
+                        Icons.Filled.ArrowDropDown,
+                        contentDescription = "$label dropdown",
+                        tint = extras.icon
+                    )
+                },
+                shape = RoundedCornerShape((extras.radius * 0.6f).dp),
+                modifier = Modifier
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                    .fillMaxWidth()
+            )
+            ExposedDropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                options.forEach { (value, display) ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                display,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (value == selected) extras.textPrimary else extras.textSecondary
+                            )
+                        },
+                        onClick = {
+                            onSelect(value)
+                            expanded = false
+                        }
+                    )
+                }
+            }
+        }
     }
 }
 

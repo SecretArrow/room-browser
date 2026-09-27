@@ -41,6 +41,51 @@ object ProfileEngine {
         "${info.packageName} ${info.versionName}"
     }.getOrDefault("Android WebView")
 
+    /** A WebView-provider package installed on this device (diagnostics). */
+    data class EngineOption(val packageName: String, val versionName: String, val isCurrent: Boolean)
+
+    /**
+     * All WebView-provider packages we can detect, current one flagged.
+     * Read-only diagnostics — Android manages the active provider; this list
+     * only reports what is installed (feeds the Settings → Engine dropdown).
+     * Never throws.
+     */
+    fun installedWebViewEngines(context: Context): List<EngineOption> {
+        // API 26+; minSdk is 28 so the direct call is fine — still guarded.
+        val currentInfo = runCatching { WebView.getCurrentWebViewPackage() }.getOrNull()
+        val currentPackage = currentInfo?.packageName
+        val pm = context.packageManager
+        val candidates = listOf(
+            "com.google.android.webview",
+            "com.android.webview",
+            "com.chrome.beta",
+            "com.chrome.dev",
+            "com.android.chrome"
+        )
+        val found = mutableListOf<EngineOption>()
+        candidates.forEach { name ->
+            runCatching { pm.getPackageInfo(name, 0) }.getOrNull()?.let { info ->
+                if (found.none { it.packageName == info.packageName }) {
+                    found.add(EngineOption(info.packageName, info.versionName ?: "?", false))
+                }
+            }
+        }
+        // The actually-active provider may be a vendor package outside the
+        // candidate list — make sure it is listed too.
+        if (currentPackage != null && found.none { it.packageName == currentPackage }) {
+            found.add(EngineOption(currentPackage, currentInfo?.versionName ?: "?", false))
+        }
+        if (found.isEmpty()) {
+            // Defensive: nothing detectable at all — always fall back to at
+            // least one entry matching engineName()'s source package so the
+            // dropdown never renders empty.
+            return listOf(EngineOption("com.google.android.webview", "?", true))
+        }
+        return found
+            .map { it.copy(isCurrent = it.packageName == currentPackage) }
+            .sortedWith(compareByDescending<EngineOption> { it.isCurrent }.thenBy { it.packageName })
+    }
+
     /**
      * Bind this process to [profile]. MUST be called before the first
      * WebView is instantiated. Returns false when the process is already

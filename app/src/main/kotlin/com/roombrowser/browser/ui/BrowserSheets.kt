@@ -280,7 +280,7 @@ fun PageActionsSheet(
             }
 
             SheetSectionLabel("AI Agent")
-            SheetAction(Icons.Filled.AutoAwesome, "AI Agent (autonomous browsing)") { onOpenAgent() }
+            SheetAction(Icons.Filled.AutoAwesome, "AI Agents") { onOpenAgent() }
             SheetAction(Icons.Filled.SmartToy, "AI Agent settings (providers & models)") { onOpenAgentSettings() }
             SheetAction(Icons.Filled.History, "AI Agent chats") { onOpenAgentSessions() }
 
