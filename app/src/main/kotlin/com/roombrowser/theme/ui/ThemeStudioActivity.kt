@@ -593,15 +593,15 @@ private fun ThemeCard(
     val extras = LocalRoomExtras.current
     var menuOpen by remember { mutableStateOf(false) }
     val width = 104.dp
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.semantics { contentDescription = "theme_card_${spec.id}" }
-    ) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             Modifier
                 .size(width, 76.dp)
                 .clip(RoundedCornerShape(18.dp))
                 .clickable(onClick = onClick)
+                // Addressable + clickable on the SAME node (the proven
+                // gear-button pattern; UI tests target this description).
+                .semantics { contentDescription = "theme_card_${spec.id}" }
         ) {
             // dual palette strip: dark top / light bottom
             Column(Modifier.fillMaxSize()) {
