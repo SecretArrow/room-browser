@@ -405,6 +405,19 @@ class BrowserViewModel(
     fun reload() { activeWebView?.reload() }
     fun stopLoading() { activeWebView?.stopLoading() }
 
+    /**
+     * Leaves fullscreen (custom-view) media mode. Called by the system Back
+     * handler so the first Back press exits fullscreen video instead of
+     * killing the engine activity.
+     */
+    fun exitFullscreen() {
+        if (customView != null) {
+            customView = null
+            customViewCallback?.onCustomViewHidden()
+            customViewCallback = null
+        }
+    }
+
     // ---------- Tabs ----------
 
     suspend fun openNewTab(url: String = "about:home", isPrivate: Boolean = false) {

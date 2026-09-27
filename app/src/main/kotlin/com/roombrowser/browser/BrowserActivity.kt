@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
@@ -37,6 +38,10 @@ class BrowserActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Edge-to-edge with runtime insets: the UI applies WindowInsets
+        // padding itself, so nothing ever overlaps the 3-button navigation
+        // bar (Back / Home / Recents) or the status bar.
+        enableEdgeToEdge()
 
         val fromIntent = intent.getStringExtra(EXTRA_PROFILE_ID)
         var profileIdString = fromIntent

@@ -7,6 +7,7 @@ import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.FrameLayout
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -15,11 +16,19 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -162,9 +171,25 @@ fun BrowserScreen(
     }
 
     Scaffold(
+        // Keyboard: same semantics as the previous adjustResize window — the
+        // whole browser UI (toolbar included) rides above the IME. IME insets
+        // are consumed here so the agent composer's imePadding() never
+        // double-applies.
+        modifier = Modifier.imePadding(),
+        // Insets are applied EXPLICITLY (bottomBar + content Box below) —
+        // deterministic, no double-counting, on every API level 28..35+.
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
             BrowserBottomBar(
+                // THE fix for the 3-button collision: the toolbar is padded
+                // above the system Back / Home / Recents bar (plus display
+                // cutouts in landscape).
+                modifier = Modifier.windowInsetsPadding(
+                    WindowInsets.systemBars
+                        .union(WindowInsets.displayCutout)
+                        .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
+                ),
                 viewModel = viewModel,
                 onOpenTabs = { route = BrowserRoute.Tabs },
                 onShowPageActions = { showPageActions = true },
@@ -174,7 +199,18 @@ fun BrowserScreen(
             )
         }
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                // Below the status bar / beside cutouts: omnibox, tab strip
+                // and every routed screen start INSIDE the safe area.
+                .windowInsetsPadding(
+                    WindowInsets.systemBars
+                        .union(WindowInsets.displayCutout)
+                        .only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
+                )
+        ) {
             when (route) {
                 BrowserRoute.Browser -> BrowserContent(
                     viewModel = viewModel,
@@ -249,6 +285,29 @@ fun BrowserScreen(
                     modifier = Modifier.fillMaxSize()
                 )
             }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // System Back button — a browser must NEVER die on the first press.
+    // Priority (most specific first):
+    //   fullscreen video → reader mode → find-in-page → agent panel →
+    //   sub-screen route → web history → background the app.
+    // ModalBottomSheets/dialogs register their own (later = higher
+    // priority) callbacks, so they close themselves before this runs.
+    // ------------------------------------------------------------------
+    BackHandler {
+        when {
+            viewModel.customView != null -> viewModel.exitFullscreen()
+            viewModel.readerContent != null -> viewModel.exitReaderMode()
+            showFindBar -> {
+                viewModel.clearFindInPage()
+                showFindBar = false
+            }
+            agentPanelExpanded -> agentPanelExpanded = false
+            route != BrowserRoute.Browser -> route = BrowserRoute.Browser
+            viewModel.pageState.canGoBack -> viewModel.goBack()
+            else -> activity.moveTaskToBack(true)   // keep engine + tabs alive
         }
     }
 

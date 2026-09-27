@@ -53,6 +53,13 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
 - **Biometric profile lock** — fingerprint/face or device credential.
 - **Material 3 UI** — light/dark/AMOLED themes, per-profile accent colors,
   error pages, empty states, accessibility semantics.
+- **Proper system-UI integration** — edge-to-edge with explicit
+  `WindowInsets` handling: the toolbar, omnibox, sheets and dialogs never
+  overlap the 3-button navigation bar (Back / Home / Recents) or the status
+  bar on any API level. The system **Back** button follows browser rules:
+  exit fullscreen video → close reader/find bar → collapse the agent panel →
+  return from sub-screens → walk web history → background the app (the
+  engine process and all tabs stay alive).
 
 ## Honest limitations (no false claims)
 

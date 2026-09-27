@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
@@ -32,6 +33,9 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Edge-to-edge: insets are consumed by the Compose UI so the profile
+        // list never runs under the system navigation buttons.
+        enableEdgeToEdge()
         viewModel = ViewModelProvider(this)[MainViewModel::class.java]
         requestNotificationPermissionIfNeeded()
         // Route external links (VIEW intent from other apps) through the

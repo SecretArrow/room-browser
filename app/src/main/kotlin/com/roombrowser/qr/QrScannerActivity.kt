@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -44,6 +45,10 @@ class QrScannerActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Consistent edge-to-edge: the camera preview fills the screen
+        // behind the (transparent) system bars — no UI element overlaps the
+        // Back / Home / Recents buttons.
+        enableEdgeToEdge()
         previewView = PreviewView(this)
         setContentView(previewView)
         reader = MultiFormatReader().apply {

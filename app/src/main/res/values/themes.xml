@@ -1,8 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.RoomBrowser" parent="Theme.AppCompat.DayNight.NoActionBar">
-        <item name="android:statusBarColor">@android:color/transparent</item>
-        <item name="android:navigationBarColor">@android:color/transparent</item>
-        <item name="android:windowLightStatusBar">true</item>
-    </style>
+    <!--
+      System bars are fully managed at runtime:
+        - Every activity calls enableEdgeToEdge() (transparent bars,
+          deterministic insets on every API level 28..35+).
+        - RoomBrowserTheme syncs status/navigation bar ICON CONTRAST with
+          the app's effective light/dark theme (not the system theme).
+      Do NOT hard-code transparent colors or light-icon flags here —
+      hard-coded values caused:
+        (a) the browser toolbar to overlap the 3-button navigation bar
+            (Back / Home / Recents), and
+        (b) invisible status-bar icons in dark theme.
+    -->
+    <style name="Theme.RoomBrowser" parent="Theme.AppCompat.DayNight.NoActionBar" />
 </resources>

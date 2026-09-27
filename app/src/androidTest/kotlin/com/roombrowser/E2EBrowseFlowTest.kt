@@ -58,6 +58,16 @@ class E2EBrowseFlowTest {
         return device.findObjects(By.text(text)).isEmpty()
     }
 
+    /** Polls until [condition] holds (250 ms cadence). */
+    private fun waitUntil(timeoutMs: Long, condition: () -> Boolean): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) return true
+            Thread.sleep(250)
+        }
+        return condition()
+    }
+
     /** Clicks the center of the first node showing [text]. */
     private fun clickText(text: String, timeoutMs: Long): Boolean {
         val node = device.wait(Until.findObject(By.text(text)), timeoutMs) ?: return false
@@ -79,9 +89,12 @@ class E2EBrowseFlowTest {
             || hasText("Privacy Dashboard", 10_000)
             || hasText("trackers blocked", 5_000)
 
-    @Test
-    fun first_run_create_profile_and_open_browser_engine() {
-        // ---- 1. Cold start into the launcher activity ------------------------
+    /**
+     * Full bootstrap: cold start -> first-run profile creation (or OPEN on
+     * an existing card) -> the ':browser' engine UI is visible.
+     */
+    private fun openEngineFromLauncher(): Boolean {
+        // ---- 1. Cold start into the launcher activity --------------------
         device.pressHome()
         launchMainActivity()
         device.waitForIdle(2_000)
@@ -93,7 +106,7 @@ class E2EBrowseFlowTest {
         val alreadyHasProfile = device.findObjects(By.text("OPEN")).isNotEmpty()
 
         if (!alreadyHasProfile) {
-            // ---- 2a. Create the first profile through the real dialog -------
+            // ---- 2a. Create the first profile through the real dialog ---
             // 'Cancel' only exists inside the dialog: reliable open-signal.
             var dialogOpen = false
             for (attempt in 1..2) {
@@ -141,7 +154,7 @@ class E2EBrowseFlowTest {
                 waitGone("Cancel", 8_000)
             )
 
-            // ---- 3. First-run creation AUTO-OPENS the :browser engine -------
+            // ---- 3. First-run creation AUTO-OPENS the :browser engine ---
             // (MainScreen's onCreate callback calls onOpenProfile directly.)
             // Older/alternative flows land on the profile list with OPEN.
             if (!engineUiUp(30_000)) {
@@ -152,16 +165,61 @@ class E2EBrowseFlowTest {
                 assertTrue("OPEN button must be clickable", clickText("OPEN", 5_000))
             }
         } else {
-            // ---- 2b. Existing profile: straight to the engine ---------------
+            // ---- 2b. Existing profile: straight to the engine -----------
             assertTrue("OPEN button must be clickable", clickText("OPEN", 5_000))
         }
 
-        // ---- 4. The engine UI runs in the separate ':browser' process -------
+        // ---- 4. The engine UI runs in the separate ':browser' process ---
         // UiAutomator addresses the whole device, so this also proves the
         // engine process booted with its own WebView data directory.
+        return engineUiUp(30_000)
+    }
+
+    @Test
+    fun first_run_create_profile_and_open_browser_engine() {
         assertTrue(
             "Browser UI (omnibox / homepage) must appear in the :browser process",
-            engineUiUp(30_000)
+            openEngineFromLauncher()
+        )
+    }
+
+    /**
+     * SYSTEM BACK vs the engine (the "menabrak tombol back" regression guard).
+     *
+     * Contract (BrowserScreen's BackHandler):
+     *   On the homepage (no web history) the FIRST system Back press must
+     *   move the whole task to the background (moveTaskToBack) — keeping the
+     *   engine process and all tabs alive. It must NEVER finish the engine
+     *   activity back to the profile list on a single press.
+     */
+    @Test
+    fun system_back_backgrounds_app_without_killing_engine() {
+        assertTrue("Engine must be reachable from the launcher", openEngineFromLauncher())
+
+        // ---- 1. First Back press: homepage has no history -> background ---
+        device.pressBack()
+        device.waitForIdle(1_000)
+        val backgrounded = waitUntil(4_000) {
+            device.currentPackageName != targetContext.packageName
+        }
+        assertTrue(
+            "First Back must background the app (moveTaskToBack), not stay in-app",
+            backgrounded
+        )
+        assertTrue(
+            "Back must not finish the engine back to the profile list (old bug)",
+            device.findObjects(By.text("Your profiles")).isEmpty()
+        )
+
+        // ---- 2. The engine survives: resume it, UI intact ----------------
+        targetContext.startActivity(
+            Intent()
+                .setClassName(targetContext.packageName, "com.roombrowser.browser.BrowserActivity")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+        assertTrue(
+            "Engine must resume with its UI intact after being backgrounded",
+            engineUiUp(20_000)
         )
     }
 }

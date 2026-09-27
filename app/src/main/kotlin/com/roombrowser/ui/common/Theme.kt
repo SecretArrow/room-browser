@@ -1,5 +1,6 @@
 package com.roombrowser.ui.common
 
+import android.app.Activity
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
@@ -7,11 +8,14 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
 import com.roombrowser.domain.model.ThemeMode
 
 /**
@@ -67,6 +71,24 @@ fun RoomBrowserTheme(
         ThemeMode.LIGHT -> false
         ThemeMode.DARK, ThemeMode.AMOLED -> true
     }
+
+    // Keep system-bar icon contrast in sync with the APP's effective theme.
+    // enableEdgeToEdge() only knows the SYSTEM dark mode — when the app runs
+    // dark while the system is light (or vice versa) the clock/battery icons
+    // and the 3 navigation buttons would otherwise become invisible.
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        DisposableEffect(dark) {
+            val window = (view.context as? Activity)?.window
+            if (window != null) {
+                val controller = WindowCompat.getInsetsController(window, view)
+                controller.isAppearanceLightStatusBars = !dark
+                controller.isAppearanceLightNavigationBars = !dark
+            }
+            onDispose { }
+        }
+    }
+
     MaterialTheme(
         colorScheme = scheme(
             accent = Color(accentArgb.toInt()),
