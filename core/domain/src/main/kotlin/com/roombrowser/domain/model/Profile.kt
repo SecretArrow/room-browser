@@ -105,10 +105,21 @@ data class ProfileSettings(
     val dohUrl: String? = null,
     val dotHostname: String? = null,
     // Privacy
-    val blockAds: Boolean = true,
-    val blockTrackers: Boolean = true,
-    val blockCrossSiteTrackers: Boolean = true,
-    val blockPopups: Boolean = true,
+    //
+    // Compatibility-first defaults (2026-09 revision): the annoyance shields —
+    // ad blocking, tracker blocking, cross-site-tracker blocking and popup
+    // blocking — are now OFF out of the box so sites render exactly as their
+    // authors intended (aggressive blocking broke layouts, login flows and
+    // embedded players on many real sites). Users who want the stricter
+    // behavior can enable each shield per profile in Settings.
+    //
+    // Security-grade protections that never break legitimate sites stay ON:
+    // blockMalicious below, and httpsUpgrade (which falls back to http when
+    // the secure version is unreachable).
+    val blockAds: Boolean = false,
+    val blockTrackers: Boolean = false,
+    val blockCrossSiteTrackers: Boolean = false,
+    val blockPopups: Boolean = false,
     val blockMalicious: Boolean = true,
     // HTTPS-First: upgrade http navigations to https, then FALL BACK to the
     // original http URL automatically when the secure version is unreachable

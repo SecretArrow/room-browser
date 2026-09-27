@@ -36,16 +36,6 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -88,7 +78,6 @@ import com.roombrowser.qr.QrCodeGenerator
 import com.roombrowser.qr.QrScannerActivity
 import com.roombrowser.ui.common.LoadingBar
 import com.roombrowser.ui.common.LocalRoomExtras
-import com.roombrowser.ui.common.ProfileAvatar
 import com.roombrowser.ui.common.StatTile
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -226,10 +215,7 @@ fun BrowserScreen(
                 ),
                 viewModel = viewModel,
                 onOpenTabs = { route = BrowserRoute.Tabs },
-                onShowPageActions = { showPageActions = true },
-                onShowQuickSwitcher = { showQuickSwitcher = true },
-                onOpenBookmarks = { route = BrowserRoute.Bookmarks },
-                onBackHome = { route = BrowserRoute.Browser }
+                onShowPageActions = { showPageActions = true }
             )
         }
     ) { padding ->
@@ -346,7 +332,9 @@ fun BrowserScreen(
             onOpenAbout = { route = BrowserRoute.About; showPageActions = false },
             onOpenAgent = { agentPanelExpanded = true; showPageActions = false },
             onOpenAgentSettings = { launchAgentSettings(); showPageActions = false },
-            onOpenAgentSessions = { launchAgentSessions(); showPageActions = false }
+            onOpenAgentSessions = { launchAgentSessions(); showPageActions = false },
+            onOpenBookmarks = { route = BrowserRoute.Bookmarks; showPageActions = false },
+            onShowQuickSwitcher = { showQuickSwitcher = true; showPageActions = false }
         )
     }
 

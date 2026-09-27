@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,8 +28,6 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
@@ -100,31 +99,9 @@ fun BrowserContent(
                 .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AnimatedVisibility(visible = !page.isHomepage) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(
-                        onClick = { viewModel.goBack() },
-                        modifier = Modifier.semantics { contentDescription = "Go back" }
-                    ) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = null,
-                            tint = extras.icon
-                        )
-                    }
-                    IconButton(
-                        onClick = { viewModel.goForward() },
-                        modifier = Modifier.semantics { contentDescription = "Go forward" }
-                    ) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowForward,
-                            contentDescription = null,
-                            tint = extras.icon.copy(alpha = 0.7f)
-                        )
-                    }
-                }
-            }
-            // The address pill itself
+            // The address pill owns the FULL row width — back/forward moved
+            // down to the bottom navigation bar (Brave-style) so the URL
+            // never fights nav arrows for space.
             Row(
                 modifier = Modifier
                     .weight(1f)
@@ -132,6 +109,7 @@ fun BrowserContent(
                     .background(extras.addressBar)
                     .clickable(onClick = onShowShields)
                     .border(0.5.dp, extras.border, RoundedCornerShape(extras.radius.dp))
+                    .heightIn(min = 46.dp)
                     .padding(horizontal = 12.dp, vertical = 11.dp)
                     .semantics { contentDescription = "Address bar: ${if (page.isHomepage) "search or type URL" else page.url}" },
                 verticalAlignment = Alignment.CenterVertically
@@ -172,7 +150,7 @@ fun BrowserContent(
                         Icons.Filled.Search,
                         contentDescription = null,
                         tint = extras.icon.copy(alpha = 0.55f),
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(17.dp)
                     )
                 }
             }

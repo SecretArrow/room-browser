@@ -418,10 +418,19 @@ private fun ThemeStudioRoot(controller: ThemeStudioController, onDone: () -> Uni
             Spacer(Modifier.height(16.dp))
         }
 
-        // Floating Apply — always reachable without scrolling.
+        // Floating Apply — always reachable without scrolling. INSET FIX:
+        // the FAB must sit ABOVE the system navigation bar (3-button
+        // Back/Home/Recents or the gesture hint) and beside display cutouts —
+        // a bare 24dp bottom padding put it INSIDE the nav-bar zone on
+        // 3-button devices, where taps fought the system buttons.
         Box(
             Modifier
                 .fillMaxSize()
+                .windowInsetsPadding(
+                    WindowInsets.systemBars
+                        .union(WindowInsets.displayCutout)
+                        .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
+                )
                 .padding(bottom = 24.dp),
             contentAlignment = Alignment.BottomCenter
         ) {

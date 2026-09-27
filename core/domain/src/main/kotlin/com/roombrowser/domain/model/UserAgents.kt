@@ -104,6 +104,22 @@ object UserAgents {
 
     val desktopPresets: List<UserAgentPreset> = all.filter { it.isDesktop }
 
+    /**
+     * UA ids eligible for random assignment to NEW profiles (mobile only —
+     * a desktop UA on a phone serves desktop pages by default). WEBVIEW is
+     * excluded on purpose: it maps to "use the WebView default", so picking
+     * it would be a no-op override.
+     */
+    val randomizableIds: List<String> = listOf(
+        CHROME_ANDROID.id,
+        FIREFOX_ANDROID.id,
+        EDGE_ANDROID.id,
+        SAMSUNG_ANDROID.id
+    )
+
+    /** Randomly picks one of the randomizable mobile preset ids. */
+    fun randomAndroidPresetId(): String = randomizableIds.random()
+
     fun byId(id: String): UserAgentPreset? = all.firstOrNull { it.id == id }
 
     /**

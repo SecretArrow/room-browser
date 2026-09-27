@@ -52,6 +52,32 @@ class ProfileModelTest {
     }
 
     @Test
+    fun `compatibility defaults`() {
+        val s = ProfileSettings()
+        // Annoyance shields are OFF by default (opt-in via Settings).
+        assertThat(s.blockAds).isFalse()
+        assertThat(s.blockTrackers).isFalse()
+        assertThat(s.blockCrossSiteTrackers).isFalse()
+        assertThat(s.blockPopups).isFalse()
+        // Security-grade protections and compatibility stay ON.
+        assertThat(s.blockMalicious).isTrue()
+        assertThat(s.blockThirdPartyCookies).isFalse()
+        assertThat(s.javascriptEnabled).isTrue()
+        assertThat(s.httpsUpgrade).isTrue()
+    }
+
+    @Test
+    fun `random android preset id stays within mobile presets`() {
+        val mobileIds = setOf("chrome_android", "firefox_android", "edge_android", "samsung_android")
+        assertThat(UserAgents.randomizableIds).containsExactlyElementsIn(mobileIds)
+        repeat(50) {
+            val id = UserAgents.randomAndroidPresetId()
+            assertThat(mobileIds).contains(id)
+            assertThat(id).isNotEqualTo("webview")
+        }
+    }
+
+    @Test
     fun `search url encoding`() {
         val url = SearchEngines.buildSearchUrl("duckduckgo", "a b&c")
         assertThat(url).isEqualTo("https://duckduckgo.com/?q=a+b%26c")

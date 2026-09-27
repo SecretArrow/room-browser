@@ -4,6 +4,7 @@ import com.google.common.truth.Truth.assertThat
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
+import com.roombrowser.domain.model.UaMode
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
 import org.junit.Test
@@ -126,6 +127,49 @@ class ProfileManagerTest {
         now += 12345
         manager.markActive(p.id)
         assertThat(manager.profiles().single().lastActiveAt).isEqualTo(13345)
+    }
+
+    @Test
+    fun `new profile gets randomized mobile UA when none set`() = runTest {
+        val randomManager = ProfileManager(
+            store,
+            clock = { now },
+            randomUaPresetId = { "firefox_android" }
+        )
+        val p = randomManager.create("Random", "r", 0)
+        assertThat(p.settings.uaMode).isEqualTo(UaMode.PRESET)
+        assertThat(p.settings.uaPresetId).isEqualTo("firefox_android")
+        // The randomized UA is what gets persisted, not just what is returned.
+        assertThat(store.profiles().single().settings.uaPresetId).isEqualTo("firefox_android")
+    }
+
+    @Test
+    fun `explicit custom UA is preserved`() = runTest {
+        val randomManager = ProfileManager(
+            store,
+            clock = { now },
+            randomUaPresetId = { "firefox_android" }
+        )
+        val p = randomManager.create(
+            "Custom", "c", 0,
+            settings = ProfileSettings(uaMode = UaMode.CUSTOM, customUserAgent = "MyUA/1.0")
+        )
+        assertThat(p.settings.uaMode).isEqualTo(UaMode.CUSTOM)
+        assertThat(p.settings.customUserAgent).isEqualTo("MyUA/1.0")
+        assertThat(p.settings.uaPresetId).isNull()
+    }
+
+    @Test
+    fun `import path does not randomize`() = runTest {
+        val randomManager = ProfileManager(
+            store,
+            clock = { now },
+            randomUaPresetId = { "firefox_android" }
+        )
+        val p = randomManager.create("Imported", "i", 0, randomizeUserAgent = false)
+        assertThat(p.settings.uaMode).isEqualTo(UaMode.DEFAULT)
+        assertThat(p.settings.uaPresetId).isNull()
+        assertThat(p.settings.customUserAgent).isNull()
     }
 }
 

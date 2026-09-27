@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
@@ -46,6 +47,8 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -86,22 +89,25 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Modern floating browser bottom toolbar (glass bar, themed navBar color,
+ * Floating browser bottom toolbar (glass bar, themed navBar color,
  * tab-count badge) + the redesigned action sheets. All colors follow the
  * per-profile theme.
+ *
+ * Brave-style navigation bar: Back / Forward / Tabs / Share / More —
+ * 5 × 48dp touch targets fit even 320dp screens. Bookmarks and profile
+ * switching moved into the Page Actions sheet so the bar stays lean while
+ * the omnibox above reclaims the width the nav arrows used to eat.
  */
 @Composable
 fun BrowserBottomBar(
     viewModel: BrowserViewModel,
     onOpenTabs: () -> Unit,
     onShowPageActions: () -> Unit,
-    onShowQuickSwitcher: () -> Unit,
-    onOpenBookmarks: () -> Unit,
-    onBackHome: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val extras = LocalRoomExtras.current
+    val page = viewModel.pageState
     GlassBar(
         modifier = modifier
             .fillMaxWidth()
@@ -114,6 +120,30 @@ fun BrowserBottomBar(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Web-history back — mirrors the system Back gesture.
+            IconButton(
+                onClick = { viewModel.goBack() },
+                enabled = page.canGoBack,
+                modifier = Modifier.semantics { contentDescription = "Go back" }
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = null,
+                    tint = if (page.canGoBack) extras.icon else extras.icon.copy(alpha = 0.35f)
+                )
+            }
+            // Web-history forward.
+            IconButton(
+                onClick = { viewModel.goForward() },
+                enabled = page.canGoForward,
+                modifier = Modifier.semantics { contentDescription = "Go forward" }
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = null,
+                    tint = if (page.canGoForward) extras.icon else extras.icon.copy(alpha = 0.35f)
+                )
+            }
             // Tabs with live count badge
             Box {
                 IconButton(
@@ -142,12 +172,6 @@ fun BrowserBottomBar(
                 }
             }
             IconButton(
-                onClick = onOpenBookmarks,
-                modifier = Modifier.semantics { contentDescription = "Bookmarks" }
-            ) {
-                Icon(Icons.Filled.Star, contentDescription = null, tint = extras.icon)
-            }
-            IconButton(
                 onClick = {
                     val url = viewModel.pageState.url
                     if (url != "about:home") {
@@ -161,16 +185,6 @@ fun BrowserBottomBar(
                 modifier = Modifier.semantics { contentDescription = "Share page" }
             ) {
                 Icon(Icons.Filled.Share, contentDescription = null, tint = extras.icon)
-            }
-            IconButton(
-                onClick = onShowQuickSwitcher,
-                modifier = Modifier.semantics { contentDescription = "Switch profile" }
-            ) {
-                ProfileAvatar(
-                    icon = viewModel.profile.icon.ifBlank { "\uD83D\uDC64" },
-                    colorArgb = viewModel.profile.colorArgb,
-                    size = 30
-                )
             }
             IconButton(
                 onClick = onShowPageActions,
@@ -196,7 +210,9 @@ fun PageActionsSheet(
     onOpenAbout: () -> Unit,
     onOpenAgent: () -> Unit,
     onOpenAgentSettings: () -> Unit,
-    onOpenAgentSessions: () -> Unit
+    onOpenAgentSessions: () -> Unit,
+    onOpenBookmarks: () -> Unit,
+    onShowQuickSwitcher: () -> Unit
 ) {
     val context = LocalContext.current
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -207,6 +223,7 @@ fun PageActionsSheet(
         ) {
             SheetHeader("Page Actions")
             SheetAction(Icons.AutoMirrored.Filled.ArrowBack, "Back") { viewModel.goBack(); onDismiss() }
+            SheetAction(Icons.AutoMirrored.Filled.ArrowForward, "Forward") { viewModel.goForward(); onDismiss() }
             SheetAction(Icons.Filled.Add, "New tab") { viewModel.loadUrl("about:home", newTab = true); onDismiss() }
             SheetAction(Icons.Filled.Lock, "New private tab") { viewModel.startPrivateTab(); onDismiss() }
             SheetAction(Icons.Filled.SafetyCheck, "Shields") { onDismiss(); viewModel.setSiteSetting { it } }
@@ -252,6 +269,7 @@ fun PageActionsSheet(
                 addShortcutToHomeScreen(context, viewModel)
                 onDismiss()
             }
+            SheetAction(Icons.Filled.StarBorder, "Bookmarks") { onOpenBookmarks(); onDismiss() }
 
             SheetSectionLabel("Appearance")
             SheetAction(Icons.Filled.Palette, "Theme studio") {
@@ -269,6 +287,7 @@ fun PageActionsSheet(
             SheetSectionLabel("Settings")
             SheetAction(Icons.Filled.Settings, "Browser settings") { onOpenSettings() }
             SheetAction(Icons.Filled.Settings, "Profile settings") { onOpenProfileSettings() }
+            SheetAction(Icons.Filled.SwapHoriz, "Switch profile") { onShowQuickSwitcher(); onDismiss() }
             SheetAction(Icons.Filled.Settings, "About Room Browser") { onOpenAbout() }
             Spacer(Modifier.height(24.dp))
         }

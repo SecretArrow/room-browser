@@ -3,6 +3,8 @@ package com.roombrowser.domain.profile
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
+import com.roombrowser.domain.model.UaMode
+import com.roombrowser.domain.model.UserAgents
 
 /**
  * Storage port implemented by the app layer (Room-backed).
@@ -37,18 +39,33 @@ interface TabCountStore {
 /**
  * Profile manager: create / open / edit / duplicate / delete / rename /
  * re-style / reset / lock. UUID is the immutable storage identity.
+ *
+ * [randomUaPresetId] picks the user agent for newly created profiles that
+ * have no explicit UA configured (injectable for deterministic tests).
  */
 class ProfileManager(
     private val store: ProfileStore,
-    private val clock: () -> Long = { System.currentTimeMillis() }
+    private val clock: () -> Long = { System.currentTimeMillis() },
+    private val randomUaPresetId: () -> String = { UserAgents.randomAndroidPresetId() }
 ) {
 
+    /**
+     * Create a new profile.
+     *
+     * Every newly created profile automatically identifies as a randomly
+     * picked common mobile browser UA (fingerprint diversity between
+     * profiles). Explicit UA settings are always respected: randomization
+     * only kicks in when [settings] still uses [UaMode.DEFAULT]. Import /
+     * restore callers pass [randomizeUserAgent] = false so the payload's
+     * settings are preserved verbatim.
+     */
     suspend fun create(
         name: String,
         icon: String,
         colorArgb: Long,
         settings: ProfileSettings = ProfileSettings(),
-        isDefault: Boolean = false
+        isDefault: Boolean = false,
+        randomizeUserAgent: Boolean = true
     ): Profile {
         val trimmed = name.trim()
         require(trimmed.isNotEmpty()) { "Profile name must not be empty" }
@@ -57,6 +74,12 @@ class ProfileManager(
         require(existing.none { it.name.equals(trimmed, ignoreCase = true) }) {
             "A profile with this name already exists"
         }
+        val effectiveSettings =
+            if (randomizeUserAgent && settings.uaMode == UaMode.DEFAULT) {
+                settings.copy(uaMode = UaMode.PRESET, uaPresetId = randomUaPresetId())
+            } else {
+                settings
+            }
         val profile = Profile(
             id = ProfileId.new(),
             name = trimmed,
@@ -65,7 +88,7 @@ class ProfileManager(
             isDefault = isDefault || existing.isEmpty(),
             createdAt = clock(),
             lastActiveAt = clock(),
-            settings = settings
+            settings = effectiveSettings
         )
         store.put(profile)
         return profile

@@ -2,6 +2,7 @@ package com.roombrowser.qr
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.ViewGroup
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
@@ -12,9 +13,37 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.Icon
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import android.Manifest
 import android.content.pm.PackageManager
+import android.widget.FrameLayout
 import androidx.core.app.ActivityCompat
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
@@ -50,7 +79,34 @@ class QrScannerActivity : AppCompatActivity() {
         // Back / Home / Recents buttons.
         enableEdgeToEdge()
         previewView = PreviewView(this)
-        setContentView(previewView)
+        // Close affordance: a white X in a translucent scrim circle at the
+        // top-end corner, inset-padded below the status bar and beside any
+        // display cutout (landscape). It is the ONLY clickable element in
+        // this screen, so nothing ever sits inside the system bar zones;
+        // the camera preview below it is purely visual. The Compose overlay
+        // only consumes touches that land on the button — everything else
+        // falls through to the preview.
+        val root = FrameLayout(this)
+        root.addView(
+            previewView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        root.addView(
+            ComposeView(this).apply {
+                setViewCompositionStrategy(
+                    ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed
+                )
+                setContent { QrCloseOverlay(onClose = { closeScanner() }) }
+            },
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        setContentView(root)
         reader = MultiFormatReader().apply {
             setHints(mapOf(DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE)))
         }
@@ -61,6 +117,12 @@ class QrScannerActivity : AppCompatActivity() {
         } else {
             permissionLauncher.launch(Manifest.permission.CAMERA)
         }
+    }
+
+    /** Close button — cancels the scan (no result) and finishes. */
+    private fun closeScanner() {
+        setResult(RESULT_CANCELED)
+        finish()
     }
 
     private fun startCamera() {
@@ -127,5 +189,44 @@ class QrScannerActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_QR_TEXT = "com.roombrowser.extra.QR_TEXT"
+    }
+}
+
+/**
+ * Fullscreen camera overlay holding only the close affordance. The button is
+ * padded by the REAL system insets (status bar + display cutout, horizontal
+ * sides) — never by guessed dp values — so it can never collide with the
+ * status bar, a cutout, or the system Back / Home / Recents zone (it lives at
+ * the top of the screen, far from the navigation bar).
+ */
+@Composable
+private fun QrCloseOverlay(onClose: () -> Unit) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(
+                WindowInsets.systemBars
+                    .union(WindowInsets.displayCutout)
+                    .only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
+            )
+            .padding(top = 8.dp, end = 8.dp)
+    ) {
+        Box(
+            Modifier
+                .align(Alignment.TopEnd)
+                .size(44.dp)
+                .clip(CircleShape)
+                .background(Color(0x66000000))
+                .clickable(onClick = onClose)
+                .semantics { contentDescription = "Close QR scanner" },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(24.dp)
+            )
+        }
     }
 }
