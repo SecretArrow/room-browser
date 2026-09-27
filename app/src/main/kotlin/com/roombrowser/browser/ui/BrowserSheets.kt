@@ -249,11 +249,19 @@ private fun addShortcutToHomeScreen(context: android.content.Context, viewModel:
 }
 
 @Composable
-private fun SheetAction(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+private fun SheetAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit
+) {
     Row(
         Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
+            // Addressable + announced as one action (TalkBack reads the
+            // label instead of raw child texts; UI tests target the row
+            // itself, which carries the click action).
+            .semantics { contentDescription = label }
             .padding(vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

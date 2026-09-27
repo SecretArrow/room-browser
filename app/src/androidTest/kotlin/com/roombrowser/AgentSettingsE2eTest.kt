@@ -255,24 +255,48 @@ class AgentSettingsE2eTest {
         }
     }
 
-    /** Opens the floating agent panel from the page-actions menu — the
-     *  always-available entry (the pill is hidden by default). The sheet is
-     *  scrollable and the agent rows sit low in the list, so click+drag. */
+    /** Opens a page-actions sheet entry by its content description and
+     *  VERIFIES the effect. Defence in depth (CI evidence: an accessibility
+     *  ACTION_CLICK on a text-matched sheet row once silently no-opped):
+     *  - desc-click on the clickable row (the proven gear-button pattern)
+     *  - coordinate-tap fallback on the same node
+     *  - small drags between attempts (scrollable sheet, no fling overshoot)
+     *  - sheet-dismissal recovery between rounds (Back closes a stuck sheet)
+     */
+    private fun openSheetEntry(label: String, verify: () -> Boolean): Boolean {
+        for (round in 1..3) {
+            // If the toolbar gear is covered, a leftover sheet is open —
+            // close it first (Back dismisses ModalBottomSheet).
+            if (!hasDesc("Page actions and settings", 1_500)) {
+                device.pressBack()
+                device.waitForIdle(1_000)
+            }
+            if (!clickDesc("Page actions and settings", 6_000)) continue
+            for (attempt in 1..12) {
+                val node = device.wait(Until.findObject(By.desc(label)), 2_000)
+                if (node != null) {
+                    clickSmart(node)
+                    if (verify()) return true
+                    // The a11y click can silently no-op — tap the row itself.
+                    runCatching { clickCenter(node) }
+                    if (verify()) return true
+                }
+                dragUpQuarter()
+            }
+        }
+        return false
+    }
+
+    /** Opens the floating agent panel — direct pill tap when visible,
+     *  otherwise the always-available page-menu entry. */
     private fun openAgentPanelFromMenu(): Boolean {
-        // Direct pill tap when visible (e.g. reruns on a dirty device where
-        // the show-button toggle was left on).
         if (hasDesc("AI Agent", 1_000)) {
             for (attempt in 1..2) {
                 clickDesc("AI Agent", 3_000)
                 if (panelUp(4_000)) return true
             }
         }
-        for (round in 1..2) {
-            if (!clickDesc("Page actions and settings", 6_000)) continue
-            if (!clickTextWithScroll("AI Agent (autonomous browsing)")) continue
-            if (panelUp(8_000)) return true
-        }
-        return false
+        return openSheetEntry("AI Agent (autonomous browsing)") { panelUp(6_000) }
     }
 
     private fun panelUp(timeout: Long): Boolean =
@@ -416,9 +440,10 @@ class AgentSettingsE2eTest {
 
         // Turn the toggle ON via Browser settings (the sheet scrolls — the
         // "Browser settings" row sits low in the list).
-        assertTrue("Page actions must open", clickDesc("Page actions and settings", 6_000))
-        assertTrue("Browser settings must open", clickTextWithScroll("Browser settings"))
-        assertTrue("Browser settings screen must appear", hasText("Browser Settings", 8_000))
+        assertTrue(
+            "Browser settings must open",
+            openSheetEntry("Browser settings") { hasText("Browser Settings", 6_000) }
+        )
         assertTrue(
             "Show AI Agent button switch must be clickable",
             clickDescContains("Show AI Agent button", 8_000)
@@ -436,8 +461,10 @@ class AgentSettingsE2eTest {
         )
 
         // Turn the toggle OFF again — the pill disappears.
-        assertTrue("Page actions must open (2nd)", clickDesc("Page actions and settings", 6_000))
-        assertTrue("Browser settings must open (2nd)", clickTextWithScroll("Browser settings"))
+        assertTrue(
+            "Browser settings must open (2nd)",
+            openSheetEntry("Browser settings") { hasText("Browser Settings", 6_000) }
+        )
         assertTrue(
             "Show AI Agent button switch must be clickable (2nd)",
             clickDescContains("Show AI Agent button", 8_000)
@@ -453,11 +480,11 @@ class AgentSettingsE2eTest {
         )
 
         // ---- 9. AgentSessionsActivity opens from the page menu -------------
-        assertTrue("Page actions must open (3rd)", clickDesc("Page actions and settings", 6_000))
-        assertTrue("AI Agent chats must open", clickTextWithScroll("AI Agent chats"))
         assertTrue(
-            "AgentSessionsActivity must show (title or empty state)",
-            hasText("Agent chats", 15_000) || hasText("No agent chats yet", 5_000)
+            "AI Agent chats must open",
+            openSheetEntry("AI Agent chats") {
+                hasText("Agent chats", 15_000) || hasText("No agent chats yet", 5_000)
+            }
         )
         assertTrue("Sessions close must work", clickDesc("Close", 8_000))
         assertTrue("Engine UI must be back (2nd)", engineUiUp(15_000))
