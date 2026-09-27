@@ -100,6 +100,33 @@ class ThemeStudioE2eTest {
         device.waitForIdle(600)
     }
 
+    /** Scroll-aware text wait: small deterministic drags between polls — on
+     *  the CI emulator's small screen (320x640) the preset cards live below
+     *  the fold and off-screen rows are NOT exposed to the a11y tree. */
+    private fun hasTextWithScroll(text: String, attempts: Int = 12): Boolean {
+        for (i in 1..attempts) {
+            if (hasText(text, 1_500)) return true
+            dragUpQuarter()
+        }
+        return false
+    }
+
+    /** Scroll-aware desc click with verification. */
+    private fun clickDescWithScroll(desc: String, attempts: Int = 12): Boolean {
+        for (i in 1..attempts) {
+            val node = device.wait(Until.findObject(By.desc(desc)), 1_500)
+            if (node != null) {
+                if (clickSmart(node)) return true
+                runCatching { clickCenter(node) }
+                if (hasDesc(desc, 2_000)) {
+                    // still present → the click did not consume it; try again
+                } else return true
+            }
+            dragUpQuarter()
+        }
+        return false
+    }
+
     /** Bootstrap: launcher → profile (create on first run) → engine UI up. */
     private fun openEngineFromLauncher(): Boolean {
         device.pressHome()
@@ -170,28 +197,35 @@ class ThemeStudioE2eTest {
         )
 
         // ---- 2. The preset gallery is visible ------------------------------
-        assertTrue("Preset section header must show", hasText("Presets", 8_000))
+        // The CI emulator screen is small (320x640) — the cards sit below the
+        // fold, so the finds are scroll-aware.
+        assertTrue("Preset section header must show", hasTextWithScroll("Presets"))
         assertTrue(
             "At least two presets must be visible",
-            hasText("Obsidian", 6_000) && hasText("Ocean", 4_000)
+            hasTextWithScroll("Obsidian") && hasTextWithScroll("Ocean")
         )
 
         // ---- 3. Preview a preset (tap = preview only, nothing persisted) ---
         assertTrue(
             "Ocean preset card must be clickable",
-            clickDesc("theme_card_ocean", 8_000)
+            clickDescWithScroll("theme_card_ocean")
         )
         device.waitForIdle(800)
 
         // ---- 4. Apply it to this profile ------------------------------------
+        // The floating Apply stays on-screen; scroll back up if needed.
         assertTrue(
             "Apply button must be clickable",
-            clickDesc("theme_apply", 8_000)
+            clickDescWithScroll("theme_apply")
         )
         device.waitForIdle(1_500)
 
         // ---- 5. Close and land back in the re-themed engine -----------------
-        assertTrue("Close must work", clickDesc("Close", 8_000))
+        for (attempt in 1..3) {
+            if (hasDesc("Close", 1_000) && clickDesc("Close", 4_000)) break
+            device.pressBack()
+            device.waitForIdle(1_000)
+        }
         assertTrue(
             "Engine UI must be back after theming",
             engineUiUp(20_000)

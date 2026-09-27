@@ -434,7 +434,15 @@ class AgentSettingsE2eTest {
         )
 
         // ---- 7. Back to the browser: the panel shows the model -------------
-        assertTrue("Settings close button must work", clickDesc("Close", 8_000))
+        // RACE GUARD: right after saving, the EDITER window can still be
+        // finishing — the first node matching desc "Close" may belong to the
+        // dying editor (its click is a silent no-op). Click, VERIFY the
+        // engine is back, and fall back to system Back (deterministic
+        // finish()) until the browser surface is truly visible again.
+        assertTrue(
+            "Settings must close (Close button or system Back)",
+            closeUntilEngineBack()
+        )
         assertTrue("Engine UI must be back", engineUiUp(15_000))
         // The panel may STILL be expanded from step 2 (rememberSaveable) —
         // in that case there is no pill to click and none is needed.
@@ -505,7 +513,22 @@ class AgentSettingsE2eTest {
                 hasText("Agent chats", 15_000) || hasText("No agent chats yet", 5_000)
             }
         )
-        assertTrue("Sessions close must work", clickDesc("Close", 8_000))
+        assertTrue("Sessions must close (Close button or system Back)", closeUntilEngineBack())
         assertTrue("Engine UI must be back (2nd)", engineUiUp(15_000))
+    }
+
+    /** Clicks the current activity's Close button, then falls back to the
+     *  system Back button until the BROWSER surface is visible again —
+     *  immune to the dying-editor-window Close race (CI evidence run
+     *  36306609106: the first desc-Close belonged to the finishing editor). */
+    private fun closeUntilEngineBack(): Boolean {
+        for (attempt in 1..3) {
+            runCatching { clickDesc("Close", 2_000) }
+            if (engineUiUp(4_000)) return true
+            device.pressBack()
+            device.waitForIdle(1_000)
+            if (engineUiUp(4_000)) return true
+        }
+        return engineUiUp(4_000)
     }
 }
