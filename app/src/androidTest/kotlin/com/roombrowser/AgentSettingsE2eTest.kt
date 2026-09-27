@@ -84,6 +84,16 @@ class AgentSettingsE2eTest {
     private fun hasDescContains(part: String, timeoutMs: Long): Boolean =
         device.wait(Until.hasObject(By.descContains(part)), timeoutMs)
 
+    /** Polls until no node shows [text] anymore (dialog/editor closed). */
+    private fun waitGone(text: String, timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (device.findObjects(By.text(text)).isEmpty()) return true
+            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+        }
+        return device.findObjects(By.text(text)).isEmpty()
+    }
+
     private fun clickText(text: String, timeoutMs: Long): Boolean {
         val node = device.wait(Until.findObject(By.text(text)), timeoutMs) ?: return false
         return clickSmart(node)
@@ -444,6 +454,16 @@ class AgentSettingsE2eTest {
         if (!clickTextWithScroll("Save provider")) {
             throw AssertionError("Save provider must be clickable; UI:\n" + uiTree())
         }
+        // The save is non-cancellable, but the EDITOR must still close ITSELF
+        // (its onDone) — proving the write committed. Waiting for the
+        // editor's "Presets" header to disappear also avoids matching the
+        // provider name in the editor's own text field (CI evidence run
+        // 36311518130: hasText("MockLLM") matched the field content 8ms
+        // after the Save click, before the coroutine had written anything).
+        assertTrue(
+            "Editor must close itself after the save completes",
+            waitGone("Presets", 15_000)
+        )
         assertTrue(
             "Settings screen must list the saved provider",
             hasText("MockLLM", 15_000)

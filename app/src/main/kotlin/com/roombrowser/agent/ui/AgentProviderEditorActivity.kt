@@ -419,18 +419,32 @@ private fun ProviderEditorRoot(
                 Button(
                     onClick = {
                         scope.launch {
-                            val result = controller.saveProvider(
-                                id = editing?.id,
-                                name = name,
-                                baseUrl = baseUrl,
-                                apiKey = apiKey,
-                                defaultModel = model,
-                                protocol = protocol
-                            )
+                            // The DB writes are NON-CANCELLABLE: finishing this
+                            // editor (user taps Back, or the system tears the
+                            // window down) while the save is in flight must
+                            // never lose the provider or the default selection.
+                            // CI evidence (run 36311518130): a Close click 57ms
+                            // after Save aborted the coroutine mid-transaction
+                            // and the provider vanished.
+                            val result = kotlinx.coroutines.withContext(
+                                kotlinx.coroutines.NonCancellable
+                            ) {
+                                controller.saveProvider(
+                                    id = editing?.id,
+                                    name = name,
+                                    baseUrl = baseUrl,
+                                    apiKey = apiKey,
+                                    defaultModel = model,
+                                    protocol = protocol
+                                )
+                            }
                             result.fold(
                                 onSuccess = { provider ->
-                                    // Make the freshly saved provider the default.
-                                    controller.setDefault(provider, provider.defaultModel)
+                                    kotlinx.coroutines.withContext(
+                                        kotlinx.coroutines.NonCancellable
+                                    ) {
+                                        controller.setDefaultNow(provider, provider.defaultModel)
+                                    }
                                     onDone()
                                 },
                                 onFailure = { saveError = it.message ?: "could not save" }

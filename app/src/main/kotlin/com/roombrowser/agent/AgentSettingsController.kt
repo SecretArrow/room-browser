@@ -138,6 +138,16 @@ class AgentSettingsController(
         }
     }
 
+    /**
+     * Suspending variant of [setDefault] for callers that must guarantee the
+     * write commits even when their own scope is being cancelled (the editor
+     * wraps this in withContext(NonCancellable) so finishing the activity
+     * mid-save can never lose the provider or the default selection).
+     */
+    suspend fun setDefaultNow(provider: AgentProviderEntity, model: String) {
+        saveSettings(settings.copy(defaultProviderId = provider.id, defaultModel = model))
+    }
+
     fun updateSettings(transform: (AgentSettings) -> AgentSettings) {
         scope.launch { saveSettings(transform(settings)) }
     }
