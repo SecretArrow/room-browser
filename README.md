@@ -49,6 +49,10 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
   works (Z.ai, OpenAI, OpenRouter, Groq, DeepSeek, Mistral, Together,
   Ollama, LM Studio or custom) with **manual provider input** and
   **model lists fetched live from the provider's `/models` endpoint**.
+  Provider management, agent settings and chat history run as **dedicated
+  activities** (their own windows with correct insets and keyboard
+  handling), and the floating agent button is **hidden by default** —
+  toggle it from Browser Settings → AI Agent → *Show AI Agent button*.
   API keys are encrypted with AndroidKeyStore. See `docs/AI_AGENTS.md`.
 - **Biometric profile lock** — fingerprint/face or device credential.
 - **Material 3 UI** — light/dark/AMOLED themes, per-profile accent colors,

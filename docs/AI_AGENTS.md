@@ -27,11 +27,24 @@ it happen behind the chat panel.
 
 | Entry point | Action |
 |---|---|
-| Floating pill (bottom-right of the browser) | Tap to expand the agent panel; collapsed it streams live progress ("clicking [12] Sign in…") |
-| Menu (⚙) → **AI Agent (autonomous browsing)** | Expands the panel |
-| Menu → **AI Agent settings (providers & models)** | Provider + behavior settings |
-| Menu → **AI Agent chats** | Per-profile chat history |
+| Menu (⚙) → **AI Agent (autonomous browsing)** | Expands the agent panel (always available) |
+| Floating pill (bottom-right of the browser) | Opt-in — see **Show AI Agent button** below; once shown, tap to expand the panel, and while a task runs it streams live progress ("clicking [12] Sign in…") |
+| Menu → **AI Agent settings (providers & models)** | Opens the AI settings **activity** (its own window) |
+| Menu → **AI Agent chats** | Opens the per-profile chat history **activity** |
 | Panel header | Model picker (provider · model), new chat, history, settings |
+
+### Show / hide the floating agent button
+
+The floating AI Agent button is **hidden by default** so the browser stays
+minimal. Turn it on via either:
+
+* **Browser Settings → AI Agent → Show AI Agent button**, or
+* **AI Agent settings → Agent behavior → Show AI Agent button**.
+
+While a task is actively running the pill always appears (live progress
+stays visible) and hides again when the turn finishes. The agent itself
+remains reachable at any time from the page menu (⚙) → *AI Agent
+(autonomous browsing)*.
 
 ## Providers & models (manual input, like opencode)
 
@@ -104,8 +117,20 @@ process (standard Android behaviour), and the system caps `dataSync`
 services at ~6 hours per day on Android 14+ — far beyond any realistic
 agent task.
 
-## Agent settings
+## Agent settings (own activity)
 
+AI settings, the provider editor and the chat history each run as their own
+**activity** — a real window with its own back-stack entry, keyboard
+handling and edge-to-edge insets (nothing ever overlaps the system
+Back / Home / Recents buttons). They run in the default process (no WebView)
+and share state with the live agent in the `:browser` process through the
+Room database (multi-instance invalidation) — every provider or setting
+change is picked up by the running browser instantly.
+
+* **Add / edit provider** — its own activity (`AgentProviderEditorActivity`):
+  presets, manual base URL + API key, live model discovery from `/models`.
+* **Show AI Agent button** — visibility of the floating button (hidden by
+  default; also switchable from Browser Settings).
 * **Confirm actions** — require Allow/Deny approval before every click,
   type or submit (off by default = fully autonomous within the step budget).
 * **Include current page by default** — attaches a page snapshot to the
@@ -114,7 +139,8 @@ agent task.
   the step budget bounds cost and runaway loops; when exhausted the agent
   is asked once more, without tools, to produce a final answer.
 * **System prompt override** — replace the built-in browsing-agent prompt.
-* **Data & privacy** — delete all agent sessions.
+* **Data & privacy** — delete all agent chats (every profile; providers
+  are kept).
 
 ## Privacy model (honest)
 
@@ -145,7 +171,13 @@ app (:browser process — owns the WebView)
 ├── AgentToolExecutor      tools against the live BrowserViewModel engine
 ├── BrowserAgentController chat state, sessions, approvals, persistence
 ├── KeyStoreCrypto         AES-256-GCM for API keys
-└── agent/ui/*             AgentPanel (pill + chat), Settings, Sessions
+└── agent/ui/*             AgentPanel (pill + chat)
+
+app (default process — agent settings activities, no WebView)
+├── AgentProviderStore     shared provider validation + encryption
+├── AgentSettingsController settings/providers persistence via Room
+└── agent/ui/*             AgentSettingsActivity, AgentProviderEditorActivity,
+                          AgentSessionsActivity (own windows)
 ```
 
 Room schema **v2** adds `agent_providers`, `agent_sessions`,
@@ -161,8 +193,12 @@ profile-scoped; providers are app-global credentials.
   SSE streaming, tool-call delta assembly, reasoning passthrough,
   non-stream fallback, auth headers, `/models` shapes and error mapping.
 * **E2E (emulator)**: `AgentSettingsE2eTest` — drives the real app UI
-  across both processes, adds a provider pointing at a local MockWebServer,
-  fetches its model list and verifies the saved selection.
+  across both processes: opens the agent panel from the page menu (the
+  pill is hidden by default), adds a provider via the settings/editor
+  activities against a local MockWebServer, fetches its model list,
+  verifies the saved selection in the panel, exercises the Show/Hide AI
+  Agent button toggle (off → pill hidden, on → pill shown, off → hidden)
+  and opens the chat-history activity.
 
 ## Tips
 

@@ -27,6 +27,13 @@ object AppStateKeys {
 @Serializable
 data class AgentSettings(
     val enabled: Boolean = true,
+    /**
+     * Visibility of the floating "AI Agent" button on the browser surface.
+     * HIDDEN by default — the agent stays reachable from the page-actions
+     * menu, and the button (or live status pill) only appears when the
+     * user opts in here (or while a task is running).
+     */
+    val showAgentButton: Boolean = false,
     val defaultProviderId: Long? = null,
     val defaultModel: String? = null,
     val temperature: Double = 0.2,

@@ -147,7 +147,11 @@ fun AgentPanelHost(
                     )
                 }
             }
-        } else {
+        } else if (agent.settings.showAgentButton || agent.running) {
+            // The floating button is OPT-IN (hidden by default — see
+            // "Show AI Agent button" in Browser/AI settings). While a task
+            // is actively running the pill always shows, so live progress
+            // stays visible; it hides again when the turn finishes.
             AgentStatusPill(
                 agent = agent,
                 onClick = { onExpandedChange(true) },

@@ -201,6 +201,28 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             value = ProfileEngine.engineName(context),
             onClick = { }
         )
+
+        // ================= AI Agent =================
+        // The floating agent button is hidden by default; this is the global
+        // opt-in/out (also available in AI Agent settings).
+        SectionHeader("AI Agent")
+        SettingSwitchRow(
+            title = "Show AI Agent button",
+            subtitle = "Floating button for the agent chat on the browser screen — hidden by default; the agent stays reachable from the page menu",
+            checked = viewModel.agent.settings.showAgentButton,
+            onCheckedChange = { checked ->
+                viewModel.agent.updateSettings { s -> s.copy(showAgentButton = checked) }
+            }
+        )
+        SettingActionRow(
+            title = "AI Agent settings",
+            subtitle = "Providers, models and agent behavior (opens its own screen)",
+            onClick = {
+                com.roombrowser.agent.ui.AgentSettingsActivity.launch(
+                    context, viewModel.profileId.value
+                )
+            }
+        )
         Spacer(Modifier.height(32.dp))
     }
 }

@@ -181,34 +181,9 @@ class BrowserAgentController(
         apiKey: String,
         defaultModel: String
     ): Result<AgentProviderEntity> {
-        val trimmedName = name.trim()
-        val trimmedUrl = OkHttpAgentGateway.normalizeBaseUrl(baseUrl)
-        if (trimmedName.isBlank()) return Result.failure(IllegalArgumentException("provider name is required"))
-        if (!trimmedUrl.startsWith("http://") && !trimmedUrl.startsWith("https://")) {
-            return Result.failure(IllegalArgumentException("base URL must start with http:// or https://"))
-        }
-        if (defaultModel.isBlank()) return Result.failure(IllegalArgumentException("model is required"))
-        return try {
-            val existing = id?.let { repo.provider(it) }
-            val encKey = when {
-                apiKey.isBlank() -> existing?.apiKeyEnc ?: ""
-                else -> KeyStoreCrypto.encrypt(apiKey)
-                    ?: return Result.failure(IllegalStateException("AndroidKeyStore unavailable — could not encrypt the API key"))
-            }
-            val entity = AgentProviderEntity(
-                id = id ?: 0,
-                name = trimmedName,
-                baseUrl = trimmedUrl,
-                apiKeyEnc = encKey,
-                defaultModel = defaultModel.trim(),
-                createdAt = existing?.createdAt ?: System.currentTimeMillis()
-            )
-            val savedId = repo.saveProvider(entity)
-            if (id != null) apiKeyCache.remove(id)
-            Result.success(entity.copy(id = savedId))
-        } catch (t: Throwable) {
-            Result.failure(t)
-        }
+        val result = AgentProviderStore.save(repo, id, name, baseUrl, apiKey, defaultModel)
+        if (result.isSuccess && id != null) apiKeyCache.remove(id)
+        return result
     }
 
     suspend fun deleteProvider(id: Long) {
@@ -366,12 +341,17 @@ class BrowserAgentController(
         entries = entries + AgentEntry.User(text, System.currentTimeMillis())
         var streamingIndex = -1
         try {
-            val sessionId = activeSessionId ?: repo.createSession(
-                profileId = profileId.value,
-                title = text.take(64),
-                providerId = provider.id,
-                model = model
-            ).also { activeSessionId = it }
+            // "Delete all agent chats" can run in the settings ACTIVITY while
+            // a session is active here — verify it still exists, else start a
+            // fresh one instead of writing to a dead row (FK safety).
+            val sessionId = activeSessionId
+                ?.takeIf { runCatching { repo.session(it) != null }.getOrDefault(false) }
+                ?: repo.createSession(
+                    profileId = profileId.value,
+                    title = text.take(64),
+                    providerId = provider.id,
+                    model = model
+                ).also { activeSessionId = it }
             repo.addMessage(sessionId, "user", text)
 
             val apiKey = apiKeyFor(provider).orEmpty()

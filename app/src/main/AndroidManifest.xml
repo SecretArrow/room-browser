@@ -79,6 +79,29 @@
             android:exported="false" />
 
         <!--
+          AI agent settings / provider editor / chat history — their OWN
+          activities (default process, no WebView). Provider management and
+          the advanced agent menus get a real window: proper back-stack
+          behavior, own IME handling and edge-to-edge insets, exactly like
+          the QR scanner. State is shared with the ':browser' process via
+          the Room database (multi-instance invalidation).
+        -->
+        <activity
+            android:name=".agent.ui.AgentSettingsActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode"
+            android:windowSoftInputMode="adjustResize" />
+        <activity
+            android:name=".agent.ui.AgentProviderEditorActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode"
+            android:windowSoftInputMode="adjustResize" />
+        <activity
+            android:name=".agent.ui.AgentSessionsActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode" />
+
+        <!--
           AI agent background execution: while an agent turn runs, this
           dataSync foreground service keeps the ':browser' process alive and
           holds a partial wake lock, so tasks continue with the app in the

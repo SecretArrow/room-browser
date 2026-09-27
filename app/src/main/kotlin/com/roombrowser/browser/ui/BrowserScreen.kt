@@ -104,8 +104,6 @@ sealed interface BrowserRoute {
     data object PrivacyDashboard : BrowserRoute
     data object Settings : BrowserRoute
     data object ProfileSettings : BrowserRoute
-    data object AgentSettings : BrowserRoute
-    data object AgentSessions : BrowserRoute
     data object About : BrowserRoute
 }
 
@@ -160,6 +158,38 @@ fun BrowserScreen(
         result.data?.getStringExtra(QrScannerActivity.EXTRA_QR_TEXT)?.let { text ->
             viewModel.onQrResult(text)
         }
+    }
+
+    // AI settings & chat history live in their OWN activities (default
+    // process) — the browser surface simply launches them and, for chat
+    // history, receives the picked session back as a result.
+    val agentSessionsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val sessionId = result.data?.getLongExtra(
+            com.roombrowser.agent.ui.AgentSessionsActivity.EXTRA_SESSION_ID, -1L
+        ) ?: -1L
+        if (sessionId > 0) {
+            viewModel.agent.openSession(sessionId)
+            agentPanelExpanded = true
+        }
+    }
+
+    fun launchAgentSettings() {
+        com.roombrowser.agent.ui.AgentSettingsActivity.launch(
+            activity, viewModel.profileId.value
+        )
+    }
+
+    fun launchAgentSessions() {
+        agentSessionsLauncher.launch(
+            Intent(activity, com.roombrowser.agent.ui.AgentSessionsActivity::class.java).apply {
+                putExtra(
+                    com.roombrowser.agent.ui.AgentSessionsActivity.EXTRA_PROFILE_ID,
+                    viewModel.profileId.value
+                )
+            }
+        )
     }
     val voiceLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -243,19 +273,6 @@ fun BrowserScreen(
                 BrowserRoute.PrivacyDashboard -> PrivacyDashboardScreen(viewModel = viewModel, onClose = { route = BrowserRoute.Browser })
                 BrowserRoute.Settings -> BrowserSettingsScreen(viewModel = viewModel, onClose = { route = BrowserRoute.Browser })
                 BrowserRoute.ProfileSettings -> ProfileSettingsScreen(viewModel = viewModel, onClose = { route = BrowserRoute.Settings })
-                BrowserRoute.AgentSettings -> com.roombrowser.agent.ui.AgentSettingsScreen(
-                    viewModel = viewModel,
-                    onClose = { route = BrowserRoute.Browser }
-                )
-                BrowserRoute.AgentSessions -> com.roombrowser.agent.ui.AgentSessionsScreen(
-                    viewModel = viewModel,
-                    onClose = { route = BrowserRoute.Browser },
-                    onOpenSession = { id ->
-                        viewModel.agent.openSession(id)
-                        route = BrowserRoute.Browser
-                        agentPanelExpanded = true
-                    }
-                )
                 BrowserRoute.About -> AboutScreen(onClose = { route = BrowserRoute.Settings })
             }
 
@@ -265,8 +282,8 @@ fun BrowserScreen(
                     viewModel = viewModel,
                     expanded = agentPanelExpanded,
                     onExpandedChange = { agentPanelExpanded = it },
-                    onOpenSettings = { route = BrowserRoute.AgentSettings },
-                    onOpenSessions = { route = BrowserRoute.AgentSessions }
+                    onOpenSettings = { launchAgentSettings() },
+                    onOpenSessions = { launchAgentSessions() }
                 )
             }
 
@@ -324,8 +341,8 @@ fun BrowserScreen(
             onOpenProfileSettings = { route = BrowserRoute.ProfileSettings; showPageActions = false },
             onOpenAbout = { route = BrowserRoute.About; showPageActions = false },
             onOpenAgent = { agentPanelExpanded = true; showPageActions = false },
-            onOpenAgentSettings = { route = BrowserRoute.AgentSettings; showPageActions = false },
-            onOpenAgentSessions = { route = BrowserRoute.AgentSessions; showPageActions = false }
+            onOpenAgentSettings = { launchAgentSettings(); showPageActions = false },
+            onOpenAgentSessions = { launchAgentSessions(); showPageActions = false }
         )
     }
 

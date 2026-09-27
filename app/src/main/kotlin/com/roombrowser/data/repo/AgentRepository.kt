@@ -72,6 +72,12 @@ class AgentRepository(private val db: AppDatabase) {
         return ids.size
     }
 
+    /** Deletes EVERY session + message across all profiles (providers kept). */
+    suspend fun deleteAllSessions() {
+        dao.deleteAllMessages()
+        dao.deleteAllSessions()
+    }
+
     /** Nukes sessions + messages + providers (the "delete agent data" action). */
     suspend fun deleteAllAgentData() {
         dao.deleteAllMessages()

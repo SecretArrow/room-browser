@@ -23,12 +23,16 @@ import org.junit.runner.RunWith
  *   MainActivity (default process)
  *     -> first-run welcome / profile list -> engine opens
  *   BrowserActivity (':browser' process)
- *     -> tap the "AI Agent" pill
- *     -> Configure providers -> Add provider
+ *     -> page menu -> "AI Agent (autonomous browsing)" opens the panel
+ *     -> Configure providers -> AgentSettingsActivity (own window)
+ *     -> Add provider -> AgentProviderEditorActivity (own window)
  *     -> type name + base URL (local MockWebServer) + API key
  *     -> Fetch models -> chips from the provider's /models response
- *     -> Save -> provider listed
- *     -> model line of the agent panel shows the selected model
+ *     -> Save -> provider listed in the settings activity
+ *     -> back to the browser: the panel shows the selected model
+ *     -> "Show AI Agent button" toggle in Browser settings:
+ *        default OFF (no floating pill), ON shows the pill, OFF hides it
+ *     -> AgentSessionsActivity opens from the page menu
  *
  * Compose fields are driven exactly like E2EBrowseFlowTest: EditText class
  * nodes + `input text` shell command + coordinate clicks.
@@ -84,6 +88,12 @@ class AgentSettingsE2eTest {
 
     private fun clickDesc(desc: String, timeoutMs: Long): Boolean {
         val node = device.wait(Until.findObject(By.desc(desc)), timeoutMs) ?: return false
+        return clickSmart(node)
+    }
+
+    /** Clicks the first node whose content-description CONTAINS [part]. */
+    private fun clickDescContains(part: String, timeoutMs: Long): Boolean {
+        val node = device.wait(Until.findObject(By.descContains(part)), timeoutMs) ?: return false
         return clickSmart(node)
     }
 
@@ -149,6 +159,8 @@ class AgentSettingsE2eTest {
             "agent_model line" to By.desc("agent_model"),
             "Page actions button" to By.desc("Page actions and settings"),
             "'Add provider' text" to By.text("Add provider"),
+            "'AI Agent Settings' title" to By.text("AI Agent Settings"),
+            "'Show AI Agent button' switch" to By.descContains("Show AI Agent button"),
             "agent hint text" to By.textContains("Ask the agent")
         )
         for ((label, selector) in probes) {
@@ -233,6 +245,22 @@ class AgentSettingsE2eTest {
         }
     }
 
+    /** Opens the floating agent panel from the page-actions menu — the
+     *  always-available entry (the pill is hidden by default). The sheet is
+     *  scrollable and the agent rows sit low in the list, so click+swipe. */
+    private fun openAgentPanelFromMenu(): Boolean {
+        if (!clickDesc("Page actions and settings", 6_000)) return false
+        if (!clickTextWithScroll("AI Agent (autonomous browsing)", attempts = 4)) return false
+        return panelUp(8_000)
+    }
+
+    private fun panelUp(timeout: Long): Boolean =
+        hasText("Configure providers", 2_000)
+            || hasText("No provider configured", 1_000)
+            || hasText("Room Agent", 1_000)
+            || hasDesc("Agent settings", 1_000)
+            || hasDesc("agent_model", 1_000)
+
     @Test
     fun add_provider_fetch_models_and_save() {
         // ---- 1. Cold start → engine (profile auto-open or OPEN tap) --------
@@ -271,42 +299,18 @@ class AgentSettingsE2eTest {
         }
         assertTrue("Browser engine must be up", engineUiUp(30_000))
 
-        // ---- 2. Open the agent panel via the floating pill -----------------
+        // ---- 2. The floating pill is HIDDEN by default ---------------------
+        // (Show-AI-Agent-button is off out of the box; the panel is reached
+        // from the page menu instead.)
         assertTrue(
-            "AI Agent pill must be visible (content-desc 'AI Agent')",
-            hasDesc("AI Agent", 20_000)
+            "Floating agent pill must be hidden by default",
+            !hasDesc("AI Agent", 3_000)
         )
-        fun panelUp(timeout: Long): Boolean =
-            hasText("Configure providers", 2_000)
-                || hasText("No provider configured", 1_000)
-                || hasText("Room Agent", 1_000)
-                || hasDesc("Agent settings", 1_000)
+        assertTrue(
+            "Agent panel must open from the page menu",
+            openAgentPanelFromMenu()
+        )
 
-        var panelOpen = false
-        for (attempt in 1..3) {
-            clickDesc("AI Agent", 5_000)
-            if (panelUp(4_000)) {
-                panelOpen = true
-                break
-            }
-            // Only dismiss a keyboard if the pill is still showing — i.e. the
-            // panel stayed collapsed; never back out of the browser itself.
-            if (hasDesc("AI Agent", 1_000)) {
-                device.pressBack()
-                device.waitForIdle(1_000)
-            }
-        }
-        if (!panelOpen) {
-            // Alternate entry: omnibox "Page actions and settings" → sheet item
-            if (clickDesc("Page actions and settings", 5_000)) {
-                if (clickText("AI Agent (autonomous browsing)", 5_000)) {
-                    panelOpen = panelUp(6_000)
-                }
-            }
-        }
-        if (!panelOpen) {
-            throw AssertionError("Agent panel must open; UI:\n" + uiTree())
-        }
         // Reach provider settings: empty-state button, or the header gear
         // (when a default provider already exists the empty state is skipped).
         if (!clickDesc("agent_configure", 6_000)) {
@@ -316,7 +320,13 @@ class AgentSettingsE2eTest {
             )
         }
 
-        // ---- 3. Add a provider ---------------------------------------------
+        // ---- 3. AgentSettingsActivity (own window) -------------------------
+        assertTrue(
+            "AgentSettingsActivity must open with its title",
+            hasText("AI Agent Settings", 15_000)
+        )
+
+        // ---- 4. AgentProviderEditorActivity (own window) -------------------
         assertTrue("Add provider button must appear", hasText("Add provider", 10_000))
         assertTrue("Add provider must be clickable", clickText("Add provider", 8_000))
         assertTrue("Editor must open", hasText("Presets", 10_000))
@@ -328,7 +338,7 @@ class AgentSettingsE2eTest {
         assertTrue("base URL field must be typeable", typeIntoField("provider_url_field", baseUrl))
         assertTrue("API key field must be typeable", typeIntoField("provider_key_field", "test-key-123"))
 
-        // ---- 4. Fetch models from the MockWebServer ------------------------
+        // ---- 5. Fetch models from the MockWebServer ------------------------
         hideImeIfNeeded()
         var chipsShown = false
         for (attempt in 1..2) {
@@ -346,7 +356,7 @@ class AgentSettingsE2eTest {
             throw AssertionError("mock-model-a chip must be selectable; UI:\n" + uiTree())
         }
 
-        // ---- 5. Save --------------------------------------------------------
+        // ---- 6. Save -> back in the settings activity ----------------------
         hideImeIfNeeded()
         if (!clickTextWithScroll("Save provider")) {
             throw AssertionError("Save provider must be clickable; UI:\n" + uiTree())
@@ -356,24 +366,17 @@ class AgentSettingsE2eTest {
             hasText("MockLLM", 15_000)
         )
 
-        // ---- 6. Back to the browser: the panel shows the model -------------
+        // ---- 7. Back to the browser: the panel shows the model -------------
         assertTrue("Settings close button must work", clickDesc("Close", 8_000))
         assertTrue("Engine UI must be back", engineUiUp(15_000))
         // The panel may STILL be expanded from step 2 (rememberSaveable) —
         // in that case there is no pill to click and none is needed.
         var reopened = hasDesc("agent_model", 2_000) || hasText("Room Agent", 2_000)
         if (!reopened) {
-            assertTrue("Agent pill must still be present", hasDesc("AI Agent", 10_000))
             for (attempt in 1..3) {
-                clickDesc("AI Agent", 4_000)
-                if (hasDesc("agent_model", 2_000) || hasText("Room Agent", 2_000)) {
+                if (openAgentPanelFromMenu()) {
                     reopened = true
                     break
-                }
-            }
-            if (!reopened && clickDesc("Page actions and settings", 5_000)) {
-                if (clickText("AI Agent (autonomous browsing)", 5_000)) {
-                    reopened = hasDesc("agent_model", 3_000) || hasText("Room Agent", 3_000)
                 }
             }
         }
@@ -385,5 +388,59 @@ class AgentSettingsE2eTest {
                 "Agent panel model line must show the fetched model; UI:\n" + uiTree()
             )
         }
+
+        // ---- 8. Show/hide the floating agent button ------------------------
+        // Collapse the panel first (system Back collapses it — see the
+        // BackHandler priority chain) so the pill area is observable.
+        device.pressBack()
+        device.waitForIdle(1_000)
+
+        // Turn the toggle ON via Browser settings (the sheet scrolls — the
+        // "Browser settings" row sits low in the list).
+        assertTrue("Page actions must open", clickDesc("Page actions and settings", 6_000))
+        assertTrue("Browser settings must open", clickTextWithScroll("Browser settings"))
+        assertTrue("Browser settings screen must appear", hasText("Browser Settings", 8_000))
+        assertTrue(
+            "Show AI Agent button switch must be clickable",
+            clickDescContains("Show AI Agent button", 8_000)
+        )
+        // The switch state comes from the Room-backed flow — waiting for the
+        // "on" label proves the write landed BEFORE we check the pill.
+        assertTrue(
+            "Switch must flip ON",
+            hasDesc("Show AI Agent button switch, on", 8_000)
+        )
+        assertTrue("Settings close must work", clickDesc("Close", 8_000))
+        assertTrue(
+            "Pill must appear once the toggle is ON",
+            hasDesc("AI Agent", 15_000)
+        )
+
+        // Turn the toggle OFF again — the pill disappears.
+        assertTrue("Page actions must open (2nd)", clickDesc("Page actions and settings", 6_000))
+        assertTrue("Browser settings must open (2nd)", clickTextWithScroll("Browser settings"))
+        assertTrue(
+            "Show AI Agent button switch must be clickable (2nd)",
+            clickDescContains("Show AI Agent button", 8_000)
+        )
+        assertTrue(
+            "Switch must flip OFF",
+            hasDesc("Show AI Agent button switch, off", 8_000)
+        )
+        assertTrue("Settings close must work (2nd)", clickDesc("Close", 8_000))
+        assertTrue(
+            "Pill must be gone after turning the toggle OFF",
+            !hasDesc("AI Agent", 4_000)
+        )
+
+        // ---- 9. AgentSessionsActivity opens from the page menu -------------
+        assertTrue("Page actions must open (3rd)", clickDesc("Page actions and settings", 6_000))
+        assertTrue("AI Agent chats must open", clickTextWithScroll("AI Agent chats"))
+        assertTrue(
+            "AgentSessionsActivity must show (title or empty state)",
+            hasText("Agent chats", 15_000) || hasText("No agent chats yet", 5_000)
+        )
+        assertTrue("Sessions close must work", clickDesc("Close", 8_000))
+        assertTrue("Engine UI must be back (2nd)", engineUiUp(15_000))
     }
 }
