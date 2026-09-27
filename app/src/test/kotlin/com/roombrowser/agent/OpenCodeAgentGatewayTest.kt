@@ -111,7 +111,9 @@ class OpenCodeAgentGatewayTest {
         assertThat(post1Body).contains("\"modelID\":\"claude-sonnet-4\"")
         // First message of the session carries the text-tool protocol briefing.
         assertThat(post1Body).contains("TEXT-BASED tool-call protocol")
-        assertThat(post1Body).contains("\"navigate\"") // tool catalogue is embedded
+        // The tool catalogue is embedded (JSON-escaped inside the text part).
+        assertThat(post1Body).contains("navigate")
+        assertThat(post1Body).contains("search_web")
         server.takeRequest() // poll GET
 
         // 2nd chat(): only the delta (assistant + tool result) is posted.
