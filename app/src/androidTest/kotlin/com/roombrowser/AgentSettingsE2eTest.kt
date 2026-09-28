@@ -50,8 +50,10 @@ class AgentSettingsE2eTest {
     fun setUp() {
         server = MockWebServer()
         server.start()
-        // Several identical responses so retried fetches also succeed.
-        repeat(3) {
+        // Several identical responses so retried fetches also succeed —
+        // the verification-driven flow may click Fetch several times and
+        // retype the URL in between.
+        repeat(6) {
             server.enqueue(
                 MockResponse()
                     .setHeader("Content-Type", "application/json")
@@ -92,18 +94,6 @@ class AgentSettingsE2eTest {
             try { Thread.sleep(250) } catch (_: InterruptedException) { }
         }
         return device.findObjects(By.text(text)).isEmpty()
-    }
-
-    /** Scroll-aware text wait: small deterministic drags between polls —
-     *  off-screen rows are NOT exposed to the a11y tree (CI evidence run
-     *  36315238139: the fetched chips rendered below the fold behind the
-     *  sticky save row and "mock-model-a" was invisible to By.text). */
-    private fun hasTextWithScroll(text: String, attempts: Int = 10): Boolean {
-        for (i in 1..attempts) {
-            if (hasText(text, 1_500)) return true
-            dragUpQuarter()
-        }
-        return false
     }
 
     private fun clickText(text: String, timeoutMs: Long): Boolean {
@@ -231,11 +221,14 @@ class AgentSettingsE2eTest {
     }
 
     /** Types text into the editor field with the given content description —
-     *  VERIFICATION-DRIVEN: every round taps a FRESHLY resolved node, types,
-     *  then verifies via a GLOBAL text search (Compose exposes field content
-     *  on an inner text node — the desc node itself reports null, but the
-     *  content IS findable by By.textContains, like the key field's bullets);
-     *  a failed round is cleared and retried. */
+     *  VERIFICATION-DRIVEN, and EVERY round clears the field first: retyping
+     *  into a non-empty field inserts at the tap-positioned cursor and
+     *  corrupts the content (CI-observed). The clear (cursor to end + one
+     *  compound shell line of 40 semicolon-chained DEL keyevents — 40
+     *  separate commands cost ~20s) also makes retries safe. Verification is
+     *  a GLOBAL text search: Compose renders field content on an inner text
+     *  node (the desc node itself reports null), findable via By.textContains
+     *  exactly like the key field's bullets. */
     private fun typeIntoField(desc: String, text: String, masked: Boolean = false): Boolean {
         for (round in 1..3) {
             hideImeIfNeeded()
@@ -255,19 +248,16 @@ class AgentSettingsE2eTest {
             // earlier can carry stale bounds — tapping it hits the void.
             val fresh = device.wait(Until.findObject(By.desc(desc)), 2_000) ?: field
             clickCenter(fresh)
-            if (round > 1) {
-                // The previous round may have left text in the focused field —
-                // clear it before typing. ONE compound shell line (semicolon-
-                // chained keyevents): 40 separate commands cost ~20s on CI.
-                device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
-                device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
-                device.waitForIdle(400)
-            }
+            // ALWAYS clear: the field may hold text from a failed earlier
+            // round (or this may be a retype after a fetch error).
+            device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
+            device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
+            device.waitForIdle(400)
             // NB: executeShellCommand does not interpret shell quoting — a quoted
             // argument would type the quotes into the field. Values here contain
             // no spaces or shell metacharacters, so pass them bare.
             device.executeShellCommand("input text $text")
-            device.waitForIdle(800)
+            device.waitForIdle(1_000)
             // Global text search: the field renders its content as a text
             // node (masked fields render a bullet run).
             val token = if (masked) "\u2022\u2022\u2022\u2022\u2022" else text
@@ -276,30 +266,30 @@ class AgentSettingsE2eTest {
         return false
     }
 
-    /** True when some a11y text node contains [token] — Compose renders field
-     *  content as a text node, so this is how typed text is verified without
-     *  depending on where in the semantics hierarchy the node sits. */
-    private fun textVisible(token: String): Boolean =
-        device.wait(Until.hasObject(By.textContains(token)), 1_000)
+    /** Outcome of one Fetch-models click. The ERROR text renders right below
+     *  the button (in view); the chips render below the fold — one drag after
+     *  a quiet moment makes them a11y-visible. */
+    private enum class FetchOutcome { CHIPS, ERROR, NOTHING }
 
-    /** True when the Fetch models button is ENABLED — M3 enables it only while
-     *  the base URL is non-blank, so this is the ground-truth check that the
-     *  URL text actually landed in the URL field (disabled buttons swallow
-     *  taps silently). The label node sits inside the merged button node;
-     *  walk up to the clickable ancestor to read its enabled state. */
-    private fun fetchModelsEnabled(): Boolean {
-        val label = runCatching { device.findObject(By.text("Fetch models")) }.getOrNull()
-            ?: return false
-        var current: UiObject2? = label
-        var hops = 0
-        while (current != null && hops < 6) {
-            val clickable = runCatching { current.isClickable }.getOrDefault(false)
-            if (clickable) return runCatching { current.isEnabled }.getOrDefault(false)
-            current = runCatching { current.parent }.getOrNull()
-            hops++
+    private fun fetchOutcome(): FetchOutcome {
+        val deadline = System.currentTimeMillis() + 9_000
+        var dragged = false
+        while (System.currentTimeMillis() < deadline) {
+            if (textExists("Could not fetch models")) return FetchOutcome.ERROR
+            if (textExists("mock-model-a")) return FetchOutcome.CHIPS
+            if (!dragged) {
+                try { Thread.sleep(1_200) } catch (_: InterruptedException) { }
+                dragUpQuarter()
+                dragged = true
+            } else {
+                try { Thread.sleep(300) } catch (_: InterruptedException) { }
+            }
         }
-        return false
+        return FetchOutcome.NOTHING
     }
+
+    private fun textExists(part: String): Boolean =
+        runCatching { device.findObjects(By.textContains(part)) }.getOrDefault(emptyList()).isNotEmpty()
 
     /** SLOW drag (100 steps ≈ no fling momentum) that scrolls ~1/4 of the
      *  screen — deterministic: a fast fling overshoots past the target row
@@ -490,35 +480,31 @@ class AgentSettingsE2eTest {
         assertTrue("name field must be typeable", typeIntoField("provider_name_field", "MockLLM"))
         assertTrue("base URL field must be typeable", typeIntoField("provider_url_field", baseUrl))
         assertTrue("API key field must be typeable", typeIntoField("provider_key_field", "test-key-123", masked = true))
-        // Fixup pass (verify-only): a missed tap can pollute an ALREADY-
-        // verified field; retype ONLY when the content is missing — blindly
-        // retyping would double it ("MockLLMMockLLM") and corrupt the URL.
-        if (!textVisible("MockLLM")) typeIntoField("provider_name_field", "MockLLM")
-        if (!textVisible(baseUrl)) typeIntoField("provider_url_field", baseUrl)
-
-        // ULTIMATE GATE: the fetch button is enabled ONLY while the base URL
-        // field is non-blank — and a disabled M3 button swallows taps
-        // silently, which is exactly how a missed URL tap failed CI before.
-        // While it stays disabled, the URL text has not landed: retype.
-        for (round in 1..3) {
-            if (fetchModelsEnabled()) break
-            typeIntoField("provider_url_field", baseUrl)
-        }
 
         // ---- 5. Fetch models from the MockWebServer ------------------------
+        // VERIFICATION-DRIVEN: after each click, watch for one of three
+        // outcomes — the chips (fetch worked; they render below the fold on
+        // the small CI screen, so poll + drag), the fetch ERROR text (the
+        // URL text got corrupted — clear the field completely and retype),
+        // or nothing at all (the tap was lost — click again). Retyping into
+        // a non-empty field without clearing corrupts it at the cursor
+        // (CI-observed: interleaved URL fragments, "Invalid URL port").
         hideImeIfNeeded()
         var chipsShown = false
-        for (attempt in 1..2) {
-            assertTrue("Fetch models button must be clickable", clickText("Fetch models", 8_000))
-            // The chips render below the fold on the small CI screen (the
-            // sticky save row shrinks the scroll viewport) — scroll-aware
-            // polling: "2 of 2 models" proves the fetch; the chip labels
-            // become a11y-visible after a small drag.
-            if (hasTextWithScroll("mock-model-a")) {
-                chipsShown = true
-                break
+        for (attempt in 1..3) {
+            assertTrue(
+                "Fetch models button must be clickable",
+                clickTextWithScroll("Fetch models")
+            )
+            when (fetchOutcome()) {
+                FetchOutcome.CHIPS -> { chipsShown = true; break }
+                FetchOutcome.ERROR ->
+                    assertTrue(
+                        "base URL field must be retypable after a failed fetch",
+                        typeIntoField("provider_url_field", baseUrl)
+                    )
+                FetchOutcome.NOTHING -> device.waitForIdle(2_000)
             }
-            device.waitForIdle(2_000)
         }
         if (!chipsShown) {
             throw AssertionError("Model chips from /models must appear; UI:\n" + uiTree())
