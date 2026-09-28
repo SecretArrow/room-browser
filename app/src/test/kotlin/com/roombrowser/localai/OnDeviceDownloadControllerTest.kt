@@ -44,7 +44,13 @@ class OnDeviceDownloadControllerTest {
 
     @After
     fun tearDown() {
-        server.shutdown()
+        // Resilient on purpose (same as OllamaLocalTest): the cancel test leaves
+        // MockWebServer's throttled writer sleeping (30 s chunk period) on a
+        // socket the client already abandoned via call.cancel() —
+        // server.shutdown() can then surface the forced interrupt as an
+        // IOException. That is harness noise from the intentional stall, not
+        // a contract failure.
+        runCatching { server.shutdown() }
     }
 
     /** Polls [condition] on the test thread until it holds or the deadline hits. */
