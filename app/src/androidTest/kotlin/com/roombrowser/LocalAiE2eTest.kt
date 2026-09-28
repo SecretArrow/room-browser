@@ -249,6 +249,11 @@ class LocalAiE2eTest {
      * (mirrors LocalAiActivity.EXTRA_LIBRARY_URL; kept as a literal so the
      * test reads like the manifest contract) — the catalog refresh then
      * talks to the fake server instead of ollama.com.
+     *
+     * The PRIMARY path uses FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TASK so
+     * an instance left by the earlier test method can never absorb the launch
+     * (a stale, extra-less activity would silently point the refresh at the
+     * real ollama.com). The shell fallback carries the same flags + extra.
      */
     private fun launchLocalAiDirectly(libraryUrl: String) {
         runCatching {
@@ -259,8 +264,9 @@ class LocalAiE2eTest {
             targetContext.startActivity(intent)
         }
         if (!hasDesc("localai_host_field", 4_000)) {
+            // 0x10008000 = FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TASK.
             device.executeShellCommand(
-                "am start -n ${targetContext.packageName}/com.roombrowser.agent.ui.LocalAiActivity" +
+                "am start -f 0x10008000 -n ${targetContext.packageName}/com.roombrowser.agent.ui.LocalAiActivity" +
                     " --es library_url $libraryUrl"
             )
             device.waitForIdle(2_000)
@@ -397,42 +403,40 @@ class LocalAiE2eTest {
         repeat(6) { dragDownQuarter() }
     }
 
-    /** Scroll-aware text-CONTAINS wait — for captions whose full text varies
-     *  (e.g. the Failed reason inside "Couldn't read the library (…)"). */
-    private fun hasTextContainsWithScroll(part: String, attempts: Int = 8): Boolean {
-        for (i in 1..attempts) {
-            if (device.wait(Until.hasObject(By.textContains(part)), 1_500)) return true
-            dragUpQuarter()
-        }
-        return false
-    }
-
     /** SINGLE-LINE screen state for assertion messages — multi-line dumps get
-     *  truncated by the runner's console, so everything is joined with ' | '.
-     *  Proves: refresh-button presence, catalog-state caption, visible texts. */
+     *  truncated by the runner's console, so everything is joined with ' | '. */
     private fun screenSummary(): String {
         val refreshBtn = runCatching {
             device.findObjects(By.descContains("localai_refresh_catalog")).size
         }.getOrDefault(-1)
-        val caption = listOf(
-            "Idle" to "Fetch the live ollama.com library",
-            "Loading" to "Fetching the newest models",
-            "Ready" to "Library updated",
-            "Failed" to "Couldn't read the library"
-        ).firstOrNull { (_, needle) ->
-            runCatching {
-                device.findObjects(By.textContains(needle)).isNotEmpty()
-            }.getOrDefault(false)
-        }?.first ?: "?"
         val texts = runCatching {
             device.findObjects(By.textContains(""))
                 .mapNotNull { it.text }
                 .distinct()
-                .take(36)
+                .take(30)
                 .map { it.take(44) }
         }.getOrDefault(emptyList())
-        return "libraryHits=${fake.libraryHits.get()} refreshBtn=$refreshBtn catalog=$caption " +
+        return "libraryHits=${fake.libraryHits.get()} refreshBtn=$refreshBtn " +
             "texts=[${texts.joinToString(" | ")}]"
+    }
+
+    /** Catalog-state caption read IN PLACE (no scrolling) — call while the
+     *  viewport is still at the refresh button. Viewport-limited on purpose:
+     *  the caption lives in the SAME row as the button. */
+    private fun catalogCaptionInPlace(): String {
+        val probes = listOf(
+            "Idle" to "Fetch the live ollama.com library",
+            "Loading" to "Fetching the newest models",
+            "Ready" to "Library updated",
+            "Failed" to "Couldn't read the library"
+        )
+        for ((label, needle) in probes) {
+            val found = runCatching {
+                device.findObjects(By.textContains(needle)).isNotEmpty()
+            }.getOrDefault(false)
+            if (found) return label
+        }
+        return "?"
     }
 
     /** Types text into the field with the given content description. */
@@ -709,46 +713,53 @@ class LocalAiE2eTest {
         )
 
         // ---- 3. Find new models → GET /library?sort=newest ----------------
-        // VERIFICATION-DRIVEN tap (the Task-11 CI lesson: a dispatched tap on
-        // this busy screen can be dropped silently). GROUND TRUTH tier: the
-        // fake server counts GET /library hits — a hit proves BOTH that the
-        // tap actually dispatched AND that the client used the injected mock
-        // URL (a lost extra would send the fetch to the real ollama.com).
-        // UI tier: the discovered card, or the honest Failed caption.
+        // VERIFICATION-DRIVEN tap with IN-PLACE state capture. Right after the
+        // click the viewport is still AT the button — the catalog caption in
+        // that same row is read there, BEFORE any scrolling drifts away:
+        //   Idle    → the tap never dispatched refreshCatalog
+        //   Loading → the fetch hangs (wrong URL / unreachable)
+        //   Failed  → the fetch ran and failed (extra lost → real ollama.com)
+        //   Ready   → the fetch ran (mock only if libraryHits > 0)
         var qwenFound = false
-        var failedState = false
         var sawLibraryRequest = false
+        var buttonNeverFound = false
+        var lastCaption = "?"
         for (round in 1..4) {
             hideImeIfNeeded()
             scrollToTop()
-            clickDescContainsWithScroll("localai_refresh_catalog", attempts = 10)
-            // Proof tier 1 (≤ 10 s): the request reached the fake server.
-            val deadline = System.currentTimeMillis() + 10_000
-            while (System.currentTimeMillis() < deadline && fake.libraryHits.get() == 0) {
-                try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            val clicked = clickDescContainsWithScroll("localai_refresh_catalog", attempts = 10)
+            if (!clicked) {
+                buttonNeverFound = true
+                break
+            }
+            // In-place capture: the caption is beside the button right now.
+            val deadline = System.currentTimeMillis() + 12_000
+            while (System.currentTimeMillis() < deadline) {
+                lastCaption = catalogCaptionInPlace()
+                if (fake.libraryHits.get() > 0) break
+                if (lastCaption == "Failed" || lastCaption == "Ready") break
+                try { Thread.sleep(300) } catch (_: InterruptedException) { }
             }
             if (fake.libraryHits.get() > 0) sawLibraryRequest = true
-            // Proof tier 2: the card, or the Failed caption.
+            // Proof tier 2: the discovered card (scrolls away from the button).
             if (hasTextWithScroll("qwen3.5")) {
                 qwenFound = true
                 break
             }
-            if (hasTextContainsWithScroll("Couldn't read the library", attempts = 4)) {
-                failedState = true
-                break
-            }
         }
         assertTrue(
+            "The refresh button must be findable/clickable; " + screenSummary(),
+            !buttonNeverFound
+        )
+        assertTrue(
             "The refresh tap must reach the fake /library within 4 rounds " +
-                "(tap dropped or library_url extra lost); " + screenSummary(),
+                "(caption after tap: $lastCaption — Idle=tap dead, Loading=hang, " +
+                "Failed/Ready with 0 hits=extra lost, fetch went to real ollama.com); " +
+                screenSummary(),
             sawLibraryRequest
         )
         assertTrue(
-            "The catalog refresh must not end in the Failed state; " + screenSummary(),
-            !failedState
-        )
-        assertTrue(
-            "Discovered family qwen3.5 must be listed (no card after 4 tap rounds); " +
+            "Discovered family qwen3.5 must be listed (caption after tap: $lastCaption); " +
                 screenSummary(),
             qwenFound
         )
