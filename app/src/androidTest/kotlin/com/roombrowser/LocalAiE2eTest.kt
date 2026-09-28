@@ -398,26 +398,12 @@ class LocalAiE2eTest {
         device.waitForIdle(600)
     }
 
-    /** Reset to the top of the scrollable screen (harmless when already there). */
+    /** Reset to the top of the scrollable screen. Generous on purpose: the
+     *  drift between rounds can reach ~5 screens (failed find loops drag the
+     *  viewport to the bottom), so 18 quarter-drags (~4.5 screens) climb back
+     *  far enough for the next round's down-search to cross the catalog row. */
     private fun scrollToTop() {
-        repeat(6) { dragDownQuarter() }
-    }
-
-    /** SINGLE-LINE screen state for assertion messages — multi-line dumps get
-     *  truncated by the runner's console, so everything is joined with ' | '. */
-    private fun screenSummary(): String {
-        val refreshBtn = runCatching {
-            device.findObjects(By.descContains("localai_refresh_catalog")).size
-        }.getOrDefault(-1)
-        val texts = runCatching {
-            device.findObjects(By.textContains(""))
-                .mapNotNull { it.text }
-                .distinct()
-                .take(30)
-                .map { it.take(44) }
-        }.getOrDefault(emptyList())
-        return "libraryHits=${fake.libraryHits.get()} refreshBtn=$refreshBtn " +
-            "texts=[${texts.joinToString(" | ")}]"
+        repeat(18) { dragDownQuarter() }
     }
 
     /** Catalog-state caption read IN PLACE (no scrolling) — call while the
@@ -437,6 +423,45 @@ class LocalAiE2eTest {
             if (found) return label
         }
         return "?"
+    }
+
+    /** Single-LINE screen state for assertion messages — multi-line dumps get
+     *  truncated by the runner's console, so everything is joined with ' | '. */
+    private fun screenSummary(): String {
+        val refreshBtn = runCatching {
+            device.findObjects(By.descContains("localai_refresh_catalog")).size
+        }.getOrDefault(-1)
+        val texts = runCatching {
+            device.findObjects(By.textContains(""))
+                .mapNotNull { it.text }
+                .distinct()
+                .take(30)
+                .map { it.take(44) }
+        }.getOrDefault(emptyList())
+        return "libraryHits=${fake.libraryHits.get()} refreshBtn=$refreshBtn " +
+            "texts=[${texts.joinToString(" | ")}]"
+    }
+
+    /** Full a11y dump AT the catalog top — descs AND texts — for the
+     *  button-not-found assertion. Runs after positioning the viewport at the
+     *  "Model catalog" header + refresh row (~1.25 screens down from the top). */
+    private fun dumpCatalogTop(): String {
+        repeat(18) { dragDownQuarter() }
+        repeat(5) { dragUpQuarter() }
+        device.waitForIdle(800)
+        val descs = runCatching {
+            device.findObjects(By.descContains("localai"))
+                .mapNotNull { it.contentDescription }
+                .take(16)
+        }.getOrDefault(emptyList())
+        val texts = runCatching {
+            device.findObjects(By.textContains(""))
+                .mapNotNull { it.text }
+                .distinct()
+                .take(24)
+                .map { it.take(40) }
+        }.getOrDefault(emptyList())
+        return "descs=[${descs.joinToString(", ")}] texts=[${texts.joinToString(" | ")}]"
     }
 
     /** Types text into the field with the given content description. */
@@ -713,23 +738,26 @@ class LocalAiE2eTest {
         )
 
         // ---- 3. Find new models → GET /library?sort=newest ----------------
-        // VERIFICATION-DRIVEN tap with IN-PLACE state capture. Right after the
-        // click the viewport is still AT the button — the catalog caption in
-        // that same row is read there, BEFORE any scrolling drifts away:
-        //   Idle    → the tap never dispatched refreshCatalog
-        //   Loading → the fetch hangs (wrong URL / unreachable)
-        //   Failed  → the fetch ran and failed (extra lost → real ollama.com)
-        //   Ready   → the fetch ran (mock only if libraryHits > 0)
+        // DUAL-PATH verification-driven tap. The desc path mirrors every other
+        // working button in this suite; the TEXT path ("Find new models") is an
+        // independent route to the same button that survives any semantics
+        // anomaly. After the click the viewport is still AT the row — the
+        // catalog caption there separates the failure theories in the message:
+        //   Idle → tap dead; Loading → hang; Failed/Ready with 0 mock hits →
+        //   library_url extra lost (fetch went to the real ollama.com).
         var qwenFound = false
         var sawLibraryRequest = false
         var buttonNeverFound = false
+        var catalogDump = ""
         var lastCaption = "?"
         for (round in 1..4) {
             hideImeIfNeeded()
             scrollToTop()
-            val clicked = clickDescContainsWithScroll("localai_refresh_catalog", attempts = 10)
+            val clicked = clickDescContainsWithScroll("localai_refresh_catalog", attempts = 10) ||
+                clickTextWithScroll("Find new models", attempts = 8)
             if (!clicked) {
                 buttonNeverFound = true
+                catalogDump = dumpCatalogTop()
                 break
             }
             // In-place capture: the caption is beside the button right now.
@@ -748,7 +776,8 @@ class LocalAiE2eTest {
             }
         }
         assertTrue(
-            "The refresh button must be findable/clickable; " + screenSummary(),
+            "The refresh button must be findable/clickable by desc OR by its " +
+                "'Find new models' text; at the catalog top: $catalogDump; " + screenSummary(),
             !buttonNeverFound
         )
         assertTrue(
