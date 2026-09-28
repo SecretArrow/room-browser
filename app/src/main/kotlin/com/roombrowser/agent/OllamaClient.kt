@@ -151,6 +151,20 @@ class OllamaClient(
                 }
                 try {
                     readPullStream(responseBody, onEvent)
+                } catch (t: Throwable) {
+                    // Cancellation contract (the pause/resume backbone): once
+                    // the pull coroutine is cancelled, whatever surfaces must
+                    // be a CancellationException. The isActive read alone
+                    // raced flaky on loaded CI runners (a cancelled job whose
+                    // blocking read aborted a hair before the state check);
+                    // call.isCanceled() is the airtight discriminator — the
+                    // watcher cancels the CALL on cancellation, and the
+                    // socket-closed IOException only reaches the reader AFTER
+                    // that, so isCanceled()==true here means OUR pause.
+                    if (call.isCanceled() || !currentCoroutineContext().isActive) {
+                        throw CancellationException("ollama pull cancelled")
+                    }
+                    throw t
                 } finally {
                     watcher.cancel()
                 }
