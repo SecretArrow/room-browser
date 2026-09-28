@@ -9,8 +9,10 @@ import androidx.test.uiautomator.BySelector
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
+import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -30,6 +32,8 @@ import org.junit.runner.RunWith
  *     -> Fetch models -> chips from the provider's /models response
  *     -> Save -> provider listed in the settings activity
  *     -> back to the browser: the panel shows the selected model
+ *     -> chat round-trip: send a prompt -> user bubble + copy icon,
+ *        mock SSE reply -> answer bubble + copy icon, tap copy -> "Copied"
  *     -> "Show AI Agent button" toggle in Browser settings:
  *        default OFF (no floating pill), ON shows the pill, OFF hides it
  *     -> AgentSessionsActivity opens from the page menu
@@ -49,17 +53,33 @@ class AgentSettingsE2eTest {
     @Before
     fun setUp() {
         server = MockWebServer()
-        server.start()
-        // Several identical responses so retried fetches also succeed —
-        // the verification-driven flow may click Fetch several times and
-        // retype the URL in between.
-        repeat(6) {
-            server.enqueue(
-                MockResponse()
-                    .setHeader("Content-Type", "application/json")
-                    .setBody("""{"object":"list","data":[{"id":"mock-model-a"},{"id":"mock-model-b"}]}""")
-            )
+        // Path-routed dispatcher (NOT a strict response queue): the
+        // verification-driven flow may click Fetch several times and the
+        // chat step below POSTs /chat/completions — every request gets a
+        // correct answer regardless of order or count.
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path ?: ""
+                return when {
+                    path.contains("/models") ->
+                        MockResponse()
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("""{"object":"list","data":[{"id":"mock-model-a"},{"id":"mock-model-b"}]}""")
+                    // OpenAI-style SSE stream: one content delta then DONE —
+                    // a plain final answer with no tool calls, so the agent
+                    // turn ends after this single response.
+                    path.contains("/chat/completions") ->
+                        MockResponse()
+                            .setHeader("Content-Type", "text/event-stream")
+                            .setBody(
+                                "data: {\"choices\":[{\"delta\":{\"content\":\"mock-reply-ok\"}}]}\n\n" +
+                                    "data: [DONE]\n\n"
+                            )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
         }
+        server.start()
     }
 
     @After
@@ -568,6 +588,42 @@ class AgentSettingsE2eTest {
                     "; UI:\n" + uiTree()
             )
         }
+
+        // ---- 7b. Chat round-trip + the copy affordance --------------------
+        // Type a prompt and send it: the user bubble (with its copy icon)
+        // appears immediately, then the mock SSE reply streams back as an
+        // assistant bubble. Tapping the copy icon puts the EXACT previously
+        // sent text back on the clipboard — proven by the "Copied" feedback
+        // label — so it can be pasted into the composer and re-processed.
+        assertTrue(
+            "composer field must be typeable",
+            typeIntoField("agent_composer_field", "e2e_copy_prompt")
+        )
+        hideImeIfNeeded()
+        if (!clickDesc("agent_send", 5_000)) {
+            throw AssertionError("send button must be clickable; UI:\n" + uiTree())
+        }
+        assertTrue(
+            "user bubble with the sent text must appear",
+            hasText("e2e_copy_prompt", 10_000)
+        )
+        assertTrue(
+            "copy icon under the user bubble must appear",
+            hasDesc("agent_copy_user", 5_000)
+        )
+        assertTrue(
+            "mock SSE reply must stream back as an assistant bubble",
+            hasText("mock-reply-ok", 20_000)
+        )
+        assertTrue(
+            "copy icon under the assistant reply must appear",
+            hasDesc("agent_copy_assistant", 5_000)
+        )
+        assertTrue(
+            "copying the previously sent text must show the Copied feedback",
+            clickDesc("agent_copy_user", 5_000) && hasText("Copied", 3_000)
+        )
+
         // ---- 8. Show/hide the floating agent button ------------------------
         // Collapse the panel first (system Back collapses it — see the
         // BackHandler priority chain) so the pill area is observable.

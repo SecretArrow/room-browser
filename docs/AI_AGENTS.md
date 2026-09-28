@@ -129,6 +129,19 @@ chips can be removed before sending; the user bubble and the persisted chat
 row list the file names. Content-URIs are not persisted across process
 death — attachments live until sent.
 
+## Copy any chat message (re-use prompts)
+
+Every bubble in the conversation carries a small copy icon (⧉) underneath:
+tap it and the bubble's exact text lands on the system clipboard, with the
+icon flipping to a check plus a tiny "Copied" label as feedback (~1.8 s).
+This works for **your own previously sent prompts** — copy one, paste it back
+into the composer and re-process it with the agent (optionally on a different
+provider/model) — and for **finished assistant answers** (summaries, extracted
+data, generated text) you want to reuse elsewhere. Icons are deliberately not
+shown on half-streamed answers, so you can never copy a truncated reply.
+Long-press selection is not needed; the affordance is one visible, tappable
+icon per message.
+
 ## Agent settings (own activity)
 
 AI settings, the provider editor and the chat history each run as their own

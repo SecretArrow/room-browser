@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -86,6 +87,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -105,6 +107,7 @@ import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.domain.agent.AgentTools
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -378,9 +381,56 @@ private fun AgentConversation(
     }
 }
 
+/**
+ * Small "copy this text" affordance rendered under a chat bubble: one tap
+ * puts the bubble's exact text on the system clipboard (no long-press
+ * guesswork — discoverable, and e2e-assertable) so a previously SENT prompt
+ * can be pasted straight back into the composer and re-processed by the
+ * agent, and a received answer can be reused elsewhere. Feedback = the icon
+ * flips to a check plus a tiny "Copied" label for ~1.8s.
+ */
+@Composable
+private fun CopyTextButton(
+    copied: Boolean,
+    onCopy: () -> Unit,
+    desc: String
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(
+            onClick = onCopy,
+            modifier = Modifier
+                .size(32.dp)
+                .semantics { contentDescription = desc }
+        ) {
+            Icon(
+                if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = if (copied) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+            )
+        }
+        if (copied) {
+            Text(
+                "Copied",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+    }
+}
+
 @Composable
 private fun UserBubble(entry: AgentEntry.User) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+    val clipboard = LocalClipboardManager.current
+    var copied by remember(entry.at) { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1_800)
+            copied = false
+        }
+    }
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
         Surface(
             shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp),
             color = MaterialTheme.colorScheme.primaryContainer,
@@ -393,11 +443,30 @@ private fun UserBubble(entry: AgentEntry.User) {
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
             )
         }
+        // Copy affordance (right-aligned under the bubble): grabs the exact
+        // text previously sent so it can be re-pasted and re-run in the
+        // composer — "copy teks yang pernah dikirim ke Chat".
+        CopyTextButton(
+            copied = copied,
+            onCopy = {
+                clipboard.setText(AnnotatedString(entry.text))
+                copied = true
+            },
+            desc = "agent_copy_user"
+        )
     }
 }
 
 @Composable
 private fun AssistantMessage(entry: AgentEntry.Assistant) {
+    val clipboard = LocalClipboardManager.current
+    var copied by remember(entry.at) { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1_800)
+            copied = false
+        }
+    }
     Column(Modifier.fillMaxWidth()) {
         if (entry.thinking.isNotBlank()) {
             ThinkingBlock(entry.thinking)
@@ -410,6 +479,19 @@ private fun AssistantMessage(entry: AgentEntry.Assistant) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface
             )
+            // Copy affordance for FINISHED answers only — copying a
+            // half-streamed reply would grab a truncated text.
+            if (!entry.streaming && entry.text.isNotBlank()) {
+                Spacer(Modifier.height(2.dp))
+                CopyTextButton(
+                    copied = copied,
+                    onCopy = {
+                        clipboard.setText(AnnotatedString(entry.text))
+                        copied = true
+                    },
+                    desc = "agent_copy_assistant"
+                )
+            }
         }
     }
 }
@@ -668,7 +750,9 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
                             }
                         }
                     ),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics { contentDescription = "agent_composer_field" }
                 )
                 Spacer(Modifier.width(8.dp))
                 if (agent.running) {

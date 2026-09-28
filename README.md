@@ -58,7 +58,10 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
   activities** (their own windows with correct insets and keyboard
   handling), and the floating agent button is **hidden by default** —
   toggle it from Browser Settings → AI Agent → *Show AI Agent button*.
-  API keys are encrypted with AndroidKeyStore. See `docs/AI_AGENTS.md`.
+  Every chat message has a **copy icon** — tap it to put a previously sent
+  prompt or a finished answer back on the clipboard, ready to paste into the
+  composer and re-process. API keys are encrypted with AndroidKeyStore.
+  See `docs/AI_AGENTS.md`.
 - **Local AI (Ollama)** — menu khusus untuk AI di perangkat sendiri:
   kelola model di server Ollama (Termux di ponsel ini atau PC di LAN) —
   koneksi + status server, katalog 19 preset model terbaik untuk ponsel
