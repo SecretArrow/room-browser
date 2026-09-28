@@ -62,7 +62,9 @@ class LocalAiE2eTest {
     @Before
     fun setUp() {
         server = MockWebServer()
-        server.setDispatcher(OllamaFake())
+        // Kotlin property syntax — OkHttp 4.x MockWebServer.dispatcher is a
+        // var, so the Java-style setDispatcher() does not resolve in Kotlin.
+        server.dispatcher = OllamaFake()
         server.start()
     }
 
