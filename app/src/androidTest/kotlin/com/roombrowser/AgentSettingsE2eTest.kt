@@ -233,18 +233,28 @@ class AgentSettingsE2eTest {
     /** Types text into the editor field with the given content description. */
     private fun typeIntoField(desc: String, text: String): Boolean {
         hideImeIfNeeded()
-        var field = device.wait(Until.findObject(By.desc(desc)), 4_000)
-        if (field == null) {
-            // scroll the editor content up so lower fields come into view
+        // Scroll-aware lookup: the editor's manual fields sit BELOW the
+        // preset list, and that list GROWS whenever presets are added (CI
+        // regression: one extra preset row pushed the name field past the
+        // old single-drag fallback). Poll + drag until the field is on
+        // screen — a fixed drag count silently breaks on layout growth.
+        var field: UiObject2? = null
+        for (i in 1..5) {
+            field = device.wait(Until.findObject(By.desc(desc)), 1_500)
+            if (field != null) break
             dragUpQuarter()
-            field = device.wait(Until.findObject(By.desc(desc)), 4_000) ?: return false
         }
+        val first: UiObject2 = field ?: return false
         // if the field sits below the fold, scroll it into view before tapping
+        var target: UiObject2 = first
         runCatching {
-            val b = field.visibleBounds
-            if (b.bottom > device.displayHeight - 80) dragUpQuarter()
+            if (first.visibleBounds.bottom > device.displayHeight - 80) {
+                dragUpQuarter()
+                // re-resolve: the node handle can go stale across a scroll
+                target = device.wait(Until.findObject(By.desc(desc)), 2_000) ?: first
+            }
         }
-        clickCenter(field)
+        clickCenter(target)
         // NB: executeShellCommand does not interpret shell quoting — a quoted
         // argument would type the quotes into the field. Values here contain
         // no spaces or shell metacharacters, so pass them bare.

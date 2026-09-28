@@ -370,6 +370,31 @@ class LocalAiE2eTest {
         return null
     }
 
+    /** PROOF that a pull for [tag] started/ran: the download row exposes a
+     *  Pause button while STARTING/DOWNLOADING/VERIFYING, a Clear button on
+     *  the kept SUCCESS row, a Resume button when PAUSED/FAILED — and the
+     *  catalog flips to the Installed chip once /api/tags lists the model.
+     *  Any of the four settles within [timeoutMs] on the instant fake server. */
+    private fun pullEvidence(tag: String, timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        val probes = listOf(
+            "localai_installed_$tag",
+            "localai_clear_$tag",
+            "localai_pause_$tag",
+            "localai_resume_$tag"
+        )
+        while (System.currentTimeMillis() < deadline) {
+            for (probe in probes) {
+                val found = runCatching {
+                    device.findObjects(By.descContains(probe))
+                }.getOrDefault(emptyList())
+                if (found.isNotEmpty()) return true
+            }
+            try { Thread.sleep(300) } catch (_: InterruptedException) { }
+        }
+        return false
+    }
+
     /** Probes the local-AI nodes for readable failure messages. */
     private fun uiTree(): String = try {
         val sb = StringBuilder()
@@ -452,16 +477,36 @@ class LocalAiE2eTest {
         // installable preset so the test does not hard-depend on the exact
         // preset catalogue ("localai_install_" never matches the installed
         // chip desc "localai_installed_…").
-        var installDesc = "localai_install_qwen2.5:0.5b"
-        if (!clickDescContainsWithScroll(installDesc, attempts = 14)) {
-            installDesc = findFirstInstallButton()
+        val preferredDesc = "localai_install_qwen2.5:0.5b"
+        val installDesc = if (hasDescContainsWithScroll(preferredDesc, attempts = 14)) {
+            preferredDesc
+        } else {
+            findFirstInstallButton()
                 ?: throw AssertionError("No catalog Install button found; UI:\n" + uiTree())
-            assertTrue(
-                "Fallback install button ($installDesc) must be clickable",
-                clickDescContainsWithScroll(installDesc, attempts = 4)
-            )
         }
         val installedTag = installDesc.removePrefix("localai_install_")
+
+        // The tap is VERIFICATION-DRIVEN: CI emulators can drop an injected
+        // tap on this busy screen (13 preset cards + chips recomposing while
+        // the a11y tree is polled — observed in CI: the tap landed dead-on
+        // the button and the download coroutine never started). So each round
+        // clicks, then waits for PROOF that the pull started: the row's Pause
+        // button while running, its Clear button once finished, the catalog
+        // Installed chip — or a Resume button if it failed. No proof → the
+        // tap was lost → find the button again and tap again.
+        var pullStarted = false
+        for (round in 1..3) {
+            clickDescContainsWithScroll(installDesc, attempts = 6)
+            if (pullEvidence(installedTag, 8_000)) {
+                pullStarted = true
+                break
+            }
+        }
+        assertTrue(
+            "Install tap must start the pull for $installedTag " +
+                "(no Pause/Clear/Resume/chip evidence after 3 taps); UI:\n" + uiTree(),
+            pullStarted
+        )
 
         // ---- 7. Pull finishes → the preset flips to "Installed" -----------
         // (The fake server lists every pulled model in /api/tags from the
