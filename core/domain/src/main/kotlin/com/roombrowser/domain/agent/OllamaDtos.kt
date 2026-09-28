@@ -424,7 +424,7 @@ data class OllamaLibraryEntry(
     /** Family name, e.g. "qwen3.5" — the part before ":" in a pull tag. */
     val name: String,
     /** One-line blurb from the listing; HTML entities unescaped; "" when absent. */
-    val description: String,
+    val description: String = "",
     /** "2 weeks ago" style freshness label straight from the page; "" when absent. */
     val updatedAt: String = "",
     /** Indigo capability badges: "tools", "thinking", "vision", "audio", "embedding". */
