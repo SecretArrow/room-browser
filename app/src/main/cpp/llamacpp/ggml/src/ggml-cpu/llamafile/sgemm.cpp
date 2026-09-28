@@ -305,15 +305,19 @@ template <typename T, typename U> T load(const U *);
 template <> inline float32x4_t load(const float *p) {
     return vld1q_f32(p);
 }
-#if !defined(_MSC_VER)
-// FIXME: this should check for __ARM_FEATURE_FP16_VECTOR_ARITHMETIC
+#if !defined(_MSC_VER) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+// FIXME (upstream): this should check for __ARM_FEATURE_FP16_VECTOR_ARITHMETIC
+// Room Browser portability patch: on 32-bit ARM (armeabi-v7a) the NDK defines
+// __ARM_NEON but NOT __ARM_FEATURE_FP16_VECTOR_ARITHMETIC, leaving vld1q_f16/
+// vld1_f16 undeclared — the compile fails. The fp16 loads now compile only
+// where the fp16 vector intrinsics actually exist (aarch64 + FP16-capable v7a).
 template <> inline float16x8_t load(const ggml_fp16_t *p) {
     return vld1q_f16((const float16_t *)p);
 }
 template <> inline float32x4_t load(const ggml_fp16_t *p) {
     return vcvt_f32_f16(vld1_f16((const float16_t *)p));
 }
-#endif // _MSC_VER
+#endif // fp16 vector arithmetic
 #endif // __ARM_NEON
 
 #if defined(__VXE__) || defined(__VXE2__)
