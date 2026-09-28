@@ -1,0 +1,32 @@
+﻿2026-09-28T12:15:02.8898654Z ##[group]Run actions/setup-java@v4
+2026-09-28T12:15:02.8899743Z with:
+2026-09-28T12:15:02.8900567Z   distribution: temurin
+2026-09-28T12:15:02.8901670Z   java-version: 21
+2026-09-28T12:15:02.8902719Z   java-package: jdk
+2026-09-28T12:15:02.8903629Z   check-latest: false
+2026-09-28T12:15:02.8904554Z   server-id: github
+2026-09-28T12:15:02.8905458Z   server-username: GITHUB_ACTOR
+2026-09-28T12:15:02.8906482Z   server-password: GITHUB_TOKEN
+2026-09-28T12:15:02.8907494Z   overwrite-settings: true
+2026-09-28T12:15:02.8908450Z   job-status: success
+2026-09-28T12:15:02.8916193Z   token: ***
+2026-09-28T12:15:02.8917018Z env:
+2026-09-28T12:15:02.8918158Z   GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.console=plain
+2026-09-28T12:15:02.8919472Z ##[endgroup]
+2026-09-28T12:15:03.0651281Z ##[warning]setup-java v4 is deprecated and will no longer receive updates. Please migrate to actions/setup-java@v5.
+2026-09-28T12:15:03.0658949Z ##[group]Installed distributions
+2026-09-28T12:15:03.0696560Z Resolved Java 21.0.12+1 from tool-cache
+2026-09-28T12:15:03.0699111Z Setting Java 21.0.12+1 as the default
+2026-09-28T12:15:03.0708350Z (node:2251) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-09-28T12:15:03.0709480Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-09-28T12:15:03.0712502Z Creating toolchains.xml for JDK version 21 from temurin
+2026-09-28T12:15:03.0790141Z Writing to /home/runner/.m2/toolchains.xml
+2026-09-28T12:15:03.0790846Z 
+2026-09-28T12:15:03.0791189Z Java configuration:
+2026-09-28T12:15:03.0791971Z   Distribution: temurin
+2026-09-28T12:15:03.0793010Z   Version: 21.0.12+1
+2026-09-28T12:15:03.0793742Z   Path: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/21.0.12-1/x64
+2026-09-28T12:15:03.0794291Z 
+2026-09-28T12:15:03.0795170Z ##[endgroup]
+2026-09-28T12:15:03.0809071Z Creating settings.xml with server-id: github
+2026-09-28T12:15:03.0811702Z Writing to /home/runner/.m2/settings.xml

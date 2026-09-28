@@ -1,0 +1,75 @@
+﻿2026-09-28T12:18:27.3890020Z ##[group]Run actions/checkout@v4
+2026-09-28T12:18:27.3890770Z with:
+2026-09-28T12:18:27.3891063Z   repository: maragung/room-browser
+2026-09-28T12:18:27.3894300Z   token: ***
+2026-09-28T12:18:27.3894580Z   ssh-strict: true
+2026-09-28T12:18:27.3894850Z   ssh-user: git
+2026-09-28T12:18:27.3895118Z   persist-credentials: true
+2026-09-28T12:18:27.3895410Z   clean: true
+2026-09-28T12:18:27.3895681Z   sparse-checkout-cone-mode: true
+2026-09-28T12:18:27.3895997Z   fetch-depth: 1
+2026-09-28T12:18:27.3896263Z   fetch-tags: false
+2026-09-28T12:18:27.3896541Z   show-progress: true
+2026-09-28T12:18:27.3896826Z   lfs: false
+2026-09-28T12:18:27.3897080Z   submodules: false
+2026-09-28T12:18:27.3897352Z   set-safe-directory: true
+2026-09-28T12:18:27.3897664Z   allow-unsafe-pr-checkout: false
+2026-09-28T12:18:27.3898261Z env:
+2026-09-28T12:18:27.3898665Z   GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.console=plain
+2026-09-28T12:18:27.3899107Z ##[endgroup]
+2026-09-28T12:18:27.5033115Z Syncing repository: maragung/room-browser
+2026-09-28T12:18:27.5035014Z ##[group]Getting Git version info
+2026-09-28T12:18:27.5035538Z Working directory is '/home/runner/work/room-browser/room-browser'
+2026-09-28T12:18:27.5036232Z [command]/usr/bin/git version
+2026-09-28T12:18:27.5089391Z git version 2.55.0
+2026-09-28T12:18:27.5114611Z ##[endgroup]
+2026-09-28T12:18:27.5131915Z Temporarily overriding HOME='/home/runner/work/_temp/b310ce2c-8ef2-483e-af95-0b6cad0854b9' before making global git config changes
+2026-09-28T12:18:27.5133819Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-28T12:18:27.5138833Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/room-browser/room-browser
+2026-09-28T12:18:27.5200126Z Deleting the contents of '/home/runner/work/room-browser/room-browser'
+2026-09-28T12:18:27.5206036Z ##[group]Initializing the repository
+2026-09-28T12:18:27.5211288Z [command]/usr/bin/git init /home/runner/work/room-browser/room-browser
+2026-09-28T12:18:27.5323463Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-09-28T12:18:27.5325046Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-09-28T12:18:27.5326712Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-09-28T12:18:27.5327828Z hint: call:
+2026-09-28T12:18:27.5328365Z hint:
+2026-09-28T12:18:27.5329034Z hint: 	git config --global init.defaultBranch <name>
+2026-09-28T12:18:27.5329769Z hint:
+2026-09-28T12:18:27.5330284Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-09-28T12:18:27.5331107Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-09-28T12:18:27.5331766Z hint:
+2026-09-28T12:18:27.5332195Z hint: 	git branch -m <name>
+2026-09-28T12:18:27.5332610Z hint:
+2026-09-28T12:18:27.5333669Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-09-28T12:18:27.5335209Z Initialized empty Git repository in /home/runner/work/room-browser/room-browser/.git/
+2026-09-28T12:18:27.5340845Z [command]/usr/bin/git remote add origin https://github.com/maragung/room-browser
+2026-09-28T12:18:27.5398541Z ##[endgroup]
+2026-09-28T12:18:27.5399774Z ##[group]Disabling automatic garbage collection
+2026-09-28T12:18:27.5403849Z [command]/usr/bin/git config --local gc.auto 0
+2026-09-28T12:18:27.5454477Z ##[endgroup]
+2026-09-28T12:18:27.5455442Z ##[group]Setting up auth
+2026-09-28T12:18:27.5456211Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-28T12:18:27.5489174Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-09-28T12:18:27.5897152Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-28T12:18:27.5938281Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-28T12:18:27.6181443Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-28T12:18:27.6220764Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-09-28T12:18:27.6462131Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-09-28T12:18:27.6508143Z ##[endgroup]
+2026-09-28T12:18:27.6508790Z ##[group]Fetching the repository
+2026-09-28T12:18:27.6520047Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +9f1425327e7731a77b0b8144476ea08bad921eac:refs/remotes/origin/main
+2026-09-28T12:18:28.9323951Z From https://github.com/maragung/room-browser
+2026-09-28T12:18:28.9325167Z  * [new ref]         9f1425327e7731a77b0b8144476ea08bad921eac -> origin/main
+2026-09-28T12:18:28.9330601Z ##[endgroup]
+2026-09-28T12:18:28.9331699Z ##[group]Determining the checkout info
+2026-09-28T12:18:28.9333888Z ##[endgroup]
+2026-09-28T12:18:28.9340715Z [command]/usr/bin/git sparse-checkout disable
+2026-09-28T12:18:28.9405091Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-09-28T12:18:28.9454368Z ##[group]Checking out the ref
+2026-09-28T12:18:28.9459713Z [command]/usr/bin/git checkout --progress --force -B main refs/remotes/origin/main
+2026-09-28T12:18:29.0304571Z Switched to a new branch 'main'
+2026-09-28T12:18:29.0310833Z branch 'main' set up to track 'origin/main'.
+2026-09-28T12:18:29.0320755Z ##[endgroup]
+2026-09-28T12:18:29.0373028Z [command]/usr/bin/git log -1 --format=%H
+2026-09-28T12:18:29.0403396Z 9f1425327e7731a77b0b8144476ea08bad921eac

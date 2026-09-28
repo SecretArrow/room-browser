@@ -183,7 +183,7 @@ class OnDeviceDownloadControllerTest {
     fun `server ignoring the range restarts the file from scratch`() {
         // A half-finished .part from an interrupted attempt…
         val partFile = File(dir, "restart.gguf.part")
-        partFile.writeBytes(ByteArray(1024) { 'X'.code })
+        partFile.writeBytes(ByteArray(1024) { 'X'.code.toByte() })
         // …and a server that answers the Range request with plain 200 + the
         // FULL body: the controller must rewrite from byte zero, not append.
         val body = "E".repeat(4096)

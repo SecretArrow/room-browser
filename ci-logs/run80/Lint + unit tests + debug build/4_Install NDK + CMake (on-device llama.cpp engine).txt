@@ -1,0 +1,17 @@
+﻿2026-09-28T12:18:29.2970252Z ##[group]Run yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null || true
+2026-09-28T12:18:29.2971817Z [36;1myes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null || true[0m
+2026-09-28T12:18:29.2973421Z [36;1m"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list_installed | grep -E "ndk|cmake" || true[0m
+2026-09-28T12:18:29.3330839Z shell: /usr/bin/bash -e {0}
+2026-09-28T12:18:29.3331225Z env:
+2026-09-28T12:18:29.3331568Z   GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.console=plain
+2026-09-28T12:18:29.3332116Z   JAVA_HOME: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/21.0.12-1/x64
+2026-09-28T12:18:29.3332666Z   JAVA_HOME_21_X64: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/21.0.12-1/x64
+2026-09-28T12:18:29.3333335Z ##[endgroup]
+2026-09-28T12:18:55.7584112Z yes: standard output: Broken pipe
+2026-09-28T12:18:56.7059674Z   cmake;3.22.1                       | 3.22.1        | CMake 3.22.1                     | cmake/3.22.1                      
+2026-09-28T12:18:56.7060826Z   cmake;3.31.5                       | 3.31.5        | CMake 3.31.5                     | cmake/3.31.5                      
+2026-09-28T12:18:56.7061800Z   cmake;4.1.2                        | 4.1.2         | CMake 4.1.2                      | cmake/4.1.2                       
+2026-09-28T12:18:56.7063109Z   ndk;27.0.12077973                  | 27.0.12077973 | NDK (Side by side) 27.0.12077973 | ndk/27.0.12077973                 
+2026-09-28T12:18:56.7064224Z   ndk;27.3.13750724                  | 27.3.13750724 | NDK (Side by side) 27.3.13750724 | ndk/27.3.13750724                 
+2026-09-28T12:18:56.7065348Z   ndk;28.2.13676358                  | 28.2.13676358 | NDK (Side by side) 28.2.13676358 | ndk/28.2.13676358                 
+2026-09-28T12:18:56.7066514Z   ndk;29.0.14206865                  | 29.0.14206865 | NDK (Side by side) 29.0.14206865 | ndk/29.0.14206865                 

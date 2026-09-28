@@ -1,0 +1,22 @@
+﻿2026-09-28T12:22:24.5168154Z Post job cleanup.
+2026-09-28T12:22:24.7813045Z In post-action step
+2026-09-28T12:22:24.7829139Z ##[group]Stopping Gradle daemons
+2026-09-28T12:22:24.7830616Z Stopping Gradle daemons for /home/runner/.gradle/wrapper/dists/gradle-8.11.1-bin/bpt9gzteqjrbo1mjrsomdt32c/gradle-8.11.1
+2026-09-28T12:22:24.7848772Z [command]/home/runner/.gradle/wrapper/dists/gradle-8.11.1-bin/bpt9gzteqjrbo1mjrsomdt32c/gradle-8.11.1/bin/gradle --stop
+2026-09-28T12:22:25.5123225Z No Gradle daemons are running.
+2026-09-28T12:22:25.5337111Z ##[endgroup]
+2026-09-28T12:22:25.5339110Z Not performing cache-cleanup due to build failure
+2026-09-28T12:22:25.5340774Z ##[group]Caching Gradle state
+2026-09-28T12:22:26.0446223Z [command]/usr/bin/tar --posix -cf cache.tzst --exclude cache.tzst -P -C /home/runner/work/room-browser/room-browser --files-from manifest.txt --use-compress-program zstdmt
+2026-09-28T12:22:26.3803332Z Failed to save cache entry with path '/home/runner/.gradle/caches/*/kotlin-dsl/accessors/*/,/home/runner/.gradle/caches/*/kotlin-dsl/scripts/*/' and key: gradle-kotlin-dsl-v1-f974de4468d06c088e15bb70bf80fd44: ReserveCacheError: Unable to reserve cache with key gradle-kotlin-dsl-v1-f974de4468d06c088e15bb70bf80fd44, another job may be creating this cache.
+2026-09-28T12:22:28.9811392Z [command]/usr/bin/tar --posix -cf cache.tzst --exclude cache.tzst -P -C /home/runner/work/room-browser/room-browser --files-from manifest.txt --use-compress-program zstdmt
+2026-09-28T12:22:33.9438579Z Sent 0 of 400147813 (0.0%), 0.0 MBs/sec
+2026-09-28T12:22:34.9444828Z Sent 333038949 of 400147813 (83.2%), 158.7 MBs/sec
+2026-09-28T12:22:35.1048809Z Sent 400147813 of 400147813 (100.0%), 176.6 MBs/sec
+2026-09-28T12:22:35.3610915Z Saved cache entry with key gradle-transforms-v1-c31514c63e0026804a8340b106ae6987 from /home/runner/.gradle/caches/transforms-4/*/,/home/runner/.gradle/caches/*/transforms/*/ in 7808ms
+2026-09-28T12:22:37.6830049Z [command]/usr/bin/tar --posix -cf cache.tzst --exclude cache.tzst -P -C /home/runner/work/room-browser/room-browser --files-from manifest.txt --use-compress-program zstdmt
+2026-09-28T12:22:39.0657512Z Sent 36264853 of 36264853 (100.0%), 34.6 MBs/sec
+2026-09-28T12:22:39.3979994Z Saved cache entry with key gradle-home-v1|Linux-X64|quality[9135b4882d00dff6218dac81a00d34cb]-9f1425327e7731a77b0b8144476ea08bad921eac from /home/runner/.gradle/caches,/home/runner/.gradle/notifications,/home/runner/.gradle/.setup-gradle in 1729ms
+2026-09-28T12:22:39.3981583Z ##[endgroup]
+2026-09-28T12:22:39.3989257Z Generating Job Summary
+2026-09-28T12:22:39.4005030Z Completed post-action step

@@ -1,0 +1,626 @@
+﻿2026-09-28T12:15:29.1112930Z ##[group]Run set +e
+2026-09-28T12:15:29.1113290Z [36;1mset +e[0m
+2026-09-28T12:15:29.1113633Z [36;1m./gradlew lintFix --console=plain --continue[0m
+2026-09-28T12:15:29.1114013Z [36;1mrc=$?[0m
+2026-09-28T12:15:29.1114264Z [36;1mset -e[0m
+2026-09-28T12:15:29.1114629Z [36;1m# AGP lintFix exits 1 BY DESIGN when it applied quickfixes[0m
+2026-09-28T12:15:29.1115149Z [36;1m# ("Aborting build since sources were modified..."). That is the[0m
+2026-09-28T12:15:29.1115664Z [36;1m# success path here: fixes land via the commit step below.[0m
+2026-09-28T12:15:29.1116155Z [36;1mif git diff --quiet && [ -z "$(git status --porcelain)" ]; then[0m
+2026-09-28T12:15:29.1117007Z [36;1m  echo "No auto-fixes were applied (lintFix exit code: $rc)."[0m
+2026-09-28T12:15:29.1117630Z [36;1m  if [ $rc -ne 0 ]; then[0m
+2026-09-28T12:15:29.1118109Z [36;1m    echo "lintFix failed without applying fixes — surfacing real lint errors."[0m
+2026-09-28T12:15:29.1118594Z [36;1m    exit $rc[0m
+2026-09-28T12:15:29.1118852Z [36;1m  fi[0m
+2026-09-28T12:15:29.1119121Z [36;1melse[0m
+2026-09-28T12:15:29.1119431Z [36;1m  echo "lintFix applied changes to the working tree."[0m
+2026-09-28T12:15:29.1119805Z [36;1mfi[0m
+2026-09-28T12:15:29.1183578Z shell: /usr/bin/bash -e {0}
+2026-09-28T12:15:29.1183886Z env:
+2026-09-28T12:15:29.1184248Z   GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.console=plain
+2026-09-28T12:15:29.1184804Z   JAVA_HOME: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/21.0.12-1/x64
+2026-09-28T12:15:29.1185347Z   JAVA_HOME_21_X64: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/21.0.12-1/x64
+2026-09-28T12:15:29.1185821Z   GRADLE_ACTION_ID: gradle/actions/setup-gradle
+2026-09-28T12:15:29.1186179Z   GRADLE_USER_HOME: /home/runner/.gradle
+2026-09-28T12:15:29.1186514Z   GRADLE_BUILD_ACTION_SETUP_COMPLETED: true
+2026-09-28T12:15:29.1186873Z   GRADLE_BUILD_ACTION_CACHE_RESTORED: true
+2026-09-28T12:15:29.1187424Z   DEVELOCITY_INJECTION_INIT_SCRIPT_NAME: gradle-actions.inject-develocity.init.gradle
+2026-09-28T12:15:29.1187964Z   DEVELOCITY_INJECTION_CUSTOM_VALUE: gradle-actions
+2026-09-28T12:15:29.1188328Z   GITHUB_DEPENDENCY_GRAPH_ENABLED: false
+2026-09-28T12:15:29.1188647Z ##[endgroup]
+2026-09-28T12:15:29.9229581Z To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.11.1/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+2026-09-28T12:15:31.3211941Z Daemon will be stopped at the end of the build 
+2026-09-28T12:15:48.5222443Z > Task :core:domain:checkKotlinGradlePluginConfigurationErrors SKIPPED
+2026-09-28T12:16:03.3206358Z > Task :core:domain:compileKotlin
+2026-09-28T12:16:03.3210806Z > Task :core:domain:compileJava NO-SOURCE
+2026-09-28T12:16:03.3211251Z > Task :core:domain:processResources NO-SOURCE
+2026-09-28T12:16:03.3211640Z > Task :core:domain:classes UP-TO-DATE
+2026-09-28T12:16:03.4230295Z > Task :core:domain:jar
+2026-09-28T12:16:03.5210078Z > Task :app:checkKotlinGradlePluginConfigurationErrors SKIPPED
+2026-09-28T12:16:03.5219489Z > Task :app:preBuild UP-TO-DATE
+2026-09-28T12:16:03.5220276Z > Task :app:preDebugBuild UP-TO-DATE
+2026-09-28T12:16:03.5221082Z > Task :app:generateDebugBuildConfig
+2026-09-28T12:16:04.0206692Z > Task :app:checkDebugAarMetadata
+2026-09-28T12:16:04.0210743Z > Task :app:generateDebugResValues FROM-CACHE
+2026-09-28T12:16:04.1207264Z > Task :app:mapDebugSourceSetPaths
+2026-09-28T12:16:04.1214136Z > Task :app:generateDebugResources FROM-CACHE
+2026-09-28T12:16:04.3205307Z > Task :app:mergeDebugResources FROM-CACHE
+2026-09-28T12:16:04.3206143Z > Task :app:packageDebugResources FROM-CACHE
+2026-09-28T12:16:05.6211649Z > Task :app:parseDebugLocalResources FROM-CACHE
+2026-09-28T12:16:05.6213209Z > Task :app:createDebugCompatibleScreenManifests
+2026-09-28T12:16:05.6216229Z > Task :app:extractDeepLinksDebug FROM-CACHE
+2026-09-28T12:16:06.0205347Z > Task :app:processDebugMainManifest
+2026-09-28T12:16:06.2205771Z > Task :app:processDebugManifest
+2026-09-28T12:16:06.3206354Z > Task :app:processDebugManifestForPackage
+2026-09-28T12:16:08.2213514Z > Task :app:processDebugResources
+2026-09-28T12:16:15.9209253Z 
+2026-09-28T12:16:15.9233431Z > Task :app:kspDebugKotlin
+2026-09-28T12:16:15.9265476Z w: [ksp] /home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/data/db/AppDatabase.kt:41: Schema export directory was not provided to the annotation processor so Room cannot export the schema. You can either provide `room.schemaLocation` annotation processor argument by applying the Room Gradle plugin (id 'androidx.room') OR set exportSchema to false.
+2026-09-28T12:16:43.1243707Z 
+2026-09-28T12:16:43.1263424Z > Task :app:compileDebugKotlin
+2026-09-28T12:16:43.1294755Z w: file:///home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/agent/ui/AgentPanel.kt:141:55 'val LocalLifecycleOwner: ProvidableCompositionLocal<LifecycleOwner>' is deprecated. Moved to lifecycle-runtime-compose library in androidx.lifecycle.compose package.
+2026-09-28T12:16:43.1324189Z w: file:///home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/agent/ui/AgentPanel.kt:600:44 'val Icons.Filled.KeyboardReturn: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Filled.KeyboardReturn.
+2026-09-28T12:16:43.1353879Z w: file:///home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/agent/ui/AgentPanel.kt:776:43 'val Icons.Filled.Send: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Filled.Send.
+2026-09-28T12:16:43.1356521Z w: file:///home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/agent/ui/LocalAiActivity.kt:1143:28 Condition is always 'true'.
+2026-09-28T12:16:43.1383902Z w: file:///home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/browser/engine/ProfileEngine.kt:130:11 'var databaseEnabled: Boolean' is deprecated. Deprecated in Java.
+2026-09-28T12:16:43.1390102Z w: file:///home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/browser/engine/ProfileEngine.kt:133:11 'var allowFileAccessFromFileURLs: Boolean' is deprecated. Deprecated in Java.
+2026-09-28T12:16:43.1397572Z w: file:///home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/browser/engine/ProfileEngine.kt:134:11 'var allowUniversalAccessFromFileURLs: Boolean' is deprecated. Deprecated in Java.
+2026-09-28T12:16:43.1399619Z w: file:///home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/browser/engine/ProfileEngine.kt:199:46 'fun clearFormData(): Unit' is deprecated. Deprecated in Java.
+2026-09-28T12:16:43.1401440Z w: file:///home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/browser/engine/ProfileEngine.kt:239:60 'fun clearFormData(): Unit' is deprecated. Deprecated in Java.
+2026-09-28T12:16:43.1403823Z w: file:///home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/browser/ui/BrowserSheets.kt:235:38 'val Icons.Filled.MenuBook: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Filled.MenuBook.
+2026-09-28T12:16:43.6213360Z 
+2026-09-28T12:16:43.6233997Z > Task :app:javaPreCompileDebug FROM-CACHE
+2026-09-28T12:16:47.0217172Z > Task :app:compileDebugJavaWithJavac
+2026-09-28T12:16:47.2223532Z > Task :app:bundleDebugClassesToCompileJar
+2026-09-28T12:16:47.2253123Z > Task :app:preDebugAndroidTestBuild SKIPPED
+2026-09-28T12:16:47.3213469Z > Task :app:generateDebugAndroidTestResValues FROM-CACHE
+2026-09-28T12:16:47.6213171Z > Task :app:generateDebugAndroidTestLintModel
+2026-09-28T12:16:47.6217616Z > Task :app:extractProguardFiles
+2026-09-28T12:16:47.7207069Z > Task :app:generateDebugLintReportModel
+2026-09-28T12:16:47.7207814Z > Task :app:preDebugUnitTestBuild UP-TO-DATE
+2026-09-28T12:16:47.8209776Z > Task :app:generateDebugUnitTestLintModel
+2026-09-28T12:17:17.8205909Z > Task :app:lintAnalyzeDebug
+2026-09-28T12:17:54.4223227Z > Task :app:lintAnalyzeDebugAndroidTest
+2026-09-28T12:17:58.7223609Z > Task :app:lintAnalyzeDebugUnitTest
+2026-09-28T12:17:58.9208018Z 
+2026-09-28T12:17:58.9210366Z > Task :app:lintFixDebug
+2026-09-28T12:17:58.9213760Z /home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/browser/BrowserActivity.kt:189: Warning: Setting Exact alarms with setExactAndAllowWhileIdle requires the SCHEDULE_EXACT_ALARM permission or power exemption from user; it is intended for applications where the user knowingly schedules actions to happen at a precise time such as alarms, clocks, calendars, etc. Check out the javadoc on this permission to make sure your use case is valid. [MissingPermission]
+2026-09-28T12:17:58.9216159Z             alarm.setExactAndAllowWhileIdle(
+2026-09-28T12:17:58.9216905Z             ^
+2026-09-28T12:17:58.9219932Z /home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/browser/ProfileSwitchExecutor.kt:108: Warning: Setting Exact alarms with setExactAndAllowWhileIdle requires the SCHEDULE_EXACT_ALARM permission or power exemption from user; it is intended for applications where the user knowingly schedules actions to happen at a precise time such as alarms, clocks, calendars, etc. Check out the javadoc on this permission to make sure your use case is valid. [MissingPermission]
+2026-09-28T12:17:58.9223929Z             alarm.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME, triggerAt, pending)
+2026-09-28T12:17:58.9224918Z             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:58.9225451Z 
+2026-09-28T12:17:58.9225758Z    Explanation for issues of type "MissingPermission":
+2026-09-28T12:17:58.9226604Z    This check scans through your code and libraries and looks at the APIs
+2026-09-28T12:17:58.9227556Z    being used, and checks this against the set of permissions required to
+2026-09-28T12:17:58.9228513Z    access those APIs. If the code using those APIs is called at runtime, then
+2026-09-28T12:17:58.9229299Z    the program will crash.
+2026-09-28T12:17:58.9229616Z 
+2026-09-28T12:17:58.9230050Z    Furthermore, for permissions that are revocable (with targetSdkVersion 23),
+2026-09-28T12:17:58.9231099Z    client code must also be prepared to handle the calls throwing an exception
+2026-09-28T12:17:58.9232065Z    if the user rejects the request for permission at runtime.
+2026-09-28T12:17:58.9232871Z 
+2026-09-28T12:17:58.9234529Z /home/runner/work/room-browser/room-browser/app/build.gradle.kts:26: Warning: Not targeting the latest versions of Android; compatibility modes apply. Consider testing and updating this version. Consult the android.os.Build.VERSION_CODES javadoc for details. [OldTargetApi]
+2026-09-28T12:17:58.9236578Z         targetSdk = 35
+2026-09-28T12:17:58.9237048Z         ~~~~~~~~~~~~~~
+2026-09-28T12:17:58.9237329Z 
+2026-09-28T12:17:58.9237604Z    Explanation for issues of type "OldTargetApi":
+2026-09-28T12:17:58.9238466Z    When your application runs on a version of Android that is more recent than
+2026-09-28T12:17:58.9263331Z    your targetSdkVersion specifies that it has been tested with, various
+2026-09-28T12:17:58.9264588Z    compatibility modes kick in. This ensures that your application continues
+2026-09-28T12:17:58.9285946Z    to work, but it may look out of place. For example, if the targetSdkVersion
+2026-09-28T12:17:58.9287099Z    is less than 14, your app may get an option button in the UI.
+2026-09-28T12:17:58.9287785Z 
+2026-09-28T12:17:58.9288566Z    To fix this issue, set the targetSdkVersion to the highest available value.
+2026-09-28T12:17:58.9290195Z    Then test your app to make sure everything works correctly. You may want to
+2026-09-28T12:17:58.9291363Z    consult the compatibility notes to see what changes apply to each version
+2026-09-28T12:17:58.9292494Z    you are adding support for:
+2026-09-28T12:17:58.9293597Z    https://developer.android.com/reference/android/os/Build.VERSION_CODES.html
+2026-09-28T12:17:58.9294783Z    as well as follow this guide:
+2026-09-28T12:17:58.9304691Z    https://developer.android.com/distribute/best-practices/develop/target-sdk.
+2026-09-28T12:17:58.9305731Z    html
+2026-09-28T12:17:58.9306403Z 
+2026-09-28T12:17:58.9307061Z    https://developer.android.com/distribute/best-practices/develop/target-sdk.html
+2026-09-28T12:17:58.9307928Z 
+2026-09-28T12:17:58.9309227Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:2: Warning: A newer version of com.android.application than 8.7.3 is available: 9.4.1 [AndroidGradlePluginVersion]
+2026-09-28T12:17:58.9310920Z agp = "8.7.3"
+2026-09-28T12:17:58.9311497Z       ~~~~~~~
+2026-09-28T12:17:58.9313278Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:2: Warning: A newer version of com.android.application than 8.7.3 is available: 9.4.1 [AndroidGradlePluginVersion]
+2026-09-28T12:17:58.9343263Z agp = "8.7.3"
+2026-09-28T12:17:58.9423014Z       ~~~~~~~
+2026-09-28T12:17:58.9504103Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:2: Warning: A newer version of com.android.application than 8.7.3 is available: 9.4.1 [AndroidGradlePluginVersion]
+2026-09-28T12:17:58.9542980Z agp = "8.7.3"
+2026-09-28T12:17:58.9582971Z       ~~~~~~~
+2026-09-28T12:17:58.9642640Z 
+2026-09-28T12:17:58.9643126Z    Explanation for issues of type "AndroidGradlePluginVersion":
+2026-09-28T12:17:58.9644114Z    This detector looks for usage of the Android Gradle Plugin where the
+2026-09-28T12:17:58.9645074Z    version you are using is not the current stable release. Using older
+2026-09-28T12:17:58.9646032Z    versions is fine, and there are cases where you deliberately want to stick
+2026-09-28T12:17:58.9647020Z    with an older version. However, you may simply not be aware that a more
+2026-09-28T12:17:58.9648006Z    recent version is available, and that is what this lint check helps find.
+2026-09-28T12:17:58.9648583Z 
+2026-09-28T12:17:58.9649606Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:7: Warning: A newer version of androidx.core:core-ktx than 1.15.0 is available: 1.19.1 [GradleDependency]
+2026-09-28T12:17:58.9651014Z coreKtx = "1.15.0"
+2026-09-28T12:17:58.9651452Z           ~~~~~~~~
+2026-09-28T12:17:58.9653016Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:7: Warning: A newer version of androidx.core:core-ktx than 1.15.0 is available: 1.19.1 [GradleDependency]
+2026-09-28T12:17:58.9654443Z coreKtx = "1.15.0"
+2026-09-28T12:17:58.9654863Z           ~~~~~~~~
+2026-09-28T12:17:58.9656115Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:7: Warning: A newer version of androidx.core:core-ktx than 1.15.0 is available: 1.19.1 [GradleDependency]
+2026-09-28T12:17:58.9657505Z coreKtx = "1.15.0"
+2026-09-28T12:17:58.9657944Z           ~~~~~~~~
+2026-09-28T12:17:58.9659244Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:8: Warning: A newer version of androidx.appcompat:appcompat than 1.7.0 is available: 1.8.0 [GradleDependency]
+2026-09-28T12:17:58.9660688Z appcompat = "1.7.0"
+2026-09-28T12:17:58.9667138Z             ~~~~~~~
+2026-09-28T12:17:58.9693821Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:8: Warning: A newer version of androidx.appcompat:appcompat than 1.7.0 is available: 1.8.0 [GradleDependency]
+2026-09-28T12:17:58.9722966Z appcompat = "1.7.0"
+2026-09-28T12:17:58.9725039Z             ~~~~~~~
+2026-09-28T12:17:58.9726573Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:8: Warning: A newer version of androidx.appcompat:appcompat than 1.7.0 is available: 1.8.0 [GradleDependency]
+2026-09-28T12:17:58.9728174Z appcompat = "1.7.0"
+2026-09-28T12:17:58.9728985Z             ~~~~~~~
+2026-09-28T12:17:58.9730572Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:9: Warning: A newer version of androidx.activity:activity-compose than 1.9.3 is available: 1.13.0 [GradleDependency]
+2026-09-28T12:17:58.9732545Z activityCompose = "1.9.3"
+2026-09-28T12:17:58.9733264Z                   ~~~~~~~
+2026-09-28T12:17:58.9734974Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:9: Warning: A newer version of androidx.activity:activity-compose than 1.9.3 is available: 1.13.0 [GradleDependency]
+2026-09-28T12:17:58.9737385Z activityCompose = "1.9.3"
+2026-09-28T12:17:58.9738075Z                   ~~~~~~~
+2026-09-28T12:17:58.9739667Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:9: Warning: A newer version of androidx.activity:activity-compose than 1.9.3 is available: 1.13.0 [GradleDependency]
+2026-09-28T12:17:58.9741409Z activityCompose = "1.9.3"
+2026-09-28T12:17:58.9742478Z                   ~~~~~~~
+2026-09-28T12:17:58.9744369Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:10: Warning: A newer version of androidx.lifecycle:lifecycle-process than 2.8.7 is available: 2.11.0 [GradleDependency]
+2026-09-28T12:17:58.9746177Z lifecycle = "2.8.7"
+2026-09-28T12:17:58.9746867Z             ~~~~~~~
+2026-09-28T12:17:58.9748486Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:10: Warning: A newer version of androidx.lifecycle:lifecycle-process than 2.8.7 is available: 2.11.0 [GradleDependency]
+2026-09-28T12:17:58.9750228Z lifecycle = "2.8.7"
+2026-09-28T12:17:58.9751117Z             ~~~~~~~
+2026-09-28T12:17:58.9755944Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:10: Warning: A newer version of androidx.lifecycle:lifecycle-process than 2.8.7 is available: 2.11.0 [GradleDependency]
+2026-09-28T12:17:58.9757755Z lifecycle = "2.8.7"
+2026-09-28T12:17:58.9758446Z             ~~~~~~~
+2026-09-28T12:17:58.9760190Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:10: Warning: A newer version of androidx.lifecycle:lifecycle-runtime-compose than 2.8.7 is available: 2.11.0 [GradleDependency]
+2026-09-28T12:17:58.9762062Z lifecycle = "2.8.7"
+2026-09-28T12:17:58.9763011Z             ~~~~~~~
+2026-09-28T12:17:58.9764731Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:10: Warning: A newer version of androidx.lifecycle:lifecycle-runtime-compose than 2.8.7 is available: 2.11.0 [GradleDependency]
+2026-09-28T12:17:58.9766594Z lifecycle = "2.8.7"
+2026-09-28T12:17:58.9767477Z             ~~~~~~~
+2026-09-28T12:17:58.9773482Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:10: Warning: A newer version of androidx.lifecycle:lifecycle-runtime-compose than 2.8.7 is available: 2.11.0 [GradleDependency]
+2026-09-28T12:17:58.9775400Z lifecycle = "2.8.7"
+2026-09-28T12:17:58.9776086Z             ~~~~~~~
+2026-09-28T12:17:58.9777815Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:10: Warning: A newer version of androidx.lifecycle:lifecycle-viewmodel-compose than 2.8.7 is available: 2.11.0 [GradleDependency]
+2026-09-28T12:17:58.9779688Z lifecycle = "2.8.7"
+2026-09-28T12:17:58.9780384Z             ~~~~~~~
+2026-09-28T12:17:58.9782100Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:10: Warning: A newer version of androidx.lifecycle:lifecycle-viewmodel-compose than 2.8.7 is available: 2.11.0 [GradleDependency]
+2026-09-28T12:17:58.9784266Z lifecycle = "2.8.7"
+2026-09-28T12:17:58.9784962Z             ~~~~~~~
+2026-09-28T12:17:58.9786675Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:10: Warning: A newer version of androidx.lifecycle:lifecycle-viewmodel-compose than 2.8.7 is available: 2.11.0 [GradleDependency]
+2026-09-28T12:17:58.9788546Z lifecycle = "2.8.7"
+2026-09-28T12:17:58.9789234Z             ~~~~~~~
+2026-09-28T12:17:58.9790874Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:11: Warning: A newer version of androidx.navigation:navigation-compose than 2.8.5 is available: 2.10.2 [GradleDependency]
+2026-09-28T12:17:58.9792992Z navigationCompose = "2.8.5"
+2026-09-28T12:17:58.9793752Z                     ~~~~~~~
+2026-09-28T12:17:58.9795454Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:11: Warning: A newer version of androidx.navigation:navigation-compose than 2.8.5 is available: 2.10.2 [GradleDependency]
+2026-09-28T12:17:58.9797225Z navigationCompose = "2.8.5"
+2026-09-28T12:17:58.9798334Z                     ~~~~~~~
+2026-09-28T12:17:58.9801905Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:11: Warning: A newer version of androidx.navigation:navigation-compose than 2.8.5 is available: 2.10.2 [GradleDependency]
+2026-09-28T12:17:58.9804651Z navigationCompose = "2.8.5"
+2026-09-28T12:17:58.9805341Z                     ~~~~~~~
+2026-09-28T12:17:58.9807069Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:12: Warning: A newer version of androidx.compose:compose-bom than 2024.12.01 is available: 2026.09.00 [GradleDependency]
+2026-09-28T12:17:58.9808924Z composeBom = "2024.12.01"
+2026-09-28T12:17:58.9809585Z              ~~~~~~~~~~~~
+2026-09-28T12:17:58.9811117Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:12: Warning: A newer version of androidx.compose:compose-bom than 2024.12.01 is available: 2026.09.00 [GradleDependency]
+2026-09-28T12:17:58.9813046Z composeBom = "2024.12.01"
+2026-09-28T12:17:58.9813687Z              ~~~~~~~~~~~~
+2026-09-28T12:17:58.9815398Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:12: Warning: A newer version of androidx.compose:compose-bom than 2024.12.01 is available: 2026.09.00 [GradleDependency]
+2026-09-28T12:17:58.9817410Z composeBom = "2024.12.01"
+2026-09-28T12:17:58.9818068Z              ~~~~~~~~~~~~
+2026-09-28T12:17:58.9819584Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:13: Warning: A newer version of androidx.room:room-compiler than 2.6.1 is available: 2.8.5 [GradleDependency]
+2026-09-28T12:17:58.9821227Z room = "2.6.1"
+2026-09-28T12:17:58.9821817Z        ~~~~~~~
+2026-09-28T12:17:58.9823534Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:13: Warning: A newer version of androidx.room:room-compiler than 2.6.1 is available: 2.8.5 [GradleDependency]
+2026-09-28T12:17:58.9825187Z room = "2.6.1"
+2026-09-28T12:17:58.9825789Z        ~~~~~~~
+2026-09-28T12:17:58.9827285Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:13: Warning: A newer version of androidx.room:room-compiler than 2.6.1 is available: 2.8.5 [GradleDependency]
+2026-09-28T12:17:58.9828944Z room = "2.6.1"
+2026-09-28T12:17:58.9829523Z        ~~~~~~~
+2026-09-28T12:17:58.9830971Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:13: Warning: A newer version of androidx.room:room-ktx than 2.6.1 is available: 2.8.5 [GradleDependency]
+2026-09-28T12:17:58.9832805Z room = "2.6.1"
+2026-09-28T12:17:58.9833430Z        ~~~~~~~
+2026-09-28T12:17:58.9834833Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:13: Warning: A newer version of androidx.room:room-ktx than 2.6.1 is available: 2.8.5 [GradleDependency]
+2026-09-28T12:17:58.9836372Z room = "2.6.1"
+2026-09-28T12:17:58.9836926Z        ~~~~~~~
+2026-09-28T12:17:58.9838298Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:13: Warning: A newer version of androidx.room:room-ktx than 2.6.1 is available: 2.8.5 [GradleDependency]
+2026-09-28T12:17:58.9839905Z room = "2.6.1"
+2026-09-28T12:17:58.9840497Z        ~~~~~~~
+2026-09-28T12:17:58.9842023Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:13: Warning: A newer version of androidx.room:room-runtime than 2.6.1 is available: 2.8.5 [GradleDependency]
+2026-09-28T12:17:58.9843808Z room = "2.6.1"
+2026-09-28T12:17:58.9844377Z        ~~~~~~~
+2026-09-28T12:17:58.9845863Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:13: Warning: A newer version of androidx.room:room-runtime than 2.6.1 is available: 2.8.5 [GradleDependency]
+2026-09-28T12:17:58.9847398Z room = "2.6.1"
+2026-09-28T12:17:58.9848008Z        ~~~~~~~
+2026-09-28T12:17:58.9849480Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:13: Warning: A newer version of androidx.room:room-runtime than 2.6.1 is available: 2.8.5 [GradleDependency]
+2026-09-28T12:17:58.9851052Z room = "2.6.1"
+2026-09-28T12:17:58.9851610Z        ~~~~~~~
+2026-09-28T12:17:58.9853225Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:13: Warning: A newer version of androidx.room:room-testing than 2.6.1 is available: 2.8.5 [GradleDependency]
+2026-09-28T12:17:58.9855280Z room = "2.6.1"
+2026-09-28T12:17:58.9855847Z        ~~~~~~~
+2026-09-28T12:17:58.9857287Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:13: Warning: A newer version of androidx.room:room-testing than 2.6.1 is available: 2.8.5 [GradleDependency]
+2026-09-28T12:17:58.9858881Z room = "2.6.1"
+2026-09-28T12:17:58.9859477Z        ~~~~~~~
+2026-09-28T12:17:58.9860910Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:13: Warning: A newer version of androidx.room:room-testing than 2.6.1 is available: 2.8.5 [GradleDependency]
+2026-09-28T12:17:58.9862706Z room = "2.6.1"
+2026-09-28T12:17:58.9863140Z        ~~~~~~~
+2026-09-28T12:17:58.9864648Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:14: Warning: A newer version of androidx.datastore:datastore-preferences than 1.1.1 is available: 1.2.1 [GradleDependency]
+2026-09-28T12:17:58.9866286Z datastore = "1.1.1"
+2026-09-28T12:17:58.9867070Z             ~~~~~~~
+2026-09-28T12:17:58.9868415Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:14: Warning: A newer version of androidx.datastore:datastore-preferences than 1.1.1 is available: 1.2.1 [GradleDependency]
+2026-09-28T12:17:58.9869528Z datastore = "1.1.1"
+2026-09-28T12:17:58.9869881Z             ~~~~~~~
+2026-09-28T12:17:58.9871146Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:14: Warning: A newer version of androidx.datastore:datastore-preferences than 1.1.1 is available: 1.2.1 [GradleDependency]
+2026-09-28T12:17:58.9872549Z datastore = "1.1.1"
+2026-09-28T12:17:58.9873191Z             ~~~~~~~
+2026-09-28T12:17:58.9887406Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:16: Warning: A newer version of androidx.work:work-runtime-ktx than 2.10.0 is available: 2.12.0 [GradleDependency]
+2026-09-28T12:17:58.9888879Z work = "2.10.0"
+2026-09-28T12:17:58.9889304Z        ~~~~~~~~
+2026-09-28T12:17:58.9890624Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:16: Warning: A newer version of androidx.work:work-runtime-ktx than 2.10.0 is available: 2.12.0 [GradleDependency]
+2026-09-28T12:17:58.9892100Z work = "2.10.0"
+2026-09-28T12:17:58.9892740Z        ~~~~~~~~
+2026-09-28T12:17:58.9894065Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:16: Warning: A newer version of androidx.work:work-runtime-ktx than 2.10.0 is available: 2.12.0 [GradleDependency]
+2026-09-28T12:17:58.9895508Z work = "2.10.0"
+2026-09-28T12:17:58.9895914Z        ~~~~~~~~
+2026-09-28T12:17:58.9897177Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:17: Warning: A newer version of androidx.webkit:webkit than 1.12.1 is available: 1.17.1 [GradleDependency]
+2026-09-28T12:17:58.9898560Z webkit = "1.12.1"
+2026-09-28T12:17:58.9898977Z          ~~~~~~~~
+2026-09-28T12:17:58.9900227Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:17: Warning: A newer version of androidx.webkit:webkit than 1.12.1 is available: 1.17.1 [GradleDependency]
+2026-09-28T12:17:58.9928123Z webkit = "1.12.1"
+2026-09-28T12:17:58.9928565Z          ~~~~~~~~
+2026-09-28T12:17:58.9929840Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:17: Warning: A newer version of androidx.webkit:webkit than 1.12.1 is available: 1.17.1 [GradleDependency]
+2026-09-28T12:17:58.9931231Z webkit = "1.12.1"
+2026-09-28T12:17:58.9931656Z          ~~~~~~~~
+2026-09-28T12:17:58.9933190Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:18: Warning: A newer version of androidx.camera:camera-camera2 than 1.4.1 is available: 1.6.2 [GradleDependency]
+2026-09-28T12:17:58.9934603Z camera = "1.4.1"
+2026-09-28T12:17:58.9935024Z          ~~~~~~~
+2026-09-28T12:17:58.9936322Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:18: Warning: A newer version of androidx.camera:camera-camera2 than 1.4.1 is available: 1.6.2 [GradleDependency]
+2026-09-28T12:17:58.9938056Z camera = "1.4.1"
+2026-09-28T12:17:58.9938478Z          ~~~~~~~
+2026-09-28T12:17:58.9939974Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:18: Warning: A newer version of androidx.camera:camera-camera2 than 1.4.1 is available: 1.6.2 [GradleDependency]
+2026-09-28T12:17:58.9941390Z camera = "1.4.1"
+2026-09-28T12:17:58.9941808Z          ~~~~~~~
+2026-09-28T12:17:58.9946272Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:18: Warning: A newer version of androidx.camera:camera-core than 1.4.1 is available: 1.6.2 [GradleDependency]
+2026-09-28T12:17:58.9947762Z camera = "1.4.1"
+2026-09-28T12:17:58.9948185Z          ~~~~~~~
+2026-09-28T12:17:58.9949475Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:18: Warning: A newer version of androidx.camera:camera-core than 1.4.1 is available: 1.6.2 [GradleDependency]
+2026-09-28T12:17:58.9950866Z camera = "1.4.1"
+2026-09-28T12:17:58.9951271Z          ~~~~~~~
+2026-09-28T12:17:58.9952856Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:18: Warning: A newer version of androidx.camera:camera-core than 1.4.1 is available: 1.6.2 [GradleDependency]
+2026-09-28T12:17:58.9954254Z camera = "1.4.1"
+2026-09-28T12:17:58.9954667Z          ~~~~~~~
+2026-09-28T12:17:58.9955970Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:18: Warning: A newer version of androidx.camera:camera-lifecycle than 1.4.1 is available: 1.6.2 [GradleDependency]
+2026-09-28T12:17:58.9957397Z camera = "1.4.1"
+2026-09-28T12:17:58.9957799Z          ~~~~~~~
+2026-09-28T12:17:58.9959108Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:18: Warning: A newer version of androidx.camera:camera-lifecycle than 1.4.1 is available: 1.6.2 [GradleDependency]
+2026-09-28T12:17:58.9960524Z camera = "1.4.1"
+2026-09-28T12:17:58.9960936Z          ~~~~~~~
+2026-09-28T12:17:58.9962438Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:18: Warning: A newer version of androidx.camera:camera-lifecycle than 1.4.1 is available: 1.6.2 [GradleDependency]
+2026-09-28T12:17:58.9963898Z camera = "1.4.1"
+2026-09-28T12:17:58.9964347Z          ~~~~~~~
+2026-09-28T12:17:58.9965624Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:18: Warning: A newer version of androidx.camera:camera-view than 1.4.1 is available: 1.6.2 [GradleDependency]
+2026-09-28T12:17:58.9967026Z camera = "1.4.1"
+2026-09-28T12:17:58.9967432Z          ~~~~~~~
+2026-09-28T12:17:58.9968694Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:18: Warning: A newer version of androidx.camera:camera-view than 1.4.1 is available: 1.6.2 [GradleDependency]
+2026-09-28T12:17:58.9970064Z camera = "1.4.1"
+2026-09-28T12:17:58.9970479Z          ~~~~~~~
+2026-09-28T12:17:58.9971727Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:18: Warning: A newer version of androidx.camera:camera-view than 1.4.1 is available: 1.6.2 [GradleDependency]
+2026-09-28T12:17:58.9973294Z camera = "1.4.1"
+2026-09-28T12:17:58.9973709Z          ~~~~~~~
+2026-09-28T12:17:58.9974954Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:24: Warning: A newer version of androidx.test:core-ktx than 1.6.1 is available: 1.7.0 [GradleDependency]
+2026-09-28T12:17:58.9976327Z androidxTestCore = "1.6.1"
+2026-09-28T12:17:58.9976909Z                    ~~~~~~~
+2026-09-28T12:17:58.9978194Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:24: Warning: A newer version of androidx.test:core-ktx than 1.6.1 is available: 1.7.0 [GradleDependency]
+2026-09-28T12:17:58.9979563Z androidxTestCore = "1.6.1"
+2026-09-28T12:17:58.9980044Z                    ~~~~~~~
+2026-09-28T12:17:58.9981313Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:24: Warning: A newer version of androidx.test:core-ktx than 1.6.1 is available: 1.7.0 [GradleDependency]
+2026-09-28T12:17:58.9982903Z androidxTestCore = "1.6.1"
+2026-09-28T12:17:58.9983399Z                    ~~~~~~~
+2026-09-28T12:17:58.9984926Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:25: Warning: A newer version of androidx.test.ext:junit than 1.2.1 is available: 1.3.0 [GradleDependency]
+2026-09-28T12:17:58.9986449Z androidxJunit = "1.2.1"
+2026-09-28T12:17:58.9986897Z                 ~~~~~~~
+2026-09-28T12:17:58.9988163Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:25: Warning: A newer version of androidx.test.ext:junit than 1.2.1 is available: 1.3.0 [GradleDependency]
+2026-09-28T12:17:58.9989523Z androidxJunit = "1.2.1"
+2026-09-28T12:17:58.9989981Z                 ~~~~~~~
+2026-09-28T12:17:58.9991237Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:25: Warning: A newer version of androidx.test.ext:junit than 1.2.1 is available: 1.3.0 [GradleDependency]
+2026-09-28T12:17:58.9992819Z androidxJunit = "1.2.1"
+2026-09-28T12:17:58.9993282Z                 ~~~~~~~
+2026-09-28T12:17:58.9994662Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:26: Warning: A newer version of androidx.test.espresso:espresso-core than 3.6.1 is available: 3.7.0 [GradleDependency]
+2026-09-28T12:17:58.9996145Z espresso = "3.6.1"
+2026-09-28T12:17:58.9996556Z            ~~~~~~~
+2026-09-28T12:17:58.9997902Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:26: Warning: A newer version of androidx.test.espresso:espresso-core than 3.6.1 is available: 3.7.0 [GradleDependency]
+2026-09-28T12:17:58.9999415Z espresso = "3.6.1"
+2026-09-28T12:17:58.9999837Z            ~~~~~~~
+2026-09-28T12:17:59.0001184Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:26: Warning: A newer version of androidx.test.espresso:espresso-core than 3.6.1 is available: 3.7.0 [GradleDependency]
+2026-09-28T12:17:59.0002839Z espresso = "3.6.1"
+2026-09-28T12:17:59.0003249Z            ~~~~~~~
+2026-09-28T12:17:59.0004592Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:27: Warning: A newer version of androidx.test.uiautomator:uiautomator than 2.3.0 is available: 2.4.0 [GradleDependency]
+2026-09-28T12:17:59.0006069Z uiautomator = "2.3.0"
+2026-09-28T12:17:59.0006507Z               ~~~~~~~
+2026-09-28T12:17:59.0007864Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:27: Warning: A newer version of androidx.test.uiautomator:uiautomator than 2.3.0 is available: 2.4.0 [GradleDependency]
+2026-09-28T12:17:59.0009331Z uiautomator = "2.3.0"
+2026-09-28T12:17:59.0009766Z               ~~~~~~~
+2026-09-28T12:17:59.0011116Z /home/runner/work/room-browser/room-browser/gradle/libs.versions.toml:27: Warning: A newer version of androidx.test.uiautomator:uiautomator than 2.3.0 is available: 2.4.0 [GradleDependency]
+2026-09-28T12:17:59.0012785Z uiautomator = "2.3.0"
+2026-09-28T12:17:59.0013221Z               ~~~~~~~
+2026-09-28T12:17:59.0013474Z 
+2026-09-28T12:17:59.0013753Z    Explanation for issues of type "GradleDependency":
+2026-09-28T12:17:59.0014619Z    This detector looks for usages of libraries where the version you are using
+2026-09-28T12:17:59.0015610Z    is not the current stable release. Using older versions is fine, and there
+2026-09-28T12:17:59.0016562Z    are cases where you deliberately want to stick with an older version.
+2026-09-28T12:17:59.0017427Z    However, you may simply not be aware that a more recent version is
+2026-09-28T12:17:59.0018233Z    available, and that is what this lint check helps find.
+2026-09-28T12:17:59.0018713Z 
+2026-09-28T12:17:59.0019816Z /home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/browser/engine/DownloadEngine.kt:95: Warning: Unnecessary; SDK_INT is always >= 28 [ObsoleteSdkInt]
+2026-09-28T12:17:59.0021375Z         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+2026-09-28T12:17:59.0022071Z             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0024013Z /home/runner/work/room-browser/room-browser/app/src/main/res/mipmap-anydpi-v26: Warning: This folder configuration (v26) is unnecessary; minSdkVersion is 28. Merge all the resources in this folder into mipmap-anydpi. [ObsoleteSdkInt]
+2026-09-28T12:17:59.0025821Z 
+2026-09-28T12:17:59.0026105Z    Explanation for issues of type "ObsoleteSdkInt":
+2026-09-28T12:17:59.0027066Z    This check flags version checks that are not necessary, because the
+2026-09-28T12:17:59.0028023Z    minSdkVersion (or surrounding known API level) is already at least as high
+2026-09-28T12:17:59.0028817Z    as the version checked for.
+2026-09-28T12:17:59.0029156Z 
+2026-09-28T12:17:59.0029570Z    Similarly, it also looks for resources in -vNN folders, such as values-v14
+2026-09-28T12:17:59.0030521Z    where the version qualifier is less than or equal to the minSdkVersion,
+2026-09-28T12:17:59.0031393Z    where the contents should be merged into the best folder.
+2026-09-28T12:17:59.0031860Z 
+2026-09-28T12:17:59.0033467Z /home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/browser/BrowserViewModel.kt:148: Warning: This field leaks a context object [StaticFieldLeak]
+2026-09-28T12:17:59.0036038Z     /** The live WebView for the active tab (single shared engine instance). */
+2026-09-28T12:17:59.0037205Z     ^
+2026-09-28T12:17:59.0037424Z 
+2026-09-28T12:17:59.0037682Z    Explanation for issues of type "StaticFieldLeak":
+2026-09-28T12:17:59.0038519Z    A static field will leak contexts.
+2026-09-28T12:17:59.0038863Z 
+2026-09-28T12:17:59.0039238Z    Non-static inner classes have an implicit reference to their outer class.
+2026-09-28T12:17:59.0040185Z    If that outer class is for example a Fragment or Activity, then this
+2026-09-28T12:17:59.0041102Z    reference means that the long-running handler/loader/task will hold a
+2026-09-28T12:17:59.0042108Z    reference to the activity which prevents it from getting garbage
+2026-09-28T12:17:59.0042998Z    collected.
+2026-09-28T12:17:59.0043271Z 
+2026-09-28T12:17:59.0044319Z    Similarly, direct field references to activities and fragments from these
+2026-09-28T12:17:59.0045189Z    longer running instances can cause leaks.
+2026-09-28T12:17:59.0045609Z 
+2026-09-28T12:17:59.0046045Z    ViewModel classes should never point to Views or non-application Contexts.
+2026-09-28T12:17:59.0046672Z 
+2026-09-28T12:17:59.0048109Z /home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/agent/ui/AgentPanel.kt:142: Information: Prefer mutableIntStateOf instead of mutableStateOf [AutoboxingStateCreation from androidx.compose.runtime]
+2026-09-28T12:17:59.0050301Z     var resumeCount by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(0) }
+2026-09-28T12:17:59.0051368Z                                                                                     ~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0053546Z /home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/agent/ui/AgentSettingsActivity.kt:402: Information: Prefer mutableFloatStateOf instead of mutableStateOf [AutoboxingStateCreation from androidx.compose.runtime]
+2026-09-28T12:17:59.0055483Z     var local by remember(value) { mutableStateOf(value) }
+2026-09-28T12:17:59.0056115Z                                    ~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0057881Z /home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/agent/ui/LocalAiActivity.kt:588: Information: Prefer mutableIntStateOf instead of mutableStateOf [AutoboxingStateCreation from androidx.compose.runtime]
+2026-09-28T12:17:59.0059727Z     var modelsRefresh by remember { mutableStateOf(0) }
+2026-09-28T12:17:59.0060359Z                                     ~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0062144Z /home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/agent/ui/LocalAiActivity.kt:598: Information: Prefer mutableIntStateOf instead of mutableStateOf [AutoboxingStateCreation from androidx.compose.runtime]
+2026-09-28T12:17:59.0064238Z     var lastEntryCount by remember { mutableStateOf(0) }
+2026-09-28T12:17:59.0064901Z                                      ~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0066722Z /home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/agent/ui/LocalAiActivity.kt:1596: Information: Prefer mutableIntStateOf instead of mutableStateOf [AutoboxingStateCreation from androidx.compose.runtime]
+2026-09-28T12:17:59.0069248Z         mutableStateOf((controller.tuning.gpuLayers ?: 0).coerceIn(0, 99))
+2026-09-28T12:17:59.0069998Z         ~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0071721Z /home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/agent/ui/LocalAiActivity.kt:1600: Information: Prefer mutableIntStateOf instead of mutableStateOf [AutoboxingStateCreation from androidx.compose.runtime]
+2026-09-28T12:17:59.0074028Z         mutableStateOf((controller.tuning.cpuThreads ?: 4).coerceIn(1, 16))
+2026-09-28T12:17:59.0074771Z         ~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0076326Z /home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/agent/ui/LocalAiActivity.kt:1603: Information: Prefer mutableFloatStateOf instead of mutableStateOf [AutoboxingStateCreation from androidx.compose.runtime]
+2026-09-28T12:17:59.0078417Z         mutableStateOf(controller.tuning.contextWindow.coerceIn(512, 16384).toFloat())
+2026-09-28T12:17:59.0079270Z         ~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0081017Z /home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/agent/ui/LocalAiActivity.kt:1606: Information: Prefer mutableFloatStateOf instead of mutableStateOf [AutoboxingStateCreation from androidx.compose.runtime]
+2026-09-28T12:17:59.0083401Z         mutableStateOf(controller.tuning.keepAliveMinutes.coerceIn(0, 60).toFloat())
+2026-09-28T12:17:59.0084304Z         ~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0085986Z /home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/main/ui/MainScreen.kt:537: Information: Prefer mutableLongStateOf instead of mutableStateOf [AutoboxingStateCreation from androidx.compose.runtime]
+2026-09-28T12:17:59.0087937Z     var color by remember { mutableStateOf(PROFILE_COLORS.first()) }
+2026-09-28T12:17:59.0088634Z                             ~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0090348Z /home/runner/work/room-browser/room-browser/app/src/main/kotlin/com/roombrowser/main/ui/MainScreen.kt:623: Information: Prefer mutableLongStateOf instead of mutableStateOf [AutoboxingStateCreation from androidx.compose.runtime]
+2026-09-28T12:17:59.0092470Z     var color by remember { mutableStateOf(profile.colorArgb) }
+2026-09-28T12:17:59.0093172Z                             ~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0093538Z 
+2026-09-28T12:17:59.0093886Z    Explanation for issues of type "AutoboxingStateCreation":
+2026-09-28T12:17:59.0094821Z    Calling mutableStateOf<T>() when T is either backed by a primitive type on
+2026-09-28T12:17:59.0095848Z    the JVM or is a value class results in a state implementation that requires
+2026-09-28T12:17:59.0096835Z    all state values to be boxed. This usually causes an additional allocation
+2026-09-28T12:17:59.0097790Z    for each state write, and adds some additional work to auto-unbox values
+2026-09-28T12:17:59.0098742Z    when reading the value of the state. Instead, prefer to use a specialized
+2026-09-28T12:17:59.0099721Z    primitive state implementation for Int, Long, Float, and Double when the
+2026-09-28T12:17:59.0100707Z    state does not need to track null values and does not override the default
+2026-09-28T12:17:59.0101707Z    SnapshotMutationPolicy. See mutableIntStateOf(), mutableLongStateOf(),
+2026-09-28T12:17:59.0102943Z    mutableFloatStateOf(), and mutableDoubleStateOf() for more information.
+2026-09-28T12:17:59.0103570Z 
+2026-09-28T12:17:59.0103782Z    Vendor: Jetpack Compose
+2026-09-28T12:17:59.0104339Z    Identifier: androidx.compose.runtime
+2026-09-28T12:17:59.0105186Z    Feedback: https://issuetracker.google.com/issues/new?component=612128
+2026-09-28T12:17:59.0105789Z 
+2026-09-28T12:17:59.0106868Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:4: Warning: The resource R.string.profile_selector_title appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0108492Z     <string name="profile_selector_title">Your profiles</string>
+2026-09-28T12:17:59.0109458Z             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0110813Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:5: Warning: The resource R.string.create_profile appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0112785Z     <string name="create_profile">Create Profile</string>
+2026-09-28T12:17:59.0113502Z             ~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0114842Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:6: Warning: The resource R.string.open_profile appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0116324Z     <string name="open_profile">Open</string>
+2026-09-28T12:17:59.0116935Z             ~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0118268Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:7: Warning: The resource R.string.duplicate_profile appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0119746Z     <string name="duplicate_profile">Duplicate</string>
+2026-09-28T12:17:59.0120376Z             ~~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0121695Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:8: Warning: The resource R.string.delete_profile appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0123320Z     <string name="delete_profile">Delete</string>
+2026-09-28T12:17:59.0123931Z             ~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0125249Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:9: Warning: The resource R.string.rename_profile appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0126686Z     <string name="rename_profile">Rename</string>
+2026-09-28T12:17:59.0127279Z             ~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0128574Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:10: Warning: The resource R.string.edit_profile appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0130035Z     <string name="edit_profile">Edit Profile</string>
+2026-09-28T12:17:59.0130678Z             ~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0131974Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:11: Warning: The resource R.string.lock_profile appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0133622Z     <string name="lock_profile">Lock profile</string>
+2026-09-28T12:17:59.0134248Z             ~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0135585Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:12: Warning: The resource R.string.set_default_profile appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0137098Z     <string name="set_default_profile">Set as default</string>
+2026-09-28T12:17:59.0137769Z             ~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0139110Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:13: Warning: The resource R.string.reset_profile appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0140540Z     <string name="reset_profile">Reset profile</string>
+2026-09-28T12:17:59.0141163Z             ~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0142727Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:14: Warning: The resource R.string.export_profile appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0144271Z     <string name="export_profile">Export settings</string>
+2026-09-28T12:17:59.0144936Z             ~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0146188Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:15: Warning: The resource R.string.import_profile appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0147580Z     <string name="import_profile">Import settings</string>
+2026-09-28T12:17:59.0148196Z             ~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0149438Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:16: Warning: The resource R.string.switch_profile appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0150859Z     <string name="switch_profile">Switch profile</string>
+2026-09-28T12:17:59.0151762Z             ~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0153605Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:17: Warning: The resource R.string.cancel appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0154962Z     <string name="cancel">Cancel</string>
+2026-09-28T12:17:59.0155530Z             ~~~~~~~~~~~~~
+2026-09-28T12:17:59.0156851Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:18: Warning: The resource R.string.continue_anyway appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0158343Z     <string name="continue_anyway">Continue Anyway</string>
+2026-09-28T12:17:59.0158988Z             ~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0160350Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:19: Warning: The resource R.string.switch_profile_action appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0161864Z     <string name="switch_profile_action">Switch</string>
+2026-09-28T12:17:59.0162706Z             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0164066Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:20: Warning: The resource R.string.dont_warn_again appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0165610Z     <string name="dont_warn_again">Don\'t warn again for this IP</string>
+2026-09-28T12:17:59.0166329Z             ~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0167674Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:21: Warning: The resource R.string.network_settings appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0169141Z     <string name="network_settings">Network Settings</string>
+2026-09-28T12:17:59.0169802Z             ~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0171146Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:22: Warning: The resource R.string.airplane_mode appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0172783Z     <string name="airplane_mode">Airplane Mode</string>
+2026-09-28T12:17:59.0173405Z             ~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0174793Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:23: Warning: The resource R.string.network_profile_warning appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0176437Z     <string name="network_profile_warning">Profile Network Warning</string>
+2026-09-28T12:17:59.0177195Z             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0178523Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:24: Warning: The resource R.string.new_tab appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0179886Z     <string name="new_tab">New tab</string>
+2026-09-28T12:17:59.0180444Z             ~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0181718Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:25: Warning: The resource R.string.private_tab appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0183318Z     <string name="private_tab">Private tab</string>
+2026-09-28T12:17:59.0183928Z             ~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0185169Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:26: Warning: The resource R.string.tabs appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0186510Z     <string name="tabs">Tabs</string>
+2026-09-28T12:17:59.0187038Z             ~~~~~~~~~~~
+2026-09-28T12:17:59.0188285Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:27: Warning: The resource R.string.bookmarks appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0189691Z     <string name="bookmarks">Bookmarks</string>
+2026-09-28T12:17:59.0190272Z             ~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0191535Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:28: Warning: The resource R.string.history appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0193103Z     <string name="history">History</string>
+2026-09-28T12:17:59.0193889Z             ~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0195149Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:29: Warning: The resource R.string.downloads appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0196753Z     <string name="downloads">Downloads</string>
+2026-09-28T12:17:59.0197327Z             ~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0198605Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:30: Warning: The resource R.string.privacy_dashboard appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0200164Z     <string name="privacy_dashboard">Privacy Dashboard</string>
+2026-09-28T12:17:59.0200860Z             ~~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0202158Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:31: Warning: The resource R.string.shields appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0203619Z     <string name="shields">Shields</string>
+2026-09-28T12:17:59.0204197Z             ~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0205406Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:32: Warning: The resource R.string.settings appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0206772Z     <string name="settings">Settings</string>
+2026-09-28T12:17:59.0207351Z             ~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0208630Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:33: Warning: The resource R.string.find_in_page appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0210084Z     <string name="find_in_page">Find in page</string>
+2026-09-28T12:17:59.0210691Z             ~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0211927Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:34: Warning: The resource R.string.share appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0213469Z     <string name="share">Share</string>
+2026-09-28T12:17:59.0214014Z             ~~~~~~~~~~~~
+2026-09-28T12:17:59.0215267Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:35: Warning: The resource R.string.translate appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0216658Z     <string name="translate">Translate</string>
+2026-09-28T12:17:59.0217241Z             ~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0218517Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:36: Warning: The resource R.string.desktop_site appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0219942Z     <string name="desktop_site">Desktop site</string>
+2026-09-28T12:17:59.0220563Z             ~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0221849Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:37: Warning: The resource R.string.add_bookmark appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0223443Z     <string name="add_bookmark">Add bookmark</string>
+2026-09-28T12:17:59.0224051Z             ~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0225375Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:38: Warning: The resource R.string.add_to_home_screen appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0226901Z     <string name="add_to_home_screen">Add to Home screen</string>
+2026-09-28T12:17:59.0227580Z             ~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0228902Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:39: Warning: The resource R.string.reader_mode appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0230308Z     <string name="reader_mode">Reader mode</string>
+2026-09-28T12:17:59.0230900Z             ~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0232199Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:40: Warning: The resource R.string.save_page_pdf appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0233892Z     <string name="save_page_pdf">Save page as PDF</string>
+2026-09-28T12:17:59.0234774Z             ~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0236108Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:41: Warning: The resource R.string.site_settings appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0237742Z     <string name="site_settings">Site settings</string>
+2026-09-28T12:17:59.0238372Z             ~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0239764Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:42: Warning: The resource R.string.clear_browsing_data appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0241333Z     <string name="clear_browsing_data">Clear browsing data</string>
+2026-09-28T12:17:59.0242083Z             ~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0243563Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:43: Warning: The resource R.string.qr_scan appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0244930Z     <string name="qr_scan">Scan QR code</string>
+2026-09-28T12:17:59.0245617Z             ~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0246933Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:44: Warning: The resource R.string.voice_search appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0248445Z     <string name="voice_search">Voice search</string>
+2026-09-28T12:17:59.0249135Z             ~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0250496Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:45: Warning: The resource R.string.search_or_type_url appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0252054Z     <string name="search_or_type_url">Search or type URL</string>
+2026-09-28T12:17:59.0252916Z             ~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0254252Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:46: Warning: The resource R.string.no_internet appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0255696Z     <string name="no_internet">No Internet</string>
+2026-09-28T12:17:59.0256306Z             ~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0257573Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:47: Warning: The resource R.string.try_again appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0258938Z     <string name="try_again">Try Again</string>
+2026-09-28T12:17:59.0259511Z             ~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0260865Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:48: Warning: The resource R.string.connection_not_secure appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0262650Z     <string name="connection_not_secure">Connection Not Secure</string>
+2026-09-28T12:17:59.0263372Z             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0264754Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:49: Warning: The resource R.string.dns_resolution_failed appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0266338Z     <string name="dns_resolution_failed">DNS Resolution Failed</string>
+2026-09-28T12:17:59.0267066Z             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0268412Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:50: Warning: The resource R.string.download_failed appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0269901Z     <string name="download_failed">Download Failed</string>
+2026-09-28T12:17:59.0270541Z             ~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0271810Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:51: Warning: The resource R.string.retry appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0273320Z     <string name="retry">Retry</string>
+2026-09-28T12:17:59.0273856Z             ~~~~~~~~~~~~
+2026-09-28T12:17:59.0275152Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:52: Warning: The resource R.string.open_with_profile appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0276694Z     <string name="open_with_profile">Open with profile</string>
+2026-09-28T12:17:59.0277577Z             ~~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0279074Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:53: Warning: The resource R.string.remember_choice appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0280606Z     <string name="remember_choice">Remember choice</string>
+2026-09-28T12:17:59.0281252Z             ~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0282753Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:54: Warning: The resource R.string.welcome_title appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0284290Z     <string name="welcome_title">Your browser. Your profiles.</string>
+2026-09-28T12:17:59.0284989Z             ~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0323007Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:55: Warning: The resource R.string.welcome_subtitle appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0324667Z     <string name="welcome_subtitle">Your data stays separated.</string>
+2026-09-28T12:17:59.0325381Z             ~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0326786Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:56: Warning: The resource R.string.start_browsing appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0328339Z     <string name="start_browsing">Start Browsing</string>
+2026-09-28T12:17:59.0328979Z             ~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0330278Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:57: Warning: The resource R.string.profile_is_ready appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0331800Z     <string name="profile_is_ready">Your profile is ready.</string>
+2026-09-28T12:17:59.0332668Z             ~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0334014Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:58: Warning: The resource R.string.biometric_lock_title appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0335609Z     <string name="biometric_lock_title">Unlock profile</string>
+2026-09-28T12:17:59.0336290Z             ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0337712Z /home/runner/work/room-browser/room-browser/app/src/main/res/values/strings.xml:59: Warning: The resource R.string.biometric_lock_subtitle appears to be unused [UnusedResources]
+2026-09-28T12:17:59.0339537Z     <string name="biometric_lock_subtitle">Authentication is required to open this profile</string>
+2026-09-28T12:17:59.0340458Z             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-09-28T12:17:59.0340822Z 
+2026-09-28T12:17:59.0341098Z    Explanation for issues of type "UnusedResources":
+2026-09-28T12:17:59.0341895Z    Unused resources make applications larger and slow down builds.
+2026-09-28T12:17:59.0342657Z 
+2026-09-28T12:17:59.0342667Z 
+2026-09-28T12:17:59.0343033Z    The unused resource check can ignore tests. If you want to include
+2026-09-28T12:17:59.0343992Z    resources that are only referenced from tests, consider packaging them in a
+2026-09-28T12:17:59.0344795Z    test source set instead.
+2026-09-28T12:17:59.0345113Z 
+2026-09-28T12:17:59.0345501Z    You can include test sources in the unused resource check by setting the
+2026-09-28T12:17:59.0346495Z    system property lint.unused-resources.include-tests =true, and to exclude
+2026-09-28T12:17:59.0347355Z    them (usually for performance reasons), use
+2026-09-28T12:17:59.0348020Z    lint.unused-resources.exclude-tests =true.
+2026-09-28T12:17:59.0348629Z    ,
+2026-09-28T12:17:59.0348841Z 
+2026-09-28T12:17:59.0349022Z 0 errors, 134 warnings
+2026-09-28T12:17:59.0349305Z 
+2026-09-28T12:17:59.0349489Z > Task :app:lintFix
+2026-09-28T12:17:59.0350469Z gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/__run_2-1790597733692.json
+2026-09-28T12:17:59.0351348Z 
+2026-09-28T12:17:59.0351554Z BUILD SUCCESSFUL in 2m 29s
+2026-09-28T12:17:59.0352102Z 30 actionable tasks: 22 executed, 8 from cache
+2026-09-28T12:17:59.5689782Z No auto-fixes were applied (lintFix exit code: 0).
