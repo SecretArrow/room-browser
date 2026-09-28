@@ -9,7 +9,11 @@ import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.domain.agent.LocalAiBackup
 import com.roombrowser.domain.agent.LocalAiBackupManifest
 import com.roombrowser.domain.agent.LocalAiTuning
+import com.roombrowser.domain.agent.OllamaLibraryEntry
+import com.roombrowser.domain.agent.OllamaLibraryHeuristics
+import com.roombrowser.domain.agent.OllamaLibraryParser
 import com.roombrowser.domain.agent.OllamaModelInfo
+import com.roombrowser.domain.agent.OllamaModelPresets
 import com.roombrowser.domain.agent.OllamaPullEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -41,7 +45,10 @@ import okhttp3.OkHttpClient
  * list), NOT the multi-GB weights — an import re-pulls the models, which is
  * the honest "import" for 2GB gguf files.
  */
-class LocalAiController(private val application: Application) {
+class LocalAiController(
+    private val application: Application,
+    libraryBaseUrl: String? = null
+) {
 
     /** Connection banner state for the screen header. */
     sealed interface ConnectionState {
@@ -64,6 +71,20 @@ class LocalAiController(private val application: Application) {
 
     enum class Phase { STARTING, DOWNLOADING, VERIFYING, SUCCESS, PAUSED, FAILED }
 
+    /**
+     * State of the LIVE catalog refresh ("Find new models"): the curated
+     * presets are frozen at release time, this fetches the public
+     * ollama.com/library so newly published families surface too. Fails
+     * SOFT — a Failed state keeps the curated tiers fully usable.
+     */
+    sealed interface CatalogState {
+        /** Never refreshed this session — the UI shows the invite hint. */
+        object Idle : CatalogState
+        object Loading : CatalogState
+        data class Ready(val entries: List<OllamaLibraryEntry>, val fetchedAtMs: Long) : CatalogState
+        data class Failed(val reason: String) : CatalogState
+    }
+
     private val graph = (application as RoomBrowserApp).graph
     private val repo = graph.agentRepo
     private val appState = graph.appState
@@ -75,6 +96,12 @@ class LocalAiController(private val application: Application) {
     // DoH-configured client inside the ':browser' process).
     private val httpClient: OkHttpClient = OkHttpClient()
 
+    /** Live ollama.com/library client — base URL injectable for e2e tests. */
+    private val libraryClient = OllamaLibraryClient(
+        httpClient,
+        libraryBaseUrl ?: OllamaLibraryClient.DEFAULT_BASE
+    )
+
     // ------------------------------------------------------------- UI state
 
     var tuning by mutableStateOf(LocalAiTuning())
@@ -84,6 +111,8 @@ class LocalAiController(private val application: Application) {
     var installed by mutableStateOf<List<OllamaModelInfo>>(emptyList())
         private set
     var downloads by mutableStateOf<Map<String, DownloadState>>(emptyMap())
+        private set
+    var catalog by mutableStateOf<CatalogState>(CatalogState.Idle)
         private set
 
     /** Active pull jobs per model tag (the cancellation handle for pause). */
@@ -262,6 +291,48 @@ class LocalAiController(private val application: Application) {
         pullJobs.remove(tag)?.cancel()
         pauseRequests.remove(tag)
         downloads = downloads - tag
+    }
+
+    // ------------------------------------------------------------- catalog refresh
+
+    /**
+     * Fetches the live ollama.com/library (newest first) and moves [catalog]
+     * through Loading → Ready/Failed. Idempotent while a refresh is running.
+     * The curated presets stay untouched — discovery only ADDS families the
+     * presets do not cover.
+     */
+    fun refreshCatalog() {
+        if (catalog is CatalogState.Loading) return
+        catalog = CatalogState.Loading
+        scope.launch {
+            try {
+                val html = libraryClient.libraryHtml(sort = "newest")
+                val entries = OllamaLibraryParser.parse(html)
+                catalog = if (entries.isEmpty()) {
+                    CatalogState.Failed("the Ollama library page returned no readable models")
+                } else {
+                    CatalogState.Ready(entries, System.currentTimeMillis())
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                catalog = CatalogState.Failed(t.message ?: "refresh failed")
+            }
+        }
+    }
+
+    /**
+     * Live families the curated presets do NOT cover yet, newest-page order,
+     * chat-able, with at least one phone-usable size badge (see
+     * [OllamaLibraryHeuristics]). Reads [catalog] state so Compose
+     * recomposes on every refresh.
+     */
+    fun discoveredPhoneEntries(): List<OllamaLibraryEntry> {
+        val ready = catalog as? CatalogState.Ready ?: return emptyList()
+        val knownFamilies = OllamaModelPresets.PRESETS
+            .map { it.tag.substringBefore(':') }
+            .toSet()
+        return OllamaLibraryHeuristics.discoverPhoneModels(ready.entries, knownFamilies)
     }
 
     // ------------------------------------------------------------- delete

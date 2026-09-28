@@ -896,6 +896,17 @@ fun ModelPickerSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
     }
 }
 
+/**
+ * One provider row of the "Select model" sheet — a deliberate 3-LINE card so
+ * nothing ever overlaps or truncates into an unreadable "url · model" mash:
+ *
+ *   Line 1 — provider NAME (bold, ellipsized) + "default" tag when applicable
+ *   Line 2 — the MODEL (primary color — it is what the user is choosing)
+ *   Line 3 — the BASE URL (muted, small, ellipsized)
+ *
+ * The model line used to sit BESIDE the column as a trailing Text; on long
+ * URLs/model ids the two cramped each other into overlapping ellipses.
+ */
 @Composable
 private fun ProviderPickRow(
     provider: AgentProviderEntity,
@@ -917,25 +928,39 @@ private fun ProviderPickRow(
         }
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    provider.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                if (isDefault) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "default",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+            Spacer(Modifier.height(2.dp))
             Text(
-                provider.name + if (isDefault) "  (default)" else "",
-                style = MaterialTheme.typography.bodyLarge
+                provider.defaultModel,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             Text(
                 provider.baseUrl,
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
         }
-        Text(
-            provider.defaultModel,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
     }
 }
 

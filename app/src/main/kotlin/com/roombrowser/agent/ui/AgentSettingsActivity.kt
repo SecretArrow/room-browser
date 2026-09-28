@@ -212,9 +212,18 @@ private fun AgentSettingsRoot(
                         }
                     )
                     Spacer(Modifier.width(6.dp))
+                    // 3-LINE provider card — Name → Model → Base URL, so long
+                    // URLs and model ids never cramp into one overlapping
+                    // "url · model" line (same fix as the model picker sheet).
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(provider.name, style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                provider.name,
+                                style = MaterialTheme.typography.bodyLarge,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
                             if (provider.protocol == AgentProviderEntity.PROTOCOL_OPENCODE) {
                                 Spacer(Modifier.width(6.dp))
                                 Text(
@@ -224,9 +233,17 @@ private fun AgentSettingsRoot(
                                 )
                             }
                         }
+                        Spacer(Modifier.height(2.dp))
                         Text(
-                            "${provider.baseUrl} · ${provider.defaultModel}",
+                            provider.defaultModel,
                             style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            provider.baseUrl,
+                            style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis

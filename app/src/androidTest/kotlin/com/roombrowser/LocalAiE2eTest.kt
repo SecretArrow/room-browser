@@ -34,6 +34,15 @@ import org.junit.runner.RunWith
  *        Install button flips to the "Installed" chip
  *        (desc "localai_installed_<tag>")
  *
+ *   Catalog refresh ("Find new models", LocalAiActivity launched directly
+ *   with the test-only library_url extra pointing at the same fake server):
+ *     -> GET /library?sort=newest → structurally faithful HTML slice
+ *     -> preset-covered families (llama3.2) and embedding-only families
+ *        (bge-m3) stay hidden; the new phone-suitable family (qwen3.5,
+ *        badges 0.8b/2b/27b) is discovered
+ *     -> tapping its 0.8b Install button pulls qwen3.5:0.8b on the fake
+ *        daemon (same verification-driven pull-evidence pattern)
+ *
  * The fake server is a STATEFUL [Dispatcher], not a strict response queue:
  * the LocalAiController may call /api/version and /api/tags in any order and
  * any count (refresh on connect, refresh after a finished pull, manual
@@ -44,7 +53,9 @@ import org.junit.runner.RunWith
  * pull body completes instantly, so the DOWNLOADING phase can flash by
  * before UiAutomator polls the accessibility tree. Pause/resume semantics
  * (job cancel + re-attach, server-side layer cache) are covered by the
- * controller's unit tests (OllamaLocalTest).
+ * controller's unit tests (OllamaLocalTest). The library PARSER itself is
+ * unit-tested against a faithful fixture in OllamaDtosTest — the e2e only
+ * proves the wire-up (button → fetch → parsed cards → install).
  *
  * Compose fields are driven exactly like AgentSettingsE2eTest: semantics
  * content-description nodes + `input text` shell command (WITHOUT quotes —
@@ -59,12 +70,70 @@ class LocalAiE2eTest {
 
     private lateinit var server: MockWebServer
 
+    /**
+     * Structurally faithful slice of ollama.com/library (see OllamaDtosTest
+     * for the full-fidelity parser tests). Three families on purpose:
+     *  - llama3.2 — covered by the curated presets → hidden from discovery
+     *  - qwen3.5 — NEW phone-suitable family (0.8b/2b fit; 27b too big)
+     *  - bge-m3  — embedding-only → filtered out of discovery
+     */
+    private val libraryHtml = """
+        <html><body><ul>
+        <li  class="flex items-baseline border-b border-neutral-200 py-6">
+          <a href="/library/llama3.2" class="group w-full space-y-5">
+            <div  title="llama3.2" class="flex flex-col">
+              <p class="max-w-lg break-words text-neutral-800 text-md">Meta&#39;s compact multilingual models.</p>
+            </div>
+            <div class="flex flex-col space-y-2">
+              <div class="flex flex-wrap space-x-2">
+                <span  class="inline-flex items-center rounded-md bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-600 sm:text-[13px]">tools</span>
+                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">1b</span>
+                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">3b</span>
+              </div>
+              <span><span class="hidden sm:flex">Updated&nbsp;</span><span >3 months ago</span></span>
+            </div>
+          </a>
+        </li>
+        <li  class="flex items-baseline border-b border-neutral-200 py-6">
+          <a href="/library/qwen3.5" class="group w-full space-y-5">
+            <div  title="qwen3.5" class="flex flex-col">
+              <p class="max-w-lg break-words text-neutral-800 text-md">Qwen 3.5 is a family of open-source multimodal models.</p>
+            </div>
+            <div class="flex flex-col space-y-2">
+              <div class="flex flex-wrap space-x-2">
+                <span  class="inline-flex items-center rounded-md bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-600 sm:text-[13px]">tools</span>
+                <span  class="inline-flex items-center rounded-md bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-600 sm:text-[13px]">thinking</span>
+                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">0.8b</span>
+                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">2b</span>
+                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">27b</span>
+              </div>
+              <span><span class="hidden sm:flex">Updated&nbsp;</span><span >3 weeks ago</span></span>
+            </div>
+          </a>
+        </li>
+        <li  class="flex items-baseline border-b border-neutral-200 py-6">
+          <a href="/library/bge-m3" class="group w-full space-y-5">
+            <div  title="bge-m3" class="flex flex-col">
+              <p class="max-w-lg break-words text-neutral-800 text-md">BGE-M3 is a versatile embedding model.</p>
+            </div>
+            <div class="flex flex-col space-y-2">
+              <div class="flex flex-wrap space-x-2">
+                <span  class="inline-flex items-center rounded-md bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-600 sm:text-[13px]">embedding</span>
+                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">0.5b</span>
+              </div>
+              <span><span class="hidden sm:flex">Updated&nbsp;</span><span >2 months ago</span></span>
+            </div>
+          </a>
+        </li>
+        </ul></body></html>
+    """.trimIndent()
+
     @Before
     fun setUp() {
         server = MockWebServer()
         // Kotlin property syntax — OkHttp 4.x MockWebServer.dispatcher is a
         // var, so the Java-style setDispatcher() does not resolve in Kotlin.
-        server.dispatcher = OllamaFake()
+        server.dispatcher = OllamaFake(libraryHtml)
         server.start()
     }
 
@@ -78,13 +147,19 @@ class LocalAiE2eTest {
      *  - GET  /api/version → {"version":"0.5.7"}
      *  - GET  /api/tags    → llama3.2:1b + every model pulled so far
      *  - POST /api/pull    → instant NDJSON success stream
+     *  - GET  /library     → the faithful HTML slice above (catalog refresh)
      */
-    private class OllamaFake : Dispatcher() {
+    private class OllamaFake(val libraryHtml: String) : Dispatcher() {
         private val pulled = mutableSetOf<String>()
 
         override fun dispatch(request: RecordedRequest): MockResponse {
             val path = request.path ?: ""
             return when {
+                path.startsWith("/library") ->
+                    MockResponse()
+                        .setHeader("Content-Type", "text/html")
+                        .setBody(libraryHtml)
+
                 path.startsWith("/api/version") ->
                     MockResponse()
                         .setHeader("Content-Type", "application/json")
@@ -157,6 +232,29 @@ class LocalAiE2eTest {
         if (!hasText("AI Agent Settings", 4_000)) {
             device.executeShellCommand(
                 "am start -n ${targetContext.packageName}/com.roombrowser.agent.ui.AgentSettingsActivity"
+            )
+            device.waitForIdle(2_000)
+        }
+    }
+
+    /**
+     * Launches LocalAiActivity directly with the TEST-ONLY library_url extra
+     * (mirrors LocalAiActivity.EXTRA_LIBRARY_URL; kept as a literal so the
+     * test reads like the manifest contract) — the catalog refresh then
+     * talks to the fake server instead of ollama.com.
+     */
+    private fun launchLocalAiDirectly(libraryUrl: String) {
+        runCatching {
+            val intent = Intent()
+                .setClassName(targetContext, "com.roombrowser.agent.ui.LocalAiActivity")
+            intent.putExtra("library_url", libraryUrl)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            targetContext.startActivity(intent)
+        }
+        if (!hasDesc("localai_host_field", 4_000)) {
+            device.executeShellCommand(
+                "am start -n ${targetContext.packageName}/com.roombrowser.agent.ui.LocalAiActivity" +
+                    " --es library_url $libraryUrl"
             )
             device.waitForIdle(2_000)
         }
@@ -519,5 +617,82 @@ class LocalAiE2eTest {
         // Pause/resume buttons are intentionally NOT asserted here — see the
         // class KDoc: instant MockWebServer bodies make the DOWNLOADING phase
         // too short to observe deterministically (unit-tested instead).
+    }
+
+    // =====================================================================
+    // Catalog refresh — "Find new models" (live library discovery)
+    // =====================================================================
+
+    @Test
+    fun local_ai_catalog_refresh_discovers_and_installs_new_models() {
+        // ---- 1. LocalAiActivity directly, library pointed at the fake server
+        device.pressHome()
+        launchLocalAiDirectly(server.url("/").toString().trimEnd('/'))
+        assertTrue(
+            "LocalAiActivity must open (host field visible); UI:\n" + uiTree(),
+            hasDesc("localai_host_field", 15_000)
+        )
+
+        // ---- 2. Point the OLLAMA host at the same fake server ------------
+        // (persists the tuning host; pulls will ride on this dispatcher)
+        assertTrue(
+            "Host field must be clearable (persisted from the earlier test or default)",
+            clearField("localai_host_field")
+        )
+        val host = server.url("/").toString().trimEnd('/')
+        assertTrue("Host field must be typeable", typeIntoField("localai_host_field", host))
+        hideImeIfNeeded()
+        assertTrue("Connect button must be clickable", clickDesc("localai_connect", 8_000))
+        assertTrue(
+            "Connection status must show Ollama 0.5.7; UI:\n" + uiTree(),
+            statusContains("0.5.7", 20_000)
+        )
+
+        // ---- 3. Find new models → GET /library?sort=newest ----------------
+        // Scroll-aware: the catalog section sits below connection/installed.
+        assertTrue(
+            "The Find-new-models (refresh catalog) button must be clickable; UI:\n" + uiTree(),
+            clickDescContainsWithScroll("localai_refresh_catalog", attempts = 14)
+        )
+
+        // ---- 4. The NEW phone-suitable family is discovered ----------------
+        // (qwen3.5 is not covered by the curated presets; its card renders
+        // with the 0.8b / 2b install buttons and 27b as too-big info text.)
+        assertTrue(
+            "Discovered family qwen3.5 must be listed; UI:\n" + uiTree(),
+            hasTextWithScroll("qwen3.5")
+        )
+
+        // ---- 5. Embedding-only families stay hidden ------------------------
+        // (bge-m3 exists in the fake library but cannot chat — never listed.)
+        assertTrue(
+            "Embedding-only family bge-m3 must NOT be listed; UI:\n" + uiTree(),
+            !hasText("bge-m3", 2_000)
+        )
+
+        // ---- 6. Install the discovered family's phone-friendly tag ---------
+        // VERIFICATION-DRIVEN, same as the preset install: tap → proof that
+        // the pull started (Pause/Clear/Resume/chip), retry if the tap was
+        // lost on the busy screen.
+        val installDesc = "localai_install_qwen3.5:0.8b"
+        var pullStarted = false
+        for (round in 1..3) {
+            clickDescContainsWithScroll(installDesc, attempts = 6)
+            if (pullEvidence("qwen3.5:0.8b", 8_000)) {
+                pullStarted = true
+                break
+            }
+        }
+        assertTrue(
+            "Install tap must start the pull for qwen3.5:0.8b " +
+                "(no Pause/Clear/Resume/chip evidence after 3 taps); UI:\n" + uiTree(),
+            pullStarted
+        )
+
+        // ---- 7. Pull finishes → the discovered card flips to Installed -----
+        assertTrue(
+            "Discovered tag qwen3.5:0.8b must flip to the Installed chip after the pull; UI:\n" + uiTree(),
+            hasDescContainsWithScroll("localai_installed_qwen3.5:0.8b", attempts = 16)
+        )
     }
 }

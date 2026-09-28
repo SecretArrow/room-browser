@@ -140,13 +140,13 @@ class OllamaDtosTest {
     // ---------- OllamaModelPresets ----------
 
     @Test
-    fun `presets list the 13 curated tags in order`() {
-        assertThat(OllamaModelPresets.PRESETS).hasSize(13)
+    fun `presets list the 19 curated tags in order`() {
+        assertThat(OllamaModelPresets.PRESETS).hasSize(19)
         assertThat(OllamaModelPresets.PRESETS.map { it.tag }).containsExactly(
-            "smollm2:360m", "qwen2.5:0.5b", "tinyllama", "gemma3:1b",
-            "qwen2.5:1.5b", "deepseek-r1:1.5b", "llama3.2:1b", "gemma2:2b",
-            "qwen2.5:3b", "llama3.2:3b", "phi3.5",
-            "qwen2.5:7b", "llama3.1:8b"
+            "smollm2:360m", "gemma3:270m", "qwen2.5:0.5b", "qwen3:0.6b", "tinyllama", "gemma3:1b",
+            "qwen2.5:1.5b", "qwen3:1.7b", "deepseek-r1:1.5b", "llama3.2:1b", "gemma2:2b",
+            "qwen2.5:3b", "llama3.2:3b", "phi3.5", "qwen3:4b", "gemma3:4b",
+            "deepseek-r1:7b", "qwen2.5:7b", "llama3.1:8b"
         ).inOrder()
     }
 
@@ -167,16 +167,22 @@ class OllamaDtosTest {
         // tag -> (sizeMb, minRamGb, contextTokens)
         val expected = mapOf(
             "smollm2:360m" to Triple(269, 3, 4096),
+            "gemma3:270m" to Triple(313, 3, 32768),
             "qwen2.5:0.5b" to Triple(397, 3, 32768),
+            "qwen3:0.6b" to Triple(522, 3, 32768),
             "tinyllama" to Triple(608, 3, 2048),
             "gemma3:1b" to Triple(815, 3, 32768),
             "qwen2.5:1.5b" to Triple(986, 4, 32768),
+            "qwen3:1.7b" to Triple(1100, 4, 32768),
             "deepseek-r1:1.5b" to Triple(1113, 4, 32768),
             "llama3.2:1b" to Triple(1328, 4, 131072),
             "gemma2:2b" to Triple(1612, 4, 8192),
             "qwen2.5:3b" to Triple(1900, 6, 32768),
             "llama3.2:3b" to Triple(2010, 6, 131072),
             "phi3.5" to Triple(2163, 6, 131072),
+            "qwen3:4b" to Triple(2600, 6, 32768),
+            "gemma3:4b" to Triple(3336, 6, 32768),
+            "deepseek-r1:7b" to Triple(4689, 8, 32768),
             "qwen2.5:7b" to Triple(4720, 8, 32768),
             "llama3.1:8b" to Triple(4930, 8, 131072)
         )
@@ -220,17 +226,17 @@ class OllamaDtosTest {
             assertThat(inTier).isNotEmpty()
             assertThat(inTier.filter { it.recommended }).hasSize(1)
         }
-        assertThat(OllamaModelPresets.byTier(OllamaPresetTier.ULTRALIGHT)).hasSize(4)
-        assertThat(OllamaModelPresets.byTier(OllamaPresetTier.LIGHT)).hasSize(4)
-        assertThat(OllamaModelPresets.byTier(OllamaPresetTier.BALANCED)).hasSize(3)
-        assertThat(OllamaModelPresets.byTier(OllamaPresetTier.HEAVY)).hasSize(2)
+        assertThat(OllamaModelPresets.byTier(OllamaPresetTier.ULTRALIGHT)).hasSize(6)
+        assertThat(OllamaModelPresets.byTier(OllamaPresetTier.LIGHT)).hasSize(5)
+        assertThat(OllamaModelPresets.byTier(OllamaPresetTier.BALANCED)).hasSize(5)
+        assertThat(OllamaModelPresets.byTier(OllamaPresetTier.HEAVY)).hasSize(3)
     }
 
     @Test
     fun `recommended flags match the curation`() {
         val recommended = OllamaModelPresets.PRESETS.filter { it.recommended }.map { it.tag }
         assertThat(recommended).containsExactly(
-            "gemma3:1b", "qwen2.5:1.5b", "qwen2.5:3b", "llama3.1:8b"
+            "gemma3:1b", "qwen3:1.7b", "qwen2.5:3b", "llama3.1:8b"
         ).inOrder()
     }
 
@@ -262,7 +268,158 @@ class OllamaDtosTest {
         assertThat(OllamaModelPresets.suggestedTierForRam(12)).isEqualTo(OllamaPresetTier.HEAVY)
     }
 
-    // ---------- LocalAiTuning ----------
+    // ---------- OllamaLibraryParser (live ollama.com/library scraping) ----------
+
+    /** A trimmed but structurally faithful copy of the real listing markup. */
+    private val libraryHtml = """
+        <html><body><ul>
+        <li  class="flex items-baseline border-b border-neutral-200 py-6">
+          <a href="/library/deepseek-r1" class="group w-full space-y-5">
+            <div  title="deepseek-r1" class="flex flex-col">
+              <h2 class="truncate text-xl font-medium underline-offset-2 md:text-2xl">
+                <div class="flex space-x-2 items-center">
+                  <span class="group-hover:underline truncate">deepseek-r1</span>
+                </div>
+              </h2>
+              <p class="max-w-lg break-words text-neutral-800 text-md">DeepSeek-R1 is a family of open reasoning models with performance approaching O3 and Gemini 2.5 Pro.</p>
+            </div>
+            <div class="flex flex-col space-y-2">
+              <div class="flex flex-wrap space-x-2">
+                <span  class="inline-flex items-center rounded-md bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-600 sm:text-[13px]">tools</span>
+                <span  class="inline-flex items-center rounded-md bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-600 sm:text-[13px]">thinking</span>
+                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">1.5b</span>
+                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">7b</span>
+                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">70b</span>
+              </div>
+              <span><span class="hidden sm:flex">Updated&nbsp;</span><span >1 year ago</span></span>
+            </div>
+          </a>
+        </li>
+        <li  class="flex items-baseline border-b border-neutral-200 py-6">
+          <a href="/library/qwen3.5" class="group w-full space-y-5">
+            <div  title="qwen3.5" class="flex flex-col">
+              <p class="max-w-lg break-words text-neutral-800 text-md">Qwen 3.5 is a family of open-source multimodal models &#39;next-gen&#39;.</p>
+            </div>
+            <div class="flex flex-col space-y-2">
+              <div class="flex flex-wrap space-x-2">
+                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">0.8b</span>
+                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">2b</span>
+                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">27b</span>
+              </div>
+              <span><span class="hidden sm:flex">Updated&nbsp;</span><span >3 weeks ago</span></span>
+            </div>
+          </a>
+        </li>
+        <li  class="flex items-baseline border-b border-neutral-200 py-6">
+          <a href="/library/bge-m3" class="group w-full space-y-5">
+            <div  title="bge-m3" class="flex flex-col">
+              <p class="max-w-lg break-words text-neutral-800 text-md">BGE-M3 is a versatile embedding model.</p>
+            </div>
+            <div class="flex flex-col space-y-2">
+              <div class="flex flex-wrap space-x-2">
+                <span  class="inline-flex items-center rounded-md bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-600 sm:text-[13px]">embedding</span>
+                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">0.5b</span>
+              </div>
+              <span><span class="hidden sm:flex">Updated&nbsp;</span><span >2 months ago</span></span>
+            </div>
+          </a>
+        </li>
+        </ul></body></html>
+    """.trimIndent()
+
+    @Test
+    fun `library parser maps the real listing structure in page order`() {
+        val entries = OllamaLibraryParser.parse(libraryHtml)
+        assertThat(entries).hasSize(3)
+        assertThat(entries.map { it.name }).containsExactly("deepseek-r1", "qwen3.5", "bge-m3").inOrder()
+        assertThat(entries[0].description).contains("open reasoning models")
+        assertThat(entries[0].description).doesNotContain("&#39;")
+        assertThat(entries[1].description).isEqualTo("Qwen 3.5 is a family of open-source multimodal models 'next-gen'.")
+        assertThat(entries[0].capabilities).containsExactly("tools", "thinking").inOrder()
+        assertThat(entries[0].sizeTags).containsExactly("1.5b", "7b", "70b").inOrder()
+        assertThat(entries[1].sizeTags).containsExactly("0.8b", "2b", "27b").inOrder()
+        assertThat(entries[0].updatedAt).isEqualTo("1 year ago")
+        assertThat(entries[1].updatedAt).isEqualTo("3 weeks ago")
+    }
+
+    @Test
+    fun `library parser is lenient to drift and garbage`() {
+        // Single-space <li class= (whitespace drift), missing description,
+        // missing badges, unknown entities — still parses the name.
+        val drifted = """
+            <li class="flex items-baseline border-b">
+              <a href="/library/granite4.2"><p class="max-w-lg text-neutral-800">IBM Granite &copy; enterprise models.</p></a>
+            </li>
+        """.trimIndent()
+        val entry = OllamaLibraryParser.parse(drifted).single()
+        assertThat(entry.name).isEqualTo("granite4.2")
+        assertThat(entry.description).contains("&copy;") // unknown entity kept verbatim
+        assertThat(entry.sizeTags).isEmpty()
+        assertThat(entry.updatedAt).isEmpty()
+        assertThat(OllamaLibraryParser.parse("<html><body>no models here</body></html>")).isEmpty()
+        assertThat(OllamaLibraryParser.parse("")).isEmpty()
+        assertThat(OllamaLibraryParser.parse("<<<garbage")).isEmpty()
+    }
+
+    @Test
+    fun `library parser dedupes repeated families`() {
+        val doubled = libraryHtml + libraryHtml
+        assertThat(OllamaLibraryParser.parse(doubled)).hasSize(3)
+    }
+
+    // ---------- OllamaLibraryHeuristics (phone-suitability) ----------
+
+    @Test
+    fun `badgeParams maps plain and effective badges and rejects the rest`() {
+        assertThat(OllamaLibraryHeuristics.badgeParams("1.5b")).isEqualTo(1.5)
+        assertThat(OllamaLibraryHeuristics.badgeParams("270m")!!).isWithin(0.001).of(0.27)
+        assertThat(OllamaLibraryHeuristics.badgeParams("e4b")).isEqualTo(4.0)
+        assertThat(OllamaLibraryHeuristics.badgeParams("128x17b")).isNull()
+        assertThat(OllamaLibraryHeuristics.badgeParams("latest")).isNull()
+        assertThat(OllamaLibraryHeuristics.badgeParams("q4_0")).isNull()
+        assertThat(OllamaLibraryHeuristics.isPlainSizeBadge("0.8b")).isTrue()
+        assertThat(OllamaLibraryHeuristics.isPlainSizeBadge("e4b")).isFalse()
+        assertThat(OllamaLibraryHeuristics.isPlainSizeBadge("128x17b")).isFalse()
+    }
+
+    @Test
+    fun `phoneSizes keeps only small plain badges in page order`() {
+        val entry = OllamaLibraryParser.parse(libraryHtml)[0] // deepseek-r1
+        assertThat(OllamaLibraryHeuristics.phoneSizes(entry)).containsExactly("1.5b").inOrder()
+        val qwen = OllamaLibraryParser.parse(libraryHtml)[1]
+        assertThat(OllamaLibraryHeuristics.phoneSizes(qwen)).containsExactly("0.8b", "2b").inOrder()
+    }
+
+    @Test
+    fun `embedding-only families are not chat candidates`() {
+        val entries = OllamaLibraryParser.parse(libraryHtml)
+        assertThat(OllamaLibraryHeuristics.isChatCandidate(entries[2])).isFalse() // bge-m3
+        assertThat(OllamaLibraryHeuristics.isChatCandidate(entries[0])).isTrue()  // deepseek-r1
+        assertThat(OllamaLibraryHeuristics.isChatCandidate(entries[1])).isTrue()  // qwen3.5
+        // No-capability entries carry no evidence either way — included.
+        assertThat(
+            OllamaLibraryHeuristics.isChatCandidate(OllamaLibraryEntry(name = "x"))
+        ).isTrue()
+    }
+
+    @Test
+    fun `discoverPhoneModels filters known families chat and size`() {
+        val entries = OllamaLibraryParser.parse(libraryHtml)
+        val known = setOf("deepseek-r1")
+        val discovered = OllamaLibraryHeuristics.discoverPhoneModels(entries, known)
+        // deepseek-r1: known family. bge-m3: embedding-only. qwen3.5 survives.
+        assertThat(discovered.map { it.name }).containsExactly("qwen3.5")
+    }
+
+    @Test
+    fun `estimatedDownloadMb stays close to real q4 sizes`() {
+        assertThat(OllamaLibraryHeuristics.estimatedDownloadMb(0.27)).isEqualTo(325)
+        assertThat(OllamaLibraryHeuristics.estimatedDownloadMb(0.8)).isEqualTo(670)
+        assertThat(OllamaLibraryHeuristics.estimatedDownloadMb(1.7)).isEqualTo(1255)
+        assertThat(OllamaLibraryHeuristics.estimatedDownloadMb(4.0)).isEqualTo(2750)
+        assertThat(OllamaModelPresets.formatSizeMb(OllamaLibraryHeuristics.estimatedDownloadMb(0.8)))
+            .isEqualTo("670 MB")
+    }
 
     @Test
     fun `tuning defaults leave the server in control`() {

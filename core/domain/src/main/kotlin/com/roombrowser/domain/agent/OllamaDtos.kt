@@ -25,6 +25,9 @@ import kotlinx.serialization.json.longOrNull
  *  3. [OllamaModelPreset] / [OllamaModelPresets] — a curated, RAM-tiered
  *     catalog of phone-friendly models, so users never have to guess tags
  *     or discover too late that an 8 GB model OOMs a 4 GB phone.
+ *     [OllamaLibraryParser] / [OllamaLibraryHeuristics] complement it with
+ *     LIVE discovery against the public ollama.com/library listing, so new
+ *     families published after a release still surface in the app.
  *  4. [LocalAiTuning] — the num_gpu / num_thread / num_ctx / keep_alive
  *     knobs that make local inference survivable on big.LITTLE hardware.
  *  5. [LocalAiBackup] — import/export manifest so a Termux reinstall does
@@ -237,10 +240,12 @@ data class OllamaModelPreset(
 )
 
 /**
- * The hand-curated catalog: 13 models across 4 RAM tiers, lightest first so
+ * The hand-curated catalog: 19 models across 4 RAM tiers, lightest first so
  * vertical catalogs read small → large. Numbers are q4 defaults, rounded;
- * they are advisory and refreshed only by editing this list — the app never
- * invents presets at runtime, because a wrong tag silently pulls gigabytes.
+ * they are advisory — the app never invents presets at runtime, because a
+ * wrong tag silently pulls gigabytes. Fresh families published on
+ * ollama.com AFTER a release are covered by the live library refresh
+ * ([OllamaLibraryParser]) instead of edits here.
  */
 object OllamaModelPresets {
 
@@ -253,9 +258,21 @@ object OllamaModelPresets {
             tier = OllamaPresetTier.ULTRALIGHT
         ),
         OllamaModelPreset(
+            tag = "gemma3:270m", label = "Gemma 3 · 270M", params = "0.3B",
+            sizeMb = 313, minRamGb = 3, contextTokens = 32768,
+            strengths = "Google's tiniest Gemma 3 — capable for 270M",
+            tier = OllamaPresetTier.ULTRALIGHT, indonesianFriendly = true
+        ),
+        OllamaModelPreset(
             tag = "qwen2.5:0.5b", label = "Qwen 2.5 · 0.5B", params = "0.5B",
             sizeMb = 397, minRamGb = 3, contextTokens = 32768,
             strengths = "Fastest starter with decent multilingual skills",
+            tier = OllamaPresetTier.ULTRALIGHT, indonesianFriendly = true
+        ),
+        OllamaModelPreset(
+            tag = "qwen3:0.6b", label = "Qwen 3 · 0.6B", params = "0.6B",
+            sizeMb = 522, minRamGb = 3, contextTokens = 32768,
+            strengths = "Newest tiny Qwen — thinking mode, decent multilingual",
             tier = OllamaPresetTier.ULTRALIGHT, indonesianFriendly = true
         ),
         OllamaModelPreset(
@@ -274,7 +291,13 @@ object OllamaModelPresets {
         OllamaModelPreset(
             tag = "qwen2.5:1.5b", label = "Qwen 2.5 · 1.5B", params = "1.5B",
             sizeMb = 986, minRamGb = 4, contextTokens = 32768,
-            strengths = "Best speed/quality balance for phones",
+            strengths = "Proven speed/quality balance for phones",
+            tier = OllamaPresetTier.LIGHT, indonesianFriendly = true
+        ),
+        OllamaModelPreset(
+            tag = "qwen3:1.7b", label = "Qwen 3 · 1.7B", params = "1.7B",
+            sizeMb = 1100, minRamGb = 4, contextTokens = 32768,
+            strengths = "Latest compact Qwen — thinking mode, best new small model",
             tier = OllamaPresetTier.LIGHT, recommended = true, indonesianFriendly = true
         ),
         OllamaModelPreset(
@@ -314,7 +337,25 @@ object OllamaModelPresets {
             strengths = "Microsoft's efficient long-context model",
             tier = OllamaPresetTier.BALANCED, indonesianFriendly = true
         ),
+        OllamaModelPreset(
+            tag = "qwen3:4b", label = "Qwen 3 · 4B", params = "4.0B",
+            sizeMb = 2600, minRamGb = 6, contextTokens = 32768,
+            strengths = "Newest mid-size Qwen with strong reasoning",
+            tier = OllamaPresetTier.BALANCED, indonesianFriendly = true
+        ),
+        OllamaModelPreset(
+            tag = "gemma3:4b", label = "Gemma 3 · 4B", params = "4.3B",
+            sizeMb = 3336, minRamGb = 6, contextTokens = 32768,
+            strengths = "Vision-capable Gemma 3 — quality jumps at 4B",
+            tier = OllamaPresetTier.BALANCED, indonesianFriendly = true
+        ),
         // HEAVY — 4 GB+ download, flagship phones with 8 GB+ RAM only.
+        OllamaModelPreset(
+            tag = "deepseek-r1:7b", label = "DeepSeek R1 · 7B", params = "7.6B",
+            sizeMb = 4689, minRamGb = 8, contextTokens = 32768,
+            strengths = "Full reasoning model with visible chain-of-thought",
+            tier = OllamaPresetTier.HEAVY, indonesianFriendly = true
+        ),
         OllamaModelPreset(
             tag = "qwen2.5:7b", label = "Qwen 2.5 · 7B", params = "7.1B",
             sizeMb = 4720, minRamGb = 8, contextTokens = 32768,
@@ -362,6 +403,186 @@ object OllamaModelPresets {
         totalRamGb < 8L -> OllamaPresetTier.BALANCED
         else -> OllamaPresetTier.HEAVY
     }
+}
+
+// ---------- Live library discovery (ollama.com/library) ----------
+
+/**
+ * One model FAMILY scraped from the PUBLIC ollama.com/library listing —
+ * the fuel of the "Find new models" refresh: the curated presets are frozen
+ * at release time, while the library keeps receiving new families.
+ *
+ * Shape (validated against the real listing): each entry is an `<li>` block
+ * with an `href="/library/<name>"` anchor, a description paragraph, indigo
+ * capability badges (tools / thinking / vision / audio / embedding) and
+ * BLUE PARAMETER-SIZE badges whose text IS a pullable tag suffix
+ * ("1.5b", "270m"…). [OllamaLibraryParser] folds that block into this flat
+ * DTO; page order (newest-first for `?sort=newest`) is preserved.
+ */
+@Serializable
+data class OllamaLibraryEntry(
+    /** Family name, e.g. "qwen3.5" — the part before ":" in a pull tag. */
+    val name: String,
+    /** One-line blurb from the listing; HTML entities unescaped; "" when absent. */
+    val description: String,
+    /** "2 weeks ago" style freshness label straight from the page; "" when absent. */
+    val updatedAt: String = "",
+    /** Indigo capability badges: "tools", "thinking", "vision", "audio", "embedding". */
+    val capabilities: List<String> = emptyList(),
+    /** Blue parameter-size badges in page order: ["0.8b", "2b", "27b", "122b"]. */
+    val sizeTags: List<String> = emptyList()
+)
+
+/**
+ * Lenient scraper for the ollama.com/library listing (works for the default
+ * popularity order AND `?sort=newest`). Regex-based on purpose: no HTML
+ * parser dependency, and any markup drift degrades to fewer fields (empty
+ * description / no badges) instead of throwing — the same contract as
+ * [OllamaTagsParser]. Verified shape (2026):
+ *
+ * ```html
+ * <li class="flex items-baseline border-b …">
+ *   <a href="/library/deepseek-r1" class="group w-full space-y-5">
+ *     <div title="deepseek-r1" …>…<span …>deepseek-r1</span>…</div>
+ *     <p class="max-w-lg …">DeepSeek-R1 is a family of open reasoning…</p>
+ *     … <span class="…text-indigo-600…">tools</span>
+ *     … <span class="…text-blue-600…">1.5b</span> …
+ *     … <span class="hidden sm:flex">Updated&nbsp;</span><span >1 year ago</span>
+ *   </a>
+ * </li>
+ * ```
+ */
+object OllamaLibraryParser {
+
+    private val BLOCK = Regex(
+        """<li[^>]*flex items-baseline.*?</li>""",
+        RegexOption.DOT_MATCHES_ALL
+    )
+    // NB: no trailing `"` in the regex — a Kotlin raw string cannot end with
+    // a quote char (the closing delimiter would swallow it), and the capture
+    // is identical anyway: the char class stops at the attribute's quote.
+    private val NAME = Regex("""href="/library/([a-z0-9._-]+)""")
+    private val DESCRIPTION = Regex("""<p class="max-w-lg[^"]*">([^<]*)</p>""")
+    private val SIZE_BADGE = Regex("""text-blue-600[^>]*>\s*([^<]+?)\s*</span>""")
+    private val CAPABILITY = Regex("""text-indigo-600[^>]*>\s*([^<]+?)\s*</span>""")
+    private val UPDATED = Regex("""Updated[^<]*</span>\s*<span[^>]*>\s*([^<]+?)\s*</span>""")
+
+    /**
+     * Parses the listing page; NEVER throws (garbage/empty → empty list).
+     * Entries are deduped by name and keep page order.
+     */
+    fun parse(html: String): List<OllamaLibraryEntry> = runCatching {
+        BLOCK.findAll(html)
+            .mapNotNull { match ->
+                val block = match.value
+                val name = NAME.find(block)?.groupValues?.get(1) ?: return@mapNotNull null
+                OllamaLibraryEntry(
+                    name = name,
+                    description = matchGroup(DESCRIPTION, block)?.let(::unescapeEntities)?.trim() ?: "",
+                    updatedAt = matchGroup(UPDATED, block)?.trim() ?: "",
+                    capabilities = CAPABILITY.findAll(block)
+                        .mapNotNull { it.groupValues[1].trim().takeIf { badge -> badge.isNotEmpty() } }
+                        .distinct()
+                        .toList(),
+                    sizeTags = SIZE_BADGE.findAll(block)
+                        .mapNotNull { it.groupValues[1].trim().takeIf { badge -> badge.isNotEmpty() } }
+                        .distinct()
+                        .toList()
+                )
+            }
+            .distinctBy { it.name }
+            .toList()
+    }.getOrDefault(emptyList())
+
+    private fun matchGroup(regex: Regex, block: String): String? =
+        regex.find(block)?.groupValues?.get(1)
+
+    /**
+     * Minimal HTML-entity unescape for descriptions: numeric (`&#39;`,
+     * `&#x27;`) plus the handful of named entities ollama.com actually uses.
+     * Unknown entities are left verbatim — never a crash.
+     */
+    private fun unescapeEntities(text: String): String {
+        if (!text.contains('&')) return text
+        val named = mapOf(
+            "amp" to "&", "lt" to "<", "gt" to ">", "quot" to "\"",
+            "apos" to "'", "nbsp" to " "
+        )
+        return Regex("&(#x?[0-9a-fA-F]+|[a-zA-Z]+);").replace(text) { match ->
+            val token = match.groupValues[1]
+            when {
+                token.length > 2 && token[0] == '#' && (token[1] == 'x' || token[1] == 'X') ->
+                    token.substring(2).toIntOrNull(16)?.toChar()?.toString() ?: match.value
+                token.startsWith("#") ->
+                    token.substring(1).toIntOrNull()?.toChar()?.toString() ?: match.value
+                else -> named[token.lowercase()] ?: match.value
+            }
+        }
+    }
+}
+
+/**
+ * Phone-suitability rules for DISCOVERED families — mirrors the curatorial
+ * judgment baked into the static presets, applied at runtime to whatever
+ * the live library returned:
+ *
+ *  - a size badge is phone-usable when its parameter count is ≤ [PHONE_PARAMS_MAX]
+ *    (4B ≈ 2.7 GB q4 download — beyond that a phone thrashes or OOMs);
+ *  - MoE "e"-badges (effective params, e.g. "e4b") and "128x17b"-style total×active
+ *    badges carry NO honest download estimate → informational only, not installable;
+ *  - embedding-only families (bge-*, nomic-embed…) cannot chat → not candidates.
+ */
+object OllamaLibraryHeuristics {
+
+    /** Params ceiling for a phone-usable discovered tag (billions). */
+    const val PHONE_PARAMS_MAX = 4.0
+
+    private val PLAIN_SIZE = Regex("""^[0-9]+(?:\.[0-9]+)?[bm]$""")
+    private val PARAMS = Regex("""^e?([0-9]+(?:\.[0-9]+)?)([bm])$""")
+
+    /**
+     * Parameter count of a badge: "1.5b" → 1.5, "270m" → 0.27, "e4b" → 4.0
+     * (MoE EFFECTIVE params). "128x17b", "latest", "q4_0" → null.
+     */
+    fun badgeParams(badge: String): Double? {
+        val match = PARAMS.find(badge.trim().lowercase()) ?: return null
+        val value = match.groupValues[1].toDoubleOrNull() ?: return null
+        return if (match.groupValues[2] == "m") value / 1000.0 else value
+    }
+
+    /** Install-able badge: a PLAIN params tag whose download size is estimable. */
+    fun isPlainSizeBadge(badge: String): Boolean =
+        PLAIN_SIZE.matches(badge.trim().lowercase())
+
+    /** The entry's size badges that are phone-usable, in page order. */
+    fun phoneSizes(entry: OllamaLibraryEntry): List<String> =
+        entry.sizeTags.filter { badge ->
+            isPlainSizeBadge(badge) && (badgeParams(badge) ?: Double.MAX_VALUE) <= PHONE_PARAMS_MAX
+        }
+
+    /** Chat-able: families whose ONLY capability is "embedding" are excluded. */
+    fun isChatCandidate(entry: OllamaLibraryEntry): Boolean =
+        entry.capabilities.isEmpty() || entry.capabilities.any { it != "embedding" }
+
+    /**
+     * Live families the curated presets do NOT cover yet: newest page order
+     * preserved, chat-able, at least one phone-usable size badge.
+     */
+    fun discoverPhoneModels(
+        entries: List<OllamaLibraryEntry>,
+        knownFamilies: Set<String>
+    ): List<OllamaLibraryEntry> = entries.filter { entry ->
+        entry.name !in knownFamilies && isChatCandidate(entry) && phoneSizes(entry).isNotEmpty()
+    }
+
+    /**
+     * Rough q4 DOWNLOAD estimate in MB: 150 MB fixed + 650 MB per parameter
+     * billion (integer math; renders through [OllamaModelPresets.formatSizeMb]).
+     * Calibrated: 0.27B→325 (real 313), 0.8B→680 (real 660), 1.7B→1255 (real
+     * 1100), 4B→2750 (real 2600) — always labeled "est." in the UI; the pull
+     * stream shows the real bytes.
+     */
+    fun estimatedDownloadMb(params: Double): Int = (150 + 650 * params).toInt()
 }
 
 // ---------- Tuning + backup ----------

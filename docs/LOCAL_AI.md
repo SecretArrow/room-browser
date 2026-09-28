@@ -129,23 +129,29 @@ family, jumlah parameter, dan kuantisasi. Tiap baris punya:
 
 ### Katalog model — terbaik untuk ponsel
 
-13 preset kurasi, dikelompokkan dalam 4 tier berdasarkan RAM, plus saran
+19 preset kurasi, dikelompokkan dalam 4 tier berdasarkan RAM, plus saran
 tier otomatis sesuai RAM perangkat Anda. Ukuran = perkiraan unduhan tag
 q4 default (kuantisasi 4-bit standar).
 
 | Tag | Parameter | Unduhan | RAM min | Konteks | Kelebihan | Tier |
 |---|---|---|---|---|---|---|
 | `smollm2:360m` | 0.4B | ~269 MB | 3 GB | 4096 | Chat koheren meski sangat kecil | Ultra light |
+| `gemma3:270m` | 0.3B | ~313 MB | 3 GB | 32768 | Gemma 3 terkecil — kuat untuk 270M | Ultra light |
 | `qwen2.5:0.5b` | 0.5B | ~397 MB | 3 GB | 32768 | Pemula tercepat, multibahasa lumayan | Ultra light |
+| `qwen3:0.6b` | 0.6B | ~522 MB | 3 GB | 32768 | Qwen terbaru terkecil — thinking mode | Ultra light |
 | `tinyllama` | 1.1B | ~608 MB | 3 GB | 2048 | Model mini klasik — sangat cepat, kualitas dasar | Ultra light |
 | `gemma3:1b` ⭐ | 1.0B | ~815 MB | 3 GB | 32768 | Model terkecil Google — tak lazim kuat untuk ukurannya | Ultra light (rekomendasi) |
-| `qwen2.5:1.5b` ⭐ | 1.5B | ~986 MB | 4 GB | 32768 | Balance kualitas/kecepatan terbaik untuk ponsel | Light (rekomendasi) |
+| `qwen2.5:1.5b` | 1.5B | ~986 MB | 4 GB | 32768 | Balance kualitas/kecepatan yang teruji | Light |
+| `qwen3:1.7b` ⭐ | 1.7B | ~1100 MB | 4 GB | 32768 | Qwen kompak terbaru — thinking mode, model kecil baru terbaik | Light (rekomendasi) |
 | `deepseek-r1:1.5b` | 1.5B | ~1113 MB | 4 GB | 32768 | Model reasoning mini dengan chain-of-thought terlihat | Light |
 | `llama3.2:1b` | 1.0B | ~1328 MB | 4 GB | 131072 | Model phone-first Meta, multibahasa bagus | Light |
 | `gemma2:2b` | 2.6B | ~1612 MB | 4 GB | 8192 | Model Google seimbang, prosa bersih | Light |
 | `qwen2.5:3b` ⭐ | 3.1B | ~1900 MB | 6 GB | 32768 | Kualitas terbaik yang realistis di ponsel; tool calling kuat | Balanced (rekomendasi) |
 | `llama3.2:3b` | 3.2B | ~2010 MB | 6 GB | 131072 | Llama 3.2 lebih besar — multibahasa terbaik | Balanced |
 | `phi3.5` | 3.8B | ~2163 MB | 6 GB | 131072 | Model efisien Microsoft dengan konteks panjang | Balanced |
+| `qwen3:4b` | 4.0B | ~2600 MB | 6 GB | 32768 | Qwen mid-size terbaru, reasoning kuat | Balanced |
+| `gemma3:4b` | 4.3B | ~3336 MB | 6 GB | 32768 | Gemma 3 dengan vision — kualitas naik di 4B | Balanced |
+| `deepseek-r1:7b` | 7.6B | ~4689 MB | 8 GB | 32768 | Model reasoning penuh dengan chain-of-thought terlihat | Heavy |
 | `qwen2.5:7b` | 7.1B | ~4720 MB | 8 GB | 32768 | Kualitas flagship — butuh ponsel top + kesabaran | Heavy |
 | `llama3.1:8b` ⭐ | 8.0B | ~4930 MB | 8 GB | 131072 | Kualitas asisten penuh di ponsel flagship | Heavy (rekomendasi) |
 
@@ -157,6 +163,36 @@ berbahasa Indonesia — kekuatan bahasa Indonesia model kecil bervariasi).
 berperilaku seperti 4 GB saat LLM dan browser berjalan bersamaan.
 Saran tier: RAM < 4 GB → Ultra light; < 6 GB → Light; < 8 GB →
 Balanced; ≥ 8 GB → Heavy.
+
+### Find new models — refresh katalog live
+
+Preset di atas dibekukan saat rilis. Tombol **Find new models** di atas
+tier katalog mengambil **library publik ollama.com secara live**
+(`GET https://ollama.com/library?sort=newest`, hanya-baca, HTTPS) lalu
+menampilkan famili model **baru** yang belum tercakup preset dan cocok
+untuk ponsel:
+
+- **Badge ukuran parameter** (1.5b, 270m, …) di listing ollama.com adalah
+  **tag yang bisa langsung di-pull** — badge ≤ 4B jadi tombol **Install**
+  dengan perkiraan unduhan q4 (ber-label *est.*; progres pull menampilkan
+  byte nyata).
+- **Badge > 4B** tampil sebagai info "too big for phones" (tidak bisa
+  di-install dari sini).
+- Famili **embedding-only** (bge-m3, nomic-embed…) disembunyikan — tidak
+  bisa chat.
+- Kartu memuat deskripsi, badge kapabilitas (tools/thinking/vision), dan
+  label "updated X ago" dari listing.
+- Maksimum 20 kartu ditampilkan (urutan terbaru dulu) + ringkasan jumlah
+  sisanya.
+
+Gagal fetch (offline, situs berubah markup) = pesan error jujur + preset
+kurasi tetap berfungsi penuh — refresh tidak pernah merusak katalog.
+Parser-nya unit-test terhadap fixture markup asli; e2e membuktikan alur
+penuh tombol → fetch → kartu → install via MockWebServer.
+
+Ukuran unduhan model yang ditemukan dihitung dengan heuristik
+`150 MB + 650 MB × parameter (miliar)` — cukup dekat dengan q4 nyata
+(0.8B → ~670 MB; 4B → ~2.7 GB) dan selalu ber-label *est.*
 
 ### Downloads — pause/resume
 

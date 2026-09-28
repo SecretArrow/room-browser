@@ -1,4 +1,4 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 
 package com.roombrowser.agent.ui
 
@@ -15,6 +15,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -75,10 +77,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.agent.LocalAiController
 import com.roombrowser.domain.agent.LocalAiBackup
 import com.roombrowser.domain.agent.LocalAiTuning
+import com.roombrowser.domain.agent.OllamaLibraryEntry
+import com.roombrowser.domain.agent.OllamaLibraryHeuristics
 import com.roombrowser.domain.agent.OllamaModelInfo
 import com.roombrowser.domain.agent.OllamaModelPreset
 import com.roombrowser.domain.agent.OllamaModelPresets
@@ -126,7 +131,10 @@ class LocalAiActivity : ComponentActivity() {
         // Edge-to-edge: insets are consumed by the Compose UI below — nothing
         // ever overlaps the system Back / Home / Recents buttons.
         enableEdgeToEdge()
-        controller = LocalAiController(application)
+        // EXTRA_LIBRARY_URL is a TEST hook (e2e points the live-library
+        // client at a MockWebServer); production launches never set it and
+        // fall back to https://ollama.com.
+        controller = LocalAiController(application, intent.getStringExtra(EXTRA_LIBRARY_URL))
         controller.start()
         setContent {
             RoomBrowserTheme {
@@ -145,6 +153,9 @@ class LocalAiActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_PROFILE_ID = "profile_id"
+
+        /** Test-only override of the live-library base URL (see onCreate). */
+        const val EXTRA_LIBRARY_URL = "library_url"
 
         fun launch(from: Activity, profileId: String?) {
             from.startActivity(Intent(from, LocalAiActivity::class.java).apply {
@@ -675,12 +686,19 @@ private fun CatalogSection(
     }
     val suggestedTier = OllamaModelPresets.suggestedTierForRam(ramGb)
     Text(
-        "Curated presets that run well on phones. Sizes are approximate (default 4-bit tags). " +
+        "Curated presets that run well on phones, plus a live refresh against " +
+            "ollama.com to discover new models. Sizes are approximate (default 4-bit tags). " +
             "On this device: ${Build.MODEL} · $cores cores · $ramGb GB — suggested tier: ${suggestedTier.label}.",
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 16.dp)
     )
+
+    // ---- Live discovery: new families from the public ollama.com library.
+    // Shown BEFORE the curated tiers — "what's new" is the question this
+    // section answers; the tiers below remain the vetted, offline-safe path.
+    RefreshCatalogSection(controller = controller, onNotice = onNotice)
+
     OllamaPresetTier.values().forEach { tier ->
         Text(
             tier.label,
@@ -704,6 +722,228 @@ private fun CatalogSection(
                 }
             )
         }
+    }
+}
+
+// ===========================================================================
+// Live catalog refresh — "Find new models"
+// ===========================================================================
+
+/** How many discovered family cards render (newest first); the rest are summed up. */
+private const val DISCOVERED_CARDS_MAX = 20
+
+@Composable
+private fun RefreshCatalogSection(
+    controller: LocalAiController,
+    onNotice: (String) -> Unit
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Button(
+                onClick = { controller.refreshCatalog() },
+                enabled = controller.catalog !is LocalAiController.CatalogState.Loading,
+                modifier = Modifier.semantics { contentDescription = "localai_refresh_catalog" }
+            ) {
+                if (controller.catalog is LocalAiController.CatalogState.Loading) {
+                    CircularProgressIndicator(
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(14.dp)
+                    )
+                } else {
+                    Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                }
+                Spacer(Modifier.width(6.dp))
+                Text("Find new models")
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                when (val state = controller.catalog) {
+                    is LocalAiController.CatalogState.Idle -> Text(
+                        "Fetch the live ollama.com library to discover newly published phone-suitable models.",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    is LocalAiController.CatalogState.Loading -> Text(
+                        "Fetching the newest models from ollama.com…",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    is LocalAiController.CatalogState.Ready -> Text(
+                        "Library updated ${relativeTime(state.fetchedAtMs)} · ${state.entries.size} families",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    is LocalAiController.CatalogState.Failed -> Text(
+                        "Couldn't read the library (${state.reason}) — the curated presets below still work.",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        }
+
+        when (val state = controller.catalog) {
+            is LocalAiController.CatalogState.Ready -> {
+                val discovered = controller.discoveredPhoneEntries()
+                if (discovered.isEmpty()) {
+                    Text(
+                        "No new phone-suitable models beyond the presets right now — check again later.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                } else {
+                    Text(
+                        "New in the Ollama library — ${discovered.size} phone-suitable families",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
+                    )
+                    discovered.take(DISCOVERED_CARDS_MAX).forEach { entry ->
+                        LibraryEntryCard(
+                            entry = entry,
+                            controller = controller,
+                            onNotice = onNotice
+                        )
+                    }
+                    if (discovered.size > DISCOVERED_CARDS_MAX) {
+                        Text(
+                            "+ ${discovered.size - DISCOVERED_CARDS_MAX} more families — open ollama.com/library in the browser to see them all.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+            }
+            else -> Unit
+        }
+    }
+}
+
+@Composable
+private fun LibraryEntryCard(
+    entry: OllamaLibraryEntry,
+    controller: LocalAiController,
+    onNotice: (String) -> Unit
+) {
+    val phoneSizes = OllamaLibraryHeuristics.phoneSizes(entry)
+    val oversized = entry.sizeTags.filterNot { it in phoneSizes }
+    RoomCard(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    entry.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                if (entry.updatedAt.isNotBlank()) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "updated ${entry.updatedAt}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            if (entry.description.isNotBlank()) {
+                Text(
+                    entry.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+            if (entry.capabilities.isNotEmpty()) {
+                Text(
+                    entry.capabilities.joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+            // Phone-usable size tags → Install buttons (the badge text IS the
+            // pullable tag suffix, verified against the real library). The
+            // estimated size uses the q4 heuristic and is labeled as such;
+            // the pull progress shows the real bytes.
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.padding(top = 6.dp)
+            ) {
+                phoneSizes.forEach { badge ->
+                    val fullTag = "${entry.name}:$badge"
+                    val installed = controller.installed.any { it.name == fullTag }
+                    if (installed) {
+                        AssistChip(
+                            onClick = {},
+                            enabled = false,
+                            label = { Text("$badge · installed") },
+                            modifier = Modifier.semantics {
+                                contentDescription = "localai_installed_$fullTag"
+                            }
+                        )
+                    } else {
+                        FilledTonalButton(
+                            onClick = {
+                                controller.pull(fullTag)
+                                onNotice("Installing $fullTag…")
+                            },
+                            modifier = Modifier.semantics {
+                                contentDescription = "localai_install_$fullTag"
+                            }
+                        ) {
+                            Text(
+                                "$badge · ~${
+                                    OllamaModelPresets.formatSizeMb(
+                                        OllamaLibraryHeuristics.estimatedDownloadMb(
+                                            OllamaLibraryHeuristics.badgeParams(badge) ?: 0.0
+                                        )
+                                    )
+                                } est.",
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                    }
+                }
+            }
+            if (oversized.isNotEmpty()) {
+                Text(
+                    "Also available: ${oversized.joinToString(", ")} — too big for phones.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+        }
+    }
+}
+
+/** "just now" / "5 min ago" / "3 h ago" / "2 d ago" — integer math, no clock drift drama. */
+private fun relativeTime(epochMs: Long): String {
+    val minutes = ((System.currentTimeMillis() - epochMs) / 60_000L).toInt()
+    return when {
+        minutes < 1 -> "just now"
+        minutes < 60 -> "$minutes min ago"
+        minutes < 60 * 24 -> "${minutes / 60} h ago"
+        else -> "${minutes / (60 * 24)} d ago"
     }
 }
 

@@ -61,12 +61,16 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
   API keys are encrypted with AndroidKeyStore. See `docs/AI_AGENTS.md`.
 - **Local AI (Ollama)** — menu khusus untuk AI di perangkat sendiri:
   kelola model di server Ollama (Termux di ponsel ini atau PC di LAN) —
-  koneksi + status server, katalog 13 preset model terbaik untuk ponsel
-  (4 tier berdasarkan RAM), unduh model dengan **pause/resume** (cache
-  layer di sisi server), **tuning GPU/CPU/konteks/keep-alive** yang
-  diterapkan ke chat protokol Ollama natif, serta **import/export setup**
-  sebagai manifest JSON kecil. Semua trafik lokal — tanpa cloud, tanpa
-  telemetry; model TIDAK dibundel di APK (Room Browser adalah klien
+  koneksi + status server, katalog 19 preset model terbaik untuk ponsel
+  (4 tier berdasarkan RAM), tombol **Find new models** yang me-refresh
+  **library live ollama.com** untuk menemukan famili model baru yang cocok
+  untuk ponsel (badge ukuran jadi tombol Install, famili embedding
+  disembunyikan), unduh model dengan **pause/resume** (cache layer di sisi
+  server), **tuning GPU/CPU/konteks/keep-alive** yang diterapkan ke chat
+  protokol Ollama natif, serta **import/export setup** sebagai manifest
+  JSON kecil. Kartu provider **Select model** kini 3 baris (Nama → Model →
+  Base URL) agar tidak tumpang tindih. Semua trafik lokal — tanpa cloud,
+  tanpa telemetry; model TIDAK dibundel di APK (Room Browser adalah klien
   manajemen). Entry: AI Agent Settings → *Local AI (Ollama)* atau chip
   *Ollama native* di provider editor. Lihat `docs/LOCAL_AI.md`.
 - **Biometric profile lock** — fingerprint/face or device credential.
