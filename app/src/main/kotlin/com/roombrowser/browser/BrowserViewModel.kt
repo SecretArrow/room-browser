@@ -40,6 +40,7 @@ import com.roombrowser.domain.theme.RoomThemeSpec
 import com.roombrowser.domain.theme.ThemeJson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -145,7 +146,13 @@ class BrowserViewModel(
     /** Transient UI messages consumed by the Compose layer. */
     val snackbar = MutableStateFlow<String?>(null)
 
-    /** The live WebView for the active tab (single shared engine instance). */
+    /** Set once the persisted-tab restore finished — incoming navigation
+     *  requests (EXTRA_INITIAL_URL, QR, share-intents) wait for it so they
+     *  can never be overridden by the restore picking the first tab. */
+    private val restored = MutableStateFlow(false)
+
+    /** The live WebView of the ACTIVE tab — each tab owns its own engine
+     *  (kept alive in its TabManager session while in the background). */
     var activeWebView: WebView? = null
         private set
 
@@ -236,6 +243,14 @@ class BrowserViewModel(
             refreshShields()
             refreshStats()
         }
+        override fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean) {
+            // The single source of truth for the Back / Forward buttons and
+            // the system-Back web-history branch. Without this the nav bar
+            // stayed grey forever (canGoBack was never reported).
+            if (pageState.canGoBack != canGoBack || pageState.canGoForward != canGoForward) {
+                pageState = pageState.copy(canGoBack = canGoBack, canGoForward = canGoForward)
+            }
+        }
         override fun onReceivedError(url: String, errorCode: Int, description: String?) {
             pageError = when (errorCode) {
                 android.webkit.WebViewClient.ERROR_HOST_LOOKUP -> PageError.DnsFailure(url)
@@ -315,43 +330,46 @@ class BrowserViewModel(
     }
 
     private suspend fun initialize() {
-        profile = graph.profileRepo.getProfile(profileId) ?: profile
-        themeSpec = BuiltInThemes.resolveOrDefault(profile.themeJson)
-        webViewClient = RoomWebViewClient(profile, graph.filterEngine, clientCallbacks)
-        webChromeClient = RoomWebChromeClient(profile, chromeCallbacks)
-        globalSettings = appState.globalSettingsSnapshot()
-        httpClient = dnsMonitor.apply(globalSettings, profile)
-        agent.updateClient(httpClient)
-        agent.start()
-        downloadEngine = DownloadEngine(getApplication(), browserRepo, httpClient)
-        downloadEngine.ensureChannels()
-        appState.setActiveProfile(profileId.value)
-        graph.profileRepo.touch(profileId, System.currentTimeMillis())
-        loadSiteSettingsSnapshot()
+        try {
+            profile = graph.profileRepo.getProfile(profileId) ?: profile
+            themeSpec = BuiltInThemes.resolveOrDefault(profile.themeJson)
+            webViewClient = RoomWebViewClient(profile, graph.filterEngine, clientCallbacks)
+            webChromeClient = RoomWebChromeClient(profile, chromeCallbacks)
+            globalSettings = appState.globalSettingsSnapshot()
+            httpClient = dnsMonitor.apply(globalSettings, profile)
+            agent.updateClient(httpClient)
+            agent.start()
+            downloadEngine = DownloadEngine(getApplication(), browserRepo, httpClient)
+            downloadEngine.ensureChannels()
+            appState.setActiveProfile(profileId.value)
+            graph.profileRepo.touch(profileId, System.currentTimeMillis())
+            loadSiteSettingsSnapshot()
 
-        // Restore persisted tabs (lazy: state only; WebView on demand)
-        val open = browserRepo.openTabs(profileId)
-        tabManager.restore(open)
-        tabs = open
-        activeTabId = open.firstOrNull()?.id
-        if (activeTabId != null) {
-            val first = open.first()
-            pageState = pageState.copy(
-                url = first.url,
-                title = first.title,
-                isPrivate = first.isPrivate,
-                isHomepage = first.url == "about:home"
-            )
-        }
-        if (open.isEmpty()) {
-            openNewTab("about:home", isPrivate = false)
-        }
+            // Restore persisted tabs: the first tab's engine is built RIGHT HERE
+            // via selectTab (lazily, with a reload) — previously the restored
+            // tab showed its URL in the omnibox but never got a live engine,
+            // leaving a blank surface until the next navigation.
+            val open = browserRepo.openTabs(profileId)
+            tabManager.restore(open)
+            tabs = open
+            activeTabId = open.firstOrNull()?.id
+            if (activeTabId != null) {
+                selectTab(activeTabId!!)
+            }
+            if (open.isEmpty()) {
+                openNewTab("about:home", isPrivate = false)
+            }
 
-        val profiles = graph.profileRepo.profiles()
-        allProfiles = profiles
-        networkIdentity.checkOnOpen(httpClient, profile, globalSettings, profiles)
-        refreshStats()
-        refreshBookmarks()
+            val profiles = graph.profileRepo.profiles()
+            allProfiles = profiles
+            networkIdentity.checkOnOpen(httpClient, profile, globalSettings, profiles)
+            refreshStats()
+            refreshBookmarks()
+        } finally {
+            // Release the navigation gate even on failure — a broken restore
+            // must not leave incoming URLs waiting forever.
+            restored.value = true
+        }
     }
 
     suspend fun refreshAllProfiles() {
@@ -374,7 +392,7 @@ class BrowserViewModel(
                     if (settingsChanged) {
                         webViewClient = RoomWebViewClient(profile, graph.filterEngine, clientCallbacks)
                         webChromeClient = RoomWebChromeClient(profile, chromeCallbacks)
-                        activeWebView?.let { ProfileEngine.configure(it, profile) }
+                        reconfigureAllWebViews()
                     }
                 }
             }
@@ -413,6 +431,10 @@ class BrowserViewModel(
             return
         }
         viewModelScope.launch {
+            // Serialize against the persisted-tab restore: an incoming
+            // initial/QR/share URL must land AFTER the restore chose the
+            // active tab, never before (the restore would override it).
+            restored.first { it }
             if (newTab || activeTabId == null) {
                 openNewTab(url, isPrivate)
             } else {
@@ -429,6 +451,25 @@ class BrowserViewModel(
     fun goForward() { activeWebView?.goForward() }
     fun reload() { activeWebView?.reload() }
     fun stopLoading() { activeWebView?.stopLoading() }
+
+    /**
+     * Returns the active tab to the start page (about:home) — the "Back to
+     * start page" action of the exit-confirmation dialog. The tab's WebView
+     * is destroyed (not reused) so the NEXT navigation starts with a clean
+     * history instead of secretly back-stepping into the abandoned page.
+     */
+    fun goHome() {
+        destroyActiveWebView()
+        pageState = PageState(isPrivate = pageState.isPrivate)
+        pageError = null
+        val id = activeTabId
+        if (id != null) {
+            viewModelScope.launch {
+                val tab = browserRepo.tab(id) ?: return@launch
+                browserRepo.updateTab(tab.copy(url = "about:home", title = "", lastViewedAt = System.currentTimeMillis()))
+            }
+        }
+    }
 
     /**
      * Leaves fullscreen (custom-view) media mode. Called by the system Back
@@ -454,13 +495,26 @@ class BrowserViewModel(
             url = url,
             title = "",
             isHomepage = url == "about:home",
-            loading = url != "about:home"
+            loading = url != "about:home",
+            // A brand-new tab starts with a clean history — the previous
+            // tab's back/forward state must NOT leak into it.
+            canGoBack = false,
+            canGoForward = false
         )
         if (url != "about:home") {
-            val webView = activeWebView ?: createWebView().also { activeWebView = it }
+            // PER-TAB WebView: every tab gets its OWN engine instance so
+            // web history stays tab-scoped (no cross-tab back-stepping) and
+            // switching tabs never reloads a still-live page.
+            val webView = createWebView()
+            activeWebView = webView
             tabManager.attachWebView(entity.id, webView)
             webView.loadUrl(url)
+        } else {
+            // The previous tab keeps its engine alive in its OWN session;
+            // the new homepage tab simply has no engine of its own.
+            activeWebView = null
         }
+        evictStaleWebViews(entity.id)
     }
 
     fun selectTab(id: String) {
@@ -475,18 +529,40 @@ class BrowserViewModel(
             loading = false,
             desktopMode = false
         )
-        val webView = activeWebView ?: createWebView().also { activeWebView = it }
-        tabManager.attachWebView(id, webView)
-        if (tab.url != "about:home") webView.loadUrl(tab.url)
+        // Reuse the tab's OWN WebView when it is still alive (instant,
+        // state-preserving switch); lazily create one only for tabs that
+        // never had — or were LRU-evicted from — a live engine.
+        val existing = tabManager.get(id)?.webView
+        if (tab.url == "about:home") {
+            // Homepage tabs keep no live engine: pageState above already
+            // shows the start page; drop any stale engine the session may
+            // still hold so switching back never resurrects a dead page.
+            existing?.let { destroyWebViewQuiet(it) }
+            activeWebView = null
+            pageState = pageState.copy(canGoBack = false, canGoForward = false)
+        } else {
+            val webView = existing ?: createWebView().also { tabManager.attachWebView(id, it) }
+            activeWebView = webView
+            if (existing == null) webView.loadUrl(tab.url)
+            // History state belongs to the newly-selected tab's engine.
+            pageState = pageState.copy(canGoBack = webView.canGoBack(), canGoForward = webView.canGoForward())
+        }
         applyCurrentSiteSettings()
+        evictStaleWebViews(id)
     }
 
     fun closeTab(id: String) {
         viewModelScope.launch {
+            // Destroy THIS tab's engine before dropping the session — with
+            // per-tab WebViews the session map no longer shares one engine,
+            // so skipping the destroy would leak it.
+            tabManager.get(id)?.webView?.let { destroyWebViewQuiet(it) }
+            tabManager.remove(id)
             browserRepo.closeTab(id)
             val remaining = browserRepo.openTabs(profileId)
             tabs = remaining
             if (activeTabId == id) {
+                activeWebView = null
                 val next = remaining.lastOrNull()
                 activeTabId = next?.id
                 if (next != null) selectTab(next.id) else pageState = PageState()
@@ -523,7 +599,13 @@ class BrowserViewModel(
                     true -> tab.position < activePos
                     else -> tab.position > activePos
                 }
-            }.forEach { browserRepo.closeTab(it.id) }
+            }.forEach { tab ->
+                // Per-tab engines: release each closed tab's engine + session,
+                // not just its database row.
+                tabManager.get(tab.id)?.webView?.let { destroyWebViewQuiet(it) }
+                tabManager.remove(tab.id)
+                browserRepo.closeTab(tab.id)
+            }
             tabs = browserRepo.openTabs(profileId)
         }
     }
@@ -563,6 +645,56 @@ class BrowserViewModel(
             download(url, name, mimeType)
         }
         return webView
+    }
+
+    // ---------- Per-tab WebView lifecycle ----------
+
+    /** Destroys the ACTIVE tab's engine (fresh history on next navigation). */
+    private fun destroyActiveWebView() {
+        val webView = activeWebView ?: return
+        activeWebView = null
+        destroyWebViewQuiet(webView)
+    }
+
+    /** Detaches [webView] from its session, view tree and the renderer —
+     *  never throws, safe for already-released engines. */
+    private fun destroyWebViewQuiet(webView: WebView) {
+        tabManager.detachWebView(webView)
+        runCatching { webView.stopLoading() }
+        runCatching { (webView.parent as? android.view.ViewGroup)?.removeView(webView) }
+        runCatching { webView.destroy() }
+    }
+
+    /**
+     * Live-engine budget: at most [MAX_LIVE_WEBVIEWS] engines stay alive at
+     * once (each holds renderer memory). Oldest BACKGROUND tabs are evicted
+     * first; their sessions keep entity + thumbnail and rebuild the engine
+     * (with a reload) when re-selected — graceful degradation, never a leak.
+     */
+    private fun evictStaleWebViews(keepId: String) {
+        val live = tabManager.liveWebViewSessions()
+        if (live.size <= MAX_LIVE_WEBVIEWS) return
+        val excess = live.size - MAX_LIVE_WEBVIEWS
+        tabManager.lruVictims(keepId).take(excess).forEach { victim ->
+            victim.webView?.let { destroyWebViewQuiet(it) }
+        }
+    }
+
+    /** Destroys EVERY live engine (profile switch / final teardown). */
+    fun destroyAllWebViews() {
+        tabManager.liveWebViewSessions().forEach { session ->
+            session.webView?.let { destroyWebViewQuiet(it) }
+        }
+        activeWebView = null
+    }
+
+    /** Re-applies profile settings (JS, UA, zoom, cookies…) to EVERY live
+     *  engine — per-tab engines in the background must not keep stale
+     *  settings until they happen to be re-selected. */
+    private fun reconfigureAllWebViews() {
+        tabManager.liveWebViewSessions().forEach { session ->
+            session.webView?.let { ProfileEngine.configure(it, profile) }
+        }
     }
 
     // ---------- WebView lifecycle helpers ----------
@@ -896,7 +1028,7 @@ class BrowserViewModel(
     suspend fun updateSettings(newSettings: ProfileSettings) {
         graph.profileManager.updateSettings(profileId, newSettings)
         profile = profile.copy(settings = newSettings)
-        activeWebView?.let { ProfileEngine.configure(it, profile) }
+        reconfigureAllWebViews()
         httpClient = dnsMonitor.apply(globalSettings, profile)
         agent.updateClient(httpClient)
         val profiles = graph.profileRepo.profiles()
@@ -992,13 +1124,19 @@ class BrowserViewModel(
 
     override fun onCleared() {
         runCatching { agent.shutdown() }
-        runCatching { activeWebView?.destroy() }
+        // Per-tab engines must not outlive the ViewModel's scope.
+        runCatching { destroyAllWebViews() }
         if (::downloadEngine.isInitialized) downloadEngine.shutdown()
         super.onCleared()
     }
 
     companion object {
         const val DAY_MS = 24L * 60 * 60 * 1000
+
+        /** Live per-tab engine budget — beyond this, oldest background
+         *  tabs lose their engine (rebuilt lazily on re-selection). */
+        const val MAX_LIVE_WEBVIEWS = 4
+
         const val READER_SCRIPT = """
             (function(){
               var candidates = document.querySelectorAll('article, main, [role=main], .post, #content, .content');

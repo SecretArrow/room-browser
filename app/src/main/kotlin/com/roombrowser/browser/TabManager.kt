@@ -9,7 +9,9 @@ data class TabSession(
     val entity: TabEntity,
     val webView: WebView?,
     val thumbnail: Bitmap?,
-    val desktopMode: Boolean = false
+    val desktopMode: Boolean = false,
+    /** Monotonic recency stamp — drives LRU eviction of live WebViews. */
+    val lastUsedAt: Long = 0L
 ) {
     val id: String get() = entity.id
     val url: String get() = entity.url
@@ -46,7 +48,18 @@ class TabManager {
     }
 
     fun attachWebView(id: String, webView: WebView?) {
-        sessions[id]?.let { sessions[id] = it.copy(webView = webView) }
+        sessions[id]?.let { sessions[id] = it.copy(webView = webView, lastUsedAt = android.os.SystemClock.elapsedRealtime()) }
+    }
+
+    /** Drops the engine reference from whichever session holds [webView]
+     *  (per-tab engines are owned by exactly ONE session). */
+    fun detachWebView(webView: WebView?) {
+        if (webView == null) return
+        for ((id, session) in sessions) {
+            if (session.webView === webView) {
+                sessions[id] = session.copy(webView = null)
+            }
+        }
     }
 
     fun captureThumbnail(id: String, bitmap: Bitmap?) {
@@ -66,6 +79,21 @@ class TabManager {
     }
 
     fun privateTabs(): List<TabSession> = sessions.values.filter { it.entity.isPrivate }
+
+    /** Sessions that currently hold a LIVE WebView (the active one included). */
+    fun liveWebViewSessions(): List<TabSession> =
+        sessions.values.filter { it.webView != null }
+
+    /**
+     * LRU eviction candidates: background sessions (never [keepId]) holding
+     * live WebViews, OLDEST first. The caller destroys as many as needed to
+     * stay under the live-WebView budget — evicted tabs gracefully fall back
+     * to lazy re-creation (entity + thumbnail survive, page reloads on return).
+     */
+    fun lruVictims(keepId: String?): List<TabSession> =
+        sessions.values
+            .filter { it.webView != null && it.id != keepId }
+            .sortedBy { it.lastUsedAt }
 
     fun clear() {
         sessions.clear()

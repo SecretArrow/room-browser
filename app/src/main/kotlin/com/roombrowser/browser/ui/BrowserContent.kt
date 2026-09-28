@@ -141,7 +141,11 @@ fun BrowserContent(
                         keyboardActions = KeyboardActions(
                             onGo = { viewModel.onOmniBoxInput(omniInput) }
                         ),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            // Stable a11y hook for the navigation e2e suite
+                            // (same pattern as agent_composer_field).
+                            .semantics { contentDescription = "omni_field" }
                     )
                 }
                 if (!page.isHomepage) {
@@ -155,11 +159,21 @@ fun BrowserContent(
                 }
             }
             Spacer(Modifier.width(4.dp))
+            // Reload / Stop — same dual role as the bottom-bar refresh
+            // slot: Stop while loading, Reload otherwise; nothing to do on
+            // the start page so it greys out there.
             IconButton(
-                onClick = { viewModel.reload() },
-                modifier = Modifier.semantics { contentDescription = "Reload" }
+                onClick = { if (page.loading) viewModel.stopLoading() else viewModel.reload() },
+                enabled = !page.isHomepage,
+                modifier = Modifier.semantics {
+                    contentDescription = if (page.loading) "Stop loading" else "Reload"
+                }
             ) {
-                Icon(Icons.Filled.Refresh, contentDescription = null, tint = extras.icon)
+                Icon(
+                    if (page.loading) Icons.Filled.Close else Icons.Filled.Refresh,
+                    contentDescription = null,
+                    tint = if (page.isHomepage) extras.icon.copy(alpha = 0.35f) else extras.icon
+                )
             }
             AnimatedVisibility(visible = !page.isHomepage) {
                 IconButton(

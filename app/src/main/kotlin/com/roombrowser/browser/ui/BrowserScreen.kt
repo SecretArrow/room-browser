@@ -141,6 +141,11 @@ fun BrowserScreen(
     var showTranslateDialog by remember { mutableStateOf(false) }
     var showQrDialog by remember { mutableStateOf(false) }
     var showIpWarning by remember { mutableStateOf(true) }
+    // System-Back exit confirmation — a page with no back history left must
+    // NEVER leave the app without an explicit user decision (user mandate:
+    // "kalau yang dibuka bukan url dasar jangan keluarkan app, cukup tampilkan
+    // konfirmasi dulu").
+    var showExitConfirm by remember { mutableStateOf(false) }
 
     val qrLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -299,9 +304,15 @@ fun BrowserScreen(
     // System Back button — a browser must NEVER die on the first press.
     // Priority (most specific first):
     //   fullscreen video → reader mode → find-in-page → agent panel →
-    //   sub-screen route → web history → background the app.
+    //   sub-screen route → web history → exit confirmation → background.
     // ModalBottomSheets/dialogs register their own (later = higher
     // priority) callbacks, so they close themselves before this runs.
+    // The web-history branch actually WORKS now: canGoBack is live-tracked
+    // via doUpdateVisitedHistory, so Back walks pages like a real browser.
+    // When a non-home page has no history left, an explicit confirmation
+    // (Exit / Back to start page / Cancel) stands between the user and
+    // leaving the app. The homepage keeps the instant-background contract
+    // (E2EBrowseFlowTest.system_back_backgrounds_app_without_killing_engine).
     // ------------------------------------------------------------------
     BackHandler {
         when {
@@ -314,6 +325,7 @@ fun BrowserScreen(
             agentPanelExpanded -> agentPanelExpanded = false
             route != BrowserRoute.Browser -> route = BrowserRoute.Browser
             viewModel.pageState.canGoBack -> viewModel.goBack()
+            !viewModel.pageState.isHomepage -> showExitConfirm = true
             else -> activity.moveTaskToBack(true)   // keep engine + tabs alive
         }
     }
@@ -379,6 +391,46 @@ fun BrowserScreen(
         QrShareDialog(
             content = viewModel.pageState.url,
             onDismiss = { showQrDialog = false }
+        )
+    }
+
+    // ---------- System-Back exit confirmation (non-home, no history) ------
+    // Fired by the BackHandler's `!isHomepage` branch: the current page has
+    // no back history left, so leaving the app requires an EXPLICIT choice.
+    // "Exit" keeps the engine + tabs alive via moveTaskToBack (same contract
+    // as the homepage back), "Back to start page" returns to about:home with
+    // a clean per-tab history, "Cancel" (or outside-tap) simply stays.
+    if (showExitConfirm) {
+        val page = viewModel.pageState
+        val host = UrlIntelligence.hostOf(page.url)?.let { "You are viewing $it." } ?: ""
+        AlertDialog(
+            onDismissRequest = { showExitConfirm = false },
+            title = { Text("Exit Room Browser?") },
+            text = {
+                Column {
+                    Text(
+                        (if (host.isBlank()) "" else "$host ") +
+                            "This page has no back history left. Your tabs and the engine stay alive in the background."
+                    )
+                    TextButton(
+                        onClick = {
+                            showExitConfirm = false
+                            viewModel.goHome()
+                        }
+                    ) { Text("Back to start page") }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showExitConfirm = false
+                        activity.moveTaskToBack(true)
+                    }
+                ) { Text("Exit") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExitConfirm = false }) { Text("Cancel") }
+            }
         )
     }
 

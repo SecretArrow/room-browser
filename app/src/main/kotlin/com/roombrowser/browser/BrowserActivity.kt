@@ -149,11 +149,10 @@ class BrowserActivity : FragmentActivity() {
                 }
 
                 override fun destroyBrowserContext() {
-                    viewModel.activeWebView?.apply {
-                        stopLoading()
-                        loadUrl("about:blank")
-                        destroy()
-                    }
+                    // Per-tab engines: EVERY live engine must go, not just the
+                    // active one (the process restart would reap them, but the
+                    // explicit destroy keeps the switch protocol honest).
+                    viewModel.destroyAllWebViews()
                     viewModel.detachWebView()
                 }
 

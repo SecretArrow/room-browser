@@ -60,6 +60,10 @@ class RoomWebViewClient(
         fun onSuspiciousSite(url: String, signals: List<String>)
         fun onPageStarted(url: String)
         fun onPageFinished(url: String, title: String)
+        /** Live web-history state — fires on EVERY navigation (including
+         *  same-document pushState/replaceState) so the UI's Back / Forward
+         *  controls are never stale. */
+        fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean)
         fun onReceivedError(url: String, errorCode: Int, description: String?)
         fun onSslError(url: String, error: SslError)
         fun openInNewTab(url: String, isPrivate: Boolean)
@@ -132,12 +136,27 @@ class RoomWebViewClient(
 
     override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
         CookieManager.getInstance().flush()
+        // Early history feedback: the back/forward buttons light up as soon
+        // as a navigation begins, then doUpdateVisitedHistory re-reports the
+        // authoritative state when the entry lands.
+        callbacks.onHistoryChanged(view.canGoBack(), view.canGoForward())
         callbacks.onPageStarted(url)
     }
 
     override fun onPageFinished(view: WebView, url: String) {
         CookieManager.getInstance().flush()
+        callbacks.onHistoryChanged(view.canGoBack(), view.canGoForward())
         callbacks.onPageFinished(url, view.title ?: url)
+    }
+
+    /**
+     * THE reliable back/forward signal: fires for every history commit —
+     * including same-document navigations (history.pushState) that skip
+     * onPageStarted/onPageFinished entirely. Without this, the navigation
+     * buttons stay grey forever on SPA sites.
+     */
+    override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
+        callbacks.onHistoryChanged(view.canGoBack(), view.canGoForward())
     }
 
     override fun onReceivedError(

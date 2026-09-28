@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SafetyCheck
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
@@ -93,10 +94,15 @@ import java.util.Locale
  * tab-count badge) + the redesigned action sheets. All colors follow the
  * per-profile theme.
  *
- * Brave-style navigation bar: Back / Forward / Tabs / Share / More —
- * 5 × 48dp touch targets fit even 320dp screens. Bookmarks and profile
- * switching moved into the Page Actions sheet so the bar stays lean while
- * the omnibox above reclaims the width the nav arrows used to eat.
+ * Brave-style navigation bar: Back / Forward / Refresh / Tabs / Share /
+ * More — 6 × 48dp touch targets fit even 320dp screens. Bookmarks and
+ * profile switching moved into the Page Actions sheet so the bar stays
+ * lean while the omnibox above reclaims the width the nav arrows used
+ * to eat.
+ *
+ * The refresh slot doubles as a STOP control while a page is loading
+ * (the standard browser pattern), and greys out on the start page where
+ * there is nothing to reload.
  */
 @Composable
 fun BrowserBottomBar(
@@ -142,6 +148,21 @@ fun BrowserBottomBar(
                     Icons.AutoMirrored.Filled.ArrowForward,
                     contentDescription = null,
                     tint = if (page.canGoForward) extras.icon else extras.icon.copy(alpha = 0.35f)
+                )
+            }
+            // Refresh — becomes Stop while a page is loading; disabled on
+            // the start page (nothing to reload there).
+            IconButton(
+                onClick = { if (page.loading) viewModel.stopLoading() else viewModel.reload() },
+                enabled = !page.isHomepage,
+                modifier = Modifier.semantics {
+                    contentDescription = if (page.loading) "Stop loading" else "Reload page"
+                }
+            ) {
+                Icon(
+                    if (page.loading) Icons.Filled.Close else Icons.Filled.Refresh,
+                    contentDescription = null,
+                    tint = if (page.isHomepage) extras.icon.copy(alpha = 0.35f) else extras.icon
                 )
             }
             // Tabs with live count badge

@@ -82,11 +82,17 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
   *Ollama native* / *On-device* di provider editor. Lihat `docs/LOCAL_AI.md`.
 - **Biometric profile lock** — fingerprint/face or device credential.
 - **Material 3 UI (2026 redesign)** — premium Brave-inspired-but-original
-  design language: floating pill omnibox that owns the full toolbar width
-  (back/forward live in the bottom bar, Brave-style, with tabs / share /
-  menu), glass bottom bar with tab-count badge, rounded cards everywhere,
+  design language: floating pill omnibox that owns the full toolbar width,
+  glass bottom bar with tab-count badge, rounded cards everywhere,
   modern tab management, smooth animations, responsive layouts and
   excellent dark-mode support.
+- **Working bottom-bar navigation** — Back / Forward / Refresh (doubles as
+  Stop while a page loads) / Tabs / Share / More. Back/forward state is
+  live-tracked via `doUpdateVisitedHistory` (SPA pushState included), so
+  the buttons light up exactly when history exists. Every tab owns its OWN
+  WebView engine — web history never leaks across tabs, switching tabs
+  never reloads a still-live page, and a live-engine budget (LRU, max 4)
+  keeps memory bounded; evicted tabs rebuild lazily on return.
 - **Per-profile Theme System** — 18 hand-tuned built-in themes (Obsidian,
   Arctic, Ocean, Emerald, Midnight, Aurora, Sunset, Cyber, Royal, Sakura,
   Forest, Aqua, Crimson, Golden, Slate, Lavender, Coffee, Rose), each with
@@ -114,8 +120,13 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
   overlap the 3-button navigation bar (Back / Home / Recents) or the status
   bar on any API level. The system **Back** button follows browser rules:
   exit fullscreen video → close reader/find bar → collapse the agent panel →
-  return from sub-screens → walk web history → background the app (the
-  engine process and all tabs stay alive).
+  return from sub-screens → walk web history → **ask before leaving** →
+  background the app. A page with no back history left never kicks you out
+  silently: an "Exit Room Browser?" confirmation offers Exit (engine and
+  tabs stay alive), Back to start page, or Cancel. On the homepage, Back
+  backgrounds the app instantly. JavaScript is NEVER disabled by default
+  (platform-default-off is explicitly overridden from profile settings,
+  whose own default is on — guarded by a unit test).
 
 ## Honest limitations (no false claims)
 

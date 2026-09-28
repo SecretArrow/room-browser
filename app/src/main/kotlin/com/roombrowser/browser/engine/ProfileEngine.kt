@@ -125,6 +125,13 @@ object ProfileEngine {
         val s: WebSettings = webView.settings
         val settings: ProfileSettings = profile.settings
 
+        // POLICY (user mandate): JavaScript is NEVER disabled by default.
+        // The platform WebView default is javaScriptEnabled == false — we
+        // ALWAYS apply it explicitly from ProfileSettings, whose own default
+        // is `true` (guarded by the `compatibility defaults` unit test in
+        // core:domain). Only an explicit per-profile toggle (Settings) or an
+        // explicit per-site override (site settings jsEnabled) may turn it
+        // off — never a default path.
         s.javaScriptEnabled = settings.javascriptEnabled
         s.domStorageEnabled = true
         s.databaseEnabled = true
