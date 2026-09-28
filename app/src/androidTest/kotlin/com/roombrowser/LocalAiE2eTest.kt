@@ -679,7 +679,7 @@ class LocalAiE2eTest {
         // ---- 5. Installed models come from GET /api/tags -------------------
         assertTrue(
             "The installed model llama3.2:1b must be listed; UI:\n" + uiTree(),
-            hasTextWithScroll("llama3.2:1b")
+            hasTextWithScroll("llama3.2:1b", attempts = 16)
         )
 
         // ---- 6. Install a catalog preset -----------------------------------
@@ -688,7 +688,7 @@ class LocalAiE2eTest {
         // preset catalogue ("localai_install_" never matches the installed
         // chip desc "localai_installed_…").
         val preferredDesc = "localai_install_qwen2.5:0.5b"
-        val installDesc = if (hasDescContainsWithScroll(preferredDesc, attempts = 14)) {
+        val installDesc = if (hasDescContainsWithScroll(preferredDesc, attempts = 20)) {
             preferredDesc
         } else {
             findFirstInstallButton()
@@ -706,7 +706,7 @@ class LocalAiE2eTest {
         // tap was lost → find the button again and tap again.
         var pullStarted = false
         for (round in 1..3) {
-            clickDescContainsWithScroll(installDesc, attempts = 6)
+            clickDescContainsWithScroll(installDesc, attempts = 12)
             if (pullEvidence(installedTag, 8_000)) {
                 pullStarted = true
                 break
@@ -723,7 +723,7 @@ class LocalAiE2eTest {
         // moment its pull request arrives, so ANY refresh timing works.)
         assertTrue(
             "Preset $installedTag must flip to the Installed chip after the pull; UI:\n" + uiTree(),
-            hasDescContainsWithScroll("localai_installed_$installedTag", attempts = 16)
+            hasDescContainsWithScroll("localai_installed_$installedTag", attempts = 20)
         )
 
         // Pause/resume buttons are intentionally NOT asserted here — see the
@@ -776,7 +776,10 @@ class LocalAiE2eTest {
         for (round in 1..4) {
             hideImeIfNeeded()
             scrollToTop()
-            val clicked = scrollAndShellTap("localai_refresh_catalog", "Find new models")
+            // Task 13 added an "On-device engine" section between Connection
+            // and Installed models (~1.5 extra screens) — every scroll to the
+            // catalog now needs proportionally more quarter-drags.
+            val clicked = scrollAndShellTap("localai_refresh_catalog", "Find new models", attempts = 20)
             if (!clicked) {
                 buttonNeverFound = true
                 catalogDump = dumpCatalogTop()
@@ -792,7 +795,7 @@ class LocalAiE2eTest {
             }
             if (fake.libraryHits.get() > 0) sawLibraryRequest = true
             // Proof tier 2: the discovered card (scrolls away from the button).
-            if (hasTextWithScroll("qwen3.5")) {
+            if (hasTextWithScroll("qwen3.5", attempts = 16)) {
                 qwenFound = true
                 break
             }
@@ -829,7 +832,7 @@ class LocalAiE2eTest {
         val installDesc = "localai_install_qwen3.5:0.8b"
         var pullStarted = false
         for (round in 1..3) {
-            clickDescContainsWithScroll(installDesc, attempts = 6)
+            clickDescContainsWithScroll(installDesc, attempts = 12)
             if (pullEvidence("qwen3.5:0.8b", 8_000)) {
                 pullStarted = true
                 break
@@ -844,7 +847,7 @@ class LocalAiE2eTest {
         // ---- 6. Pull finishes → the discovered card flips to Installed -----
         assertTrue(
             "Discovered tag qwen3.5:0.8b must flip to the Installed chip after the pull; UI:\n" + uiTree(),
-            hasDescContainsWithScroll("localai_installed_qwen3.5:0.8b", attempts = 16)
+            hasDescContainsWithScroll("localai_installed_qwen3.5:0.8b", attempts = 20)
         )
     }
 }
