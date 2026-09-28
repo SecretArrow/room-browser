@@ -8,8 +8,11 @@ import com.roombrowser.domain.agent.OllamaPullParser
 import com.roombrowser.domain.agent.OllamaTagsParser
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
@@ -102,9 +105,13 @@ class OllamaClient(
      * parsed line is handed to [onEvent] in order.
      *
      * Cancellation contract (the pause/resume backbone): cancelling the
-     * calling coroutine cancels the HTTP call (see [execute]) and surfaces
-     * as a [CancellationException] — even when the blocked read only wakes
-     * up with an IOException, a cancelled coroutine must stay cancelled.
+     * calling coroutine cancels the HTTP call — not just while the response
+     * is pending (the one-shot hook in [execute]), but for the WHOLE body
+     * read: a sibling watcher coroutine calls call.cancel() when the pull
+     * coroutine is cancelled, so a blocked readLine() aborts immediately
+     * instead of waiting for the next (possibly throttled) chunk. Cancellation
+     * surfaces as a [CancellationException] — even when the blocked read only
+     * wakes up with an IOException, a cancelled coroutine must stay cancelled.
      * Ollama keeps completed blobs server-side, so a re-issued pull simply
      * skips them: that re-issue IS the resume.
      */
@@ -122,11 +129,32 @@ class OllamaClient(
             .header("User-Agent", "RoomBrowser-Agent/1.0")
         if (apiKey.isNotBlank()) request.header("Authorization", "Bearer $apiKey")
 
-        val response = execute(request.build())
+        val call = callFactory.newCall(request.build())
+        val response = execute(call)
         try {
             if (!response.isSuccessful) throw AgentHttpException(response.code, errorBody(response))
             val responseBody = response.body ?: throw AgentHttpException(response.code, "empty body")
-            readPullStream(responseBody, onEvent)
+            // Cancellation watcher: the invokeOnCancellation hook inside
+            // execute() is one-shot and already spent once the response has
+            // arrived — without this sibling, a coroutine cancelled mid-body
+            // leaves the blocking readLine() stranded until the next chunk
+            // (throttled servers: seconds; stalled sockets: the full read
+            // timeout) and "pause" stops being prompt. The watcher keeps
+            // call.cancel() tied to coroutine cancellation for the whole read.
+            coroutineScope {
+                val watcher = launch {
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        runCatching { call.cancel() }
+                    }
+                }
+                try {
+                    readPullStream(responseBody, onEvent)
+                } finally {
+                    watcher.cancel()
+                }
+            }
         } finally {
             runCatching { response.close() }
         }
@@ -198,8 +226,12 @@ class OllamaClient(
 
     /** Enqueues the call and suspends; cancelling the coroutine cancels HTTP. */
     private suspend fun execute(request: Request): Response =
+        execute(callFactory.newCall(request))
+
+    /** Call-level variant — streaming methods keep the [Call] so a watcher
+     *  can cancel it later, when cancellation arrives mid-body. */
+    private suspend fun execute(call: Call): Response =
         suspendCancellableCoroutine { continuation ->
-            val call = callFactory.newCall(request)
             continuation.invokeOnCancellation { runCatching { call.cancel() } }
             call.enqueue(object : okhttp3.Callback {
                 override fun onFailure(call: Call, e: java.io.IOException) {
