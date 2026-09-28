@@ -375,6 +375,31 @@ class LocalAiE2eTest {
         device.waitForIdle(600)
     }
 
+    /** Reverse of [dragUpQuarter] — scrolls the viewport toward the START of
+     *  the screen, so retry rounds can get back to widgets above the fold. */
+    private fun dragDownQuarter() {
+        device.swipe(
+            device.displayWidth / 2, device.displayHeight * 3 / 8,
+            device.displayWidth / 2, device.displayHeight * 5 / 8, 100
+        )
+        device.waitForIdle(600)
+    }
+
+    /** Reset to the top of the scrollable screen (harmless when already there). */
+    private fun scrollToTop() {
+        repeat(6) { dragDownQuarter() }
+    }
+
+    /** Scroll-aware text-CONTAINS wait — for captions whose full text varies
+     *  (e.g. the Failed reason inside "Couldn't read the library (…)"). */
+    private fun hasTextContainsWithScroll(part: String, attempts: Int = 8): Boolean {
+        for (i in 1..attempts) {
+            if (device.wait(Until.hasObject(By.textContains(part)), 1_500)) return true
+            dragUpQuarter()
+        }
+        return false
+    }
+
     /** Types text into the field with the given content description. */
     private fun typeIntoField(desc: String, text: String): Boolean {
         hideImeIfNeeded()
@@ -649,28 +674,45 @@ class LocalAiE2eTest {
         )
 
         // ---- 3. Find new models → GET /library?sort=newest ----------------
-        // Scroll-aware: the catalog section sits below connection/installed.
+        // VERIFICATION-DRIVEN tap (the Task-11 CI lesson: a dispatched tap on
+        // this busy screen can be dropped silently, leaving the catalog Idle).
+        // Every round resets to the top, taps, then waits for PROOF — the
+        // discovered card, or the honest Failed caption — and taps again
+        // when neither shows up.
+        var qwenFound = false
+        var failedState = false
+        for (round in 1..4) {
+            hideImeIfNeeded()
+            scrollToTop()
+            clickDescContainsWithScroll("localai_refresh_catalog", attempts = 10)
+            if (hasTextWithScroll("qwen3.5")) {
+                qwenFound = true
+                break
+            }
+            if (hasTextContainsWithScroll("Couldn't read the library", attempts = 4)) {
+                failedState = true
+                break
+            }
+        }
         assertTrue(
-            "The Find-new-models (refresh catalog) button must be clickable; UI:\n" + uiTree(),
-            clickDescContainsWithScroll("localai_refresh_catalog", attempts = 14)
+            "The catalog refresh must not end in the Failed state " +
+                "(fetch/parse problem — see the caption reason in the dump); UI:\n" + uiTree(),
+            !failedState
+        )
+        assertTrue(
+            "Discovered family qwen3.5 must be listed (no card after 4 tap rounds); " +
+                "UI:\n" + uiTree(),
+            qwenFound
         )
 
-        // ---- 4. The NEW phone-suitable family is discovered ----------------
-        // (qwen3.5 is not covered by the curated presets; its card renders
-        // with the 0.8b / 2b install buttons and 27b as too-big info text.)
-        assertTrue(
-            "Discovered family qwen3.5 must be listed; UI:\n" + uiTree(),
-            hasTextWithScroll("qwen3.5")
-        )
-
-        // ---- 5. Embedding-only families stay hidden ------------------------
+        // ---- 4. Embedding-only families stay hidden ------------------------
         // (bge-m3 exists in the fake library but cannot chat — never listed.)
         assertTrue(
             "Embedding-only family bge-m3 must NOT be listed; UI:\n" + uiTree(),
             !hasText("bge-m3", 2_000)
         )
 
-        // ---- 6. Install the discovered family's phone-friendly tag ---------
+        // ---- 5. Install the discovered family's phone-friendly tag ---------
         // VERIFICATION-DRIVEN, same as the preset install: tap → proof that
         // the pull started (Pause/Clear/Resume/chip), retry if the tap was
         // lost on the busy screen.
@@ -689,7 +731,7 @@ class LocalAiE2eTest {
             pullStarted
         )
 
-        // ---- 7. Pull finishes → the discovered card flips to Installed -----
+        // ---- 6. Pull finishes → the discovered card flips to Installed -----
         assertTrue(
             "Discovered tag qwen3.5:0.8b must flip to the Installed chip after the pull; UI:\n" + uiTree(),
             hasDescContainsWithScroll("localai_installed_qwen3.5:0.8b", attempts = 16)
