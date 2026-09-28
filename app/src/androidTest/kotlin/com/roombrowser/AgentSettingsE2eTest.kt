@@ -230,37 +230,71 @@ class AgentSettingsE2eTest {
         "probe dump failed: $t"
     }
 
-    /** Types text into the editor field with the given content description. */
-    private fun typeIntoField(desc: String, text: String): Boolean {
-        hideImeIfNeeded()
-        // Scroll-aware lookup: the editor's manual fields sit BELOW the
-        // preset list, and that list GROWS whenever presets are added (CI
-        // regression: one extra preset row pushed the name field past the
-        // old single-drag fallback). Poll + drag until the field is on
-        // screen — a fixed drag count silently breaks on layout growth.
-        var field: UiObject2? = null
-        for (i in 1..5) {
-            field = device.wait(Until.findObject(By.desc(desc)), 1_500)
-            if (field != null) break
-            dragUpQuarter()
-        }
-        val first: UiObject2 = field ?: return false
-        // if the field sits below the fold, scroll it into view before tapping
-        var target: UiObject2 = first
-        runCatching {
-            if (first.visibleBounds.bottom > device.displayHeight - 80) {
+    /** Types text into the editor field with the given content description —
+     *  VERIFICATION-DRIVEN: every round taps a FRESHLY resolved node, types,
+     *  then reads the field content back from the a11y tree; a failed round
+     *  (tap lost / text landed in the neighbour because the IME opening on
+     *  the previous field resized the editor and MOVED this one) is cleared
+     *  and retried. Round 1 skips the clear: fields start empty and the
+     *  40-command clear costs seconds on CI. */
+    private fun typeIntoField(desc: String, text: String, masked: Boolean = false): Boolean {
+        for (round in 1..3) {
+            hideImeIfNeeded()
+            // Scroll-aware lookup: the editor's manual fields sit BELOW the
+            // preset list, and that list GROWS when presets are added (CI
+            // regression: one extra preset row pushed the name field past the
+            // old single-drag fallback). Poll + drag until the field is on
+            // screen — a fixed drag count silently breaks on layout growth.
+            var field: UiObject2? = null
+            for (i in 1..5) {
+                field = device.wait(Until.findObject(By.desc(desc)), 1_500)
+                if (field != null) break
                 dragUpQuarter()
-                // re-resolve: the node handle can go stale across a scroll
-                target = device.wait(Until.findObject(By.desc(desc)), 2_000) ?: first
             }
+            if (field == null) continue
+            // FRESH resolve immediately before the tap: a handle captured
+            // before the previous field's IME opened carries stale bounds
+            // (adjustResize moves every field) — tapping it hits the void.
+            val fresh = device.wait(Until.findObject(By.desc(desc)), 2_000) ?: field
+            clickCenter(fresh)
+            if (round > 1) {
+                // The previous round may have polluted the focused field —
+                // clear it before typing (cursor to end + repeated DEL).
+                device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
+                repeat(40) { device.executeShellCommand("input keyevent KEYCODE_DEL") }
+                device.waitForIdle(400)
+            }
+            // NB: executeShellCommand does not interpret shell quoting — a quoted
+            // argument would type the quotes into the field. Values here contain
+            // no spaces or shell metacharacters, so pass them bare.
+            device.executeShellCommand("input text $text")
+            device.waitForIdle(800)
+            if (fieldHasContent(desc, text, masked)) return true
         }
-        clickCenter(target)
-        // NB: executeShellCommand does not interpret shell quoting — a quoted
-        // argument would type the quotes into the field. Values here contain
-        // no spaces or shell metacharacters, so pass them bare.
-        device.executeShellCommand("input text $text")
-        device.waitForIdle(1_000)
-        return true
+        return false
+    }
+
+    /** Reads the field's content back from the a11y tree: Compose exposes the
+     *  text on a descendant text node (the desc node itself reports null).
+     *  Plain fields must match EXACTLY (a polluted field fails → retry); the
+     *  masked key renders as bullets, so match any long bullet run. */
+    private fun fieldHasContent(desc: String, expected: String, masked: Boolean): Boolean {
+        val node = runCatching { device.findObject(By.desc(desc)) }.getOrNull() ?: return false
+        val texts = mutableListOf<String>()
+        runCatching { node.text }.getOrNull()?.let { texts.add(it) }
+        collectDescendantTexts(node, texts, depth = 0)
+        return when {
+            masked -> texts.any { it.length >= 8 && it.all { c -> c == '\u2022' } }
+            else -> texts.any { it == expected }
+        }
+    }
+
+    private fun collectDescendantTexts(node: UiObject2, out: MutableList<String>, depth: Int) {
+        if (depth > 4) return
+        runCatching { node.children }.getOrDefault(emptyList()).forEach { child ->
+            runCatching { child.text }.getOrNull()?.let { out.add(it) }
+            collectDescendantTexts(child, out, depth + 1)
+        }
     }
 
     /** SLOW drag (100 steps ≈ no fling momentum) that scrolls ~1/4 of the
@@ -451,7 +485,13 @@ class AgentSettingsE2eTest {
         val baseUrl = server.url("/v1").toString().trimEnd('/')
         assertTrue("name field must be typeable", typeIntoField("provider_name_field", "MockLLM"))
         assertTrue("base URL field must be typeable", typeIntoField("provider_url_field", baseUrl))
-        assertTrue("API key field must be typeable", typeIntoField("provider_key_field", "test-key-123"))
+        assertTrue("API key field must be typeable", typeIntoField("provider_key_field", "test-key-123", masked = true))
+        // Fixup pass: a missed tap can pollute an ALREADY-verified field (the
+        // neighbour's text lands in it AFTER its own verification). Re-run
+        // the two plain fields — verified ones pass instantly; polluted ones
+        // get cleared and retyped. The masked key cannot pollute downwards.
+        typeIntoField("provider_name_field", "MockLLM")
+        typeIntoField("provider_url_field", baseUrl)
 
         // ---- 5. Fetch models from the MockWebServer ------------------------
         hideImeIfNeeded()
