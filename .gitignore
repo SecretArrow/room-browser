@@ -31,3 +31,4 @@ captures/
 # Kotlin daemon session artifacts
 .kotlin/
 release-out/
+ci-logs/
