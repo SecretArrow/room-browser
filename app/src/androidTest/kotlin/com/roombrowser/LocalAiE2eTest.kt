@@ -2,7 +2,6 @@ package com.roombrowser
 
 import android.content.Context
 import android.content.Intent
-import android.view.accessibility.AccessibilityNodeInfo
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
@@ -425,30 +424,22 @@ class LocalAiE2eTest {
                     return true
                 }
             }
-            // A11y scrolling, not swipes: on the busy CI runner the injected
-            // swipe timing stretches into real FLING momentum — the viewport
-            // LEAPS past the refresh row in one jump and the 1.5s poll never
-            // sees the button (CI proof: refreshBtn=0 while the dump shows
-            // catalog tier cards = far beyond the button). ACTION_SCROLL_FORWARD
-            // advances exactly one viewport with zero gesture physics.
-            if (!a11yScrollForward()) dragUpQuarter()
+            slowDragUp()
         }
         return false
     }
 
-    /** One deterministic viewport-page scroll via the accessibility action —
-     *  immune to fling physics and the runner's event-injection jitter. */
-    private fun a11yScrollForward(): Boolean {
-        val candidates = runCatching { device.findObjects(By.scrollable(true)) }.getOrDefault(emptyList())
-        val target = candidates
-            .filter { runCatching { it.visibleBounds.height() }.getOrDefault(0) > device.displayHeight / 3 }
-            .maxByOrNull { runCatching { it.visibleBounds.height() }.getOrDefault(0) }
-            ?: return false
-        val ok = runCatching {
-            target.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-        }.getOrDefault(false)
+    /** Anti-fling scroll: the SAME quarter-screen distance as dragUpQuarter
+     *  but over 300 interpolation steps (~3x duration, near-zero velocity).
+     *  Compose never flings a drag this slow, so the viewport can never LEAP
+     *  past a node between polls (CI proof: refreshBtn=0 while the dump
+     *  showed catalog tier cards far beyond the refresh row). */
+    private fun slowDragUp() {
+        device.swipe(
+            device.displayWidth / 2, device.displayHeight * 5 / 8,
+            device.displayWidth / 2, device.displayHeight * 3 / 8, 300
+        )
         device.waitForIdle(600)
-        return ok
     }
 
     /** Catalog-state caption read IN PLACE (no scrolling) — call while the
