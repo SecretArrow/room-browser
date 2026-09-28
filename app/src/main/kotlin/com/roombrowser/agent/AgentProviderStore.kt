@@ -53,10 +53,20 @@ object AgentProviderStore {
         val proto = when (protocol) {
             AgentProviderEntity.PROTOCOL_OPENCODE -> AgentProviderEntity.PROTOCOL_OPENCODE
             AgentProviderEntity.PROTOCOL_OLLAMA -> AgentProviderEntity.PROTOCOL_OLLAMA
+            AgentProviderEntity.PROTOCOL_LOCAL -> AgentProviderEntity.PROTOCOL_LOCAL
             else -> AgentProviderEntity.PROTOCOL_OPENAI
         }
         if (trimmedName.isBlank()) return Result.failure(IllegalArgumentException("provider name is required"))
-        if (!trimmedUrl.startsWith("http://") && !trimmedUrl.startsWith("https://")) {
+        // Base-URL validation is PROTOCOL-AWARE: only server protocols need
+        // an http(s) endpoint. The on-device engine has no server at all —
+        // the UI pre-fills the placeholder "local://engine" (any non-blank
+        // value is accepted there; the gateway ignores it and resolves the
+        // .gguf model from app-private storage instead).
+        if (proto == AgentProviderEntity.PROTOCOL_LOCAL) {
+            if (trimmedUrl.isBlank()) {
+                return Result.failure(IllegalArgumentException("base URL is required"))
+            }
+        } else if (!trimmedUrl.startsWith("http://") && !trimmedUrl.startsWith("https://")) {
             return Result.failure(IllegalArgumentException("base URL must start with http:// or https://"))
         }
         if (defaultModel.isBlank()) return Result.failure(IllegalArgumentException("model is required"))

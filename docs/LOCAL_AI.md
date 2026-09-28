@@ -4,17 +4,60 @@ Room Browser punya menu **Local AI (Ollama)**: instal, kelola, dan
 ekspor-impor model AI yang berjalan **sepenuhnya di jaringan lokal Anda** —
 di ponsel yang sama (lewat Termux) atau di PC di LAN. Tidak ada cloud, tidak
 ada API key, tidak ada data yang keluar dari jaringan rumah/kantor Anda.
+Sejak task 13 ada juga **mesin on-device tertanam** (llama.cpp di dalam
+aplikasi, tanpa server sama sekali) — lihat [Mesin on-device (tanpa
+Termux)](#mesin-on-device-tanpa-termux) di bawah.
 
 Menu ini diakses dari **AI Agent Settings → Local AI (Ollama)**, atau lewat
 link **Manage local models →** saat menambah/mengedit provider
 **Ollama native**.
 
+## Mesin on-device (tanpa Termux)
+
+Sejak task 13, layar Local AI punya bagian **On-device engine (built-in, no
+Termux)** — mesin inferensi **llama.cpp yang tertanam langsung di dalam
+aplikasi**. Tidak ada server, tidak ada Termux, tidak ada jaringan sama
+sekali: inferensi berjalan **di CPU ponsel ini**, di dalam proses app.
+
+Kejujuran teknisnya:
+
+- **CPU-only.** Mesin ini berjalan di CPU (runtime ggml-CPU) — jujur soal
+  kecepatan: model kecil (≤1B) realistis untuk browsing sederhana; model
+  besar butuh kesabaran. Kecepatannya nyata, tapi terbatas.
+- **Modelnya file `.gguf` biasa** di penyimpanan privat app
+  (`noBackupFilesDir/on_device_models`). Tidak ada format proprietary,
+  tidak ada bobot yang dibundel di APK — Anda **impor / ekspor / unduh
+  sendiri**:
+  - **Import .gguf file** — pilih file apa pun lewat SAF (file manager,
+    cloud drive, flashdisk OTG).
+  - **Export** per model — tulis ulang file `.gguf` ke lokasi mana pun
+    (SAF) untuk dipindah ke perangkat lain atau di-backup.
+  - **Download URL** — unduh langsung dari URL `.gguf` (mis. dari
+    Hugging Face) dengan **pause/resume berbasis HTTP Range** (file
+    `.part` dilanjutkan, bukan diunduh ulang).
+- **Try model** — tombol diagnostik per model: memuat model ke engine dan
+  menjalankan satu generasi pendek ("Once upon a time", 24 token). Hasilnya
+  (atau pesan error yang jujur) tampil di dialog — cara tercepat
+  membuktikan stack natif bekerja di perangkat Anda.
+- **Protokol provider "On-device"** — tombol **Use in chat** per model
+  membuat/memperbarui provider berprotokol `LOCAL` (base URL palsu
+  `local://engine`, tanpa API key). Gateway
+  `LocalLlamaGateway` meresolve model dari direktori yang sama — chat agent
+  berjalan penuh di perangkat. Di editor provider ada chip keempat
+  **On-device**; tombol **Fetch models** di sana membaca daftar `.gguf`
+  dari penyimpanan lokal (bukan HTTP).
+- **Atribusi:** didukung oleh **llama.cpp** (lisensi MIT) — salinan
+  upstream di-vendor di `app/src/main/cpp/llamacpp`, berasal dari
+  <https://github.com/ggml-org/llama.cpp>. Hanya backend CPU yang aktif
+  (backend GPU dihapus dari vendor copy).
+
 ## Apa itu Local AI (Ollama)?
 
 [Ollama](https://ollama.com) adalah server model AI lokal yang menjalankan
 model open-source (Llama, Qwen, Gemma, DeepSeek…) langsung di perangkat Anda.
-Room Browser **tidak menjalankan modelnya sendiri** — Room Browser adalah
-**klien manajemen** untuk server Ollama Anda:
+Untuk jalur Ollama ini Room Browser **tidak menjalankan modelnya sendiri** —
+Room Browser adalah **klien manajemen** untuk server Ollama Anda (jalur
+tanpa server ada di bagian [Mesin on-device](#mesin-on-device-tanpa-termux)):
 
 - terhubung ke server (cek versi, status online/offline),
 - menampilkan model yang sudah terpasang di server,
@@ -284,7 +327,9 @@ core:domain (JVM murni, teruji unit)
 ├── OllamaDtos      DTO /api/tags + parser NDJSON /api/pull (lenient)
 ├── OllamaModelPresets  katalog 13 preset 4 tier + saran tier per RAM
 ├── LocalAiTuning   num_gpu/num_thread/num_ctx/keep_alive + clamp
-└── LocalAiBackup   manifest import/export (encode/decode ketat)
+├── LocalAiBackup   manifest import/export (encode/decode ketat)
+└── localai/Gguf    parser header GGUF v1-v3 → GgufMeta (nama, kuantisasi,
+                   arsitektur, ctx, jumlah parameter approx)
 
 app (proses default — tanpa WebView)
 ├── OllamaClient    GET /api/version, /api/tags, POST /api/pull (NDJSON
@@ -292,11 +337,17 @@ app (proses default — tanpa WebView)
 ├── LocalAiController  state machine: koneksi, installed, downloads
 │                  (pause = cancel job; resume = re-issue pull),
 │                  tuning, use-in-chat, import/export
+├── localai/engine/LlamaEngine   pembungkus coroutine di atas JNI llama.cpp
+│                  (load/unload/completeRaw/chat + StateFlow status)
+├── localai/store/OnDeviceModelStore       daftar/hapus/impor/ekspor .gguf
+├── localai/store/OnDeviceDownloadController  unduhan URL .gguf + Range resume
 └── agent/ui/LocalAiActivity  layar Compose (activity sendiri)
 
 app (proses :browser)
-└── OllamaAgentGateway  protokol natif /api/chat — mengirim options
-                        tuning Local AI pada setiap chat agent
+├── OllamaAgentGateway  protokol natif /api/chat — mengirim options
+│                      tuning Local AI pada setiap chat agent
+└── LocalLlamaGateway   protokol "LOCAL" — turn agent penuh on-device
+                        (resolve .gguf, load sekali, satu Text event)
 ```
 
 ## Test
@@ -313,3 +364,9 @@ app (proses :browser)
   diassert di e2e (body MockWebServer selesai seketika, fase
   DOWNLOADING terlalu cepat untuk diamati) — semantiknya diuji di
   `OllamaLocalTest`.
+- **E2E on-device**: `OnDeviceEngineE2eTest` — model asli
+  `smoke-story-260k.gguf` (260K parameter, ~1.13 MB) di-seed ke direktori
+  model sebelum layar dibuka → bagian On-device engine muncul → tombol
+  **Try** membuktikan stack natif penuh (JNI load + generasi 24 token)
+  di emulator x86_64. `LocalLlamaGatewayTest` (JVM) menguji resolusi
+  model, pemetaan pesan, dan semua mode kegagalan dengan engine palsu.

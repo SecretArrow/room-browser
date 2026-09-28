@@ -36,3 +36,9 @@
 
 # --- CameraX ---
 -keep class androidx.camera.** { *; }
+
+# On-device llama.cpp engine (JNI): keep the bridge class and its native methods.
+-keepclasseswithmembernames class com.roombrowser.localai.engine.LlamaBridge { native <methods>; }
+-keep class com.roombrowser.localai.engine.LlamaBridge { *; }
+-keep interface com.roombrowser.localai.engine.LlamaEngineApi { *; }
+-keep class com.roombrowser.localai.engine.LlamaEngine { *; }

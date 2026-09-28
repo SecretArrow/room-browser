@@ -71,11 +71,15 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
   disembunyikan), unduh model dengan **pause/resume** (cache layer di sisi
   server), **tuning GPU/CPU/konteks/keep-alive** yang diterapkan ke chat
   protokol Ollama natif, serta **import/export setup** sebagai manifest
-  JSON kecil. Kartu provider **Select model** kini 3 baris (Nama → Model →
+  JSON kecil. Plus sejak task 13: **mesin on-device tertanam
+  (tanpa Termux)** — llama.cpp berjalan di dalam aplikasi di CPU ponsel;
+  bobot model `.gguf` diimpor/diekspor bebas (SAF) atau diunduh per-URL
+  dengan Range-resume, dan tombol **Try** membuktikan stack natifnya
+  langsung di layar. Kartu provider **Select model** kini 3 baris (Nama → Model →
   Base URL) agar tidak tumpang tindih. Semua trafik lokal — tanpa cloud,
   tanpa telemetry; model TIDAK dibundel di APK (Room Browser adalah klien
   manajemen). Entry: AI Agent Settings → *Local AI (Ollama)* atau chip
-  *Ollama native* di provider editor. Lihat `docs/LOCAL_AI.md`.
+  *Ollama native* / *On-device* di provider editor. Lihat `docs/LOCAL_AI.md`.
 - **Biometric profile lock** — fingerprint/face or device credential.
 - **Material 3 UI (2026 redesign)** — premium Brave-inspired-but-original
   design language: floating pill omnibox that owns the full toolbar width

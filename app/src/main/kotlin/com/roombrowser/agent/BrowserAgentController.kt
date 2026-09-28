@@ -289,7 +289,7 @@ class BrowserAgentController(
         modelsError = null
         try {
             val key = apiKeyFor(provider).orEmpty()
-            val gateway = AgentGateways.forProvider(callFactory, provider, key)
+            val gateway = AgentGateways.forProvider(callFactory, provider, key, appContext = appContext)
             val models = gateway.listModels()
             modelCache[provider.id] = models
             return models
@@ -313,7 +313,7 @@ class BrowserAgentController(
         modelsLoading = true
         modelsError = null
         try {
-            val gateway = AgentGateways.forProvider(callFactory, baseUrl, apiKey, protocol)
+            val gateway = AgentGateways.forProvider(callFactory, baseUrl, apiKey, protocol, appContext = appContext)
             return gateway.listModels()
         } catch (t: Throwable) {
             modelsError = t.friendlyMessage()
@@ -463,7 +463,8 @@ class BrowserAgentController(
                 callFactory,
                 provider,
                 apiKey,
-                tuning = localAiTuning.takeIf { provider.protocol == AgentProviderEntity.PROTOCOL_OLLAMA }
+                tuning = localAiTuning.takeIf { provider.protocol == AgentProviderEntity.PROTOCOL_OLLAMA },
+                appContext = appContext
             )
             val engine = SearchEngines.byId(vm.profileSettings().searchEngineId).label
             val prompt = settings.systemPromptOverride?.takeIf { it.isNotBlank() }

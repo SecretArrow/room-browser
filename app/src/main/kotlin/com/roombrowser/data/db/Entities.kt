@@ -170,13 +170,15 @@ data class CustomThemeEntity(
 // =========================================================================
 
 /**
- * A user-configured AI agent provider. Three protocols are supported:
+ * A user-configured AI agent provider. Four protocols are supported:
  *  - [PROTOCOL_OPENAI] — any OpenAI-compatible chat/completions API
  *    (Z.ai, OpenAI, OpenRouter, Groq, DeepSeek, Ollama, LM Studio, custom...)
  *  - [PROTOCOL_OPENCODE] — an `opencode serve` server (session-based REST
  *    API on its own machine, bridged by OpenCodeAgentGateway)
  *  - [PROTOCOL_OLLAMA] — a native Ollama server (/api/chat + /api/tags;
  *    managed by the Local AI screen, bridged by OllamaAgentGateway)
+ *  - [PROTOCOL_LOCAL] — the embedded on-device llama.cpp engine (no server,
+ *    no network; models are .gguf files managed in Local AI)
  *
  * The API key is stored ENCRYPTED with an AndroidKeyStore AES-GCM key.
  */
@@ -194,6 +196,7 @@ data class AgentProviderEntity(
         const val PROTOCOL_OPENAI = "OPENAI"
         const val PROTOCOL_OPENCODE = "OPENCODE"
         const val PROTOCOL_OLLAMA = "OLLAMA"
+        const val PROTOCOL_LOCAL = "LOCAL"
     }
 }
 

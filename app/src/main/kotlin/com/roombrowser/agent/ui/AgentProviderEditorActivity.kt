@@ -48,6 +48,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,9 +65,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.agent.AgentSettingsController
 import com.roombrowser.data.db.AgentProviderEntity
+import com.roombrowser.localai.store.OnDeviceModelStore
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.SettingActionRow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Well-known provider presets (editable after selection). */
 data class ProviderPreset(val label: String, val url: String, val protocol: String)
@@ -156,13 +160,22 @@ private fun ProviderEditorRoot(
         mutableStateOf(
             // Explicit mapping — a plain else→OPENAI would silently CORRUPT
             // an edited Ollama-native provider (its protocol would flip to
-            // the OpenAI transport on open).
+            // the OpenAI transport on open). LOCAL gets the same guard.
             when (editing?.protocol) {
                 AgentProviderEntity.PROTOCOL_OPENCODE -> AgentProviderEntity.PROTOCOL_OPENCODE
                 AgentProviderEntity.PROTOCOL_OLLAMA -> AgentProviderEntity.PROTOCOL_OLLAMA
+                AgentProviderEntity.PROTOCOL_LOCAL -> AgentProviderEntity.PROTOCOL_LOCAL
                 else -> AgentProviderEntity.PROTOCOL_OPENAI
             }
         )
+    }
+    // On-device providers carry a PLACEHOLDER base URL ("local://engine") —
+    // pre-fill it whenever the protocol is LOCAL and nothing is typed yet,
+    // so the field always satisfies the (non-blank) save validation.
+    LaunchedEffect(protocol) {
+        if (protocol == AgentProviderEntity.PROTOCOL_LOCAL && baseUrl.isBlank()) {
+            baseUrl = "local://engine"
+        }
     }
     var apiKey by remember(editing) { mutableStateOf("") }
     var keyVisible by remember { mutableStateOf(false) }
@@ -288,7 +301,12 @@ private fun ProviderEditorRoot(
             // ---- Provider type ----
             Text("Provider type", style = MaterialTheme.typography.labelLarge)
             Spacer(Modifier.height(4.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // FlowRow (like the presets below): four protocol chips wrap on
+            // narrow screens instead of being clipped off-screen.
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
                 FilterChip(
                     selected = protocol == AgentProviderEntity.PROTOCOL_OPENAI,
                     onClick = { protocol = AgentProviderEntity.PROTOCOL_OPENAI; models = emptyList(); fetchError = null },
@@ -306,6 +324,17 @@ private fun ProviderEditorRoot(
                     onClick = { protocol = AgentProviderEntity.PROTOCOL_OLLAMA; models = emptyList(); fetchError = null },
                     label = { Text("Ollama native") },
                     modifier = Modifier.semantics { contentDescription = "provider_protocol_ollama" }
+                )
+                FilterChip(
+                    selected = protocol == AgentProviderEntity.PROTOCOL_LOCAL,
+                    onClick = {
+                        protocol = AgentProviderEntity.PROTOCOL_LOCAL
+                        models = emptyList()
+                        fetchError = null
+                        if (baseUrl.isBlank()) baseUrl = "local://engine"
+                    },
+                    label = { Text("On-device") },
+                    modifier = Modifier.semantics { contentDescription = "provider_protocol_local" }
                 )
             }
             if (protocol == AgentProviderEntity.PROTOCOL_OPENCODE) {
@@ -331,6 +360,23 @@ private fun ProviderEditorRoot(
                 SettingActionRow(
                     title = "Manage local models →",
                     subtitle = "Open the Local AI menu — install, pause/resume, import/export",
+                    onClick = { LocalAiActivity.launch(context, null) }
+                )
+            }
+            if (protocol == AgentProviderEntity.PROTOCOL_LOCAL) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "On-device engine: the model runs INSIDE the app through the embedded " +
+                        "llama.cpp runtime — no server, no network, no API key (the base URL is a " +
+                        "placeholder and the key field is unused). Pick the model in Local AI → " +
+                        "On-device engine (import a .gguf file or download one); Fetch models " +
+                        "lists the models stored on this phone.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                SettingActionRow(
+                    title = "Manage on-device models →",
+                    subtitle = "Open the Local AI screen — import, download, test models",
                     onClick = { LocalAiActivity.launch(context, null) }
                 )
             }
@@ -377,6 +423,8 @@ private fun ProviderEditorRoot(
                                 "Base URL (opencode serve, e.g. http://192.168.1.10:4096)"
                             AgentProviderEntity.PROTOCOL_OLLAMA ->
                                 "Base URL (Ollama server, e.g. http://localhost:11434)"
+                            AgentProviderEntity.PROTOCOL_LOCAL ->
+                                "Base URL (placeholder — local://engine, unused)"
                             else ->
                                 "Base URL (OpenAI-compatible, e.g. https://api.z.ai/api/paas/v4)"
                         }
@@ -420,17 +468,44 @@ private fun ProviderEditorRoot(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Button(
                     onClick = {
-                        scope.launch {
-                            fetching = true
-                            fetchError = null
-                            try {
-                                models = controller.fetchModels(baseUrl, apiKey, protocol)
-                                if (models.isNotEmpty() && model !in models) model = models.first()
-                                modelQuery = ""
-                            } catch (t: Throwable) {
-                                fetchError = t.message ?: "fetch failed"
-                            } finally {
-                                fetching = false
+                        // LOCAL: no HTTP at all — the "models" of the on-device
+                        // engine are the .gguf files in app-private storage;
+                        // list them from the store instead of the network.
+                        if (protocol == AgentProviderEntity.PROTOCOL_LOCAL) {
+                            scope.launch {
+                                fetching = true
+                                fetchError = null
+                                try {
+                                    val ids = withContext(Dispatchers.IO) {
+                                        OnDeviceModelStore(context).list().map { it.id }
+                                    }
+                                    if (ids.isEmpty()) {
+                                        fetchError =
+                                            "No on-device models yet — import or download one in Local AI first."
+                                    } else {
+                                        models = ids
+                                        if (model !in models) model = models.first()
+                                        modelQuery = ""
+                                    }
+                                } catch (t: Throwable) {
+                                    fetchError = t.message ?: "listing failed"
+                                } finally {
+                                    fetching = false
+                                }
+                            }
+                        } else {
+                            scope.launch {
+                                fetching = true
+                                fetchError = null
+                                try {
+                                    models = controller.fetchModels(baseUrl, apiKey, protocol)
+                                    if (models.isNotEmpty() && model !in models) model = models.first()
+                                    modelQuery = ""
+                                } catch (t: Throwable) {
+                                    fetchError = t.message ?: "fetch failed"
+                                } finally {
+                                    fetching = false
+                                }
                             }
                         }
                     },
@@ -444,7 +519,11 @@ private fun ProviderEditorRoot(
                 if (fetching) {
                     CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("Contacting provider…", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        if (protocol == AgentProviderEntity.PROTOCOL_LOCAL) "Reading on-device models…"
+                        else "Contacting provider…",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                 }
             }
             fetchError?.let {

@@ -66,6 +66,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -79,7 +80,10 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.roombrowser.RoomBrowserApp
+import com.roombrowser.agent.AgentProviderStore
 import com.roombrowser.agent.LocalAiController
+import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.domain.agent.LocalAiBackup
 import com.roombrowser.domain.agent.LocalAiTuning
 import com.roombrowser.domain.agent.OllamaLibraryEntry
@@ -88,13 +92,21 @@ import com.roombrowser.domain.agent.OllamaModelInfo
 import com.roombrowser.domain.agent.OllamaModelPreset
 import com.roombrowser.domain.agent.OllamaModelPresets
 import com.roombrowser.domain.agent.OllamaPresetTier
+import com.roombrowser.localai.engine.LlamaEngine
+import com.roombrowser.localai.store.OnDeviceDownloadController
+import com.roombrowser.localai.store.OnDeviceDownloadEntry
+import com.roombrowser.localai.store.OnDeviceModel
+import com.roombrowser.localai.store.OnDeviceModelStore
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomCard
 import com.roombrowser.ui.common.SectionHeader
 import com.roombrowser.ui.common.SettingSwitchRow
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Local AI (Ollama) manager — a DEDICATED ACTIVITY (own window, own back
@@ -125,6 +137,8 @@ import kotlinx.coroutines.launch
 class LocalAiActivity : ComponentActivity() {
 
     private lateinit var controller: LocalAiController
+    private lateinit var onDeviceStore: OnDeviceModelStore
+    private lateinit var onDeviceDownloads: OnDeviceDownloadController
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -136,10 +150,17 @@ class LocalAiActivity : ComponentActivity() {
         // fall back to https://ollama.com.
         controller = LocalAiController(application, intent.getStringExtra(EXTRA_LIBRARY_URL))
         controller.start()
+        // On-device engine store + download controller — owned at the
+        // ACTIVITY level (like the Ollama controller) so in-flight .gguf
+        // downloads die with the window instead of leaking.
+        onDeviceStore = OnDeviceModelStore(application)
+        onDeviceDownloads = OnDeviceDownloadController(onDeviceStore)
         setContent {
             RoomBrowserTheme {
                 LocalAiRoot(
                     controller = controller,
+                    onDeviceStore = onDeviceStore,
+                    onDeviceDownloads = onDeviceDownloads,
                     onClose = { finish() }
                 )
             }
@@ -147,6 +168,7 @@ class LocalAiActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        onDeviceDownloads.shutdown()
         controller.shutdown()
         super.onDestroy()
     }
@@ -177,6 +199,8 @@ class LocalAiActivity : ComponentActivity() {
 @Composable
 private fun LocalAiRoot(
     controller: LocalAiController,
+    onDeviceStore: OnDeviceModelStore,
+    onDeviceDownloads: OnDeviceDownloadController,
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
@@ -316,6 +340,17 @@ private fun LocalAiRoot(
                 ConnectionStatusText(controller.connection, Modifier.weight(1f))
             }
             SetupGuideCard()
+
+            // ================= On-device engine =================
+            // The EMBEDDED llama.cpp runtime — inference inside the app,
+            // CPU-only, .gguf models in app-private storage. Everything the
+            // agent needs without Termux, a server, or a network.
+            SectionHeader("On-device engine (built-in, no Termux)")
+            OnDeviceEngineSection(
+                store = onDeviceStore,
+                downloads = onDeviceDownloads,
+                onNotice = { notice = it }
+            )
 
             // ================= Installed models =================
             SectionHeader("Installed models")
@@ -523,6 +558,504 @@ private fun SetupGuideCard() {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+        }
+    }
+}
+
+// ===========================================================================
+// On-device engine (embedded llama.cpp — no Termux, no server, no network)
+// ===========================================================================
+
+/**
+ * The "On-device engine" section: live engine status, the .gguf models in
+ * app-private storage (use-in-chat / try / delete / export), SAF import,
+ * URL download with pause/resume/cancel, and the honest CPU note.
+ */
+@Composable
+private fun OnDeviceEngineSection(
+    store: OnDeviceModelStore,
+    downloads: OnDeviceDownloadController,
+    onNotice: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val engineState by LlamaEngine.state.collectAsState()
+    val entries by downloads.entries.collectAsState()
+
+    // ---- Model list refresh hooks (mirror the server-model pattern):
+    // loaded once on composition, re-listed after every modelsRefresh bump
+    // (import / delete) and whenever a download settles.
+    var modelsRefresh by remember { mutableStateOf(0) }
+    var models by remember { mutableStateOf<List<OnDeviceModel>>(emptyList()) }
+    LaunchedEffect(modelsRefresh) {
+        models = withContext(Dispatchers.IO) { store.list() }
+    }
+    LaunchedEffect(Unit) { downloads.refreshListFromDisk() }
+    // The controller DROPS an entry the moment its download completes (the
+    // model then surfaces through the store's list()) — so a SHRINKING
+    // entries list is the honest "a download settled" signal (finished or
+    // canceled; a re-list is cheap and harmless either way).
+    var lastEntryCount by remember { mutableStateOf(0) }
+    LaunchedEffect(entries.size) {
+        if (entries.size < lastEntryCount) modelsRefresh++
+        lastEntryCount = entries.size
+    }
+
+    // ---- Try-model diagnostics: load + one 24-token generation, result in
+    // a dialog. PROVES the whole native stack (JNI → llama.cpp → tokens).
+    var tryingId by remember { mutableStateOf<String?>(null) }
+    var tryResultId by remember { mutableStateOf<String?>(null) }
+    var tryOutput by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(tryingId) {
+        val id = tryingId ?: return@LaunchedEffect
+        val file = store.fileFor(id)
+        val output = if (file == null) {
+            "Could not find the model file for '$id'."
+        } else {
+            val loadError = LlamaEngine.load(id, file, contextTokens = 0, threads = 4)
+            when {
+                loadError != null -> "Could not load the model: $loadError"
+                else -> {
+                    val generated = LlamaEngine.completeRaw("Once upon a time", 24, 0.1f, 0.95f)
+                    generated.fold(
+                        onSuccess = { it.ifBlank { "(the model produced no tokens)" } },
+                        onFailure = { "Could not generate: ${it.message ?: it.javaClass.simpleName}" }
+                    )
+                }
+            }
+        }
+        tryResultId = id
+        tryOutput = output
+        tryingId = null
+    }
+    tryOutput?.let { output ->
+        AlertDialog(
+            onDismissRequest = { tryOutput = null },
+            title = { Text("Model test — ${tryResultId ?: ""}") },
+            text = {
+                Text(
+                    output,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.semantics { contentDescription = "localengine_try_output" }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { tryOutput = null }) { Text("Close") }
+            }
+        )
+    }
+
+    // ---- SAF export of a model file (mirrors the JSON-backup export above).
+    var pendingExportId by remember { mutableStateOf<String?>(null) }
+    val exportModelLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri ->
+        val id = pendingExportId
+        pendingExportId = null
+        if (uri != null && id != null) {
+            scope.launch(Dispatchers.IO) {
+                val ok = runCatching { store.exportToUri(id, uri) }.getOrDefault(false)
+                onNotice(if (ok) "Exported $id" else "Export failed for $id")
+            }
+        }
+    }
+
+    // ---- SAF import of a .gguf file into app-private storage.
+    val importModelLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch(Dispatchers.IO) {
+                runCatching { store.importFromUri(uri) }
+                    .onSuccess { id ->
+                        modelsRefresh++
+                        onNotice("Imported $id")
+                    }
+                    .onFailure {
+                        onNotice("Import failed: ${it.message ?: "could not read the file"}")
+                    }
+            }
+        }
+    }
+
+    // ---- Delete confirmation (unloads the model first if it is loaded).
+    var confirmDeleteOnDevice by remember { mutableStateOf<String?>(null) }
+    confirmDeleteOnDevice?.let { id ->
+        AlertDialog(
+            onDismissRequest = { confirmDeleteOnDevice = null },
+            title = { Text("Delete on-device model?") },
+            text = { Text("Deletes the file $id.gguf from app-private storage. This cannot be undone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDeleteOnDevice = null
+                    scope.launch(Dispatchers.IO) {
+                        val ok = runCatching { store.delete(id) }.getOrDefault(false)
+                        if (ok && LlamaEngine.state.value.modelId == id) {
+                            runCatching { LlamaEngine.unload() }
+                        }
+                        modelsRefresh++
+                        onNotice(if (ok) "Deleted $id" else "Could not delete $id")
+                    }
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDeleteOnDevice = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // ---- "Use in chat": creates/updates the LOCAL provider and makes it the
+    // default — the same NonCancellable pattern LocalAiController.useInChat
+    // uses for the Ollama-native provider (finishing the activity mid-save
+    // can never lose the provider or the default selection).
+    fun useOnDeviceModelInChat(modelId: String) {
+        scope.launch {
+            try {
+                val providerName = withContext(NonCancellable) {
+                    val graph = (context.applicationContext as RoomBrowserApp).graph
+                    val repo = graph.agentRepo
+                    val appState = graph.appState
+                    val existing = repo.providers()
+                        .firstOrNull { it.protocol == AgentProviderEntity.PROTOCOL_LOCAL }
+                    // Create-or-update the on-device provider; a blank API key
+                    // keeps the stored ciphertext on edit (it is unused here).
+                    val provider = AgentProviderStore.save(
+                        repo,
+                        id = existing?.id,
+                        name = existing?.name ?: "On-device engine",
+                        baseUrl = existing?.baseUrl?.takeIf { it.isNotBlank() } ?: "local://engine",
+                        apiKey = "",
+                        defaultModel = modelId,
+                        protocol = AgentProviderEntity.PROTOCOL_LOCAL
+                    ).getOrThrow()
+                    val snapshot = appState.agentSettingsSnapshot()
+                    appState.saveAgentSettings(
+                        snapshot.copy(defaultProviderId = provider.id, defaultModel = modelId)
+                    )
+                    existing?.name ?: "On-device engine"
+                }
+                onNotice("Agent set to $providerName · $modelId")
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                onNotice(t.message ?: "failed to select the model")
+            }
+        }
+    }
+
+    // ---- Engine status card ----
+    RoomCard(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Text(
+                if (LlamaEngine.available) {
+                    "llama.cpp ${LlamaEngine.version() ?: "(version unknown)"}"
+                } else {
+                    "Engine unavailable in this build"
+                },
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.semantics { contentDescription = "localengine_version" }
+            )
+            if (engineState.loading) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 4.dp)
+                ) {
+                    CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Loading model…", style = MaterialTheme.typography.bodySmall)
+                }
+            } else {
+                engineState.modelId?.let {
+                    Text(
+                        "Loaded model: $it",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+            }
+            engineState.error?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+            Text(
+                "The browsing agent can run entirely on this phone's CPU.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
+    }
+
+    // ---- The models themselves ----
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .semantics { contentDescription = "localengine_models_list" }
+    ) {
+        if (models.isEmpty()) {
+            EmptyState(
+                title = "No on-device models yet",
+                subtitle = "Import a .gguf file or download one below."
+            )
+        } else {
+            models.forEach { model ->
+                OnDeviceModelRow(
+                    model = model,
+                    trying = tryingId == model.id,
+                    onUseInChat = { useOnDeviceModelInChat(model.id) },
+                    onTry = { tryingId = model.id },
+                    onDelete = { confirmDeleteOnDevice = model.id },
+                    onExport = {
+                        pendingExportId = model.id
+                        exportModelLauncher.launch("${model.id}.gguf")
+                    }
+                )
+            }
+        }
+    }
+
+    // ---- Import ----
+    OutlinedButton(
+        onClick = { importModelLauncher.launch(arrayOf("*/*")) },
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .semantics { contentDescription = "localengine_import" }
+    ) {
+        Icon(Icons.Filled.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text("Import .gguf file")
+    }
+
+    // ---- Download by URL (Range-resume, .part files) ----
+    Column(Modifier.padding(horizontal = 16.dp)) {
+        var downloadUrl by remember { mutableStateOf("") }
+        var downloadName by remember { mutableStateOf("") }
+        OutlinedTextField(
+            value = downloadUrl,
+            onValueChange = { downloadUrl = it },
+            label = { Text("Download URL (.gguf)") },
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { contentDescription = "localengine_url_field" }
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = downloadName,
+            onValueChange = { downloadName = it },
+            label = { Text("File name") },
+            placeholder = { Text("model.gguf") },
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { contentDescription = "localengine_filename_field" }
+        )
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = {
+                val url = downloadUrl.trim()
+                val fileName = downloadName.trim().ifBlank { "model.gguf" }
+                if (url.startsWith("http://") || url.startsWith("https://")) {
+                    downloads.start(url, fileName)
+                    onNotice("Downloading $fileName…")
+                } else {
+                    onNotice("The URL must start with http:// or https://")
+                }
+            },
+            modifier = Modifier.semantics { contentDescription = "localengine_download" }
+        ) {
+            Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Download")
+        }
+    }
+
+    // ---- Live download rows ----
+    if (entries.isNotEmpty()) {
+        Text(
+            "On-device downloads",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+        )
+        entries.forEach { entry ->
+            OnDeviceDownloadRow(
+                entry = entry,
+                onPause = { downloads.pause(entry.fileName) },
+                onResume = { downloads.start(entry.url, entry.fileName) },
+                onCancel = { downloads.cancel(entry.fileName) }
+            )
+        }
+    }
+
+    // ---- The honest note ----
+    Text(
+        "Runs llama.cpp on your phone's CPU. Models are plain .gguf files stored in " +
+            "app-private storage — import/export them freely. No Termux, no server, no network.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+    )
+}
+
+@Composable
+private fun OnDeviceModelRow(
+    model: OnDeviceModel,
+    trying: Boolean,
+    onUseInChat: () -> Unit,
+    onTry: () -> Unit,
+    onDelete: () -> Unit,
+    onExport: () -> Unit
+) {
+    RoomCard(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Text(
+                model.meta?.name ?: model.id,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            val details = listOfNotNull(
+                model.meta?.quantization ?: "unknown quant",
+                formatBytes(model.sizeBytes).ifBlank { null },
+                model.meta?.architecture,
+                model.meta?.contextLength?.let { "ctx $it" } ?: "ctx ?"
+            ).joinToString(" · ")
+            Text(
+                details,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(top = 6.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onUseInChat,
+                    modifier = Modifier.semantics { contentDescription = "localengine_use_${model.id}" }
+                ) { Text("Use in chat") }
+                OutlinedButton(
+                    onClick = onTry,
+                    enabled = !trying,
+                    modifier = Modifier.semantics { contentDescription = "localengine_try_${model.id}" }
+                ) {
+                    if (trying) {
+                        CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
+                    } else {
+                        Text("Try")
+                    }
+                }
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.semantics { contentDescription = "localengine_delete_${model.id}" }
+                ) { Icon(Icons.Filled.Delete, contentDescription = "Delete model") }
+            }
+            OutlinedButton(
+                onClick = onExport,
+                modifier = Modifier
+                    .padding(top = 4.dp)
+                    .semantics { contentDescription = "localengine_export_${model.id}" }
+            ) {
+                Icon(Icons.Filled.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Export")
+            }
+        }
+    }
+}
+
+@Composable
+private fun OnDeviceDownloadRow(
+    entry: OnDeviceDownloadEntry,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onCancel: () -> Unit
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Text(
+            entry.fileName,
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.Bold
+        )
+        val status = when {
+            entry.error != null -> "Error: ${entry.error}"
+            entry.finished -> "Finished"
+            entry.paused -> "Paused"
+            else -> {
+                val pct = entry.total?.takeIf { it > 0 }?.let { total ->
+                    (entry.received * 100 / total).toInt()
+                }
+                if (pct != null) "Downloading… $pct%" else "Downloading…"
+            }
+        }
+        Text(
+            status,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (entry.error != null) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        val knownTotal = entry.total?.takeIf { it > 0 }
+        if (knownTotal != null) {
+            LinearProgressIndicator(
+                progress = { (entry.received.toFloat() / knownTotal).coerceIn(0f, 1f) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp)
+            )
+            Text(
+                "${formatBytes(entry.received)} / ${formatBytes(knownTotal)}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        } else if (!entry.finished && !entry.paused && entry.error == null) {
+            LinearProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp)
+            )
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(top = 6.dp)
+        ) {
+            when {
+                entry.finished -> Unit
+                entry.paused || entry.error != null -> Button(
+                    onClick = onResume,
+                    modifier = Modifier.semantics { contentDescription = "localengine_resume_${entry.fileName}" }
+                ) { Text("Resume") }
+                else -> FilledTonalButton(
+                    onClick = onPause,
+                    modifier = Modifier.semantics { contentDescription = "localengine_pause_${entry.fileName}" }
+                ) { Text("Pause") }
+            }
+            TextButton(
+                onClick = onCancel,
+                modifier = Modifier.semantics { contentDescription = "localengine_cancel_${entry.fileName}" }
+            ) { Text(if (entry.finished) "Clear" else "Cancel") }
         }
     }
 }

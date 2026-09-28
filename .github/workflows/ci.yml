@@ -38,6 +38,11 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      - name: Install NDK + CMake (on-device llama.cpp engine)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list_installed | grep -E "ndk|cmake" || true
+
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v4
 
@@ -103,6 +108,11 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      - name: Install NDK + CMake (on-device llama.cpp engine)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list_installed | grep -E "ndk|cmake" || true
+
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v4
 
@@ -151,6 +161,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+
+      - name: Install NDK + CMake (on-device llama.cpp engine)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list_installed | grep -E "ndk|cmake" || true
 
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -206,6 +221,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+
+      - name: Install NDK + CMake (on-device llama.cpp engine)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list_installed | grep -E "ndk|cmake" || true
 
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v4
