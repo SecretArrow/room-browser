@@ -134,7 +134,11 @@ class AgentSettingsE2eTest {
 
     private fun clickCenter(node: UiObject2): Boolean = try {
         val b = node.visibleBounds
-        device.click(b.centerX(), b.centerY())
+        // SHELL TAP, not device.click() gesture injection: the CI runner's
+        // busy a11y pipeline silently swallows injected gestures (Task 12
+        // lesson, commit 2354d81 — "Gestures took longer than expected");
+        // `input tap` is deterministic and focuses Compose fields reliably.
+        device.executeShellCommand("input tap ${b.centerX()} ${b.centerY()}")
         device.waitForIdle(1_000)
         true
     } catch (_: Exception) {
@@ -499,7 +503,10 @@ class AgentSettingsE2eTest {
         // Fill the manual fields via their semantics descriptions
         // (name → URL → API key), then fetch the model list.
         val baseUrl = server.url("/v1").toString().trimEnd('/')
-        assertTrue("name field must be typeable", typeIntoField("provider_name_field", "MockLLM"))
+        assertTrue(
+            "name field must be typeable; UI:\n" + uiTree(),
+            typeIntoField("provider_name_field", "MockLLM")
+        )
         assertTrue("base URL field must be typeable", typeIntoField("provider_url_field", baseUrl))
         assertTrue("API key field must be typeable", typeIntoField("provider_key_field", "test-key-123", masked = true))
 
