@@ -40,8 +40,18 @@ jobs:
 
       - name: Install NDK + CMake (on-device llama.cpp engine)
         run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list_installed | grep -E "ndk|cmake" || true
+          NDK=/usr/local/lib/android/sdk/ndk/27.0.12077973
+          CMAKE_DIR=$(ls -d /usr/local/lib/android/sdk/cmake/3.22.1 2>/dev/null || true)
+          if [ ! -f "$NDK/source.properties" ] || [ -z "$CMAKE_DIR" ]; then
+            echo "NDK/CMake missing or incomplete — (re)installing…"
+            rm -rf "$NDK"
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null || true
+          fi
+          # Hard verification: a corrupted/partial NDK install must FAIL the
+          # job loudly (CXX1101 'missing source.properties' cost a full CI
+          # round) instead of surfacing as a gradle configure error later.
+          test -f "$NDK/source.properties" || { echo "NDK source.properties missing after install"; exit 1; }
+          test -d "$CMAKE_DIR" || test -d /usr/local/lib/android/sdk/cmake/3.22.1 || { echo "cmake 3.22.1 missing after install"; exit 1; }
 
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -110,8 +120,18 @@ jobs:
 
       - name: Install NDK + CMake (on-device llama.cpp engine)
         run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list_installed | grep -E "ndk|cmake" || true
+          NDK=/usr/local/lib/android/sdk/ndk/27.0.12077973
+          CMAKE_DIR=$(ls -d /usr/local/lib/android/sdk/cmake/3.22.1 2>/dev/null || true)
+          if [ ! -f "$NDK/source.properties" ] || [ -z "$CMAKE_DIR" ]; then
+            echo "NDK/CMake missing or incomplete — (re)installing…"
+            rm -rf "$NDK"
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null || true
+          fi
+          # Hard verification: a corrupted/partial NDK install must FAIL the
+          # job loudly (CXX1101 'missing source.properties' cost a full CI
+          # round) instead of surfacing as a gradle configure error later.
+          test -f "$NDK/source.properties" || { echo "NDK source.properties missing after install"; exit 1; }
+          test -d "$CMAKE_DIR" || test -d /usr/local/lib/android/sdk/cmake/3.22.1 || { echo "cmake 3.22.1 missing after install"; exit 1; }
 
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -164,8 +184,18 @@ jobs:
 
       - name: Install NDK + CMake (on-device llama.cpp engine)
         run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list_installed | grep -E "ndk|cmake" || true
+          NDK=/usr/local/lib/android/sdk/ndk/27.0.12077973
+          CMAKE_DIR=$(ls -d /usr/local/lib/android/sdk/cmake/3.22.1 2>/dev/null || true)
+          if [ ! -f "$NDK/source.properties" ] || [ -z "$CMAKE_DIR" ]; then
+            echo "NDK/CMake missing or incomplete — (re)installing…"
+            rm -rf "$NDK"
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null || true
+          fi
+          # Hard verification: a corrupted/partial NDK install must FAIL the
+          # job loudly (CXX1101 'missing source.properties' cost a full CI
+          # round) instead of surfacing as a gradle configure error later.
+          test -f "$NDK/source.properties" || { echo "NDK source.properties missing after install"; exit 1; }
+          test -d "$CMAKE_DIR" || test -d /usr/local/lib/android/sdk/cmake/3.22.1 || { echo "cmake 3.22.1 missing after install"; exit 1; }
 
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -232,8 +262,18 @@ jobs:
 
       - name: Install NDK + CMake (on-device llama.cpp engine)
         run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list_installed | grep -E "ndk|cmake" || true
+          NDK=/usr/local/lib/android/sdk/ndk/27.0.12077973
+          CMAKE_DIR=$(ls -d /usr/local/lib/android/sdk/cmake/3.22.1 2>/dev/null || true)
+          if [ ! -f "$NDK/source.properties" ] || [ -z "$CMAKE_DIR" ]; then
+            echo "NDK/CMake missing or incomplete — (re)installing…"
+            rm -rf "$NDK"
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null || true
+          fi
+          # Hard verification: a corrupted/partial NDK install must FAIL the
+          # job loudly (CXX1101 'missing source.properties' cost a full CI
+          # round) instead of surfacing as a gradle configure error later.
+          test -f "$NDK/source.properties" || { echo "NDK source.properties missing after install"; exit 1; }
+          test -d "$CMAKE_DIR" || test -d /usr/local/lib/android/sdk/cmake/3.22.1 || { echo "cmake 3.22.1 missing after install"; exit 1; }
 
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v4
