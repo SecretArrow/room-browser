@@ -295,6 +295,14 @@ Java_com_roombrowser_localai_engine_LlamaBridge_nativeGenerate(
         llama_sampler_chain_add(smpl, llama_sampler_init_top_p(
                 (topP > 0.0f && topP < 1.0f) ? topP : 0.95f, /*min_keep=*/1));
         llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
+        // CRITICAL: the chain must END with a token-SELECTING sampler. top_p and
+        // temp only FILTER candidates — they never set cur_p.selected, so
+        // llama_sampler_sample()'s GGML_ASSERT(cur_p.selected >= 0) fires
+        // (SIGABRT → process crash; reproduced on a host harness against the
+        // bundled stories260K smoke model, llama-sampler.cpp:956). dist picks
+        // the actual token from the filtered distribution — exactly the
+        // simple.cpp upstream pattern.
+        llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
     }
 
     // --- Feed the whole prompt in n_batch-sized chunks ---

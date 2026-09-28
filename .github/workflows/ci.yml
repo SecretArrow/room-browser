@@ -188,14 +188,23 @@ jobs:
             adb shell settings put global window_animation_scale 0
             adb shell settings put global transition_animation_scale 0
             adb shell settings put global animator_duration_scale 0
-            ./gradlew connectedDebugAndroidTest --console=plain
+            # On failure, dump the device logcat (crash buffer + full) into the
+            # workspace so the report artifact answers WHY a process crashed.
+            ./gradlew connectedDebugAndroidTest --console=plain || {
+              adb exec-out logcat -d -b crash > /home/runner/work/room-browser/e2e-logcat-crash.txt || true
+              adb exec-out logcat -d -t 2000 > /home/runner/work/room-browser/e2e-logcat-tail.txt || true
+              exit 1
+            }
 
       - name: Upload instrumented test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-reports
-          path: app/build/outputs/androidTest-results/
+          path: |
+            app/build/outputs/androidTest-results/
+            /home/runner/work/room-browser/e2e-logcat-crash.txt
+            /home/runner/work/room-browser/e2e-logcat-tail.txt
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------

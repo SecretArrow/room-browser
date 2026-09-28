@@ -257,8 +257,10 @@ class AgentSettingsE2eTest {
             // regression: one extra preset row pushed the name field past the
             // old single-drag fallback). Poll + drag until the field is on
             // screen — a fixed drag count silently breaks on layout growth.
+            // (Task 13 regression: the 4th protocol chip + LOCAL caption add
+            // another wrapped FlowRow row + a hint paragraph above the fields.)
             var field: UiObject2? = null
-            for (i in 1..5) {
+            for (i in 1..10) {
                 field = device.wait(Until.findObject(By.desc(desc)), 1_500)
                 if (field != null) break
                 dragUpQuarter()

@@ -608,22 +608,27 @@ private fun OnDeviceEngineSection(
     var tryOutput by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(tryingId) {
         val id = tryingId ?: return@LaunchedEffect
-        val file = store.fileFor(id)
-        val output = if (file == null) {
-            "Could not find the model file for '$id'."
-        } else {
-            val loadError = LlamaEngine.load(id, file, contextTokens = 0, threads = 4)
-            when {
-                loadError != null -> "Could not load the model: $loadError"
-                else -> {
-                    val generated = LlamaEngine.completeRaw("Once upon a time", 24, 0.1f, 0.95f)
-                    generated.fold(
-                        onSuccess = { it.ifBlank { "(the model produced no tokens)" } },
-                        onFailure = { "Could not generate: ${it.message ?: it.javaClass.simpleName}" }
-                    )
+        // runCatching(Throwable) on purpose: any Java-side error thrown out of
+        // the engine path (incl. UnsatisfiedLinkError-style Errors) becomes
+        // an honest dialog message instead of killing the process.
+        val output = runCatching {
+            val file = store.fileFor(id)
+            if (file == null) {
+                "Could not find the model file for '$id'."
+            } else {
+                val loadError = LlamaEngine.load(id, file, contextTokens = 0, threads = 4)
+                when {
+                    loadError != null -> "Could not load the model: $loadError"
+                    else -> {
+                        val generated = LlamaEngine.completeRaw("Once upon a time", 24, 0.1f, 0.95f)
+                        generated.fold(
+                            onSuccess = { it.ifBlank { "(the model produced no tokens)" } },
+                            onFailure = { "Could not generate: ${it.message ?: it.javaClass.simpleName}" }
+                        )
+                    }
                 }
             }
-        }
+        }.getOrElse { "Model test failed: ${it.message ?: it.javaClass.simpleName}" }
         tryResultId = id
         tryOutput = output
         tryingId = null
