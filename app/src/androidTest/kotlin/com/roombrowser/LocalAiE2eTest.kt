@@ -406,6 +406,29 @@ class LocalAiE2eTest {
         repeat(18) { dragDownQuarter() }
     }
 
+    /** Scroll-aware SHELL tap: find the node (desc preferred, exact text
+     *  fallback), then tap its visible center via `input tap` — the same
+     *  input channel as the proven `input text` typing. UiAutomator's gesture
+     *  injection was PHANTOM-dropped on this busy screen four rounds in a row
+     *  (the node was found, the "click" returned success, the onClick never
+     *  fired — the catalog caption stayed Idle through 12 s of in-place polls). */
+    private fun scrollAndShellTap(descPart: String, textNeedle: String, attempts: Int = 10): Boolean {
+        for (i in 1..attempts) {
+            val node = device.wait(Until.findObject(By.descContains(descPart)), 1_500)
+                ?: device.wait(Until.findObject(By.text(textNeedle)), 500)
+            if (node != null) {
+                val bounds = runCatching { node.visibleBounds }.getOrNull()
+                if (bounds != null && bounds.width() > 0 && bounds.height() > 0) {
+                    device.executeShellCommand("input tap ${bounds.centerX()} ${bounds.centerY()}")
+                    device.waitForIdle(800)
+                    return true
+                }
+            }
+            dragUpQuarter()
+        }
+        return false
+    }
+
     /** Catalog-state caption read IN PLACE (no scrolling) — call while the
      *  viewport is still at the refresh button. Viewport-limited on purpose:
      *  the caption lives in the SAME row as the button. */
@@ -753,8 +776,7 @@ class LocalAiE2eTest {
         for (round in 1..4) {
             hideImeIfNeeded()
             scrollToTop()
-            val clicked = clickDescContainsWithScroll("localai_refresh_catalog", attempts = 10) ||
-                clickTextWithScroll("Find new models", attempts = 8)
+            val clicked = scrollAndShellTap("localai_refresh_catalog", "Find new models")
             if (!clicked) {
                 buttonNeverFound = true
                 catalogDump = dumpCatalogTop()
