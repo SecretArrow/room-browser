@@ -17,6 +17,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * E2E for the Local AI (Ollama) manager (real app UI, fake Ollama server):
@@ -69,6 +70,7 @@ class LocalAiE2eTest {
     private val targetContext: Context = instrumentation.targetContext
 
     private lateinit var server: MockWebServer
+    private lateinit var fake: OllamaFake
 
     /**
      * Structurally faithful slice of ollama.com/library (see OllamaDtosTest
@@ -131,9 +133,10 @@ class LocalAiE2eTest {
     @Before
     fun setUp() {
         server = MockWebServer()
+        fake = OllamaFake(libraryHtml)
         // Kotlin property syntax — OkHttp 4.x MockWebServer.dispatcher is a
         // var, so the Java-style setDispatcher() does not resolve in Kotlin.
-        server.dispatcher = OllamaFake(libraryHtml)
+        server.dispatcher = fake
         server.start()
     }
 
@@ -152,14 +155,18 @@ class LocalAiE2eTest {
     private class OllamaFake(val libraryHtml: String) : Dispatcher() {
         private val pulled = mutableSetOf<String>()
 
+        /** Ground truth for the refresh test: GET /library hit count. */
+        val libraryHits = AtomicInteger()
+
         override fun dispatch(request: RecordedRequest): MockResponse {
             val path = request.path ?: ""
             return when {
-                path.startsWith("/library") ->
+                path.startsWith("/library") -> {
+                    libraryHits.incrementAndGet()
                     MockResponse()
                         .setHeader("Content-Type", "text/html")
                         .setBody(libraryHtml)
-
+                }
                 path.startsWith("/api/version") ->
                     MockResponse()
                         .setHeader("Content-Type", "application/json")
@@ -398,6 +405,34 @@ class LocalAiE2eTest {
             dragUpQuarter()
         }
         return false
+    }
+
+    /** SINGLE-LINE screen state for assertion messages — multi-line dumps get
+     *  truncated by the runner's console, so everything is joined with ' | '.
+     *  Proves: refresh-button presence, catalog-state caption, visible texts. */
+    private fun screenSummary(): String {
+        val refreshBtn = runCatching {
+            device.findObjects(By.descContains("localai_refresh_catalog")).size
+        }.getOrDefault(-1)
+        val caption = listOf(
+            "Idle" to "Fetch the live ollama.com library",
+            "Loading" to "Fetching the newest models",
+            "Ready" to "Library updated",
+            "Failed" to "Couldn't read the library"
+        ).firstOrNull { (_, needle) ->
+            runCatching {
+                device.findObjects(By.textContains(needle)).isNotEmpty()
+            }.getOrDefault(false)
+        }?.first ?: "?"
+        val texts = runCatching {
+            device.findObjects(By.textContains(""))
+                .mapNotNull { it.text }
+                .distinct()
+                .take(36)
+                .map { it.take(44) }
+        }.getOrDefault(emptyList())
+        return "libraryHits=${fake.libraryHits.get()} refreshBtn=$refreshBtn catalog=$caption " +
+            "texts=[${texts.joinToString(" | ")}]"
     }
 
     /** Types text into the field with the given content description. */
@@ -675,16 +710,25 @@ class LocalAiE2eTest {
 
         // ---- 3. Find new models → GET /library?sort=newest ----------------
         // VERIFICATION-DRIVEN tap (the Task-11 CI lesson: a dispatched tap on
-        // this busy screen can be dropped silently, leaving the catalog Idle).
-        // Every round resets to the top, taps, then waits for PROOF — the
-        // discovered card, or the honest Failed caption — and taps again
-        // when neither shows up.
+        // this busy screen can be dropped silently). GROUND TRUTH tier: the
+        // fake server counts GET /library hits — a hit proves BOTH that the
+        // tap actually dispatched AND that the client used the injected mock
+        // URL (a lost extra would send the fetch to the real ollama.com).
+        // UI tier: the discovered card, or the honest Failed caption.
         var qwenFound = false
         var failedState = false
+        var sawLibraryRequest = false
         for (round in 1..4) {
             hideImeIfNeeded()
             scrollToTop()
             clickDescContainsWithScroll("localai_refresh_catalog", attempts = 10)
+            // Proof tier 1 (≤ 10 s): the request reached the fake server.
+            val deadline = System.currentTimeMillis() + 10_000
+            while (System.currentTimeMillis() < deadline && fake.libraryHits.get() == 0) {
+                try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            }
+            if (fake.libraryHits.get() > 0) sawLibraryRequest = true
+            // Proof tier 2: the card, or the Failed caption.
             if (hasTextWithScroll("qwen3.5")) {
                 qwenFound = true
                 break
@@ -695,13 +739,17 @@ class LocalAiE2eTest {
             }
         }
         assertTrue(
-            "The catalog refresh must not end in the Failed state " +
-                "(fetch/parse problem — see the caption reason in the dump); UI:\n" + uiTree(),
+            "The refresh tap must reach the fake /library within 4 rounds " +
+                "(tap dropped or library_url extra lost); " + screenSummary(),
+            sawLibraryRequest
+        )
+        assertTrue(
+            "The catalog refresh must not end in the Failed state; " + screenSummary(),
             !failedState
         )
         assertTrue(
             "Discovered family qwen3.5 must be listed (no card after 4 tap rounds); " +
-                "UI:\n" + uiTree(),
+                screenSummary(),
             qwenFound
         )
 
