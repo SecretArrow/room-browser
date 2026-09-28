@@ -307,13 +307,19 @@ class OllamaLocalTest {
     @Test
     fun `pull cancellation surfaces as CancellationException and a second pull resumes`() = runBlocking {
         // Response 1: throttled so the stream stalls right after the first
-        // line — the window in which the user presses Pause. Response 2: the
-        // re-issued (resumed) pull, served completely.
+        // line — the window in which the user presses Pause. The chunk period
+        // (30 s) is deliberately LONG: a broken cancellation watcher would
+        // only wake up when the next chunk arrives (~30 s) or the read times
+        // out (60 s), so a 10 s prompt-window below still discriminates a
+        // WORKING watcher (< 10 s) from a broken one — with 2.5x headroom
+        // for CI runner CPU starvation (the 4 s window flaked on a loaded
+        // 2-core runner: 38 tests, parallel forks, GC pauses).
+        // Response 2: the re-issued (resumed) pull, served completely.
         server.enqueue(
             MockResponse()
                 .setHeader("Content-Type", "application/x-ndjson")
                 .setBody(pullBody)
-                .throttleBody(48, 5, TimeUnit.SECONDS)
+                .throttleBody(48, 30, TimeUnit.SECONDS)
         )
         server.enqueue(
             MockResponse()
@@ -329,12 +335,14 @@ class OllamaLocalTest {
         }
 
         // Wait for the first NDJSON line, then PAUSE (cancel the job).
-        withTimeout(15_000) { firstEvent.await() }
+        // (First throttle chunk is written immediately, so 30 s is generous
+        // headroom for thread scheduling on a starved runner.)
+        withTimeout(30_000) { firstEvent.await() }
         pullJob.cancel()
         // The cancelled pull must return PROMPTLY (the blocked read is aborted
         // via call.cancel()) and surface as a CancellationException — that is
         // the exact contract LocalAiController.pause() relies on.
-        val surfaced = withTimeout(4_000) { runCatching { pullJob.await() }.exceptionOrNull() }
+        val surfaced = withTimeout(10_000) { runCatching { pullJob.await() }.exceptionOrNull() }
         assertThat(surfaced).isInstanceOf(CancellationException::class.java)
         assertThat(server.takeRequest().path).isEqualTo("/api/pull")
         scope.cancel()
