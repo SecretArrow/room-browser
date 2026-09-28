@@ -49,7 +49,13 @@ class OllamaLocalTest {
 
     @After
     fun tearDown() {
-        server.shutdown()
+        // Resilient on purpose: the pull-cancellation test leaves MockWebServer's
+        // throttled writer sleeping (30 s chunk period) on a socket the client
+        // already abandoned via call.cancel() — server.shutdown() can then
+        // surface the forced interrupt as an IOException. That is harness
+        // noise from the intentional stall, not a contract failure (the same
+        // pattern the e2e tests use for their fake servers).
+        runCatching { server.shutdown() }
     }
 
     /** Base URL exactly as a user would store it (trailing slash, normalized inside). */
