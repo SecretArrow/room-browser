@@ -1,0 +1,31 @@
+# Desktop (C) build outputs
+desktop/build/
+desktop/dist/
+desktop/build-*/
+
+# CI scratch
+release-out/
+ci-logs/
+e2e-logcat-*.txt
+
+# Gradle / Android scratch at repo root (real patterns live in android/.gitignore)
+.gradle/
+local.properties
+.cxx/
+.kotlin/
+
+# IDE / OS
+.idea/
+*.iml
+.vscode/
+.DS_Store
+*.hprof
+captures/
+
+# Secrets and signing — NEVER commit
+*.jks
+*.keystore
+keystore.properties
+secrets.properties
+*.pem
+*.p12

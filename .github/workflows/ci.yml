@@ -57,6 +57,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Apply automatic lint fixes
+        working-directory: android
         run: |
           set +e
           ./gradlew lintFix --console=plain --continue
@@ -127,9 +128,6 @@ jobs:
             rm -rf "$NDK"
             yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null || true
           fi
-          # Hard verification: a corrupted/partial NDK install must FAIL the
-          # job loudly (CXX1101 'missing source.properties' cost a full CI
-          # round) instead of surfacing as a gradle configure error later.
           test -f "$NDK/source.properties" || { echo "NDK source.properties missing after install"; exit 1; }
           test -d "$CMAKE_DIR" || test -d /usr/local/lib/android/sdk/cmake/3.22.1 || { echo "cmake 3.22.1 missing after install"; exit 1; }
 
@@ -137,12 +135,15 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Static analysis (Android Lint)
+        working-directory: android
         run: ./gradlew lintDebug --console=plain
 
       - name: Unit tests (domain + app)
+        working-directory: android
         run: ./gradlew testDebugUnitTest :core:domain:test --console=plain
 
       - name: Debug build (all ABIs)
+        working-directory: android
         run: ./gradlew assembleDebug --console=plain
 
       - name: Upload lint report
@@ -150,7 +151,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lint-report
-          path: app/build/reports/lint-results-debug.html
+          path: android/app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
 
       - name: Upload test reports
@@ -159,8 +160,8 @@ jobs:
         with:
           name: test-reports
           path: |
-            app/build/reports/tests/
-            core/domain/build/reports/tests/
+            android/app/build/reports/tests/
+            android/core/domain/build/reports/tests/
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------
@@ -191,9 +192,6 @@ jobs:
             rm -rf "$NDK"
             yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null || true
           fi
-          # Hard verification: a corrupted/partial NDK install must FAIL the
-          # job loudly (CXX1101 'missing source.properties' cost a full CI
-          # round) instead of surfacing as a gradle configure error later.
           test -f "$NDK/source.properties" || { echo "NDK source.properties missing after install"; exit 1; }
           test -d "$CMAKE_DIR" || test -d /usr/local/lib/android/sdk/cmake/3.22.1 || { echo "cmake 3.22.1 missing after install"; exit 1; }
 
@@ -223,7 +221,7 @@ jobs:
             # failure fallback on ONE POSIX-valid line: on gradle failure,
             # dump the device logcat (crash buffer + tail) into the workspace
             # so the e2e-reports artifact answers WHY, then exit non-zero.
-            ./gradlew connectedDebugAndroidTest --console=plain || (adb exec-out logcat -d -b crash > /home/runner/work/room-browser/e2e-logcat-crash.txt; adb exec-out logcat -d -t 2000 > /home/runner/work/room-browser/e2e-logcat-tail.txt; exit 1)
+            cd android && ./gradlew connectedDebugAndroidTest --console=plain || (adb exec-out logcat -d -b crash > /home/runner/work/room-browser/e2e-logcat-crash.txt; adb exec-out logcat -d -t 2000 > /home/runner/work/room-browser/e2e-logcat-tail.txt; exit 1)
 
       - name: Upload instrumented test reports
         if: always()
@@ -231,23 +229,173 @@ jobs:
         with:
           name: e2e-reports
           path: |
-            app/build/outputs/androidTest-results/
+            android/app/build/outputs/androidTest-results/
             /home/runner/work/room-browser/e2e-logcat-crash.txt
             /home/runner/work/room-browser/e2e-logcat-tail.txt
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------
+  # DESKTOP (Windows x64): pure-C browser chrome (Win32) + WebView2.
+  # Headers come from the official WebView2 NuGet SDK; the loader DLL is
+  # loaded at runtime via LoadLibrary (no .lib linkage, no CRT mismatch)
+  # and shipped next to the exe for a portable zip.
+  # ---------------------------------------------------------------------
+  desktop-windows:
+    name: Desktop build (Windows x64, C + WebView2)
+    needs: autofix
+    if: needs.autofix.outputs.pushed_with_pat != 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            git fetch --tags -f origin
+            LATEST=$(git tag --list 'v1.0.*' | sed 's/^v1\.0\.//' | sort -n | tail -1)
+            NEXT=$(( ${LATEST:-0} + 1 ))
+            V="1.0.$NEXT"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "computed version: $V"
+
+      - name: Fetch WebView2 SDK (official NuGet package)
+        shell: pwsh
+        run: |
+          $sdk = "1.0.2903.40"
+          curl.exe -sSL -o webview2.nupkg "https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/$sdk"
+          Copy-Item webview2.nupkg webview2.zip -Force
+          Expand-Archive webview2.zip -DestinationPath webview2-sdk -Force
+          $inc = (Get-ChildItem -Path webview2-sdk -Recurse -Filter WebView2.h | Select-Object -First 1).DirectoryName
+          $dll = (Get-ChildItem -Path webview2-sdk -Recurse -Filter WebView2Loader.dll | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1).FullName
+          if (-not $dll) { $dll = (Get-ChildItem -Path webview2-sdk -Recurse -Filter WebView2Loader.dll | Select-Object -First 1).FullName }
+          if (-not $inc -or -not $dll) {
+            Write-Host "WebView2 SDK layout not recognized — dumping tree:"
+            Get-ChildItem -Recurse webview2-sdk | ForEach-Object { Write-Host $_.FullName }
+            exit 1
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "WEBVIEW2_INCLUDE=$inc"
+          Add-Content -Path $env:GITHUB_ENV -Value "WEBVIEW2_DLL=$dll"
+          Write-Host "headers: $inc"
+          Write-Host "loader : $dll"
+
+      - name: Configure + build (MSVC, C11)
+        shell: pwsh
+        run: |
+          cmake -S desktop -B desktop/build -DCMAKE_BUILD_TYPE=Release `
+                -DROOMBROWSER_VERSION="${{ steps.ver.outputs.version }}" `
+                -DWEBVIEW2_INCLUDE_DIR="$env:WEBVIEW2_INCLUDE"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          cmake --build desktop/build --config Release
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Smoke test (--version)
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          $exe = Join-Path $PWD "desktop\build\Release\RoomBrowser.exe"
+          if (-not (Test-Path $exe)) { Write-Host "RoomBrowser.exe missing"; exit 1 }
+          $p = Start-Process -FilePath $exe -ArgumentList "--version","--out","version-out.txt" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { Write-Host "exit code: $($p.ExitCode)"; exit 1 }
+          $line = Get-Content version-out.txt -ErrorAction SilentlyContinue
+          Write-Host "version output: $line"
+          if (-not ($line -match "Room Browser .+ windows")) { Write-Host "unexpected --version output"; exit 1 }
+
+      - name: Stage WebView2 loader DLL next to the exe
+        shell: pwsh
+        run: |
+          Copy-Item "$env:WEBVIEW2_DLL" "desktop\build\Release\" -Force
+          Get-ChildItem "desktop\build\Release"
+
+      - name: Package (portable zip)
+        shell: pwsh
+        run: |
+          desktop\scripts\package-windows.ps1 -BuildDir desktop\build\Release -Version ${{ steps.ver.outputs.version }} -DistDir desktop\dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows
+          path: desktop/dist/
+
+  # ---------------------------------------------------------------------
+  # DESKTOP (Ubuntu x64): pure-C browser chrome (GTK3) + WebKitGTK.
+  # Runs the shared C-core unit tests, then packages deb + tar.gz.
+  # ---------------------------------------------------------------------
+  desktop-linux:
+    name: Desktop build (Ubuntu x64, C + WebKitGTK)
+    needs: autofix
+    if: needs.autofix.outputs.pushed_with_pat != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install GTK3 + WebKitGTK dev libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev
+
+      - name: Compute version
+        id: ver
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            git fetch --tags -f origin
+            LATEST=$(git tag --list 'v1.0.*' | sed 's/^v1\.0\.//' | sort -n | tail -1)
+            NEXT=$(( ${LATEST:-0} + 1 ))
+            V="1.0.$NEXT"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "computed version: $V"
+
+      - name: Configure + build (gcc, C11) + run core unit tests
+        run: |
+          cmake -S desktop -B desktop/build -DCMAKE_BUILD_TYPE=Release \
+                -DROOMBROWSER_VERSION="${{ steps.ver.outputs.version }}" \
+                -DRB_BUILD_TESTS=ON
+          cmake --build desktop/build -j"$(nproc)"
+          ./desktop/build/rb_tests
+
+      - name: Smoke test (--version)
+        run: |
+          ./desktop/build/roombrowser --version | tee version-out.txt
+          grep -E 'Room Browser .+ linux' version-out.txt
+
+      - name: Package (deb + tar.gz)
+        run: |
+          desktop/scripts/package-linux.sh desktop/build ${{ steps.ver.outputs.version }} desktop/dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux
+          path: desktop/dist/
+
+  # ---------------------------------------------------------------------
   # AUTO-RELEASE: on every green main push AND on v* tags.
-  # Produces signed per-ABI APKs + universal + AAB, checksums, and a
-  # GitHub Release (spec section 57: ABI releases).
+  # Android: signed per-ABI APKs + universal + AAB.
+  # Desktop: windows zip + linux deb/tar.gz (downloaded from the desktop
+  # matrix jobs of this same run). Version numbering continues from the
+  # highest existing v1.0.x tag (the repo moved, run numbers restarted).
   # ---------------------------------------------------------------------
   release:
-    name: Auto-release (signed APKs per ABI)
-    needs: [ quality, e2e ]
+    name: Auto-release (Android + Desktop)
+    needs: [ quality, e2e, desktop-windows, desktop-linux ]
     if: >-
       !cancelled() &&
       needs.quality.result == 'success' &&
       needs.e2e.result == 'success' &&
+      needs.desktop-windows.result == 'success' &&
+      needs.desktop-linux.result == 'success' &&
       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     steps:
@@ -269,9 +417,6 @@ jobs:
             rm -rf "$NDK"
             yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null || true
           fi
-          # Hard verification: a corrupted/partial NDK install must FAIL the
-          # job loudly (CXX1101 'missing source.properties' cost a full CI
-          # round) instead of surfacing as a gradle configure error later.
           test -f "$NDK/source.properties" || { echo "NDK source.properties missing after install"; exit 1; }
           test -d "$CMAKE_DIR" || test -d /usr/local/lib/android/sdk/cmake/3.22.1 || { echo "cmake 3.22.1 missing after install"; exit 1; }
 
@@ -286,9 +431,12 @@ jobs:
             echo "prerelease=false"                        >> "$GITHUB_OUTPUT"
             echo "name=Room Browser ${GITHUB_REF_NAME}"    >> "$GITHUB_OUTPUT"
           else
-            echo "tag=v1.0.${{ github.run_number }}"       >> "$GITHUB_OUTPUT"
+            git fetch --tags -f origin
+            LATEST=$(git tag --list 'v1.0.*' | sed 's/^v1\.0\.//' | sort -n | tail -1)
+            NEXT=$(( ${LATEST:-0} + 1 ))
+            echo "tag=v1.0.$NEXT"                          >> "$GITHUB_OUTPUT"
             echo "prerelease=true"                         >> "$GITHUB_OUTPUT"
-            echo "name=Room Browser v1.0.${{ github.run_number }} (main)" >> "$GITHUB_OUTPUT"
+            echo "name=Room Browser v1.0.$NEXT (main)"     >> "$GITHUB_OUTPUT"
           fi
 
       - name: Decode signing keystore (from repository secrets)
@@ -306,23 +454,32 @@ jobs:
           fi
 
       - name: Build signed release APKs (ABI splits + universal)
-        run: ./gradlew assembleRelease --console=plain
+        run: cd android && ./gradlew assembleRelease --console=plain
 
       - name: Build Android App Bundle
-        run: ./gradlew bundleRelease --console=plain
+        run: cd android && ./gradlew bundleRelease --console=plain
+
+      - name: Download desktop artifacts (this run)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: desktop-dist
 
       - name: Collect artifacts and checksums
         run: |
           mkdir -p release-out
-          cp app/build/outputs/apk/release/*.apk release-out/
-          cp app/build/outputs/bundle/release/*.aab release-out/ || true
+          cp android/app/build/outputs/apk/release/*.apk release-out/
+          cp android/app/build/outputs/bundle/release/*.aab release-out/ || true
+          cp desktop-dist/desktop-windows/* release-out/
+          cp desktop-dist/desktop-linux/* release-out/
+          test -n "$(ls release-out/*.zip release-out/*.deb 2>/dev/null)" || { echo "desktop artifacts missing"; exit 1; }
           cd release-out && sha256sum * > checksums.sha256 && cd ..
           ls -lh release-out/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-apks
+          name: release-bundle
           path: release-out/
 
       - name: Create GitHub Release
@@ -337,7 +494,7 @@ jobs:
           body: |
             ## Room Browser ${{ steps.tag.outputs.tag }}
 
-            **Signed per-ABI release APKs + universal + AAB.**
+            **Android: signed per-ABI APKs + universal + AAB. Desktop: Windows portable zip + Ubuntu deb/tar.gz (pure-C browser).**
 
             | Artifact | Target |
             |---|---|
@@ -346,12 +503,20 @@ jobs:
             | `x86_64` / `x86` | emulators, x86 devices |
             | `universal` | all ABIs (larger download) |
             | `.aab` | Play Store upload |
+            | `*-windows-x64.zip` | Windows 10/11 — portable zip (exe + WebView2Loader.dll) |
+            | `*_amd64.deb` | Ubuntu/Debian — `apt` package (pulls GTK3 + WebKitGTK deps) |
+            | `*-linux-x64.tar.gz` | any modern Linux with GTK3 + WebKitGTK |
 
             Verify integrity with `sha256sum -c checksums.sha256`.
 
             ### CI gates passed
             - Android Lint (with auto-fix stage)
-            - Unit tests (domain + app)
+            - Unit tests (domain + app + desktop C core)
             - E2E instrumented tests on emulator (profile CRUD, cross-process browsing, storage isolation)
+            - Desktop `--version` smoke tests (Windows MSVC + Ubuntu gcc builds)
 
-            ${{ env.SIGNING_MODE == 'debug-fallback' && '⚠️ Built with fallback debug signing — configure repository secrets (see RELEASE.md) for production signing.' || '✅ Signed with the release keystore.' }}
+            > Note: this repository moved — releases are signed with the NEW
+            > repository keystore. Updating over an APK from the previous
+            > repository requires a one-time uninstall/reinstall.
+
+            ${{ env.SIGNING_MODE == 'debug-fallback' && '⚠️ Built with fallback debug signing — configure repository secrets (see android/RELEASE.md) for production signing.' || '✅ Signed with the release keystore.' }}
