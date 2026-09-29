@@ -1,0 +1,186 @@
+name: Backup signing key
+
+# MANUAL ONLY — this must never run on push. It reads the release signing
+# keystore out of the repository secrets, where it currently exists as the
+# ONLY copy anywhere, and emits a recoverable backup: an AES-256 gpg blob
+# committed under backup/, plus a short-lived downloadable artifact.
+#
+# Why a secret-derived file may live in Git at all, when build.gradle.kts says
+# "no secrets are ever committed to Git" (spec section 58): what lands in the
+# repo is CIPHERTEXT. The passphrase exists only in the BACKUP_PASSPHRASE
+# secret and in the owner's password manager, so the committed blob is not a
+# usable credential and cannot sign anything. The keystore, its store/key
+# passwords, and the generated keystore.properties all stay inside the
+# encrypted archive — only the .gpg is ever written to the tree or uploaded.
+#
+# Two properties this workflow is built around:
+#
+#  1. It PROVES the backup restores before committing it. An untested backup
+#     is worse than none: it looks like safety while being nothing. So it
+#     decrypts the blob it just wrote, compares the keystore byte for byte,
+#     and re-opens the restored keystore with the recorded password.
+#  2. It never prints a password or the keystore. Actions logs of a PUBLIC
+#     repository are world-readable. The only keystore-derived thing echoed
+#     below is the certificate's SHA-256 fingerprint, which is public data by
+#     design and is what you compare after a restore to prove the key is the
+#     same one.
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "Also commit the encrypted blob to backup/ (uncheck for a download-only backup)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  backup:
+    name: Encrypt and verify a keystore backup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # Fail loudly and early rather than committing a backup that cannot be
+      # restored. A weak passphrase is the one failure mode that would still
+      # LOOK fine: the blob lands in a public repo, so its only protection is
+      # the passphrase, and it is exposed to offline cracking forever.
+      - name: Guard — required secrets, and a passphrase worth relying on
+        env:
+          KEYSTORE_B64: ${{ secrets.ROOMBROWSER_KEYSTORE_B64 }}
+          PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "$KEYSTORE_B64" ] || missing="$missing ROOMBROWSER_KEYSTORE_B64"
+          [ -n "$PASSPHRASE" ]   || missing="$missing BACKUP_PASSPHRASE"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing secret(s):$missing — see backup/README.md for how to set them."
+            exit 1
+          fi
+          if [ "${#PASSPHRASE}" -lt 24 ]; then
+            echo "::error::BACKUP_PASSPHRASE is ${#PASSPHRASE} characters; use at least 24 (32+ random is better). It is the only thing standing between a public blob and a signing key."
+            exit 1
+          fi
+          echo "Secrets present; passphrase length is acceptable (${#PASSPHRASE} chars)."
+
+      - name: Build and verify the encrypted backup
+        env:
+          KEYSTORE_B64: ${{ secrets.ROOMBROWSER_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.ROOMBROWSER_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ROOMBROWSER_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ROOMBROWSER_KEY_PASSWORD }}
+          PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          WORK="$RUNNER_TEMP/signing-backup"
+          mkdir -p "$WORK" backup
+
+          # ---- 1. The plaintext side, built only inside this VM -------------
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$WORK/room-browser-release.jks"
+          printf '%s' "$PASSPHRASE" > "$WORK/pass"
+
+          # The passwords travel WITH the key: a keystore without them signs
+          # nothing, so a backup that omits them is not a backup. Written with
+          # echo rather than a heredoc so the YAML indentation of this step can
+          # never end up inside the properties file.
+          {
+            echo "storeFile=room-browser-release.jks"
+            echo "storePassword=$STORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASSWORD"
+          } > "$WORK/keystore.properties"
+
+          # ---- 2. Prove the keystore is usable BEFORE backing it up --------
+          # A wrong ROOMBROWSER_STORE_PASSWORD secret would otherwise be
+          # discovered only on the day a restore is actually needed. keytool
+          # takes the password on stdin: it never reaches argv (visible in ps)
+          # or the log.
+          if ! printf '%s' "$STORE_PASSWORD" \
+                 | keytool -list -keystore "$WORK/room-browser-release.jks" -alias "$KEY_ALIAS" \
+                 > /dev/null 2>&1; then
+            echo "::error::ROOMBROWSER_STORE_PASSWORD does not open the keystore (or ROOMBROWSER_KEY_ALIAS is wrong). Backing this up would preserve a key nobody can use."
+            exit 1
+          fi
+          FINGERPRINT=$(printf '%s' "$STORE_PASSWORD" \
+                 | keytool -list -v -keystore "$WORK/room-browser-release.jks" -alias "$KEY_ALIAS" 2>/dev/null \
+                 | grep -m1 -E "SHA256:" | sed -E 's/.*SHA256: *//' || true)
+
+          printf '%s\n' \
+            "Room Browser release signing key — encrypted backup" \
+            "" \
+            "Restore steps are in backup/README.md in the repository." \
+            "Certificate SHA-256 fingerprint at backup time: ${FINGERPRINT:-unknown}" \
+            > "$WORK/README.txt"
+
+          # ---- 3. Encrypt ------------------------------------------------
+          tar -czf "$WORK/room-browser-signing-backup.tar.gz" \
+            -C "$WORK" room-browser-release.jks keystore.properties README.txt
+          gpg --batch --yes --quiet --pinentry-mode loopback \
+            --passphrase-file "$WORK/pass" \
+            --symmetric --cipher-algo AES256 \
+            --s2k-mode 3 --s2k-digest-algo SHA512 --s2k-count 65011712 \
+            -o backup/room-browser-signing-backup.tar.gz.gpg \
+            "$WORK/room-browser-signing-backup.tar.gz"
+
+          # ---- 4. Prove the blob we are about to commit actually restores --
+          # Byte-for-byte, through the real passphrase. This is the whole point
+          # of the workflow: a backup nobody has decrypted is a guess.
+          mkdir -p "$WORK/roundtrip"
+          gpg --batch --yes --quiet --pinentry-mode loopback \
+            --passphrase-file "$WORK/pass" \
+            -d backup/room-browser-signing-backup.tar.gz.gpg \
+            | tar -xzf - -C "$WORK/roundtrip"
+          cmp "$WORK/room-browser-release.jks" "$WORK/roundtrip/room-browser-release.jks"
+          if ! printf '%s' "$STORE_PASSWORD" \
+                 | keytool -list -keystore "$WORK/roundtrip/room-browser-release.jks" -alias "$KEY_ALIAS" \
+                 > /dev/null 2>&1; then
+            echo "::error::The RESTORED keystore does not open with the recorded password — refusing to commit a backup that fails its own restore."
+            exit 1
+          fi
+          rm -f "$WORK/pass"
+          echo "Verified: the blob decrypts with the passphrase, the keystore is byte-identical, and the recorded password opens it."
+
+      - name: Upload the encrypted blob as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: signing-key-backup-encrypted
+          # ONLY the ciphertext — never the archive, never the keystore.
+          # Artifacts of a public repository are downloadable by anyone, so
+          # this is safe only because it is encrypted.
+          path: backup/room-browser-signing-backup.tar.gz.gpg
+          retention-days: 1
+          if-no-files-found: error
+
+      # Re-encrypting uses a fresh salt and IV, so the blob differs on every
+      # run even when the key has not changed. That means each run adds a new
+      # (small) binary to history — run this when the key or its passwords
+      # change, not on a schedule.
+      - name: Commit the blob to backup/
+        if: ${{ inputs.commit }}
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backup/room-browser-signing-backup.tar.gz.gpg backup/README.md
+          if git diff --cached --quiet; then
+            echo "Nothing staged — already up to date."
+            exit 0
+          fi
+          git commit -m "chore(backup): refresh the encrypted signing-key backup"
+          if [ -n "$PAT_TOKEN" ]; then
+            git push "https://x-access-token:$PAT_TOKEN@github.com/${{ github.repository }}.git" HEAD:${{ github.ref_name }}
+          else
+            git push
+          fi
