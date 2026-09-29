@@ -1,14 +1,19 @@
 /*
- * rb_bookmarks.c — bookmark list for Room Browser core.
+ * rb_bookmarks.c — bookmarks for Room Browser core.
  * Pure C11; only the C standard library is used.
  *
- * The JSON-lines reader/writer mirrors rb_history.c on purpose: each
- * module stays self-contained (shared public contract, private helpers).
+ * INVARIANT: `items[0 .. count-1]` are in display order — folder IS NULL,
+ * folder, position, created_at, then id (see rb_bm_before).  Every mutation
+ * below restores it, which is what keeps rb_bookmarks_at() an array read.
+ *
+ * The JSON-lines reader/writer uses the shared primitives in rb_json.h, so
+ * the escaping and unescaping rules are the same ones every other store in
+ * the browser applies.
  */
 
 #include "rb_bookmarks.h"
 
-#include "rb_str.h"
+#include "rb_json.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,45 +21,34 @@
 
 #define RB_BOOKMARKS_LINE 16384
 
-static char *rb_bm_strdup(const char *s)
-{
-    size_t n;
-    char *p;
-
-    if (s == NULL) {
-        s = "";
-    }
-    n = strlen(s) + 1;
-    p = (char *)malloc(n);
-    if (p == NULL) {
-        fprintf(stderr, "rb_bookmarks: out of memory\n");
-        exit(1);
-    }
-    memcpy(p, s, n);
-    return p;
-}
-
-typedef struct {
-    char *url;
-    char *title;
-} rb_bm;
-
 struct rb_bookmarks {
-    rb_bm *items; /* insertion order */
+    rb_bookmark *items; /* display order */
     int count;
     int cap;
+    long next_id;
 };
+
+/* ------------------------------- helpers -------------------------------- */
+
+static void rb_bm_release(rb_bookmark *bm)
+{
+    free(bm->url);
+    free(bm->title);
+    free(bm->folder);
+    memset(bm, 0, sizeof(*bm));
+}
 
 static void rb_bookmarks_grow(rb_bookmarks *b)
 {
     int ncap;
-    rb_bm *grown;
+    rb_bookmark *grown;
 
     if (b->count < b->cap) {
         return;
     }
     ncap = (b->cap > 0) ? b->cap * 2 : 8;
-    grown = (rb_bm *)realloc(b->items, (size_t)ncap * sizeof(rb_bm));
+    grown = (rb_bookmark *)realloc(b->items,
+                                   (size_t)ncap * sizeof(rb_bookmark));
     if (grown == NULL) {
         fprintf(stderr, "rb_bookmarks: out of memory\n");
         exit(1);
@@ -63,7 +57,67 @@ static void rb_bookmarks_grow(rb_bookmarks *b)
     b->cap = ncap;
 }
 
-static int rb_bookmarks_index_of(const rb_bookmarks *b, const char *url)
+/* 1 when `a` sorts before `b`.  This is the DAO's ORDER BY, with the id as a
+ * final tie-break: SQLite would leave four-way ties in whatever order it
+ * happened to read, and an order that depends on storage layout is not
+ * something a UI or a test can rely on. */
+static int rb_bm_before(const rb_bookmark *a, const rb_bookmark *b)
+{
+    const int a_folder = (a->folder != NULL);
+    const int b_folder = (b->folder != NULL);
+
+    if (a_folder != b_folder) {
+        return a_folder; /* the one WITH a folder sorts first */
+    }
+    if (a_folder) {
+        int c = strcmp(a->folder, b->folder);
+        if (c != 0) {
+            return c < 0;
+        }
+    }
+    if (a->position != b->position) {
+        return a->position < b->position;
+    }
+    if (a->created_at != b->created_at) {
+        return a->created_at < b->created_at;
+    }
+    return a->id < b->id;
+}
+
+/* Stable insertion sort.  Bookmark lists are short and nearly sorted between
+ * mutations, which is the case this is built for. */
+static void rb_bookmarks_sort(rb_bookmarks *b)
+{
+    int i;
+
+    for (i = 1; i < b->count; i++) {
+        rb_bookmark key = b->items[i];
+        int j = i - 1;
+
+        while (j >= 0 && rb_bm_before(&key, &b->items[j])) {
+            b->items[j + 1] = b->items[j];
+            j--;
+        }
+        b->items[j + 1] = key;
+    }
+}
+
+static int rb_bookmarks_index_of_id(const rb_bookmarks *b, long id)
+{
+    int i;
+
+    if (b == NULL) {
+        return -1;
+    }
+    for (i = 0; i < b->count; i++) {
+        if (b->items[i].id == id) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int rb_bookmarks_index_of_url(const rb_bookmarks *b, const char *url)
 {
     int i;
 
@@ -78,294 +132,47 @@ static int rb_bookmarks_index_of(const rb_bookmarks *b, const char *url)
     return -1;
 }
 
-/* ------------------------- minimal JSON helpers ------------------------- */
-
-static void rb_js_skip_ws(const char *s, size_t *i)
+/* Drops the row at `i`, keeping the display order of everything else. */
+static void rb_bookmarks_drop(rb_bookmarks *b, int i)
 {
-    while (s[*i] == ' ' || s[*i] == '\t') {
-        (*i)++;
+    rb_bm_release(&b->items[i]);
+    if (i + 1 < b->count) {
+        memmove(&b->items[i], &b->items[i + 1],
+                (size_t)(b->count - i - 1) * sizeof(rb_bookmark));
     }
+    b->count--;
 }
 
-static int rb_hex_val(char c)
+/* ------------------------------- parsing -------------------------------- */
+
+/* Reads a string field; NULL when the key is absent or explicitly null. */
+static char *rb_bm_field_str(const char *line, const char *key)
 {
-    if (c >= '0' && c <= '9') {
-        return c - '0';
+    size_t pos;
+    char *out = NULL;
+
+    if (!rb_json_find_key(line, key, &pos)) {
+        return NULL;
     }
-    if (c >= 'a' && c <= 'f') {
-        return c - 'a' + 10;
+    if (line[pos] != '"' || !rb_json_parse_string(line, &pos, &out)) {
+        return NULL; /* null, a number, or malformed: not a folder name */
     }
-    if (c >= 'A' && c <= 'F') {
-        return c - 'A' + 10;
-    }
-    return -1;
+    return out;
 }
 
-static void rb_append_utf8(rb_str *b, unsigned cp)
+static long long rb_bm_field_num(const char *line, const char *key,
+                                 long long fallback)
 {
-    char one[2];
+    size_t pos;
+    long long v = fallback;
 
-    if (cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu)) {
-        cp = 0xFFFDu; /* out of range / lone surrogate -> replacement char */
+    if (!rb_json_find_key(line, key, &pos)) {
+        return fallback;
     }
-    one[1] = '\0';
-    if (cp < 0x80u) {
-        one[0] = (char)cp;
-        rb_str_append(b, one);
-    } else if (cp < 0x800u) {
-        one[0] = (char)(0xC0u | (cp >> 6));
-        rb_str_append(b, one);
-        one[0] = (char)(0x80u | (cp & 0x3Fu));
-        rb_str_append(b, one);
-    } else if (cp < 0x10000u) {
-        one[0] = (char)(0xE0u | (cp >> 12));
-        rb_str_append(b, one);
-        one[0] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
-        rb_str_append(b, one);
-        one[0] = (char)(0x80u | (cp & 0x3Fu));
-        rb_str_append(b, one);
-    } else {
-        one[0] = (char)(0xF0u | (cp >> 18));
-        rb_str_append(b, one);
-        one[0] = (char)(0x80u | ((cp >> 12) & 0x3Fu));
-        rb_str_append(b, one);
-        one[0] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
-        rb_str_append(b, one);
-        one[0] = (char)(0x80u | (cp & 0x3Fu));
-        rb_str_append(b, one);
+    if (!rb_json_parse_number(line, &pos, &v)) {
+        return fallback;
     }
-}
-
-static int rb_parse_json_string(const char *s, size_t *i, char **out)
-{
-    rb_str b;
-
-    *out = NULL;
-    if (s[*i] != '"') {
-        return 0;
-    }
-    (*i)++;
-    rb_str_init(&b);
-    while (s[*i] != '"' && s[*i] != '\0') {
-        char c = s[*i];
-        if (c == '\\') {
-            char e = s[*i + 1];
-            switch (e) {
-            case '"':
-                rb_str_append(&b, "\"");
-                break;
-            case '\\':
-                rb_str_append(&b, "\\");
-                break;
-            case '/':
-                rb_str_append(&b, "/");
-                break;
-            case 'b':
-                rb_str_append(&b, "\b");
-                break;
-            case 'f':
-                rb_str_append(&b, "\f");
-                break;
-            case 'n':
-                rb_str_append(&b, "\n");
-                break;
-            case 'r':
-                rb_str_append(&b, "\r");
-                break;
-            case 't':
-                rb_str_append(&b, "\t");
-                break;
-            case 'u': {
-                unsigned cp = 0;
-                int k;
-                for (k = 1; k <= 4; k++) {
-                    int hv = rb_hex_val(s[*i + (size_t)k]);
-                    if (hv < 0) {
-                        goto fail;
-                    }
-                    cp = cp * 16u + (unsigned)hv;
-                }
-                rb_append_utf8(&b, cp);
-                (*i) += 6;
-                continue;
-            }
-            default:
-                goto fail;
-            }
-            (*i) += 2;
-        } else {
-            char one[2];
-            one[0] = c;
-            one[1] = '\0';
-            rb_str_append(&b, one);
-            (*i)++;
-        }
-    }
-    if (s[*i] != '"') {
-        goto fail; /* unterminated */
-    }
-    (*i)++;
-    *out = (b.data != NULL) ? b.data : rb_bm_strdup("");
-    return 1;
-fail:
-    rb_str_free(&b);
-    return 0;
-}
-
-static int rb_parse_json_number(const char *s, size_t *i, long long *out)
-{
-    char *end = NULL;
-    long long v;
-
-    if (s[*i] == '\0') {
-        return 0;
-    }
-    v = strtoll(s + *i, &end, 10);
-    if (end == s + *i) {
-        return 0;
-    }
-    *i = (size_t)(end - s);
-    *out = v;
-    return 1;
-}
-
-/* Parses one bookmark JSON object; requires the "url" key. */
-static int rb_parse_bookmark_line(const char *line, char **out_url,
-                                  char **out_title)
-{
-    size_t i = 0;
-    char *url = NULL;
-    char *title = NULL;
-    int have_url = 0;
-
-    *out_url = NULL;
-    *out_title = NULL;
-
-    rb_js_skip_ws(line, &i);
-    if (line[i] != '{') {
-        return 0;
-    }
-    i++;
-    for (;;) {
-        char *key = NULL;
-        rb_js_skip_ws(line, &i);
-        if (line[i] == '}') {
-            i++;
-            rb_js_skip_ws(line, &i);
-            if (line[i] != '\0') {
-                goto fail;
-            }
-            break;
-        }
-        if (line[i] != '"') {
-            goto fail;
-        }
-        if (!rb_parse_json_string(line, &i, &key)) {
-            goto fail;
-        }
-        rb_js_skip_ws(line, &i);
-        if (line[i] != ':') {
-            free(key);
-            goto fail;
-        }
-        i++;
-        rb_js_skip_ws(line, &i);
-        if (line[i] == '"') {
-            char *val = NULL;
-            if (!rb_parse_json_string(line, &i, &val)) {
-                free(key);
-                goto fail;
-            }
-            if (strcmp(key, "url") == 0) {
-                free(url);
-                url = val;
-                have_url = 1;
-            } else if (strcmp(key, "title") == 0) {
-                free(title);
-                title = val;
-            } else {
-                free(val); /* unknown key: tolerated */
-            }
-        } else {
-            long long num = 0;
-            if (!rb_parse_json_number(line, &i, &num)) {
-                free(key);
-                goto fail;
-            }
-            /* numbers (e.g. stray "visited_at") are tolerated and ignored */
-        }
-        free(key);
-        rb_js_skip_ws(line, &i);
-        if (line[i] == ',') {
-            i++;
-            continue;
-        }
-        if (line[i] == '}') {
-            i++;
-            rb_js_skip_ws(line, &i);
-            if (line[i] != '\0') {
-                goto fail;
-            }
-            break;
-        }
-        goto fail;
-    }
-    if (!have_url) {
-        goto fail;
-    }
-    *out_url = url;
-    *out_title = (title != NULL) ? title : rb_bm_strdup("");
-    return 1;
-fail:
-    free(url);
-    free(title);
-    return 0;
-}
-
-static char *rb_json_escape(const char *s)
-{
-    rb_str b;
-    size_t i;
-
-    rb_str_init(&b);
-    if (s != NULL) {
-        for (i = 0; s[i] != '\0'; i++) {
-            unsigned char c = (unsigned char)s[i];
-            switch (c) {
-            case '"':
-                rb_str_append(&b, "\\\"");
-                break;
-            case '\\':
-                rb_str_append(&b, "\\\\");
-                break;
-            case '\n':
-                rb_str_append(&b, "\\n");
-                break;
-            case '\r':
-                rb_str_append(&b, "\\r");
-                break;
-            case '\t':
-                rb_str_append(&b, "\\t");
-                break;
-            case '\b':
-                rb_str_append(&b, "\\b");
-                break;
-            case '\f':
-                rb_str_append(&b, "\\f");
-                break;
-            default:
-                if (c < 0x20u) {
-                    rb_str_appendf(&b, "\\u%04x", (unsigned)c);
-                } else {
-                    char one[2];
-                    one[0] = (char)c;
-                    one[1] = '\0';
-                    rb_str_append(&b, one);
-                }
-            }
-        }
-    }
-    return (b.data != NULL) ? b.data : rb_bm_strdup("");
+    return v;
 }
 
 /* ------------------------------ public API ------------------------------ */
@@ -373,10 +180,12 @@ static char *rb_json_escape(const char *s)
 rb_bookmarks *rb_bookmarks_new(void)
 {
     rb_bookmarks *b = (rb_bookmarks *)calloc(1, sizeof(*b));
+
     if (b == NULL) {
         fprintf(stderr, "rb_bookmarks: out of memory\n");
         exit(1);
     }
+    b->next_id = 1;
     return b;
 }
 
@@ -388,57 +197,10 @@ void rb_bookmarks_free(rb_bookmarks *b)
         return;
     }
     for (i = 0; i < b->count; i++) {
-        free(b->items[i].url);
-        free(b->items[i].title);
+        rb_bm_release(&b->items[i]);
     }
     free(b->items);
     free(b);
-}
-
-int rb_bookmarks_add(rb_bookmarks *b, const char *url, const char *title)
-{
-    rb_bm *slot;
-
-    if (b == NULL || url == NULL || url[0] == '\0') {
-        return 0;
-    }
-    if (rb_bookmarks_index_of(b, url) >= 0) {
-        return 0; /* already present */
-    }
-    rb_bookmarks_grow(b);
-    slot = &b->items[b->count];
-    slot->url = rb_bm_strdup(url);
-    slot->title = rb_bm_strdup(title);
-    b->count++;
-    return 1;
-}
-
-int rb_bookmarks_remove(rb_bookmarks *b, const char *url)
-{
-    int i;
-
-    if (b == NULL) {
-        return 0;
-    }
-    i = rb_bookmarks_index_of(b, url);
-    if (i < 0) {
-        return 0;
-    }
-    free(b->items[i].url);
-    free(b->items[i].title);
-    if (i + 1 < b->count) {
-        memmove(&b->items[i], &b->items[i + 1],
-                (size_t)(b->count - i - 1) * sizeof(rb_bm));
-    }
-    b->count--;
-    return 1;
-}
-
-int rb_bookmarks_contains(const rb_bookmarks *b, const char *url)
-{
-    return (b != NULL && url != NULL && rb_bookmarks_index_of(b, url) >= 0)
-               ? 1
-               : 0;
 }
 
 int rb_bookmarks_count(const rb_bookmarks *b)
@@ -446,26 +208,225 @@ int rb_bookmarks_count(const rb_bookmarks *b)
     return (b != NULL) ? b->count : 0;
 }
 
-const char *rb_bookmarks_url_at(const rb_bookmarks *b, int index)
+const rb_bookmark *rb_bookmarks_at(const rb_bookmarks *b, int index)
 {
     if (b == NULL || index < 0 || index >= b->count) {
         return NULL;
     }
-    return b->items[index].url;
+    return &b->items[index];
 }
 
-const char *rb_bookmarks_title_at(const rb_bookmarks *b, int index)
+const rb_bookmark *rb_bookmarks_find(const rb_bookmarks *b, const char *url)
 {
-    if (b == NULL || index < 0 || index >= b->count) {
-        return NULL;
+    int i = rb_bookmarks_index_of_url(b, url);
+
+    return (i >= 0) ? &b->items[i] : NULL;
+}
+
+int rb_bookmarks_contains(const rb_bookmarks *b, const char *url)
+{
+    return (rb_bookmarks_index_of_url(b, url) >= 0) ? 1 : 0;
+}
+
+rb_bookmark *rb_bookmarks_by_id(rb_bookmarks *b, long id)
+{
+    int i = rb_bookmarks_index_of_id(b, id);
+
+    return (i >= 0) ? &b->items[i] : NULL;
+}
+
+int rb_bookmarks_max_position(const rb_bookmarks *b)
+{
+    int i;
+    int best = -1;
+
+    if (b == NULL) {
+        return -1;
     }
-    return b->items[index].title;
+    for (i = 0; i < b->count; i++) {
+        if (b->items[i].position > best) {
+            best = b->items[i].position;
+        }
+    }
+    return best;
+}
+
+long rb_bookmarks_add(rb_bookmarks *b, const char *url, const char *title,
+                      const char *folder, long long now_ms)
+{
+    rb_bookmark row;
+    long id;
+
+    if (b == NULL || url == NULL || url[0] == '\0') {
+        return -1;
+    }
+    if (rb_bookmarks_index_of_url(b, url) >= 0) {
+        return -1; /* already bookmarked; addBookmark returns -1 here too */
+    }
+    memset(&row, 0, sizeof(row));
+    id = b->next_id++;
+    row.id = id;
+    row.url = rb_json_strdup(url);
+    row.title = rb_json_strdup(title);
+    /* An empty folder name is the no-folder case: Android's callers pass null
+     * or a real name, so "" would otherwise create a group with no header. */
+    row.folder = (folder != NULL && folder[0] != '\0')
+                     ? rb_json_strdup(folder)
+                     : NULL;
+    row.position = rb_bookmarks_max_position(b) + 1;
+    row.created_at = now_ms;
+
+    rb_bookmarks_grow(b);
+    b->items[b->count++] = row;
+    /* The new row's position is the highest in use, so it can only need to
+     * travel within its own group — but a new folder group can sort anywhere,
+     * so sort rather than insert. */
+    rb_bookmarks_sort(b);
+    return id;
+}
+
+int rb_bookmarks_update_meta(rb_bookmarks *b, long id, const char *title,
+                             const char *folder)
+{
+    int i = rb_bookmarks_index_of_id(b, id);
+    rb_bookmark *bm;
+
+    if (i < 0) {
+        return 0;
+    }
+    bm = &b->items[i];
+    free(bm->title);
+    bm->title = rb_json_strdup(title);
+    free(bm->folder);
+    bm->folder = (folder != NULL && folder[0] != '\0')
+                     ? rb_json_strdup(folder)
+                     : NULL;
+    /* folder is part of the sort key, so this can move the row. */
+    rb_bookmarks_sort(b);
+    return 1;
+}
+
+int rb_bookmarks_delete(rb_bookmarks *b, long id)
+{
+    int i = rb_bookmarks_index_of_id(b, id);
+
+    if (i < 0) {
+        return 0;
+    }
+    rb_bookmarks_drop(b, i);
+    return 1;
+}
+
+int rb_bookmarks_delete_url(rb_bookmarks *b, const char *url)
+{
+    int i = rb_bookmarks_index_of_url(b, url);
+
+    if (i < 0) {
+        return 0;
+    }
+    rb_bookmarks_drop(b, i);
+    return 1;
+}
+
+int rb_bookmarks_toggle(rb_bookmarks *b, const char *url, const char *title,
+                        long long now_ms)
+{
+    if (rb_bookmarks_delete_url(b, url)) {
+        return 0;
+    }
+    return (rb_bookmarks_add(b, url, title, NULL, now_ms) > 0) ? 1 : 0;
+}
+
+int rb_bookmarks_clear(rb_bookmarks *b)
+{
+    int removed;
+    int i;
+
+    if (b == NULL) {
+        return 0;
+    }
+    removed = b->count;
+    for (i = 0; i < b->count; i++) {
+        rb_bm_release(&b->items[i]);
+    }
+    b->count = 0;
+    return removed;
+}
+
+/* ------------------------------ persistence ----------------------------- */
+
+static int rb_bm_write_str(FILE *f, const char *value)
+{
+    char *escaped = rb_json_escape(value);
+    int rc = 0;
+
+    if (fputc('"', f) == EOF || fputs(escaped, f) == EOF || fputc('"', f) == EOF) {
+        rc = -1;
+    }
+    free(escaped);
+    return rc;
+}
+
+static int rb_bm_write_row(FILE *f, const rb_bookmark *bm)
+{
+    int rc;
+
+    if (fprintf(f, "{\"id\":%ld,\"position\":%d,\"created_at\":%lld,\"url\":",
+                bm->id, bm->position, bm->created_at) < 0) {
+        return -1;
+    }
+    rc = rb_bm_write_str(f, bm->url);
+    if (rc == 0 && fputs(",\"title\":", f) == EOF) {
+        rc = -1;
+    }
+    if (rc == 0) {
+        rc = rb_bm_write_str(f, bm->title);
+    }
+    if (rc == 0 && fputs(",\"folder\":", f) == EOF) {
+        rc = -1;
+    }
+    if (rc == 0) {
+        /* An explicit null, not an omitted key: it is the difference between
+         * "no folder" and a folder named "". */
+        rc = (bm->folder != NULL) ? rb_bm_write_str(f, bm->folder)
+                                  : (fputs("null", f) == EOF ? -1 : 0);
+    }
+    if (rc == 0 && fputs("}\n", f) == EOF) {
+        rc = -1;
+    }
+    return rc;
+}
+
+int rb_bookmarks_save(const rb_bookmarks *b, const char *path)
+{
+    FILE *f;
+    int i;
+    int rc = 0;
+
+    if (b == NULL || path == NULL) {
+        return -1;
+    }
+    f = fopen(path, "wb");
+    if (f == NULL) {
+        return -1;
+    }
+    for (i = 0; i < b->count && rc == 0; i++) {
+        rc = rb_bm_write_row(f, &b->items[i]);
+    }
+    if (rc == 0 && ferror(f)) {
+        rc = -1;
+    }
+    if (fclose(f) != 0) {
+        rc = -1;
+    }
+    return rc;
 }
 
 int rb_bookmarks_load(rb_bookmarks *b, const char *path)
 {
     char buf[RB_BOOKMARKS_LINE];
     FILE *f;
+    int rc = 0;
 
     if (b == NULL || path == NULL) {
         return -1;
@@ -476,8 +437,10 @@ int rb_bookmarks_load(rb_bookmarks *b, const char *path)
     }
     while (fgets(buf, (int)sizeof(buf), f) != NULL) {
         size_t len = strlen(buf);
-        char *url = NULL;
-        char *title = NULL;
+        char *url;
+        char *title;
+        char *folder;
+        rb_bookmark row;
 
         if (len > 0 && buf[len - 1] != '\n' && !feof(f)) {
             int ch; /* line longer than the buffer: skip it entirely */
@@ -492,47 +455,45 @@ int rb_bookmarks_load(rb_bookmarks *b, const char *path)
         if (len == 0) {
             continue;
         }
-        if (rb_parse_bookmark_line(buf, &url, &title)) {
-            (void)rb_bookmarks_add(b, url, title); /* keeps de-duplication */
-            free(url);
-            free(title);
+        url = rb_bm_field_str(buf, "url");
+        if (url == NULL || url[0] == '\0') {
+            free(url); /* not one of our rows */
+            continue;
         }
+        if (rb_bookmarks_index_of_url(b, url) >= 0) {
+            free(url); /* already held: the first row wins */
+            continue;
+        }
+        title = rb_bm_field_str(buf, "title");
+        folder = rb_bm_field_str(buf, "folder");
+
+        memset(&row, 0, sizeof(row));
+        row.id = (long)rb_bm_field_num(buf, "id", 0);
+        row.position = (int)rb_bm_field_num(buf, "position", 0);
+        row.created_at = rb_bm_field_num(buf, "created_at", 0);
+        row.url = url;
+        row.title = (title != NULL) ? title : rb_json_strdup("");
+        row.folder = (folder != NULL && folder[0] != '\0') ? folder : NULL;
+        if (row.folder == NULL) {
+            free(folder);
+        }
+
+        rb_bookmarks_grow(b);
+        if (row.id <= 0) {
+            row.id = b->next_id; /* a row from before ids existed */
+        }
+        if (row.id >= b->next_id) {
+            b->next_id = row.id + 1;
+        }
+        b->items[b->count++] = row;
     }
     if (ferror(f)) {
-        fclose(f);
-        return -1;
+        rc = -1;
     }
     fclose(f);
-    return 0;
-}
 
-int rb_bookmarks_save(const rb_bookmarks *b, const char *path)
-{
-    FILE *f;
-    int i;
-
-    if (b == NULL || path == NULL) {
-        return -1;
-    }
-    f = fopen(path, "wb");
-    if (f == NULL) {
-        return -1;
-    }
-    for (i = 0; i < b->count; i++) {
-        char *eu = rb_json_escape(b->items[i].url);
-        char *et = rb_json_escape(b->items[i].title);
-        int ok = fprintf(f, "{\"url\":\"%s\",\"title\":\"%s\"}\n", eu, et) >= 0;
-        free(eu);
-        free(et);
-        if (!ok) {
-            fclose(f);
-            return -1;
-        }
-    }
-    if (fflush(f) != 0) {
-        fclose(f);
-        return -1;
-    }
-    fclose(f);
-    return 0;
+    /* The file's row order is not necessarily the display order — rows may
+     * have been written by an older build with no positions at all. */
+    rb_bookmarks_sort(b);
+    return rc;
 }

@@ -4,13 +4,35 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(ROOMBROWSER_VERSION "1.0.86" CACHE STRING "Room Browser release version")
 option(RB_BUILD_TESTS "Build the core unit tests" OFF)
+# The GTK / WebView2 GUI needs a full desktop toolkit installed.  Turning it
+# off builds rb_core and the tests alone, which is what the core-only
+# development loop and the sanitizer job use.
+option(RB_BUILD_GUI "Build the platform GUI executables (GTK / Win32)" ON)
 configure_file(src/rb_version.h.in ${CMAKE_CURRENT_BINARY_DIR}/rb_version.h @ONLY)
-add_library(rb_core STATIC src/core/rb_str.c src/core/rb_url.c src/core/rb_tabs.c
-                          src/core/rb_history.c src/core/rb_bookmarks.c
-                          src/core/rb_settings.c src/core/rb_paths.c)
+add_library(rb_core STATIC
+    src/core/rb_str.c
+    src/core/rb_json.c
+    src/core/rb_url.c
+    src/core/rb_search.c
+    src/core/rb_paths.c
+    src/core/rb_settings.c
+    src/core/rb_prefs.c
+    src/core/rb_profile.c
+    src/core/rb_tabs.c
+    src/core/rb_history.c
+    src/core/rb_bookmarks.c
+    src/core/rb_ua.c
+    src/core/rb_theme.c
+    src/core/rb_filters.c
+    src/core/rb_filterlist.c
+    src/core/rb_https.c
+    src/core/rb_downloads.c
+    src/core/rb_dns.c
+    src/core/rb_ipconflict.c
+    src/core/rb_switch.c)
 target_include_directories(rb_core PUBLIC src ${CMAKE_CURRENT_BINARY_DIR})
 
-if(WIN32)
+if(RB_BUILD_GUI AND WIN32)
     set(WEBVIEW2_INCLUDE_DIR "" CACHE PATH "Path to the WebView2 SDK include directory")
     if(NOT WEBVIEW2_INCLUDE_DIR)
         message(FATAL_ERROR "WEBVIEW2_INCLUDE_DIR must be set to the WebView2 SDK include directory")
@@ -35,7 +57,7 @@ if(WIN32)
     endif()
 endif()
 
-if(UNIX AND NOT APPLE)
+if(RB_BUILD_GUI AND UNIX AND NOT APPLE)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk+-3.0 webkit2gtk-4.1)
     add_executable(roombrowser

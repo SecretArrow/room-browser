@@ -5,12 +5,17 @@
 
 #include "rb_url.h"
 
+#include "rb_search.h"
 #include "rb_str.h"
 
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Engine used by the legacy two-argument entry points (rb_url_decide,
+ * rb_url_build_search) — the same default as the engine registry. */
+#define RB_URL_DEFAULT_ENGINE "duckduckgo"
 
 static const char *const RB_URL_SCHEMES[] = {
     "about",     "blob",  "brave",      "chrome", "data", "file",
@@ -302,48 +307,568 @@ char *rb_url_normalize(const char *input)
 
 char *rb_url_build_search(const char *query)
 {
-    const char *a;
-    const char *b;
-    const char *q;
-    size_t i;
-    rb_str out;
-
-    if (query == NULL) {
-        query = "";
-    }
-    a = query;
-    b = query + strlen(query);
-    while (a < b && (*a == ' ' || *a == '\t' || *a == '\r' || *a == '\n')) {
-        a++;
-    }
-    while (b > a && (b[-1] == ' ' || b[-1] == '\t' || b[-1] == '\r' ||
-                     b[-1] == '\n')) {
-        b--;
-    }
-    q = a;
-
-    rb_str_init(&out);
-    rb_str_append(&out, "https://duckduckgo.com/?q=");
-    for (i = 0; q[i] != '\0' && &q[i] < b; i++) {
-        unsigned char c = (unsigned char)q[i];
-        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-            (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' ||
-            c == '~') {
-            char one[2];
-            one[0] = (char)c;
-            one[1] = '\0';
-            rb_str_append(&out, one);
-        } else {
-            rb_str_appendf(&out, "%%%02X", (unsigned)c);
-        }
-    }
-    return out.data;
+    /* Single source of truth: the engine registry (rb_search.c). The
+     * DuckDuckGo template there is "https://duckduckgo.com/?q={query}",
+     * which is exactly what this function has always produced. */
+    return rb_search_url(RB_URL_DEFAULT_ENGINE, query);
 }
 
 char *rb_url_decide(const char *input)
 {
-    if (rb_url_is_probably_url(input)) {
-        return rb_url_normalize(input);
+    return rb_url_decide_engine(input, RB_URL_DEFAULT_ENGINE);
+}
+
+char *rb_url_decide_engine(const char *input, const char *engine_id)
+{
+    /* One decider for the whole browser: rb_url_classify is the port of
+     * UrlIntelligence.classify, and the omnibox is the only thing that
+     * decides anything.  Keeping a second set of heuristics here is how the
+     * two would drift apart. */
+    return rb_url_classify(input, engine_id, NULL, NULL);
+}
+
+/* ------------------------------------------------------------------ */
+/* UrlIntelligence.classify */
+
+/* Kotlin's \s, which is Java's [ \t\n\x0B\f\r]. */
+static int rb_ws_char(char c)
+{
+    return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' ||
+           c == '\r';
+}
+
+static int rb_has_ws(const char *s)
+{
+    for (; *s != '\0'; s++) {
+        if (rb_ws_char(*s)) {
+            return 1;
+        }
     }
-    return rb_url_build_search(input);
+    return 0;
+}
+
+/* Case-insensitive "starts with". */
+static int rb_ci_starts(const char *s, const char *prefix)
+{
+    size_t i;
+
+    for (i = 0; prefix[i] != '\0'; i++) {
+        if (s[i] == '\0' ||
+            tolower((unsigned char)s[i]) != tolower((unsigned char)prefix[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static char *rb_url_trim_dup(const char *s)
+{
+    const char *a;
+    const char *b;
+
+    if (s == NULL) {
+        return rb_url_dupn("", 0);
+    }
+    a = s;
+    b = s + strlen(s);
+    while (a < b && rb_ws_char(*a)) {
+        a++;
+    }
+    while (b > a && rb_ws_char(b[-1])) {
+        b--;
+    }
+    return rb_url_dupn(a, (size_t)(b - a));
+}
+
+/* Joins a prefix and a body into one malloc'd string. */
+static char *rb_url_join(const char *a, const char *b, const char *c)
+{
+    rb_str out;
+
+    rb_str_init(&out);
+    rb_str_append(&out, a);
+    rb_str_append(&out, b);
+    rb_str_append(&out, c);
+    return out.data;
+}
+
+/* ^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(:\d+)?$ , octets <= 255.
+ * Four dotted decimal groups, each 1-3 digits, with an optional port.  The
+ * 3-digit cap is what keeps "1234.1.1.1" out (the regex cannot match it
+ * either) and the octet check is UrlIntelligence's second pass. */
+static int rb_looks_like_ipv4(const char *s)
+{
+    int part;
+
+    for (part = 0; part < 4; part++) {
+        int digits = 0;
+        int value = 0;
+
+        while (s[digits] >= '0' && s[digits] <= '9' && digits < 3) {
+            value = value * 10 + (s[digits] - '0');
+            digits++;
+        }
+        if (digits == 0 || value > 255) {
+            return 0;
+        }
+        s += digits;
+        if (part < 3) {
+            if (*s != '.') {
+                return 0;
+            }
+            s++;
+        }
+    }
+    if (*s == ':') {
+        s++;
+        if (!isdigit((unsigned char)*s)) {
+            return 0;
+        }
+        while (isdigit((unsigned char)*s)) {
+            s++;
+        }
+    }
+    return *s == '\0';
+}
+
+/* ^[0-9a-fA-F:]+:[0-9a-fA-F:.]+$ , for callers that already found a ':'.
+ *
+ * The pattern is matched by hand rather than with a regular expression: the
+ * first class greedily takes the hex/colon run and the second class must then
+ * reach the end of the string, which is a short backtrack to try. */
+static int rb_looks_like_ipv6(const char *s)
+{
+    size_t run = 0;
+    size_t j;
+
+    while (isxdigit((unsigned char)s[run]) || s[run] == ':') {
+        run++;
+    }
+    /* The split point is a ':' somewhere inside that run; everything left of
+     * it is the first class, everything right of it the second. */
+    for (j = run; j > 0; j--) {
+        size_t k;
+
+        if (s[j - 1] != ':') {
+            continue;
+        }
+        for (k = j; s[k] != '\0'; k++) {
+            if (!isxdigit((unsigned char)s[k]) && s[k] != ':' && s[k] != '.') {
+                break;
+            }
+        }
+        if (k > j && s[k] == '\0') {
+            return 1; /* first class, ':', then a non-empty tail to the end */
+        }
+    }
+    return 0;
+}
+
+/* ^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(/.*)?$ , case-insensitive. */
+static int rb_looks_like_localhost(const char *s)
+{
+    static const char *const NAMES[] = { "localhost", "127.0.0.1", "[::1]" };
+    size_t i;
+
+    for (i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++) {
+        const char *p;
+        size_t n = strlen(NAMES[i]);
+
+        if (!rb_ci_eq(s, n, NAMES[i])) {
+            continue;
+        }
+        p = s + n;
+        if (*p == ':') {
+            p++;
+            if (!isdigit((unsigned char)*p)) {
+                return 0;
+            }
+            while (isdigit((unsigned char)*p)) {
+                p++;
+            }
+        }
+        if (*p == '/') {
+            return 1; /* the path is unconstrained, including empty */
+        }
+        return *p == '\0';
+    }
+    return 0;
+}
+
+/* ^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+(:\d+)?(/.*)?$ — a dotted name with at
+ * least one dot, so "example" alone is not one. */
+static int rb_looks_like_domain(const char *s)
+{
+    int dots = 0;
+
+    for (;;) {
+        size_t n = 0;
+
+        while (isalnum((unsigned char)*s) || *s == '-') {
+            s++;
+            n++;
+        }
+        if (n == 0) {
+            return 0;
+        }
+        if (*s != '.') {
+            break;
+        }
+        s++;
+        dots++;
+    }
+    if (dots == 0) {
+        return 0; /* no dot: a single word is search text */
+    }
+    if (*s == ':') {
+        s++;
+        if (!isdigit((unsigned char)*s)) {
+            return 0;
+        }
+        while (isdigit((unsigned char)*s)) {
+            s++;
+        }
+    }
+    if (*s == '/') {
+        return 1;
+    }
+    return *s == '\0';
+}
+
+char *rb_url_classify(const char *input, const char *engine_id, int *out_kind,
+                      int *out_upgraded)
+{
+    char *raw;
+    char *url;
+
+    if (out_kind != NULL) {
+        *out_kind = RB_URL_INPUT_SEARCH;
+    }
+    if (out_upgraded != NULL) {
+        *out_upgraded = 0;
+    }
+    raw = rb_url_trim_dup(input);
+    if (raw[0] == '\0') {
+        return raw; /* blank input stays blank; the caller decides */
+    }
+
+    /* file:// is loaded as-is: the desktop editions enable file access per
+     * the profile setting, exactly like the Android WebView does. */
+    if (rb_ci_starts(raw, "file://")) {
+        if (out_kind != NULL) {
+            *out_kind = RB_URL_INPUT_WEB;
+        }
+        return raw;
+    }
+
+    /* Anything with whitespace in it is a query, whatever else it looks
+     * like: no URL contains a space, and "how to boil water" must not be
+     * treated as a host. */
+    if (rb_has_ws(raw)) {
+        url = rb_search_url(engine_id, raw);
+        free(raw);
+        return url;
+    }
+
+    /* An address literal or localhost goes to http, never https: they are
+     * spelled out precisely because the endpoint is a local or non-standard
+     * one, and a TLS attempt against it fails — often slowly. */
+    if (rb_looks_like_ipv4(raw)) {
+        if (out_kind != NULL) {
+            *out_kind = RB_URL_INPUT_WEB;
+        }
+        url = rb_url_join("http://", raw, "");
+        free(raw);
+        return url;
+    }
+    if (strchr(raw, ':') != NULL && rb_looks_like_ipv6(raw)) {
+        if (out_kind != NULL) {
+            *out_kind = RB_URL_INPUT_WEB;
+        }
+        url = rb_url_join("http://[", raw, "]");
+        free(raw);
+        return url;
+    }
+    if (rb_looks_like_localhost(raw)) {
+        if (out_kind != NULL) {
+            *out_kind = RB_URL_INPUT_WEB;
+        }
+        url = rb_url_join("http://", raw, "");
+        free(raw);
+        return url;
+    }
+
+    if (rb_scheme_prefix_len(raw) > 0) {
+        if (rb_ci_starts(raw, "http://") || rb_ci_starts(raw, "https://")) {
+            /* An explicitly typed scheme is EXPLICIT USER INTENT: an http://
+             * URL the user typed is loaded as http, because http-only sites
+             * must stay reachable.  Automatic upgrades happen only for link
+             * navigations inside pages, and those carry a fallback. */
+            if (out_kind != NULL) {
+                *out_kind = RB_URL_INPUT_WEB;
+            }
+            return raw;
+        }
+        /* about:, data:, blob:, javascript:, ... are searched for rather
+         * than loaded: typing one should not be a way to run it. */
+        url = rb_search_url(engine_id, raw);
+        free(raw);
+        return url;
+    }
+
+    if (rb_looks_like_domain(raw)) { /* already implies a dot */
+        char *https = rb_url_join("https://", raw, "");
+        char *final_url = rb_url_upgrade_to_https(https, NULL);
+
+        free(https);
+        free(raw);
+        if (out_kind != NULL) {
+            *out_kind = RB_URL_INPUT_WEB;
+        }
+        if (out_upgraded != NULL) {
+            /* "The browser chose https for a bare domain."  Android's
+             * Input.Web.upgradedToHttps is false on this path — upgrade()
+             * is handed a URL that is already https, so it never fires, and
+             * nothing in the Android app reads the flag anyway.  Reporting
+             * the useful answer here costs nothing and gives the desktop
+             * HTTPS-first wiring a real signal; the URL is the same either
+             * way. */
+            *out_upgraded = rb_url_is_https(final_url) ? 1 : 0;
+        }
+        return final_url;
+    }
+
+    url = rb_search_url(engine_id, raw);
+    free(raw);
+    return url;
+}
+
+/* ------------------------------------------------------------------ */
+/* URL inspection */
+
+int rb_url_is_http(const char *url)
+{
+    return url != NULL && rb_ci_eq(url, 7, "http://");
+}
+
+int rb_url_is_https(const char *url)
+{
+    return url != NULL && rb_ci_eq(url, 8, "https://");
+}
+
+/* Offset of the authority inside a "scheme://..." URL, or 0 when there is
+ * no "://" at all. */
+static size_t rb_url_authority_offset(const char *url)
+{
+    const char *sep = (url != NULL) ? strstr(url, "://") : NULL;
+    return (sep != NULL) ? (size_t)(sep - url) + 3 : 0;
+}
+
+char *rb_url_host_of(const char *url)
+{
+    const char *p;
+    const char *end;
+    size_t off;
+    size_t len;
+    char *host;
+
+    if (url == NULL) {
+        return NULL;
+    }
+    off = rb_url_authority_offset(url);
+    if (off == 0) {
+        return NULL; /* no authority: about:blank, mailto:, ... */
+    }
+    p = url + off;
+    end = p + rb_auth_len(p);
+    if (p == end) {
+        return NULL;
+    }
+
+    /* Drop any userinfo ("user:pass@host"). */
+    {
+        const char *at = NULL;
+        const char *q;
+        for (q = p; q < end; q++) {
+            if (*q == '@') {
+                at = q;
+            }
+        }
+        if (at != NULL) {
+            p = at + 1;
+        }
+    }
+
+    /* Bracketed IPv6 literal: keep the address, drop the brackets. */
+    if (p < end && *p == '[') {
+        const char *close = NULL;
+        const char *q;
+        for (q = p + 1; q < end; q++) {
+            if (*q == ']') {
+                close = q;
+                break;
+            }
+        }
+        if (close != NULL) {
+            p++;
+            end = close;
+        }
+    } else {
+        const char *colon = NULL;
+        const char *q;
+        for (q = p; q < end; q++) {
+            if (*q == ':') {
+                colon = q;
+                break; /* first ':' starts the port */
+            }
+        }
+        if (colon != NULL) {
+            end = colon;
+        }
+    }
+    if (p >= end) {
+        return NULL;
+    }
+    len = (size_t)(end - p);
+    host = rb_url_dupn(p, len);
+    {
+        size_t i;
+        for (i = 0; i < len; i++) {
+            host[i] = (char)tolower((unsigned char)host[i]);
+        }
+    }
+    return host;
+}
+
+char *rb_url_path_of(const char *url)
+{
+    const char *p;
+    size_t off;
+
+    if (url == NULL) {
+        return NULL;
+    }
+    off = rb_url_authority_offset(url);
+    if (off == 0) {
+        return rb_url_dupn("/", 1);
+    }
+    p = url + off + rb_auth_len(url + off);
+    if (*p == '\0') {
+        return rb_url_dupn("/", 1);
+    }
+    if (*p == '?' || *p == '#') {
+        /* No path, but a query/fragment is present. */
+        return rb_url_dupn("/", 1);
+    }
+    /* Trim any fragment so filtering keyword rules see the path only. */
+    {
+        const char *hash = strchr(p, '#');
+        size_t len = (hash != NULL) ? (size_t)(hash - p) : strlen(p);
+        return rb_url_dupn(p, len);
+    }
+}
+
+char *rb_url_display(const char *url)
+{
+    const char *p;
+    rb_str out;
+    size_t len;
+
+    if (url == NULL) {
+        return rb_url_dupn("", 0);
+    }
+    p = url;
+    if (rb_url_is_https(p)) {
+        p += 8;
+    } else if (rb_url_is_http(p)) {
+        p += 7;
+    }
+    rb_str_init(&out);
+    rb_str_append(&out, p);
+    len = out.len;
+    if (len > 1 && out.data[len - 1] == '/') {
+        out.data[len - 1] = '\0';
+        out.len = len - 1;
+    }
+    return out.data;
+}
+
+char *rb_url_upgrade_to_https(const char *url, int *out_upgraded)
+{
+    const char *rest;
+    const char *authority_end;
+    const char *colon = NULL;
+    size_t tlen;
+    size_t authority_len;
+    size_t port_len;
+    rb_str out;
+
+    if (out_upgraded != NULL) {
+        *out_upgraded = 0;
+    }
+    if (url == NULL) {
+        return rb_url_dupn("", 0);
+    }
+    /* Trim surrounding whitespace into (url, tlen). */
+    {
+        const char *a = url;
+        const char *b = url + strlen(url);
+        while (a < b && (*a == ' ' || *a == '\t')) {
+            a++;
+        }
+        while (b > a && (b[-1] == ' ' || b[-1] == '\t')) {
+            b--;
+        }
+        url = a;
+        tlen = (size_t)(b - a);
+    }
+    if (!rb_url_is_http(url)) {
+        return rb_url_dupn(url, tlen); /* nothing to upgrade */
+    }
+
+    rest = url + 7;
+    {   /* authority runs to the first '/', '?' or '#' (rb_auth_len does this) */
+        size_t n = rb_auth_len(rest);
+        authority_end = rest + n;
+        authority_len = n;
+    }
+
+    /* An explicit port other than 80 means the endpoint is deliberately
+     * non-standard — leave it on http (see the header comment). */
+    {
+        const char *q = rest;
+        if (authority_len > 0 && *q == '[') {
+            /* Bracketed IPv6 literal: its interior ':' are not a port. */
+            const char *close = memchr(q, ']', authority_len);
+            if (close != NULL) {
+                q = close + 1;
+            }
+        }
+        for (; q < authority_end; q++) {
+            if (*q == ':') {
+                colon = q;
+            }
+        }
+    }
+    if (colon != NULL) {
+        port_len = (size_t)(authority_end - (colon + 1));
+        if (!(port_len == 2 && colon[1] == '8' && colon[2] == '0')) {
+            return rb_url_dupn(url, tlen); /* keep http, *out_upgraded stays 0 */
+        }
+    }
+
+    /* Upgrade: "https://" + host (with a trailing ":80" dropped) + rest. */
+    rb_str_init(&out);
+    rb_str_append(&out, "https://");
+    if (colon != NULL) {
+        rb_str_appendf(&out, "%.*s", (int)(colon - rest), rest);
+    } else {
+        rb_str_appendf(&out, "%.*s", (int)authority_len, rest);
+    }
+    rb_str_append(&out, authority_end);
+
+    if (out_upgraded != NULL) {
+        *out_upgraded = 1;
+    }
+    return out.data;
 }

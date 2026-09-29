@@ -92,6 +92,54 @@ static void rb_trim_in_place(char *s)
     }
 }
 
+/* The file is line-based, so a value containing a newline would be written
+ * as two lines and come back truncated (only the first would still have its
+ * key, the rest would be skipped as malformed).  Homepage shortcut lists and
+ * any pasted multi-line text hit this.  Escape the backslash and the two
+ * line terminators so every byte sequence survives the round trip.  Keys
+ * need no escaping: they are constrained to contain neither '=' nor a
+ * newline. */
+static void rb_settings_write_escaped(FILE *f, const char *value)
+{
+    const char *p;
+
+    for (p = (value != NULL) ? value : ""; *p != '\0'; p++) {
+        switch (*p) {
+        case '\\':
+            fputs("\\\\", f);
+            break;
+        case '\n':
+            fputs("\\n", f);
+            break;
+        case '\r':
+            fputs("\\r", f);
+            break;
+        default:
+            fputc((unsigned char)*p, f);
+            break;
+        }
+    }
+}
+
+/* Reverses rb_settings_write_escaped, in place.  An unrecognised escape is
+ * left alone, so a value that predates this escaping (a Windows path such as
+ * "C:\new") keeps every byte it had. */
+static void rb_unescape_in_place(char *s)
+{
+    char *out = s;
+    const char *in = s;
+
+    while (*in != '\0') {
+        if (*in == '\\' && (in[1] == '\\' || in[1] == 'n' || in[1] == 'r')) {
+            *out++ = (in[1] == '\\') ? '\\' : (in[1] == 'n') ? '\n' : '\r';
+            in += 2;
+            continue;
+        }
+        *out++ = *in++;
+    }
+    *out = '\0';
+}
+
 rb_settings *rb_settings_new(void)
 {
     rb_settings *s = (rb_settings *)calloc(1, sizeof(*s));
@@ -179,6 +227,27 @@ void rb_settings_set_int(rb_settings *s, const char *key, int value)
     rb_settings_set(s, key, buf);
 }
 
+int rb_settings_count(const rb_settings *s)
+{
+    return (s != NULL) ? s->count : 0;
+}
+
+const char *rb_settings_key_at(const rb_settings *s, int index)
+{
+    if (s == NULL || index < 0 || index >= s->count) {
+        return NULL;
+    }
+    return s->items[index].key;
+}
+
+const char *rb_settings_value_at(const rb_settings *s, int index)
+{
+    if (s == NULL || index < 0 || index >= s->count) {
+        return NULL;
+    }
+    return s->items[index].value;
+}
+
 int rb_settings_load(rb_settings *s, const char *path)
 {
     char buf[RB_SETTINGS_LINE];
@@ -217,7 +286,8 @@ int rb_settings_load(rb_settings *s, const char *path)
         if (buf[0] == '\0') {
             continue;
         }
-        rb_settings_set(s, buf, eq + 1); /* value is kept verbatim */
+        rb_unescape_in_place(eq + 1);
+        rb_settings_set(s, buf, eq + 1);
     }
     if (ferror(f)) {
         fclose(f);
@@ -240,7 +310,12 @@ int rb_settings_save(const rb_settings *s, const char *path)
         return -1;
     }
     for (i = 0; i < s->count; i++) {
-        if (fprintf(f, "%s=%s\n", s->items[i].key, s->items[i].value) < 0) {
+        if (fprintf(f, "%s=", s->items[i].key) < 0) {
+            fclose(f);
+            return -1;
+        }
+        rb_settings_write_escaped(f, s->items[i].value);
+        if (fputc('\n', f) == EOF) {
             fclose(f);
             return -1;
         }

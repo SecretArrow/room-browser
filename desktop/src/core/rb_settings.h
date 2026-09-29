@@ -2,8 +2,11 @@
  * rb_settings.h — simple key=value store for Room Browser core.
  *
  * Persisted as plain "key=value\n" lines (split at the FIRST '=' so values
- * may contain '=').  Keys must not contain '=' or newlines.  All strings
- * UTF-8.  Defaults in rb_settings_new():
+ * may contain '=').  Keys must not contain '=' or newlines; values may hold
+ * anything: a backslash, LF and CR are written as "\\", "\n" and "\r" and
+ * decoded again on load, so multi-line values (the homepage shortcut list)
+ * survive a round trip instead of being truncated at the first newline.  All
+ * strings UTF-8.  Defaults in rb_settings_new():
  *   home=https://duckduckgo.com  search_engine=duckduckgo  javascript=1
  * (javascript NEVER defaults to 0 — project-wide policy.)
  */
@@ -36,6 +39,13 @@ int          rb_settings_get_int(const rb_settings *s, const char *key, int fall
 void         rb_settings_set(rb_settings *s, const char *key, const char *value);
 
 void         rb_settings_set_int(rb_settings *s, const char *key, int value);
+
+/* Ordered iteration over the stored pairs, for persistence layers that
+ * write the whole store out (profile settings snapshots).  Index must be
+ * in [0, rb_settings_count()).  Never returns NULL for a valid index. */
+int          rb_settings_count(const rb_settings *s);
+const char  *rb_settings_key_at(const rb_settings *s, int index);
+const char  *rb_settings_value_at(const rb_settings *s, int index);
 
 /* Loads "key=value\n" lines, updating existing keys and appending new
  * ones.  Malformed lines are skipped.  A missing file is fine (returns
