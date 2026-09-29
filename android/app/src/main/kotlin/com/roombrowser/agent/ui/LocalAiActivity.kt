@@ -1648,7 +1648,7 @@ private fun TuningSection(
         "GPU layers to offload",
         style = MaterialTheme.typography.titleSmall,
         fontWeight = FontWeight.Bold,
-        modifier = Modifier.padding(horizontal = 16.dp, top = 12.dp)
+        modifier = Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp)
     )
     SettingSwitchRow(
         title = "Auto (server decides)",
@@ -1671,7 +1671,7 @@ private fun TuningSection(
         "CPU threads",
         style = MaterialTheme.typography.titleSmall,
         fontWeight = FontWeight.Bold,
-        modifier = Modifier.padding(horizontal = 16.dp, top = 12.dp)
+        modifier = Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp)
     )
     SettingSwitchRow(
         title = "Auto (server decides)",
