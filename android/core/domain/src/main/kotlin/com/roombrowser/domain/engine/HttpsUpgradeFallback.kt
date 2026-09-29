@@ -28,7 +28,14 @@ object HttpsUpgradeFallbackPolicy {
         // ERROR_CONNECT: socket connect failed (nothing listening on 443)
         -6,
         // ERROR_TIMEOUT: connection timed out
-        -8 -> true
+        -8,
+        // ERROR_FAILED_SSL_HANDSHAKE: TLS transport failed on an endpoint WE
+        // upgraded ourselves — typical for http-only hosts with the port kept
+        // (localhost dev servers, router/IoT admin panels). Retrying the
+        // original http URL once is exactly the HTTPS-First semantic of the
+        // major browsers. CI-proven necessary: without it, an in-page link
+        // click on a plain-http host dead-ends with no error surface.
+        -11 -> true
         else -> false
     }
 

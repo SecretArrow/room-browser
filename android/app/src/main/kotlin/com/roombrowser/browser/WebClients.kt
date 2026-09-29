@@ -184,7 +184,12 @@ class RoomWebViewClient(
     override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
         // HTTPS-First fallback: an https endpoint without a valid TLS setup
         // behind one of OUR upgrades → retry the original http URL once.
-        val original = upgradeFallbacks.consume(view.url ?: "")
+        // The registry key is the FAILING url (error.url — e.g.
+        // https://host:port/page), NOT view.url: during an in-page link
+        // navigation view.url still reports the LAST COMMITTED page, so the
+        // old key could never match and the fallback silently never fired
+        // (CI-proven by BrowserNavigationE2eTest).
+        val original = upgradeFallbacks.consume(error.url)
         if (original != null) {
             handler.cancel()
             view.post { view.loadUrl(original) }

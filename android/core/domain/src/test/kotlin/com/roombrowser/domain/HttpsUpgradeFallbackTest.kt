@@ -41,9 +41,15 @@ class HttpsUpgradeFallbackTest {
     }
 
     @Test
-    fun `connect and timeout errors are recoverable`() {
+    fun `connect timeout and ssl handshake errors are recoverable`() {
         assertThat(HttpsUpgradeFallbackPolicy.isRecoverable(-6)).isTrue() // ERROR_CONNECT
         assertThat(HttpsUpgradeFallbackPolicy.isRecoverable(-8)).isTrue() // ERROR_TIMEOUT
+        // ERROR_FAILED_SSL_HANDSHAKE: https-only transport failure after OUR OWN
+        // upgrade — the http original must be retried once (HTTPS-First
+        // semantics; CI-proven by BrowserNavigationE2eTest against a plain-http
+        // MockWebServer: without this, in-page link clicks on http-only hosts
+        // dead-end with no error surface).
+        assertThat(HttpsUpgradeFallbackPolicy.isRecoverable(-11)).isTrue()
     }
 
     @Test
