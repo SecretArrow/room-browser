@@ -72,8 +72,24 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Well-known provider presets (editable after selection). */
-data class ProviderPreset(val label: String, val url: String, val protocol: String)
+/**
+ * A model a preset ships as a ready-to-pick chip. [reasoning] marks models
+ * that expose a thinking/reasoning channel (surfaced as a " · reasoning" hint);
+ * it is display-only — any model id can still be typed or fetched.
+ */
+data class PresetModel(val id: String, val label: String, val reasoning: Boolean = false)
+
+/**
+ * Well-known provider presets (editable after selection). Some presets also
+ * ship a known model pick-list ([models]); the list is only a convenience —
+ * the user can still fetch the provider's `/models` or type any id by hand.
+ */
+data class ProviderPreset(
+    val label: String,
+    val url: String,
+    val protocol: String,
+    val models: List<PresetModel> = emptyList()
+)
 
 val PROVIDER_PRESETS: List<ProviderPreset> = listOf(
     ProviderPreset("Z.ai", "https://api.z.ai/api/paas/v4", "OPENAI"),
@@ -83,6 +99,18 @@ val PROVIDER_PRESETS: List<ProviderPreset> = listOf(
     ProviderPreset("DeepSeek", "https://api.deepseek.com/v1", "OPENAI"),
     ProviderPreset("Mistral", "https://api.mistral.ai/v1", "OPENAI"),
     ProviderPreset("Together", "https://api.together.xyz/v1", "OPENAI"),
+    // AgentRouter speaks the @ai-sdk/anthropic shape (POST /messages). The
+    // gateway probes once and falls back to the OpenAI shape if the endpoint
+    // is really OpenAI-compatible, so this one preset covers both. It ships a
+    // known model; more can be fetched or typed.
+    ProviderPreset(
+        "AgentRouter",
+        "https://agentrouter.org/v1",
+        AgentProviderEntity.PROTOCOL_ANTHROPIC,
+        models = listOf(
+            PresetModel("deepseek-v4-flash", "DeepSeek V4 Flash", reasoning = true)
+        )
+    ),
     ProviderPreset("Ollama (OpenAI /v1)", "http://localhost:11434/v1", "OPENAI"),
     ProviderPreset("Ollama native", "http://localhost:11434", "OLLAMA"),
     ProviderPreset("LM Studio (this device)", "http://localhost:1234/v1", "OPENAI"),
@@ -165,6 +193,7 @@ private fun ProviderEditorRoot(
                 AgentProviderEntity.PROTOCOL_OPENCODE -> AgentProviderEntity.PROTOCOL_OPENCODE
                 AgentProviderEntity.PROTOCOL_OLLAMA -> AgentProviderEntity.PROTOCOL_OLLAMA
                 AgentProviderEntity.PROTOCOL_LOCAL -> AgentProviderEntity.PROTOCOL_LOCAL
+                AgentProviderEntity.PROTOCOL_ANTHROPIC -> AgentProviderEntity.PROTOCOL_ANTHROPIC
                 else -> AgentProviderEntity.PROTOCOL_OPENAI
             }
         )
@@ -186,6 +215,17 @@ private fun ProviderEditorRoot(
     var model by remember(editing) { mutableStateOf(editing?.defaultModel ?: "") }
     var saveError by remember { mutableStateOf<String?>(null) }
     var hasKey by remember(editing) { mutableStateOf(editing != null && editing.apiKeyEnc.isNotBlank()) }
+    // Preset-supplied model pick-list for the current provider (e.g. AgentRouter
+    // ships DeepSeek V4 Flash). Seeded on open when the edited provider matches a
+    // preset that ships models; refreshed when a preset chip is tapped, cleared
+    // when the protocol is changed by hand.
+    var presetModels by remember(editing) {
+        mutableStateOf(
+            PROVIDER_PRESETS.firstOrNull {
+                it.models.isNotEmpty() && it.url == editing?.baseUrl && it.protocol == editing?.protocol
+            }?.models ?: emptyList()
+        )
+    }
 
     Scaffold(
         // adjustResize semantics: fields, chips and the save row all ride
@@ -309,19 +349,25 @@ private fun ProviderEditorRoot(
             ) {
                 FilterChip(
                     selected = protocol == AgentProviderEntity.PROTOCOL_OPENAI,
-                    onClick = { protocol = AgentProviderEntity.PROTOCOL_OPENAI; models = emptyList(); fetchError = null },
+                    onClick = { protocol = AgentProviderEntity.PROTOCOL_OPENAI; models = emptyList(); presetModels = emptyList(); fetchError = null },
                     label = { Text("OpenAI-compatible API") },
                     modifier = Modifier.semantics { contentDescription = "provider_protocol_openai" }
                 )
                 FilterChip(
+                    selected = protocol == AgentProviderEntity.PROTOCOL_ANTHROPIC,
+                    onClick = { protocol = AgentProviderEntity.PROTOCOL_ANTHROPIC; models = emptyList(); presetModels = emptyList(); fetchError = null },
+                    label = { Text("Anthropic Messages API") },
+                    modifier = Modifier.semantics { contentDescription = "provider_protocol_anthropic" }
+                )
+                FilterChip(
                     selected = protocol == AgentProviderEntity.PROTOCOL_OPENCODE,
-                    onClick = { protocol = AgentProviderEntity.PROTOCOL_OPENCODE; models = emptyList(); fetchError = null },
+                    onClick = { protocol = AgentProviderEntity.PROTOCOL_OPENCODE; models = emptyList(); presetModels = emptyList(); fetchError = null },
                     label = { Text("OpenCode server") },
                     modifier = Modifier.semantics { contentDescription = "provider_protocol_opencode" }
                 )
                 FilterChip(
                     selected = protocol == AgentProviderEntity.PROTOCOL_OLLAMA,
-                    onClick = { protocol = AgentProviderEntity.PROTOCOL_OLLAMA; models = emptyList(); fetchError = null },
+                    onClick = { protocol = AgentProviderEntity.PROTOCOL_OLLAMA; models = emptyList(); presetModels = emptyList(); fetchError = null },
                     label = { Text("Ollama native") },
                     modifier = Modifier.semantics { contentDescription = "provider_protocol_ollama" }
                 )
@@ -330,6 +376,7 @@ private fun ProviderEditorRoot(
                     onClick = {
                         protocol = AgentProviderEntity.PROTOCOL_LOCAL
                         models = emptyList()
+                        presetModels = emptyList()
                         fetchError = null
                         if (baseUrl.isBlank()) baseUrl = "local://engine"
                     },
@@ -410,6 +457,18 @@ private fun ProviderEditorRoot(
                     }
                 }
             }
+            if (protocol == AgentProviderEntity.PROTOCOL_ANTHROPIC) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Anthropic Messages API (POST /messages, x-api-key + anthropic-version) — " +
+                        "spoken by aggregators like AgentRouter through the @ai-sdk/anthropic SDK. " +
+                        "The first turn probes this endpoint; if it actually serves the OpenAI shape " +
+                        "it transparently falls back to /chat/completions, so either kind of aggregator " +
+                        "works. Pick a model below, fetch the provider's list, or type any id.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             Spacer(Modifier.height(12.dp))
 
             // ---- Presets ----
@@ -427,6 +486,14 @@ private fun ProviderEditorRoot(
                                 baseUrl = preset.url
                                 protocol = preset.protocol
                                 if (name.isBlank()) name = preset.label.substringBefore(" (")
+                                // Adopt this preset's known models and drop any
+                                // list fetched from a previous provider.
+                                presetModels = preset.models
+                                models = emptyList()
+                                fetchError = null
+                                // Prefill the model when empty so a preset like
+                                // AgentRouter works without a fetch round-trip.
+                                if (model.isBlank()) preset.models.firstOrNull()?.let { model = it.id }
                             }
                         },
                         label = { Text(preset.label) }
@@ -458,6 +525,8 @@ private fun ProviderEditorRoot(
                                 "Base URL (Ollama server, e.g. http://localhost:11434)"
                             AgentProviderEntity.PROTOCOL_LOCAL ->
                                 "Base URL (placeholder — local://engine, unused)"
+                            AgentProviderEntity.PROTOCOL_ANTHROPIC ->
+                                "Base URL (Anthropic Messages API, e.g. https://agentrouter.org/v1)"
                             else ->
                                 "Base URL (OpenAI-compatible, e.g. https://api.z.ai/api/paas/v4)"
                         }
@@ -496,6 +565,38 @@ private fun ProviderEditorRoot(
                     .semantics { contentDescription = "provider_key_field" }
             )
             Spacer(Modifier.height(12.dp))
+
+            // ---- Preset models (pick-list shipped with the provider) ----
+            if (presetModels.isNotEmpty()) {
+                Text("Models for this provider", style = MaterialTheme.typography.labelLarge)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "Known models for this preset — tap to select, or fetch/type any other id below.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(6.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.semantics { contentDescription = "provider_preset_models" }
+                ) {
+                    presetModels.forEach { pm ->
+                        FilterChip(
+                            selected = pm.id == model,
+                            onClick = { model = pm.id },
+                            label = {
+                                Text(
+                                    if (pm.reasoning) "${pm.label} · reasoning" else pm.label,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
 
             // ---- Fetch models ----
             Row(verticalAlignment = Alignment.CenterVertically) {

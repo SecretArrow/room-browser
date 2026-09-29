@@ -54,6 +54,7 @@ object AgentProviderStore {
             AgentProviderEntity.PROTOCOL_OPENCODE -> AgentProviderEntity.PROTOCOL_OPENCODE
             AgentProviderEntity.PROTOCOL_OLLAMA -> AgentProviderEntity.PROTOCOL_OLLAMA
             AgentProviderEntity.PROTOCOL_LOCAL -> AgentProviderEntity.PROTOCOL_LOCAL
+            AgentProviderEntity.PROTOCOL_ANTHROPIC -> AgentProviderEntity.PROTOCOL_ANTHROPIC
             else -> AgentProviderEntity.PROTOCOL_OPENAI
         }
         if (trimmedName.isBlank()) return Result.failure(IllegalArgumentException("provider name is required"))

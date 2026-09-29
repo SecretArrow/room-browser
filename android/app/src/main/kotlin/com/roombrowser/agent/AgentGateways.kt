@@ -8,6 +8,9 @@ import okhttp3.OkHttpClient
 /**
  * Creates the correct [AgentGateway] for a saved provider:
  *  - OpenAI-compatible chat/completions,
+ *  - the Anthropic Messages API (protocol "ANTHROPIC", POST /messages — used
+ *    by aggregators like AgentRouter; [AnthropicAgentGateway] probes once and
+ *    falls back to the OpenAI shape when the endpoint is not Anthropic-shaped),
  *  - an `opencode serve` server,
  *  - a native Ollama server (protocol "OLLAMA", /api/chat — the only
  *    protocol that consumes [LocalAiTuning]: num_ctx/num_gpu/num_thread +
@@ -41,6 +44,7 @@ object AgentGateways {
         AgentProviderEntity.PROTOCOL_OPENCODE -> OpenCodeAgentGateway(callFactory, baseUrl, apiKey)
         AgentProviderEntity.PROTOCOL_OLLAMA -> OllamaAgentGateway(callFactory, baseUrl, apiKey, tuning)
         AgentProviderEntity.PROTOCOL_LOCAL -> localGateway(appContext)
+        AgentProviderEntity.PROTOCOL_ANTHROPIC -> AnthropicAgentGateway(callFactory, baseUrl, apiKey)
         else -> OkHttpAgentGateway(callFactory, baseUrl, apiKey)
     }
 

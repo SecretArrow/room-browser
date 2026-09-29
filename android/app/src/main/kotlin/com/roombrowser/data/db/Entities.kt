@@ -170,7 +170,7 @@ data class CustomThemeEntity(
 // =========================================================================
 
 /**
- * A user-configured AI agent provider. Four protocols are supported:
+ * A user-configured AI agent provider. Five protocols are supported:
  *  - [PROTOCOL_OPENAI] — any OpenAI-compatible chat/completions API
  *    (Z.ai, OpenAI, OpenRouter, Groq, DeepSeek, Ollama, LM Studio, custom...)
  *  - [PROTOCOL_OPENCODE] — an `opencode serve` server (session-based REST
@@ -179,8 +179,17 @@ data class CustomThemeEntity(
  *    managed by the Local AI screen, bridged by OllamaAgentGateway)
  *  - [PROTOCOL_LOCAL] — the embedded on-device llama.cpp engine (no server,
  *    no network; models are .gguf files managed in Local AI)
+ *  - [PROTOCOL_ANTHROPIC] — the Anthropic Messages API shape (POST /messages,
+ *    x-api-key + anthropic-version), spoken by aggregators such as AgentRouter
+ *    through the @ai-sdk/anthropic SDK and bridged by AnthropicAgentGateway,
+ *    which probes once and falls back to the OpenAI shape when the endpoint is
+ *    not Anthropic-shaped
  *
  * The API key is stored ENCRYPTED with an AndroidKeyStore AES-GCM key.
+ *
+ * `protocol` is a plain String column (defaultValue "OPENAI"), so adding a new
+ * protocol value needs NO Room migration: existing rows keep their value and
+ * only new/edited Anthropic providers ever store "ANTHROPIC".
  */
 @Entity(tableName = "agent_providers")
 data class AgentProviderEntity(
@@ -197,6 +206,7 @@ data class AgentProviderEntity(
         const val PROTOCOL_OPENCODE = "OPENCODE"
         const val PROTOCOL_OLLAMA = "OLLAMA"
         const val PROTOCOL_LOCAL = "LOCAL"
+        const val PROTOCOL_ANTHROPIC = "ANTHROPIC"
     }
 }
 
