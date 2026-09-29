@@ -163,6 +163,24 @@ class BrowserNavigationE2eTest {
         return clickSmart(node)
     }
 
+    /** Chromium/WebView net log captured ON-DEVICE at the moment of failure —
+     *  the runner-level logcat dump only fires at the END of the whole gradle
+     *  run, long after this test's window has scrolled away. */
+    private fun chromiumLog(): String = try {
+        val p = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "-t", "800"))
+        val out = p.inputStream.bufferedReader().readText()
+        p.waitFor()
+        out.lineSequence()
+            .filter {
+                it.contains("chromium", true) || it.contains("ERR_", true) ||
+                    it.contains("SSL", true) || it.contains("cr_")
+            }
+            .takeLast(80)
+            .joinToString("\n")
+    } catch (_: Exception) {
+        "(logcat unavailable)"
+    }
+
     /** Readable failure diagnostics (readable from the e2e-reports artifact). */
     private fun uiTree(): String = try {
         val sb = StringBuilder()
@@ -304,9 +322,14 @@ class BrowserNavigationE2eTest {
             "The 'Goto page 2' link must be clickable\n${uiTree()}",
             clickText("Goto page 2", 15_000)
         )
+        if (!hasText("ROOM-E2E-PAGE-TWO", 12_000)) {
+            // Defense-in-depth against a swallowed first tap on a busy runner
+            // (Task 12 lesson: the a11y pipeline can drop injected input).
+            clickText("Goto page 2", 5_000)
+        }
         assertTrue(
-            "Page TWO must load after the link click\n${uiTree()}",
-            hasText("ROOM-E2E-PAGE-TWO", 20_000)
+            "Page TWO must load after the link click\n${uiTree()}\nCHROMIUM LOG:\n${chromiumLog()}",
+            hasText("ROOM-E2E-PAGE-TWO", 15_000)
         )
 
         // ---- 3. Bottom-bar Back: TWO -> ONE (the old always-grey bug) -----

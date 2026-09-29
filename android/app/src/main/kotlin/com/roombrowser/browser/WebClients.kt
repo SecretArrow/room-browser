@@ -181,6 +181,36 @@ class RoomWebViewClient(
         }
     }
 
+    /**
+     * LEGACY 4-arg error callback — some WebView stacks report main-frame
+     * transport failures (ERR_SSL_PROTOCOL_ERROR against plain-http ports,
+     * connection resets mid-handshake) ONLY through this deprecated
+     * signature during shouldOverrideUrlLoading→loadUrl upgrade flows.
+     * The default implementation is a no-op, so the failure dies silently
+     * with the old page still shown (CI-proven by BrowserNavigationE2eTest:
+     * https attempt started — back/forward lit up — then nothing: no error
+     * surface, no fallback, server never saw the retry).
+     *
+     * Routing: only the upgrade-fallback case is handled here; ordinary
+     * error reporting stays with the modern signature above (overriding
+     * both for reporting would double-fire on stacks that call both —
+     * onPageStarted clears pageError, so a raced overlay self-heals).
+     */
+    @Deprecated("Deprecated in Java")
+    override fun onReceivedError(
+        view: WebView,
+        errorCode: Int,
+        description: String?,
+        failingUrl: String?
+    ) {
+        if (failingUrl != null) {
+            val original = upgradeFallbacks.consume(failingUrl)
+            if (original != null && HttpsUpgradeFallbackPolicy.isRecoverable(errorCode)) {
+                view.post { view.loadUrl(original) }
+            }
+        }
+    }
+
     override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
         // HTTPS-First fallback: an https endpoint without a valid TLS setup
         // behind one of OUR upgrades → retry the original http URL once.
