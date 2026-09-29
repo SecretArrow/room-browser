@@ -593,14 +593,35 @@ void rb_do_activate(App *app, long id)
 void rb_do_navigate(App *app, const char *url)
 {
     rb_tab *t;
-    if (!url || !url[0]) return;
+    char *upgraded = NULL;
+    int did_upgrade = 0;
+    const char *target = url;
+
+    if (!app || !url || !url[0]) return;
     t = app->active_id ? rb_tabs_get(app->tabs, app->active_id) : NULL;
     if (!t) return;
-    rb_set_str(&t->url, rb_strdup(url));
+
+    /* HTTPS-First.  The omnibox already sends a bare domain straight to
+     * https, so what this catches is everything else that is still plain
+     * http at load time: a typed http:// URL, a bookmark or homepage entry,
+     * a session-restored tab.  The upgrade is recorded so that the failure
+     * handler can retry the original once — see the NavigationCompleted
+     * handler in webview.c.  With the setting off, http URLs load as typed,
+     * exactly as on Android. */
+    if (app->https && rb_pref_int(app, RB_PREF_HTTPS_UPGRADE, 1)) {
+        upgraded = rb_url_upgrade_to_https(url, &did_upgrade);
+        if (did_upgrade && upgraded) {
+            rb_https_register(app->https, upgraded, url);
+            target = upgraded;
+        }
+    }
+
+    rb_set_str(&t->url, rb_strdup(target));
     app->loading = 1;
     rb_update_reloadbtn(app);
-    rb_update_omni(app, url);
-    rb_wv_navigate(app, url);
+    rb_update_omni(app, target);
+    rb_wv_navigate(app, target);
+    free(upgraded);
 }
 
 void rb_do_toggle_bookmark(App *app)

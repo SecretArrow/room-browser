@@ -72,6 +72,42 @@ static const IID rb_iid_history_evt = {
 static const IID rb_iid_navcomp_evt = {
     0xd33a35bf, 0x1c49, 0x4f98, {0x93, 0xab, 0x00, 0x6e, 0x05, 0x33, 0xfe, 0x1c} };
 
+/* Added with the profile/privacy work.  Every value below was read out of the
+ * SDK's own WebView2.h (1.0.2903.40) rather than typed from memory: a wrong
+ * IID does not fail to compile, it makes QueryInterface return E_NOINTERFACE
+ * at run time and the feature silently does nothing. */
+static const IID rb_iid_settings2 = {
+    0xee9a0f68, 0xf46c, 0x4e32, {0xac, 0x23, 0xef, 0x8c, 0xac, 0x22, 0x4d, 0x2a} };
+static const IID rb_iid_navstart_evt = {
+    0x9adbe429, 0xf36d, 0x432b, {0x9d, 0xdc, 0xf8, 0x88, 0x1f, 0xbd, 0x76, 0xe3} };
+static const IID rb_iid_newwin_evt = {
+    0xd4c185fe, 0xc81c, 0x4989, {0x97, 0xaf, 0x2d, 0x3f, 0xa7, 0xab, 0x56, 0x51} };
+static const IID rb_iid_webres_evt = {
+    0xab00b74c, 0x15f1, 0x4646, {0x80, 0xe8, 0xe7, 0x63, 0x41, 0xd2, 0x5d, 0x71} };
+static const IID rb_iid_dlstart_evt = {
+    0xefedc989, 0xc396, 0x41ca, {0x83, 0xf7, 0x07, 0xf8, 0x45, 0xa5, 0x57, 0x24} };
+/* add_WebResourceRequested + AddWebResourceRequestedFilter are used through
+ * ICoreWebView2 itself.  The SDK marks that pair deprecated in favour of
+ * ICoreWebView2_22's request-source-kind variants, but it is still
+ * implemented by the Evergreen runtime and is one interface fewer to
+ * QueryInterface for; the modern pair only adds filtering by request source,
+ * which this layer does not need.
+ *
+ * add_DownloadStarting is NOT on the base interface: it arrived with
+ * ICoreWebView2_4 (runtime 1.0.1108), so it has to be reached through the
+ * QueryInterface below.  Asking for _4 rather than a later version is
+ * deliberate — it is the lowest one that carries the method, so the download
+ * feature works on the widest range of installed runtimes. */
+static const IID rb_iid_wv4 = {
+    /* ICoreWebView2_4 */
+    0x20d02d59, 0x6df2, 0x42dc, {0xbd, 0x06, 0xf9, 0x8a, 0x69, 0x4b, 0x13, 0x02} };
+static const IID rb_iid_dlstate_evt = {
+    /* ICoreWebView2StateChangedEventHandler */
+    0x81336594, 0x7ede, 0x4ba9, {0xbf, 0x71, 0xac, 0xf0, 0xa9, 0x5b, 0x58, 0xdd} };
+static const IID rb_iid_dlbytes_evt = {
+    /* ICoreWebView2BytesReceivedChangedEventHandler */
+    0x828e8ab6, 0xd94c, 0x4264, {0x9c, 0xef, 0x52, 0x17, 0x17, 0x0d, 0x62, 0x51} };
+
 static int rb_iid_eq(REFIID a, const IID *b)
 {
     return a && b && memcmp(a, b, sizeof(IID)) == 0;
@@ -136,11 +172,57 @@ typedef struct {
     ULONG refs;
 } NavEvt;
 
+typedef struct {
+    ICoreWebView2NavigationStartingEventHandler base;
+    App *app;
+    ULONG refs;
+} NavStartEvt;
+
+typedef struct {
+    ICoreWebView2NewWindowRequestedEventHandler base;
+    App *app;
+    ULONG refs;
+} NewWinEvt;
+
+typedef struct {
+    ICoreWebView2WebResourceRequestedEventHandler base;
+    App *app;
+    ULONG refs;
+} WebResEvt;
+
+typedef struct {
+    ICoreWebView2DownloadStartingEventHandler base;
+    App *app;
+    ULONG refs;
+} DlStartEvt;
+
+/* One of these is allocated per download.  The store's id is the only thing
+ * the progress handlers need and it is not reachable from the operation, so
+ * it is carried here.  The operation itself is deliberately NOT stored: the
+ * handler is invoked with it as the sender, and a borrowed pointer would go
+ * stale the moment the runtime released it.  Like every other handler in
+ * this file they are never freed — see the lifetime note at the top of the
+ * file.  The cost is one small struct per download started in a session. */
+typedef struct {
+    ICoreWebView2StateChangedEventHandler base;
+    App *app;
+    long long dl_id;
+    ULONG refs;
+} DlStateEvt;
+
+typedef struct {
+    ICoreWebView2BytesReceivedChangedEventHandler base;
+    App *app;
+    long long dl_id;
+    ULONG refs;
+} DlBytesEvt;
+
 /* ------------------------------------------------------------------ */
 /* Forward declarations */
 
 static void rb_wv_ensure_active(App *app);
 static void rb_wv_wire(App *app, TabView *tv);
+static void rb_wv_apply_web_settings(App *app, ICoreWebView2 *wv);
 static void rb_wv_unavailable(App *app);
 static void rb_wv_area(App *app, RECT *r);
 static TabView *rb_views_slot(struct RbViews *v, long tab_id);
@@ -514,6 +596,47 @@ static ULONG STDMETHODCALLTYPE NavEvt_Release(
     return h->refs;
 }
 
+/* Maps a WebView2 navigation failure onto the core's retry vocabulary.
+ *
+ * Only the failures an http retry could plausibly fix are retry-worthy.  The
+ * interesting case is a certificate rejection: an https upgrade that lands on
+ * a host with a broken or self-signed certificate fails at the TLS layer, and
+ * that is exactly the situation the fallback exists for, so it maps to
+ * SSL_HANDSHAKE alongside the plain connect failures.
+ *
+ * A user cancel is deliberately not retryable — the user stopped the load,
+ * and silently restarting it over http would be the rudest possible reply. */
+#define RB_WIN_HTTPS_NO_RETRY 0
+
+static int rb_win_https_code(COREWEBVIEW2_WEB_ERROR_STATUS st)
+{
+    switch (st) {
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_SERVER_UNREACHABLE:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_DISCONNECTED:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_ERROR_HTTP_INVALID_SERVER_RESPONSE:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_UNEXPECTED_ERROR:
+        return RB_HTTPS_ERR_CONNECT;
+
+    case COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT:
+        return RB_HTTPS_ERR_TIMEOUT;
+
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT:
+        return RB_HTTPS_ERR_SSL_HANDSHAKE;
+
+    default:
+        /* OPERATION_CANCELED, REDIRECT_FAILED, the certificate-the-user-must-
+         * answer cases and UNKNOWN: nothing an http retry would fix. */
+        return RB_WIN_HTTPS_NO_RETRY;
+    }
+}
+
 static HRESULT STDMETHODCALLTYPE NavEvt_Invoke(
     ICoreWebView2NavigationCompletedEventHandler *self,
     ICoreWebView2 *sender, ICoreWebView2NavigationCompletedEventArgs *args)
@@ -522,10 +645,36 @@ static HRESULT STDMETHODCALLTYPE NavEvt_Invoke(
     App *app = h->app;
     TabView *tv = app && app->views ? rb_views_by_wv(app->views, sender) : NULL;
     rb_tab *t;
-    (void)args;
+    BOOL ok = TRUE;
     if (!tv) return S_OK;
     t = rb_tabs_get(app->tabs, tv->tab_id);
     if (!t) return S_OK;
+
+    if (args != NULL && SUCCEEDED(args->lpVtbl->get_IsSuccess(args, &ok)) && !ok) {
+        COREWEBVIEW2_WEB_ERROR_STATUS st = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+        char *retry = NULL;
+        args->lpVtbl->get_WebErrorStatus(args, &st);
+        /* A URL that fails because the engine could not reach https may be
+         * one this browser upgraded from http a moment ago.  When it is, the
+         * original http URL comes back and is loaded instead — the fallback
+         * half of "upgrade, but do not lock the user out". */
+        retry = rb_https_retry_url(app->https, t->url, rb_win_https_code(st));
+        if (retry != NULL) {
+            if (retry[0] != '\0') {
+                rb_set_str(&t->url, rb_strdup(retry));
+                if (tv->tab_id == app->active_id) rb_update_omni(app, retry);
+                {
+                    wchar_t *wu = rb_utf8_to_wide(retry);
+                    if (wu != NULL) {
+                        sender->lpVtbl->Navigate(sender, wu);
+                        free(wu);
+                    }
+                }
+            }
+            free(retry);
+            return S_OK;   /* an http retry is starting; not a finished load */
+        }
+    }
 
     if (tv->tab_id == app->active_id) {
         app->loading = 0;
@@ -547,6 +696,573 @@ static ICoreWebView2NavigationCompletedEventHandlerVtbl g_nav_vtbl = {
 };
 
 static NavEvt g_nav_evt;
+
+/* ------------------------------------------------------------------ */
+/* Navigation policy, content blocking and downloads.
+ *
+ * Every handler below implements the same three IUnknown-shaped methods and
+ * differs only in its interface type and IID, so the boilerplate is
+ * generated from one macro instead of copied six more times.  The handlers
+ * above are left hand-written: they predate this and rewriting them would
+ * bury the actual change in noise. */
+
+#define RB_HANDLER_QI(ctype, htype, iidvar)                                   \
+    static HRESULT STDMETHODCALLTYPE htype##_QueryInterface(ctype *self,      \
+                                                            REFIID riid,      \
+                                                            void **ppv)       \
+    {                                                                         \
+        htype *h = (htype *)self;                                             \
+        if (!ppv) return E_POINTER;                                           \
+        if (rb_iid_eq(riid, &rb_iid_iunknown) || rb_iid_eq(riid, &iidvar)) {  \
+            *ppv = self;                                                      \
+            h->refs++;                                                        \
+            return S_OK;                                                      \
+        }                                                                     \
+        *ppv = NULL;                                                          \
+        return E_NOINTERFACE;                                                 \
+    }
+
+#define RB_HANDLER_REFCOUNT(ctype, htype)                                     \
+    static ULONG STDMETHODCALLTYPE htype##_AddRef(ctype *self)                \
+    {                                                                         \
+        return ++((htype *)self)->refs;                                       \
+    }                                                                         \
+    static ULONG STDMETHODCALLTYPE htype##_Release(ctype *self)               \
+    {                                                                         \
+        htype *h = (htype *)self;                                             \
+        if (h->refs > 1) h->refs--;                                           \
+        return h->refs;                                                       \
+    }
+
+/* The category to block for `url` requested by the page at `page_url`, or
+ * RB_FILTER_NONE.  Both URLs are absolute; `page_url` may be NULL, which the
+ * engine reads as "no page context" (a main-frame request). */
+static rb_filter_category rb_wv_block_category(App *app, const char *url,
+                                               const char *page_url)
+{
+    rb_filter_options opts;
+    char *host;
+    char *phost = NULL;
+    char *path;
+    rb_filter_category cat;
+
+    if (app == NULL || app->filters == NULL || url == NULL) return RB_FILTER_NONE;
+    host = rb_url_host_of(url);
+    if (host == NULL) return RB_FILTER_NONE;
+    path = rb_url_path_of(url);
+    if (page_url != NULL) phost = rb_url_host_of(page_url);
+
+    opts = rb_filter_opts(app);
+    cat = rb_filters_decide(app->filters, host, phost, path, &opts, NULL);
+
+    free(host);
+    free(phost);
+    free(path);
+    return cat;
+}
+
+/* Answers a blocked subresource with an empty 403.  WebView2 has no "cancel"
+ * for a WebResourceRequested — putting a response IS the block, and an empty
+ * one keeps the page's own error handling intact instead of tearing the
+ * request down. */
+static void rb_wv_block_request(App *app,
+                                ICoreWebView2WebResourceRequestedEventArgs *args,
+                                rb_filter_category cat)
+{
+    struct RbViews *v = app ? app->views : NULL;
+    ICoreWebView2WebResourceResponse *resp = NULL;
+
+    if (v == NULL || v->env == NULL) return;
+    if (FAILED(v->env->lpVtbl->CreateWebResourceResponse(v->env, NULL, 403,
+                                                         L"Blocked", L"",
+                                                         &resp)) ||
+        resp == NULL) {
+        return;
+    }
+    args->lpVtbl->put_Response(args, resp);
+    resp->lpVtbl->Release(resp);
+    rb_filters_count_block(app->filters, cat);
+}
+
+/* ---- NavigationStarting: the main-frame policy ----
+ *
+ * Android's shouldOverrideUrlLoading.  A navigation into a host the bundled
+ * list calls malicious is stopped with a dialog; a host that is merely
+ * suspicious (plain http, an IP literal, punycode) is allowed through with a
+ * warning, because those heuristics have false positives and silently
+ * refusing a page the user asked for is worse than telling them about it.
+ *
+ * The dialog is modal and runs a nested message loop inside a WebView2 event
+ * handler.  That is deliberate and it is what the GTK layer does too: the
+ * navigation has already been cancelled by the time it appears, so nothing
+ * is waiting on it. */
+RB_HANDLER_QI(ICoreWebView2NavigationStartingEventHandler, NavStartEvt,
+              rb_iid_navstart_evt)
+RB_HANDLER_REFCOUNT(ICoreWebView2NavigationStartingEventHandler, NavStartEvt)
+
+static HRESULT STDMETHODCALLTYPE NavStartEvt_Invoke(
+    ICoreWebView2NavigationStartingEventHandler *self,
+    ICoreWebView2 *sender, ICoreWebView2NavigationStartingEventArgs *args)
+{
+    NavStartEvt *h = (NavStartEvt *)self;
+    App *app = h->app;
+    rb_filter_options opts;
+    LPWSTR wurl = NULL;
+    char *url = NULL;
+    (void)sender;
+
+    if (app == NULL || app->filters == NULL || args == NULL) return S_OK;
+    if (FAILED(args->lpVtbl->get_Uri(args, &wurl)) || wurl == NULL) return S_OK;
+    url = rb_wide_to_utf8(wurl);
+    CoTaskMemFree(wurl);
+    if (url == NULL) return S_OK;
+
+    /* The switches are read per navigation, not cached, so turning
+     * "Block malicious sites" off takes effect on the next page rather than
+     * at the next restart.  Same as the GTK layer, and the same single
+     * source of truth (rb_filter_opts) so the two cannot disagree. */
+    opts = rb_filter_opts(app);
+    if (opts.block_malicious) {
+        char *host = rb_url_host_of(url);
+        if (host != NULL && host[0] != '\0') {
+            /* blocked_category only consults the malicious list here, because
+             * that is the list a main frame is allowed to be judged by. */
+            rb_filter_category cat =
+                rb_filters_blocked_category(app->filters, host);
+            if (cat == RB_FILTER_MALICIOUS) {
+                rb_filters_count_block(app->filters, RB_FILTER_MALICIOUS);
+                args->lpVtbl->put_Cancel(args, TRUE);
+                rb_warn(app, "Blocked a malicious site",
+                        "This address is on the malicious-site blocklist, so "
+                        "the page was not loaded.");
+                free(host);
+                free(url);
+                return S_OK;
+            }
+        }
+        free(host);
+    }
+
+    /* Not on any list: the heuristics still get to speak, and the page is
+     * allowed through — a warning, not a block.  They have false positives,
+     * and silently refusing a page the user asked for is worse than telling
+     * them what looks odd about it. */
+    {
+        unsigned int signals = rb_filters_suspicious_signals(url);
+        if (signals != RB_SUSPICIOUS_NONE) {
+            char *text = rb_filters_suspicious_text(signals);
+            if (text != NULL && text[0] != '\0') {
+                size_t need = strlen(text) + 16;
+                char *body = (char *)malloc(need);
+                if (body != NULL) {
+                    snprintf(body, need, "Caution: %s", text);
+                    rb_warn(app, "Suspicious address", body);
+                    free(body);
+                }
+            }
+            free(text);
+        }
+    }
+
+    free(url);
+    return S_OK;
+}
+
+static ICoreWebView2NavigationStartingEventHandlerVtbl g_navstart_vtbl = {
+    NavStartEvt_QueryInterface, NavStartEvt_AddRef, NavStartEvt_Release,
+    NavStartEvt_Invoke
+};
+
+static NavStartEvt g_navstart_evt;
+
+/* ---- NewWindowRequested: window.open goes to a tab ----
+ *
+ * With block_popups off (the compatibility default) the request is handed to
+ * the tab strip, so window.open behaves the way a browser user expects
+ * rather than being silently dropped.  With it on, the request is marked
+ * handled and nothing opens. */
+RB_HANDLER_QI(ICoreWebView2NewWindowRequestedEventHandler, NewWinEvt,
+              rb_iid_newwin_evt)
+RB_HANDLER_REFCOUNT(ICoreWebView2NewWindowRequestedEventHandler, NewWinEvt)
+
+static HRESULT STDMETHODCALLTYPE NewWinEvt_Invoke(
+    ICoreWebView2NewWindowRequestedEventHandler *self,
+    ICoreWebView2 *sender, ICoreWebView2NewWindowRequestedEventArgs *args)
+{
+    NewWinEvt *h = (NewWinEvt *)self;
+    App *app = h->app;
+    rb_filter_options opts;
+    LPWSTR wurl = NULL;
+    char *url = NULL;
+    (void)sender;
+
+    if (app == NULL || args == NULL) return S_OK;
+    if (FAILED(args->lpVtbl->get_Uri(args, &wurl)) || wurl == NULL) return S_OK;
+    url = rb_wide_to_utf8(wurl);
+    CoTaskMemFree(wurl);
+
+    opts = rb_filter_opts(app);
+    if (opts.block_popups) {
+        args->lpVtbl->put_Handled(args, TRUE);
+        rb_filters_count_block(app->filters, RB_FILTER_POPUP);
+        free(url);
+        return S_OK;
+    }
+
+    /* Handled here whatever happens next, so the runtime does not open its
+     * own popup window on top of the tab this creates. */
+    args->lpVtbl->put_Handled(args, TRUE);
+    if (url != NULL && url[0] != '\0') {
+        long id = rb_tabs_add(app->tabs, "New Tab", url, rb_profile_now_ms());
+        if (id != 0) {
+            app->active_id = id;
+            rb_tabs_rebuild(app);
+            rb_update_all(app);
+            rb_wv_activate(app, id);
+        }
+    }
+    free(url);
+    return S_OK;
+}
+
+static ICoreWebView2NewWindowRequestedEventHandlerVtbl g_newwin_vtbl = {
+    NewWinEvt_QueryInterface, NewWinEvt_AddRef, NewWinEvt_Release,
+    NewWinEvt_Invoke
+};
+
+static NewWinEvt g_newwin_evt;
+
+/* ---- WebResourceRequested: content blocking ----
+ *
+ * WebKitGTK's decide-policy cannot see subresources, which is why the GTK
+ * layer hands its rules to WebKit's content blocker.  WebView2 can answer
+ * per request, so this is Android's shape instead: the same rb_filters_decide
+ * call over the same switches.
+ *
+ * A main-frame request is never blocked here.  Blocking it would show a blank
+ * page with no explanation; the navigation policy above handles that case
+ * with a dialog the user can actually read.  Same rule as Android's
+ * "if (request.isForMainFrame) return null". */
+RB_HANDLER_QI(ICoreWebView2WebResourceRequestedEventHandler, WebResEvt,
+              rb_iid_webres_evt)
+RB_HANDLER_REFCOUNT(ICoreWebView2WebResourceRequestedEventHandler, WebResEvt)
+
+static HRESULT STDMETHODCALLTYPE WebResEvt_Invoke(
+    ICoreWebView2WebResourceRequestedEventHandler *self,
+    ICoreWebView2 *sender, ICoreWebView2WebResourceRequestedEventArgs *args)
+{
+    WebResEvt *h = (WebResEvt *)self;
+    App *app = h->app;
+    TabView *tv = app && app->views ? rb_views_by_wv(app->views, sender) : NULL;
+    ICoreWebView2WebResourceRequest *req = NULL;
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT ctx;
+    LPWSTR wurl = NULL;
+    char *url = NULL;
+    const char *page_url = NULL;
+    rb_tab *t;
+    rb_filter_category cat;
+
+    if (app == NULL || app->filters == NULL || args == NULL) return S_OK;
+    if (FAILED(args->lpVtbl->get_ResourceContext(args, &ctx))) return S_OK;
+    if (ctx == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT) return S_OK;
+
+    if (FAILED(args->lpVtbl->get_Request(args, &req)) || req == NULL) return S_OK;
+    if (FAILED(req->lpVtbl->get_Uri(req, &wurl)) || wurl == NULL) {
+        req->lpVtbl->Release(req);
+        return S_OK;
+    }
+    url = rb_wide_to_utf8(wurl);
+    CoTaskMemFree(wurl);
+    req->lpVtbl->Release(req);
+    if (url == NULL) return S_OK;
+
+    if (tv != NULL) {
+        t = rb_tabs_get(app->tabs, tv->tab_id);
+        if (t != NULL) page_url = t->url;
+    }
+
+    cat = rb_wv_block_category(app, url, page_url);
+    if (cat != RB_FILTER_NONE) {
+        rb_wv_block_request(app, args, cat);
+    }
+    free(url);
+    return S_OK;
+}
+
+static ICoreWebView2WebResourceRequestedEventHandlerVtbl g_webres_vtbl = {
+    WebResEvt_QueryInterface, WebResEvt_AddRef, WebResEvt_Release,
+    WebResEvt_Invoke
+};
+
+static WebResEvt g_webres_evt;
+
+/* ---- Downloads ----
+ *
+ * Android's DownloadEngine: the transfer is recorded in the profile's
+ * downloads store, and the file lands under the profile's download
+ * directory.  WebView2 shows its own download UI unless the event is marked
+ * handled, so the destination is set and the default UI suppressed — the
+ * desktop's own downloads list is the one the user sees. */
+static void rb_dl_save(App *app)
+{
+    if (app->downloads && app->path_downloads) {
+        rb_downloads_save(app->downloads, app->path_downloads);
+    }
+}
+
+/* Splits "<dir>\<name>" and returns the trailing name, or the whole string
+ * when there is no separator. */
+static const char *rb_dl_basename(const char *path)
+{
+    const char *slash;
+    if (path == NULL) return "";
+    slash = strrchr(path, '\\');
+    if (slash == NULL) slash = strrchr(path, '/');
+    return (slash != NULL) ? slash + 1 : path;
+}
+
+/* Where the file should land: the profile's download directory plus the name
+ * the store chose, with the usual " (1)", " (2)" suffix when that path is
+ * taken.  Overwriting a file the user downloaded earlier is not a thing a
+ * browser may do, so the collision is resolved here rather than left to
+ * WebView2.  Mirrors the GTK layer's on_dl_decide_destination.  Caller
+ * frees; NULL when the directory or the record is missing. */
+static char *rb_dl_pick_destination(App *app, long long id)
+{
+    const rb_download *rec;
+    const char *dir;
+    char *path;
+    int n;
+
+    if (app == NULL || app->download_dir == NULL) return NULL;
+    dir = app->download_dir;
+    rec = rb_downloads_by_id(app->downloads, id);
+    if (rec == NULL || rec->file_name == NULL || rec->file_name[0] == '\0') {
+        return NULL;
+    }
+
+    path = rb_paths_join(dir, rec->file_name);
+    if (path == NULL) return NULL;
+
+    for (n = 1; n < 10000 && rb_paths_is_file(path); n++) {
+        const char *dot = strrchr(rec->file_name, '.');
+        char *cand;
+        if (dot != NULL && dot != rec->file_name) {
+            size_t k = (size_t)(dot - rec->file_name);
+            size_t need = strlen(dir) + 1 + k + 24 + strlen(dot) + 1;
+            cand = (char *)malloc(need);
+            if (cand == NULL) break;
+            snprintf(cand, need, "%s\\%.*s (%d)%s", dir, (int)k,
+                     rec->file_name, n, dot);
+        } else {
+            size_t need = strlen(dir) + strlen(rec->file_name) + 24;
+            cand = (char *)malloc(need);
+            if (cand == NULL) break;
+            snprintf(cand, need, "%s\\%s (%d)", dir, rec->file_name, n);
+        }
+        free(path);
+        path = cand;
+    }
+    return path;
+}
+
+/* Moves the store's view of a download to match the operation's state.
+ * WebView2 reports completion through StateChanged, and a user cancel
+ * arrives as INTERRUPTED with USER_CANCELED — which is not a failure to
+ * report, the same distinction the GTK layer draws. */
+static void rb_dl_state_changed(App *app, long long id,
+                                ICoreWebView2DownloadOperation *op)
+{
+    COREWEBVIEW2_DOWNLOAD_STATE st;
+    if (app == NULL || app->downloads == NULL || op == NULL || id == 0) return;
+    if (FAILED(op->lpVtbl->get_State(op, &st))) return;
+
+    if (st == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED) {
+        LPWSTR wpath = NULL;
+        char *path = NULL;
+        INT64 received = 0;
+        if (SUCCEEDED(op->lpVtbl->get_ResultFilePath(op, &wpath)) && wpath) {
+            path = rb_wide_to_utf8(wpath);
+            CoTaskMemFree(wpath);
+        }
+        op->lpVtbl->get_BytesReceived(op, &received);
+        rb_downloads_complete(app->downloads, id, path ? path : "",
+                              (long long)received, rb_profile_now_ms());
+        free(path);
+        rb_dl_save(app);
+        return;
+    }
+    if (st == COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED) {
+        COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason =
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;
+        int cancelled;
+        op->lpVtbl->get_InterruptReason(op, &reason);
+        cancelled = (reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED);
+        rb_downloads_set_status(app->downloads, id,
+                                cancelled ? RB_DL_CANCELLED : RB_DL_FAILED,
+                                cancelled ? NULL : "the transfer was interrupted");
+        rb_dl_save(app);
+        return;
+    }
+    rb_downloads_set_status(app->downloads, id, RB_DL_RUNNING, NULL);
+}
+
+RB_HANDLER_QI(ICoreWebView2StateChangedEventHandler, DlStateEvt, rb_iid_dlstate_evt)
+RB_HANDLER_REFCOUNT(ICoreWebView2StateChangedEventHandler, DlStateEvt)
+
+static HRESULT STDMETHODCALLTYPE DlStateEvt_Invoke(
+    ICoreWebView2StateChangedEventHandler *self,
+    ICoreWebView2DownloadOperation *sender, IUnknown *args)
+{
+    DlStateEvt *h = (DlStateEvt *)self;
+    (void)args;
+    rb_dl_state_changed(h->app, h->dl_id, sender);
+    return S_OK;
+}
+
+static ICoreWebView2StateChangedEventHandlerVtbl g_dlstate_vtbl = {
+    DlStateEvt_QueryInterface, DlStateEvt_AddRef, DlStateEvt_Release,
+    DlStateEvt_Invoke
+};
+
+RB_HANDLER_QI(ICoreWebView2BytesReceivedChangedEventHandler, DlBytesEvt,
+              rb_iid_dlbytes_evt)
+RB_HANDLER_REFCOUNT(ICoreWebView2BytesReceivedChangedEventHandler, DlBytesEvt)
+
+static HRESULT STDMETHODCALLTYPE DlBytesEvt_Invoke(
+    ICoreWebView2BytesReceivedChangedEventHandler *self,
+    ICoreWebView2DownloadOperation *sender, IUnknown *args)
+{
+    DlBytesEvt *h = (DlBytesEvt *)self;
+    INT64 received = 0, total = 0;
+    (void)args;
+    if (h->app == NULL || h->app->downloads == NULL || h->dl_id == 0) return S_OK;
+    if (FAILED(sender->lpVtbl->get_BytesReceived(sender, &received))) return S_OK;
+    if (FAILED(sender->lpVtbl->get_TotalBytesToReceive(sender, &total))) {
+        total = -1;   /* the store reads <= -1 as "length unknown" */
+    }
+    rb_downloads_set_progress(h->app->downloads, h->dl_id,
+                              (long long)received, (long long)total);
+    return S_OK;
+}
+
+static ICoreWebView2BytesReceivedChangedEventHandlerVtbl g_dlbytes_vtbl = {
+    DlBytesEvt_QueryInterface, DlBytesEvt_AddRef, DlBytesEvt_Release,
+    DlBytesEvt_Invoke
+};
+
+RB_HANDLER_QI(ICoreWebView2DownloadStartingEventHandler, DlStartEvt,
+              rb_iid_dlstart_evt)
+RB_HANDLER_REFCOUNT(ICoreWebView2DownloadStartingEventHandler, DlStartEvt)
+
+static HRESULT STDMETHODCALLTYPE DlStartEvt_Invoke(
+    ICoreWebView2DownloadStartingEventHandler *self,
+    ICoreWebView2 *sender, ICoreWebView2DownloadStartingEventArgs *args)
+{
+    DlStartEvt *h = (DlStartEvt *)self;
+    App *app = h->app;
+    ICoreWebView2DownloadOperation *op = NULL;
+    LPWSTR wurl = NULL, wmime = NULL, wpath = NULL;
+    char *url = NULL, *mime = NULL, *suggested = NULL, *dest = NULL;
+    const rb_profile *prof;
+    long long id;
+    (void)sender;
+
+    if (app == NULL || app->downloads == NULL || args == NULL) return S_OK;
+    if (FAILED(args->lpVtbl->get_DownloadOperation(args, &op)) || op == NULL) {
+        return S_OK;
+    }
+
+    if (SUCCEEDED(op->lpVtbl->get_Uri(op, &wurl)) && wurl != NULL) {
+        url = rb_wide_to_utf8(wurl);
+        CoTaskMemFree(wurl);
+    }
+    if (SUCCEEDED(op->lpVtbl->get_MimeType(op, &wmime)) && wmime != NULL) {
+        mime = rb_wide_to_utf8(wmime);
+        CoTaskMemFree(wmime);
+    }
+    /* WebView2's own idea of the name, which is this API's equivalent of
+     * WebKit's suggested_filename.  Only the basename is useful — the rest is
+     * WebView2's default folder, which is not where the file is going. */
+    if (SUCCEEDED(args->lpVtbl->get_ResultFilePath(args, &wpath)) && wpath != NULL) {
+        char *full = rb_wide_to_utf8(wpath);
+        if (full != NULL) {
+            const char *base = rb_dl_basename(full);
+            suggested = (base[0] != '\0') ? rb_strdup(base) : NULL;
+            free(full);
+        }
+        CoTaskMemFree(wpath);
+    }
+
+    if (url == NULL || url[0] == '\0') {
+        op->lpVtbl->Release(op);
+        free(mime);
+        free(suggested);
+        return S_OK;
+    }
+
+    prof = rb_active_profile(app);
+    id = rb_downloads_enqueue(app->downloads,
+                              (prof != NULL) ? prof->id : "",
+                              url, suggested, mime, rb_profile_now_ms());
+    free(suggested);
+    if (id == 0) {
+        op->lpVtbl->Release(op);
+        free(url);
+        free(mime);
+        return S_OK;
+    }
+
+    /* The store has now chosen and de-duplicated the name, so the path built
+     * from it is the one the downloads list will show.  Without this WebView2
+     * would write somewhere else entirely and the row would point at a file
+     * that does not exist. */
+    dest = rb_dl_pick_destination(app, id);
+    if (dest != NULL) {
+        wchar_t *wdest = rb_utf8_to_wide(dest);
+        if (wdest != NULL) {
+            args->lpVtbl->put_ResultFilePath(args, wdest);
+            free(wdest);
+        }
+    }
+    /* The desktop's downloads list is the UI; WebView2's own download bar
+     * would be a second, unrelated one. */
+    args->lpVtbl->put_Handled(args, TRUE);
+    free(dest);
+
+    {
+        DlStateEvt *se = (DlStateEvt *)malloc(sizeof *se);
+        DlBytesEvt *be = (DlBytesEvt *)malloc(sizeof *be);
+        EventRegistrationToken token;
+        if (se != NULL) {
+            se->base.lpVtbl = &g_dlstate_vtbl;
+            se->app = app;
+            se->dl_id = id;
+            se->refs = 1;
+            op->lpVtbl->add_StateChanged(op, &se->base, &token);
+        }
+        if (be != NULL) {
+            be->base.lpVtbl = &g_dlbytes_vtbl;
+            be->app = app;
+            be->dl_id = id;
+            be->refs = 1;
+            op->lpVtbl->add_BytesReceivedChanged(op, &be->base, &token);
+        }
+    }
+
+    rb_dl_save(app);
+    op->lpVtbl->Release(op);
+    free(url);
+    free(mime);
+    return S_OK;
+}
+
+static ICoreWebView2DownloadStartingEventHandlerVtbl g_dlstart_vtbl = {
+    DlStartEvt_QueryInterface, DlStartEvt_AddRef, DlStartEvt_Release,
+    DlStartEvt_Invoke
+};
+
+static DlStartEvt g_dlstart_evt;
 
 /* ------------------------------------------------------------------ */
 /* Views array helpers */
@@ -609,12 +1325,45 @@ static void rb_wv_wire(App *app, TabView *tv)
     wv->lpVtbl->add_HistoryChanged(wv, &g_history_evt.base, &token);
     wv->lpVtbl->add_NavigationCompleted(wv, &g_nav_evt.base, &token);
 
+    /* The main-frame policy: the malicious block, the suspicious warning and
+     * the HTTPS retry all happen on this one event. */
+    wv->lpVtbl->add_NavigationStarting(wv, &g_navstart_evt.base, &token);
+
+    /* window.open becomes a tab unless the profile blocks popups. */
+    wv->lpVtbl->add_NewWindowRequested(wv, &g_newwin_evt.base, &token);
+
+    /* Content blocking.  The filter is registered for every resource type
+     * and every URL; the handler is what decides, per request, using the
+     * same rb_filters_decide the Android edition calls.  WebView2 has no
+     * content-blocker JSON equivalent, so this is the shape that fits —
+     * and it is actually closer to Android than WebKitGTK's rule list is. */
+    wv->lpVtbl->AddWebResourceRequestedFilter(
+        wv, L"*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
+    wv->lpVtbl->add_WebResourceRequested(wv, &g_webres_evt.base, &token);
+
+    /* Downloads land in the profile's download directory and are recorded in
+     * the downloads store; WebView2's own download bar is suppressed.
+     * add_DownloadStarting is on ICoreWebView2_4, so this is the one event
+     * that needs a QueryInterface.  When the installed runtime is too old for
+     * it the subscription is simply skipped: downloads then go through
+     * WebView2's own UI, which is worse than the desktop's list but far
+     * better than a browser that cannot download at all. */
+    {
+        ICoreWebView2_4 *wv4 = NULL;
+        if (SUCCEEDED(wv->lpVtbl->QueryInterface(
+                wv, &rb_iid_wv4, (void **)&wv4)) && wv4 != NULL) {
+            wv4->lpVtbl->add_DownloadStarting(wv4, &g_dlstart_evt.base, &token);
+            wv4->lpVtbl->Release(wv4);
+        }
+    }
+
     /* Project policy: JavaScript defaults to ON; the persisted setting is
        the only way to turn it off, applied when the webview is created. */
     if (SUCCEEDED(wv->lpVtbl->get_Settings(wv, &st)) && st) {
         st->lpVtbl->put_IsScriptEnabled(st, app->js_enabled ? TRUE : FALSE);
         st->lpVtbl->Release(st);
     }
+    rb_wv_apply_web_settings(app, wv);
 
     rb_wv_area(app, &area);
     tv->ctrl->lpVtbl->put_Bounds(tv->ctrl, area);
@@ -629,6 +1378,70 @@ static void rb_wv_wire(App *app, TabView *tv)
                 free(wu);
             }
         }
+    }
+}
+
+/* Applies the ACTIVE profile's per-webview settings to one webview.
+ *
+ * Called at wire time and again whenever the preferences editor changes
+ * something, so a switch takes effect on the pages already open rather than
+ * at the next restart.  Each setting is applied only when the interface that
+ * carries it is actually present: a machine running an older WebView2
+ * Runtime returns E_NOINTERFACE, and the honest response is to leave the
+ * engine default alone rather than to fail. */
+static void rb_wv_apply_web_settings(App *app, ICoreWebView2 *wv)
+{
+    ICoreWebView2Settings *st = NULL;
+    char *ua;
+
+    if (app == NULL || wv == NULL) return;
+
+    if (SUCCEEDED(wv->lpVtbl->get_Settings(wv, &st)) && st != NULL) {
+        st->lpVtbl->put_IsScriptEnabled(st, app->js_enabled ? TRUE : FALSE);
+        /* The default context menu is deliberately NOT disabled.  It is the
+         * only way to copy text out of a page, and the GTK edition leaves
+         * WebKit's menu alone for the same reason; switching it off would
+         * cost more than the tidier look is worth. */
+        /* The link-target preview bubble is off.  Android's WebView has none
+         * and neither does WebKitGTK, so this is the parity choice — and it
+         * is the one thing given up here, since a link's address is then
+         * only visible after it has been clicked. */
+        st->lpVtbl->put_IsStatusBarEnabled(st, FALSE);
+        st->lpVtbl->Release(st);
+        st = NULL;
+    }
+
+    /* The User-Agent is the one setting that needs the newer interface:
+     * put_UserAgent lives on ICoreWebView2Settings2, not on the base
+     * settings object.  A NULL from rb_ua_current() means the profile wants
+     * the engine default, which is exactly what happens when the put is
+     * skipped. */
+    ua = rb_ua_current(app);
+    if (ua != NULL) {
+        ICoreWebView2Settings2 *st2 = NULL;
+        if (SUCCEEDED(wv->lpVtbl->QueryInterface(
+                wv, &rb_iid_settings2, (void **)&st2)) && st2 != NULL) {
+            wchar_t *wua = rb_utf8_to_wide(ua);
+            if (wua != NULL) {
+                st2->lpVtbl->put_UserAgent(st2, wua);
+                free(wua);
+            }
+            st2->lpVtbl->Release(st2);
+        }
+        free(ua);
+    }
+}
+
+/* Re-applies the settings to every live view.  The preferences editor calls
+ * this after a change so the open pages follow it immediately. */
+void rb_wv_apply_settings_all(App *app)
+{
+    struct RbViews *v = app ? app->views : NULL;
+    int i;
+    if (v == NULL) return;
+    for (i = 0; i < v->n; i++) {
+        TabView *tv = &v->items[i];
+        if (tv->wv != NULL) rb_wv_apply_web_settings(app, tv->wv);
     }
 }
 
@@ -675,10 +1488,10 @@ static void rb_wv_unavailable(App *app)
 }
 
 /* ------------------------------------------------------------------ */
-/* One-time handler initialization. The four event handlers are static
- * (they live for the whole process), but their vtable/app/refs must be
- * wired BEFORE any add_*() hands them to WebView2, otherwise the very
- * first AddRef/QueryInterface call would dereference a NULL lpVtbl. */
+/* One-time handler initialization. The event handlers are static (they
+ * live for the whole process), but their vtable/app/refs must be wired
+ * BEFORE any add_*() hands them to WebView2, otherwise the very first
+ * AddRef/QueryInterface call would dereference a NULL lpVtbl. */
 
 static void rb_wv_handlers_init(App *app)
 {
@@ -697,21 +1510,72 @@ static void rb_wv_handlers_init(App *app)
     g_nav_evt.base.lpVtbl = &g_nav_vtbl;
     g_nav_evt.app = app;
     g_nav_evt.refs = 1;
+
+    g_navstart_evt.base.lpVtbl = &g_navstart_vtbl;
+    g_navstart_evt.app = app;
+    g_navstart_evt.refs = 1;
+
+    g_newwin_evt.base.lpVtbl = &g_newwin_vtbl;
+    g_newwin_evt.app = app;
+    g_newwin_evt.refs = 1;
+
+    g_webres_evt.base.lpVtbl = &g_webres_vtbl;
+    g_webres_evt.app = app;
+    g_webres_evt.refs = 1;
+
+    g_dlstart_evt.base.lpVtbl = &g_dlstart_vtbl;
+    g_dlstart_evt.app = app;
+    g_dlstart_evt.refs = 1;
 }
 
 /* ------------------------------------------------------------------ */
 /* Public API */
 
-static int rb_wv_user_data_dir(wchar_t *out, size_t cap)
+/* The WebView2 user data folder for the ACTIVE profile, which is where
+ * cookies, localStorage, the cache and the HTTP auth cache live.  Putting it
+ * under the profile's browser_data directory is what makes profile isolation
+ * real on Windows: two profiles get two folders and therefore two unrelated
+ * cookie jars, exactly as they do on Android and on the GTK edition
+ * (which does the same thing with WebKit's website data manager).
+ *
+ * The profile id is a UUID and a UUID is not a safe folder name on its own,
+ * so rb_profile_safe_suffix() is what names it — the same helper the core
+ * hands the Android and GTK editions.
+ *
+ * Returns 0 and fills `out`, or -1 to let WebView2 fall back to its own
+ * default location (a shared folder, so isolation is lost — the caller
+ * cannot do better, and silently failing to start would be worse). */
+static int rb_wv_user_data_dir(App *app, wchar_t *out, size_t cap)
 {
-    wchar_t la[1024];
-    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", la, 1024);
-    int w;
-    if (n == 0 || n >= 1024) return -1;
-    w = swprintf(out, cap, L"%ls\\RoomBrowser\\WebView2", la);
-    if (w < 0) return -1;
-    rb_mkdirs_wide(out);
-    return 0;
+    const rb_profile *p;
+    char *data = NULL;
+    char *dir = NULL;
+    wchar_t *wide = NULL;
+    int rc = -1;
+
+    if (app == NULL || out == NULL || cap == 0) return -1;
+    p = rb_active_profile(app);
+    if (p == NULL || p->id[0] == '\0') return -1;
+
+    data = rb_paths_data_dir();
+    if (data != NULL && rb_profile_ensure_dirs(data, p->id) == 0) {
+        dir = rb_profile_subdir(data, p->id, RB_PROFILE_DIR_BROWSER_DATA);
+    }
+    if (data != NULL) rb_paths_free(data);
+
+    if (dir != NULL) {
+        wide = rb_utf8_to_wide(dir);
+        if (wide != NULL) {
+            rb_mkdirs_wide(wide);
+            if (wcslen(wide) < cap) {
+                wcscpy(out, wide);
+                rc = 0;
+            }
+            free(wide);
+        }
+    }
+    free(dir);
+    return rc;
 }
 
 int rb_wv_init(App *app)
@@ -744,7 +1608,7 @@ int rb_wv_init(App *app)
     }
 
     udd[0] = 0;
-    if (rb_wv_user_data_dir(udd, 1024) != 0) {
+    if (rb_wv_user_data_dir(app, udd, 1024) != 0) {
         udd[0] = 0;   /* fall back to the default user data folder */
     }
 

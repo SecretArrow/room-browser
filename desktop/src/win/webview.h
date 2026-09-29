@@ -41,6 +41,13 @@ void rb_wv_reload(App *app);
 void rb_wv_stop(App *app);
 void rb_wv_can_nav(App *app, int *can_back, int *can_fwd);
 
+/* Re-applies the active profile's per-webview settings (JavaScript, the
+ * User-Agent) to every live webview.  The preferences editor calls this
+ * after a change so the pages already open follow it, instead of the change
+ * waiting for a restart.  Only this half is public: applying to one webview
+ * needs ICoreWebView2, which is webview.c's private business. */
+void rb_wv_apply_settings_all(App *app);
+
 #ifdef __cplusplus
 }
 #endif
