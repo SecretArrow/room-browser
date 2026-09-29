@@ -21,6 +21,13 @@ WebKitWebView *rb_gw_new_view(App *app);
 /* Re-applies the JavaScript setting to every open webview (live toggle). */
 void rb_gw_apply_js(App *app);
 
+/* Re-applies the active profile's User-Agent to every open webview. */
+void rb_gw_apply_ua(App *app);
+/* Wires the shared WebKitWebContext's download-started signal so every
+ * download is recorded in app->downloads.  Call once, after the App is
+ * initialised. */
+void rb_gw_downloads_init(App *app);
+
 /* Navigation on the ACTIVE tab's webview. */
 void rb_gw_navigate(App *app, const char *url);
 void rb_gw_back(App *app);

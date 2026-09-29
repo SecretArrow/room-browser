@@ -37,44 +37,180 @@ static GtkWidget *g_js_item = NULL;
 /* Forward declarations (defined below, referenced by earlier functions). */
 static void on_tab_close_clicked(GtkButton *button, gpointer user_data);
 static void on_newtab_clicked(GtkButton *button, gpointer user_data);
+static void rb_downloads_dir_init(App *app);
 
 /* ------------------------------------------------------------------ */
-/* Dark chrome CSS (Brave-inspired palette, purple accent #A78BFA). */
+/* Chrome CSS, generated from the active profile's theme.
+ *
+ * The layout rules are fixed; every colour comes from rb_theme.h, so the
+ * desktop wears the same 18 palettes the Android edition does and a profile
+ * change repaints the chrome.  RGBA forms are emitted with GTK3's
+ * rgba(r,g,b,a) syntax rather than #RRGGBBaa, which GTK 3.20 does not parse.
+ *
+ * The provider is kept so the stylesheet can be re-loaded in place when the
+ * theme changes; the fallback (no theme yet) is the obsidian default. */
 
-static const char RB_CSS[] =
-"window { background-color: #202124; }\n"
-"notebook header { background-color: #202124; border: none; }\n"
-"notebook header tabs tab { background-color: #18191C; color: #9AA0A6;"
-" padding: 3px 10px 3px 12px; }\n"
-"notebook header tabs tab:checked { background-color: #292A2D;"
-" color: #E8EAED; }\n"
-"notebook header tabs tab:hover { color: #E8EAED; }\n"
-".rb-toolbar { background-color: #292A2D; padding: 5px 7px; }\n"
-".rb-btn { background-color: transparent; color: #E8EAED; border: none;"
-" padding: 2px 9px; }\n"
-".rb-btn:hover { background-color: rgba(167,139,250,0.22); }\n"
-".rb-btn:disabled { color: #5F6368; }\n"
-".rb-omni { background-color: #3C3D41; color: #E8EAED; border: none;"
-" border-radius: 8px; padding: 3px 10px 5px 10px;"
-" caret-color: #A78BFA; }\n"
-".rb-tab-close { background-color: transparent; color: #9AA0A6;"
-" border: none; padding: 0 3px; }\n"
-".rb-tab-close:hover { color: #E8EAED;"
-" background-color: rgba(167,139,250,0.25); }\n"
-".rb-dim { color: #9AA0A6; }\n";
+static GtkCssProvider *g_css = NULL;
 
-void rb_css_load(void)
+static void rb_css_rgba(char out[48], unsigned int argb, double alpha_mult)
 {
-    GtkCssProvider *provider = gtk_css_provider_new();
-    GdkScreen *screen = gdk_screen_get_default();
-    /* GTK3 signature: (provider, data, length, GError**) — the 4-arg form;
-     * the 3-arg variant is GTK4-only and fails to compile against gtk+-3.0. */
-    gtk_css_provider_load_from_data(provider, RB_CSS, -1, NULL);
-    if (screen) {
-        gtk_style_context_add_provider_for_screen(screen,
-            GTK_STYLE_PROVIDER(provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    int r = 0, g = 0, b = 0;
+    double a = 1.0;
+    rb_theme_rgb(argb, &r, &g, &b);
+    a = ((double)((argb >> 24) & 0xffu) / 255.0) * alpha_mult;
+    if (a > 1.0) a = 1.0;
+    if (a < 0.0) a = 0.0;
+    snprintf(out, 48, "rgba(%d,%d,%d,%.3f)", r, g, b, a);
+}
+
+static void rb_css_hex(char out[8], unsigned int argb)
+{
+    rb_theme_hex(argb, out);   /* "#RRGGBB", alpha dropped */
+}
+
+/* Builds the stylesheet for a resolved palette.  Caller frees. */
+static char *rb_css_build(const rb_theme_colors *c, int radius)
+{
+    char bg[8], surf[8], alt[8], prim[8];
+    char txt[8], dim[8], addr[8], tabbar[8], border[8], sel[8];
+    char accent_faint[48], accent_soft[48], sel_soft[48];
+    size_t cap = 4096;
+    char *css = (char *)malloc(cap);
+
+    if (!css) return NULL;
+
+    rb_css_hex(bg, c->background);
+    rb_css_hex(surf, c->surface);
+    rb_css_hex(alt, c->surface_alt);
+    rb_css_hex(prim, c->primary);
+    rb_css_hex(txt, c->text_primary);
+    rb_css_hex(dim, c->text_secondary);
+    rb_css_hex(addr, c->address_bar);
+    rb_css_hex(tabbar, c->tab_bar);
+    rb_css_hex(border, c->border);
+    rb_css_hex(sel, c->selection);
+    rb_css_rgba(accent_faint, c->primary, 0.22);
+    rb_css_rgba(accent_soft, c->primary, 0.25);
+    rb_css_rgba(sel_soft, c->selection, 0.45);
+
+    snprintf(css, cap,
+        "window { background-color: %s; }\n"
+        "notebook header { background-color: %s; border: none; }\n"
+        "notebook header tabs tab { background-color: %s; color: %s;"
+        " padding: 3px 10px 3px 12px; }\n"
+        "notebook header tabs tab:checked { background-color: %s;"
+        " color: %s; border-bottom: 2px solid %s; }\n"
+        "notebook header tabs tab:hover { color: %s; }\n"
+        ".rb-toolbar { background-color: %s; padding: 5px 7px;"
+        " border-bottom: 1px solid %s; }\n"
+        ".rb-btn { background-color: transparent; color: %s; border: none;"
+        " padding: 2px 9px; border-radius: %dpx; }\n"
+        ".rb-btn:hover { background-color: %s; color: %s; }\n"
+        ".rb-btn:disabled { color: %s; }\n"
+        ".rb-omni { background-color: %s; color: %s; border: 1px solid %s;"
+        " border-radius: %dpx; padding: 3px 10px 5px 10px;"
+        " caret-color: %s; }\n"
+        ".rb-omni:focus { border-color: %s; }\n"
+        ".rb-omni selection { background-color: %s; color: %s; }\n"
+        ".rb-tab-close { background-color: transparent; color: %s;"
+        " border: none; padding: 0 3px; border-radius: %dpx; }\n"
+        ".rb-tab-close:hover { color: %s; background-color: %s; }\n"
+        ".rb-dim { color: %s; }\n"
+        "menu { background-color: %s; color: %s; border: 1px solid %s; }\n"
+        "menu menuitem:hover { background-color: %s; color: %s; }\n",
+        bg, tabbar, alt, dim, surf, txt, prim, txt,
+        surf, border, txt, radius, accent_faint, txt, dim,
+        addr, txt, border, radius, prim, prim, sel_soft, txt,
+        dim, radius, txt, accent_soft, dim,
+        surf, txt, border, accent_faint, txt);
+    return css;
+}
+
+/* The chrome's own dark/light preference.  GTK3 has no "is the desktop dark"
+ * query, so AUTO reads gtk-application-prefer-dark-theme and falls back to
+ * the theme name — the same two signals every GTK3 app uses, and an
+ * approximation either way. */
+static int rb_system_is_dark(void)
+{
+    GtkSettings *s = gtk_settings_get_default();
+    gboolean prefer_dark = FALSE;
+    gchar *name = NULL;
+    int dark = 0;
+
+    if (s != NULL) {
+        g_object_get(s, "gtk-application-prefer-dark-theme", &prefer_dark, NULL);
+        dark = prefer_dark ? 1 : 0;
+        g_object_get(s, "gtk-theme-name", &name, NULL);
+        if (!dark && name != NULL) {
+            gchar *lower = g_ascii_strdown(name, -1);
+            if (strstr(lower, "dark") != NULL || strstr(lower, "-black") != NULL) {
+                dark = 1;
+            }
+            g_free(lower);
+        }
+        if (name != NULL) g_free(name);
     }
-    g_object_unref(provider);
+    return dark;
+}
+
+/* The theme the ACTIVE PROFILE selected.  The id lives in the profile's
+ * theme_json as {"id":"<theme>"} — the same place, and the same shape, as the
+ * Android edition's themeJson snapshot.  "" or a malformed snapshot means the
+ * default theme, which is what rb_theme_resolve() already answers. */
+const rb_theme *rb_theme_current(App *app)
+{
+    const rb_profile *p = rb_active_profile(app);
+    const char *json = (p && p->theme_json) ? p->theme_json : "";
+    size_t pos = 0;
+    char *id = NULL;
+    const rb_theme *t;
+
+    if (json[0] != '\0' && rb_json_find_key(json, "id", &pos) &&
+        rb_json_parse_string(json, &pos, &id) && id != NULL) {
+        t = rb_theme_by_id(id);
+        free(id);
+        return t ? t : rb_theme_default();
+    }
+    return rb_theme_default();
+}
+
+/* The MODE comes from the profile's "theme" setting ("system" is the stored
+ * spelling of rb_theme.h's AUTO). */
+static rb_theme_mode rb_theme_mode_current(App *app)
+{
+    const char *m = rb_pref(app, RB_PREF_THEME, "system");
+    if (m == NULL) return RB_THEME_AUTO;
+    if (strcmp(m, "light") == 0)  return RB_THEME_LIGHT;
+    if (strcmp(m, "dark") == 0)   return RB_THEME_DARK;
+    if (strcmp(m, "amoled") == 0) return RB_THEME_AMOLED;
+    return RB_THEME_AUTO;
+}
+
+/* (Re)loads the chrome stylesheet from the active profile's theme. */
+void rb_css_load(App *app)
+{
+    const rb_theme *t = app ? rb_theme_current(app) : rb_theme_default();
+    rb_theme_mode mode = app ? rb_theme_mode_current(app) : RB_THEME_DARK;
+    rb_theme_colors c = rb_theme_palette(t, mode, rb_system_is_dark());
+    char *css = rb_css_build(&c, t->corner_radius);
+
+    if (css == NULL) return;
+    if (g_css == NULL) {
+        g_css = gtk_css_provider_new();
+        {
+            GdkScreen *screen = gdk_screen_get_default();
+            if (screen) {
+                gtk_style_context_add_provider_for_screen(screen,
+                    GTK_STYLE_PROVIDER(g_css),
+                    GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+            }
+        }
+    }
+    /* GTK3 signature: (provider, data, length, GError**) — the 4-arg form;
+     * the 3-arg variant is GTK4-only and fails to compile against gtk+-3.0.
+     * Re-loading the same provider restyles every widget that uses it. */
+    gtk_css_provider_load_from_data(g_css, css, -1, NULL);
+    free(css);
 }
 
 /* ------------------------------------------------------------------ */
@@ -116,15 +252,30 @@ static void rb_add_class(GtkWidget *w, const char *cls)
 /* ------------------------------------------------------------------ */
 /* Persistence: load at startup, save on change (and a final save at quit). */
 
+/* The key the desktop stores its single homepage under, inside the profile.
+ * It is a DESKTOP EXTENSION: the Android edition has no single home URL, it
+ * has RB_PREF_HOMEPAGE_ENABLED plus a list of RB_PREF_HOMEPAGE_SHORTCUTS. */
+#define RB_PREF_HOME_LOCAL "home"
+
+/* The name given to the profile created for a data directory that has none.
+ * Android calls its first profile "Personal" too (ProfileManager.create()). */
+#define RB_PROFILE_FIRST_NAME "Personal"
+
 int rb_data_init(App *app)
 {
     char *dir = rb_paths_data_dir();
+    int fresh_profiles = 0;
 
     app->store = rb_tabs_new();
     app->history = rb_history_new();
     app->bookmarks = rb_bookmarks_new();
     app->settings = rb_settings_new();
-    if (!app->store || !app->history || !app->bookmarks || !app->settings) {
+    app->profiles = rb_profile_registry_new();
+    app->switcher = rb_switch_new();
+    app->https = rb_https_pending_new();
+    app->downloads = rb_downloads_new();
+    if (!app->store || !app->history || !app->bookmarks || !app->settings ||
+        !app->profiles || !app->switcher || !app->https || !app->downloads) {
         return -1;
     }
     if (!dir) return -1;
@@ -132,21 +283,96 @@ int rb_data_init(App *app)
     app->path_history = rb_path_join(dir, "history.jsonl");
     app->path_bookmarks = rb_path_join(dir, "bookmarks.jsonl");
     app->path_settings = rb_path_join(dir, "settings.txt");
-    if (!app->path_history || !app->path_bookmarks || !app->path_settings) {
+    app->path_profiles = rb_path_join(dir, "profiles.jsonl");
+    app->path_downloads = rb_path_join(dir, "downloads.jsonl");
+    if (!app->path_history || !app->path_bookmarks || !app->path_settings ||
+        !app->path_profiles || !app->path_downloads) {
         rb_paths_free(dir);
         return -1;
     }
 
+    /* The GLOBAL store is BrowserGlobalSettings: the handful of settings that
+     * belong to the installation rather than to a profile (DNS overrides,
+     * network-change retention, telemetry).  Everything a user toggles in the
+     * menu now lives in the active profile — see rb_pref(). */
+    rb_prefs_global_defaults(app->settings);
     rb_settings_load(app->settings, app->path_settings);
+
     rb_history_load(app->history, app->path_history);
     rb_bookmarks_load(app->bookmarks, app->path_bookmarks);
+    rb_downloads_load(app->downloads, app->path_downloads);
 
-    app->home_url = rb_strdup(rb_settings_get(app->settings, "home",
-                                              "https://duckduckgo.com"));
+    rb_profile_registry_load(app->profiles, app->path_profiles);
+    if (rb_profile_count(app->profiles) == 0) {
+        /* A data directory with no profiles.jsonl (a fresh install, or one
+         * written by an older desktop build) gets the first profile here,
+         * exactly as the Android edition does. */
+        fresh_profiles = 1;
+        if (rb_profile_create(app->profiles, RB_PROFILE_FIRST_NAME, NULL, 0, 1) < 0) {
+            rb_paths_free(dir);
+            return -1;
+        }
+    }
+
+    {
+        const rb_profile *first = rb_profile_default(app->profiles);
+        if (first == NULL) { first = rb_profile_at(app->profiles, 0); }
+        if (first == NULL) { rb_paths_free(dir); return -1; }
+        app->active_profile_id = rb_strdup(first->id);
+        if (!app->active_profile_id) { rb_paths_free(dir); return -1; }
+
+        /* Settings written by a desktop build older than the profile registry
+         * lived in settings.txt under bare keys ("home", "javascript").  Carry
+         * them over rather than dropping the user's homepage and JavaScript
+         * choice on the floor; the file itself is left where it is. */
+        if (fresh_profiles) {
+            rb_settings *ps = first->settings;
+            if (ps) {
+                if (rb_settings_get(app->settings, RB_PREF_HOME_LOCAL, NULL)) {
+                    rb_settings_set(ps, RB_PREF_HOME_LOCAL,
+                        rb_settings_get(app->settings, RB_PREF_HOME_LOCAL, ""));
+                }
+                if (rb_settings_get(app->settings, RB_PREF_JAVASCRIPT, NULL)) {
+                    rb_settings_set_int(ps, RB_PREF_JAVASCRIPT,
+                        rb_settings_get_int(app->settings, RB_PREF_JAVASCRIPT, 1));
+                }
+            }
+        }
+    }
+
     /* Project policy: JavaScript is NEVER disabled by default. */
-    app->js_enabled = rb_settings_get_int(app->settings, "javascript", 1);
+    app->js_enabled = rb_pref_int(app, RB_PREF_JAVASCRIPT, 1);
+    app->home_url = rb_strdup(rb_pref(app, RB_PREF_HOME_LOCAL,
+                                      "https://duckduckgo.com"));
+    rb_downloads_dir_init(app);
+
+    rb_profiles_save(app);
     rb_paths_free(dir);
     return 0;
+}
+
+/* Where downloads land: the user's Downloads folder, under the subfolder the
+ * profile names in RB_PREF_DOWNLOAD_SUBFOLDER ("RoomBrowser" by default) —
+ * the same place, and the same setting, as the Android edition.  Falls back
+ * to <data dir>/downloads when the desktop has no Downloads special dir. */
+static void rb_downloads_dir_init(App *app)
+{
+    const char *base = g_get_user_special_dir(G_USER_DIRECTORY_DOWNLOAD);
+    const char *sub = rb_pref(app, RB_PREF_DOWNLOAD_SUBFOLDER, "RoomBrowser");
+
+    if (sub == NULL) sub = "RoomBrowser";
+    if (base != NULL) {
+        app->download_dir = (sub[0] != '\0')
+            ? rb_paths_join(base, sub)
+            : rb_strdup(base);
+    } else {
+        char *data = rb_paths_data_dir();
+        app->download_dir = data ? rb_path_join(data, "downloads") : NULL;
+        if (data) rb_paths_free(data);
+    }
+    if (app->download_dir != NULL) {
+        rb_paths_mkdirs(app->download_dir);
+    }
 }
 
 void rb_data_shutdown(App *app)
@@ -160,6 +386,10 @@ void rb_data_shutdown(App *app)
     if (app->settings && app->path_settings) {
         rb_settings_save(app->settings, app->path_settings);
     }
+    if (app->downloads && app->path_downloads) {
+        rb_downloads_save(app->downloads, app->path_downloads);
+    }
+    rb_profiles_save(app);
 }
 
 void rb_data_free(App *app)
@@ -167,15 +397,98 @@ void rb_data_free(App *app)
     free(app->path_history);   app->path_history = NULL;
     free(app->path_bookmarks); app->path_bookmarks = NULL;
     free(app->path_settings);  app->path_settings = NULL;
+    free(app->path_profiles);  app->path_profiles = NULL;
+    free(app->path_downloads); app->path_downloads = NULL;
+    free(app->download_dir);   app->download_dir = NULL;
     free(app->home_url);       app->home_url = NULL;
+    free(app->active_profile_id); app->active_profile_id = NULL;
     if (app->store)     { rb_tabs_free(app->store);         app->store = NULL; }
     if (app->history)   { rb_history_free(app->history);    app->history = NULL; }
     if (app->bookmarks) { rb_bookmarks_free(app->bookmarks); app->bookmarks = NULL; }
+    if (app->downloads) { rb_downloads_free(app->downloads); app->downloads = NULL; }
     if (app->settings)  { rb_settings_free(app->settings);  app->settings = NULL; }
+    if (app->profiles)  { rb_profile_registry_free(app->profiles); app->profiles = NULL; }
+    if (app->switcher)  { rb_switch_free(app->switcher);    app->switcher = NULL; }
+    if (app->https)     { rb_https_pending_free(app->https); app->https = NULL; }
     free(app->tabs);
     app->tabs = NULL;
     app->tabs_n = 0;
     app->tabs_cap = 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Profile-scoped settings.
+ *
+ * Android reads every feature switch off the active ProfileSettings.  These
+ * are the desktop's spelling of that read, so a feature never has to know
+ * whether a profile exists, and a missing key falls back to the same default
+ * the Android edition uses. */
+
+const rb_profile *rb_active_profile(App *app)
+{
+    if (!app || !app->profiles || !app->active_profile_id) { return NULL; }
+    return rb_profile_by_id(app->profiles, app->active_profile_id);
+}
+
+const char *rb_pref(App *app, const char *key, const char *fallback)
+{
+    const rb_profile *p = rb_active_profile(app);
+    if (!p || !p->settings) { return fallback; }
+    return rb_settings_get(p->settings, key, fallback);
+}
+
+int rb_pref_int(App *app, const char *key, int fallback)
+{
+    const rb_profile *p = rb_active_profile(app);
+    if (!p || !p->settings) { return fallback; }
+    return rb_settings_get_int(p->settings, key, fallback);
+}
+
+void rb_pref_set(App *app, const char *key, const char *value)
+{
+    const rb_profile *p = rb_active_profile(app);
+    if (!p) { return; }
+    /* rb_profile_by_id hands out a const row, but the settings store it points
+     * at is not itself const: the pointer member is what carries the
+     * qualification, so reading it out yields a mutable rb_settings *.  The
+     * registry owns the store, so it is saved with the profile. */
+    rb_settings_set(p->settings, key, value);
+    rb_profiles_save(app);
+}
+
+void rb_pref_set_int(App *app, const char *key, int value)
+{
+    const rb_profile *p = rb_active_profile(app);
+    if (!p) { return; }
+    rb_settings_set_int(p->settings, key, value);
+    rb_profiles_save(app);
+}
+
+void rb_profiles_save(App *app)
+{
+    if (app && app->profiles && app->path_profiles) {
+        rb_profile_registry_save(app->profiles, app->path_profiles);
+    }
+}
+
+/* The active profile's effective User-Agent, malloc'd — or NULL when the
+ * engine default should be sent untouched.  Mirrors UserAgents.
+ * effectiveUserAgent(): the profile's ua_mode picks between the engine
+ * default, one of the presets, and a free-form string. */
+char *rb_ua_current(App *app)
+{
+    const char *mode = rb_pref(app, RB_PREF_UA_MODE, "default");
+    rb_ua_mode m = RB_UA_MODE_DEFAULT;
+
+    if (mode != NULL) {
+        if (strcmp(mode, "preset") == 0) {
+            m = RB_UA_MODE_PRESET;
+        } else if (strcmp(mode, "custom") == 0) {
+            m = RB_UA_MODE_CUSTOM;
+        }
+    }
+    return rb_ua_effective(m, rb_pref(app, RB_PREF_UA_PRESET_ID, NULL),
+                           rb_pref(app, RB_PREF_CUSTOM_USER_AGENT, NULL));
 }
 
 /* ------------------------------------------------------------------ */
@@ -303,7 +616,7 @@ void rb_do_new_tab(App *app)
         app->tabs_cap = cap;
     }
 
-    id = rb_tabs_add(app->store, "New Tab", home);
+    id = rb_tabs_add(app->store, "New Tab", home, rb_profile_now_ms());
     app->tabs[app->tabs_n].id = id;
     app->tabs[app->tabs_n].wv = wv;
     app->tabs[app->tabs_n].label = lbl;
@@ -338,7 +651,7 @@ void rb_do_close_tab_id(App *app, long id)
     memmove(&app->tabs[i], &app->tabs[i + 1],
             (size_t)(app->tabs_n - i - 1) * sizeof(app->tabs[0]));
     app->tabs_n--;
-    rb_tabs_close(app->store, id);
+    rb_tabs_close(app->store, id, rb_profile_now_ms());
     if (app->active_id == id) app->active_id = 0;
 
     if (app->tabs_n == 0) {
@@ -357,26 +670,45 @@ void rb_do_close_tab_id(App *app, long id)
 void rb_do_navigate(App *app, const char *url)
 {
     rb_tab *t;
+    char *upgraded = NULL;
+    int did_upgrade = 0;
+    const char *target = url;
+
     if (!app || !url || !url[0]) return;
     t = rb_store_tab(app);
     if (!t) return;
-    rb_set_str(&t->url, rb_strdup(url));
+
+    /* HTTPS-First.  The omnibox already sends a bare domain straight to
+     * https, so what this catches is everything else that is still plain
+     * http at load time: a typed http:// URL, a bookmark or homepage entry,
+     * a session-restored tab.  The upgrade is recorded so that the failure
+     * handler can retry the original once — see rb_gw_new_view's load-failed.
+     * With the setting off, http URLs load as typed, exactly as on Android. */
+    if (app->https && rb_pref_int(app, RB_PREF_HTTPS_UPGRADE, 1)) {
+        upgraded = rb_url_upgrade_to_https(url, &did_upgrade);
+        if (did_upgrade && upgraded) {
+            rb_https_register(app->https, upgraded, url);
+            target = upgraded;
+        }
+    }
+
+    rb_set_str(&t->url, rb_strdup(target));
     app->loading = 1;
     rb_update_reloadbtn(app);
-    rb_update_omni(app, url);
-    rb_gw_navigate(app, url);
+    rb_update_omni(app, target);
+    rb_gw_navigate(app, target);
+    free(upgraded);
 }
 
 void rb_do_toggle_bookmark(App *app)
 {
     rb_tab *t = rb_store_tab(app);
     if (!t || !t->url || !t->url[0]) return;
-    if (rb_bookmarks_contains(app->bookmarks, t->url)) {
-        rb_bookmarks_remove(app->bookmarks, t->url);
-    } else {
-        rb_bookmarks_add(app->bookmarks, t->url,
-                         t->title && t->title[0] ? t->title : t->url);
-    }
+    /* BrowserViewModel.toggleBookmark, policy included: the same call stars
+     * and unstars, and a blank title falls back to the URL. */
+    (void)rb_bookmarks_toggle(app->bookmarks, t->url,
+                              t->title && t->title[0] ? t->title : t->url,
+                              rb_profile_now_ms());
     if (app->path_bookmarks) {
         rb_bookmarks_save(app->bookmarks, app->path_bookmarks);
     }
@@ -435,13 +767,20 @@ static void on_omni_activate(GtkEntry *entry, gpointer user_data)
 {
     App *app = (App *)user_data;
     const char *text = gtk_entry_get_text(entry);
+    const char *engine;
     char *url;
+    int kind = RB_URL_INPUT_WEB;
+
     if (!text || !text[0]) return;
-    url = rb_url_decide(text);
-    if (url) {
+
+    /* The profile's engine.  A NULL or unknown id resolves to the default
+     * inside rb_search_resolve, so no fallback is spelled here. */
+    engine = rb_pref(app, RB_PREF_SEARCH_ENGINE, NULL);
+    url = rb_url_classify(text, engine, &kind, NULL);
+    if (url && url[0]) {
         rb_do_navigate(app, url);
-        free(url);
     }
+    free(url);
 }
 
 static gboolean on_omni_key(GtkWidget *widget, GdkEventKey *event,
@@ -478,10 +817,9 @@ static void on_js_toggled(GtkCheckMenuItem *item, gpointer user_data)
 {
     App *app = (App *)user_data;
     app->js_enabled = gtk_check_menu_item_get_active(item) ? 1 : 0;
-    rb_settings_set_int(app->settings, "javascript", app->js_enabled);
-    if (app->path_settings) {
-        rb_settings_save(app->settings, app->path_settings);
-    }
+    /* The switch belongs to the profile, not to the installation: Android
+     * keeps it in ProfileSettings, so two profiles can disagree. */
+    rb_pref_set_int(app, RB_PREF_JAVASCRIPT, app->js_enabled);
     rb_gw_apply_js(app);   /* live toggle: applies to the open webviews */
 }
 
@@ -576,6 +914,109 @@ static void rb_show_history_dialog(App *app)
     gtk_widget_show_all(dlg);
 }
 
+/* One row: name, then a status line that carries the progress/error. */
+static void rb_downloads_add_row(GtkWidget *list, const rb_download *dl)
+{
+    GtkWidget *row = gtk_list_box_row_new();
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    GtkWidget *l1 = gtk_label_new(dl->file_name ? dl->file_name : "");
+    char meta[320];
+    const char *status = rb_download_status_name(dl->status);
+
+    if (dl->status == RB_DL_RUNNING && dl->total_bytes > 0) {
+        snprintf(meta, sizeof meta, "%s — %d%%  (%lld / %lld bytes)",
+                 status, rb_download_progress_percent(dl->downloaded_bytes,
+                                                      dl->total_bytes),
+                 dl->downloaded_bytes, dl->total_bytes);
+    } else if (dl->status == RB_DL_FAILED && dl->error && dl->error[0]) {
+        snprintf(meta, sizeof meta, "%s — %s", status, dl->error);
+    } else {
+        snprintf(meta, sizeof meta, "%s", status);
+    }
+
+    gtk_label_set_ellipsize(GTK_LABEL(l1), PANGO_ELLIPSIZE_END);
+    gtk_label_set_xalign(GTK_LABEL(l1), 0.0f);
+    g_object_set_data_full(G_OBJECT(row), "url",
+                           rb_strdup(dl->url ? dl->url : ""), g_free);
+    gtk_box_pack_start(GTK_BOX(vbox), l1, TRUE, TRUE, 0);
+    {
+        GtkWidget *l2 = gtk_label_new(meta);
+        gtk_label_set_ellipsize(GTK_LABEL(l2), PANGO_ELLIPSIZE_MIDDLE);
+        gtk_label_set_xalign(GTK_LABEL(l2), 0.0f);
+        rb_add_class(l2, "rb-dim");
+        gtk_box_pack_start(GTK_BOX(vbox), l2, TRUE, TRUE, 0);
+    }
+    gtk_container_add(GTK_CONTAINER(row), vbox);
+    gtk_list_box_insert(GTK_LIST_BOX(list), row, -1);
+}
+
+static void on_dl_clear_clicked(GtkButton *button, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    const rb_profile *p = rb_active_profile(app);
+    (void)button;
+    /* Clears the RECORDS of this profile only; the files on disk belong to
+     * the user and are never touched (DownloadDao.deleteAllFor). */
+    rb_downloads_clear_profile(app->downloads, (p != NULL) ? p->id : "");
+    if (app->path_downloads) {
+        rb_downloads_save(app->downloads, app->path_downloads);
+    }
+    gtk_widget_destroy(gtk_widget_get_toplevel(GTK_WIDGET(button)));
+}
+
+static void rb_show_downloads_dialog(App *app)
+{
+    GtkWidget *dlg, *scroll, *list, *clear;
+    int n, i;
+
+    dlg = gtk_dialog_new_with_buttons("Downloads", GTK_WINDOW(app->win),
+            GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+            "_Close", GTK_RESPONSE_CLOSE, NULL);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 560, 400);
+
+    scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    list = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
+
+    n = rb_downloads_count(app->downloads);
+    for (i = 0; i < n; i++) {
+        const rb_download *dl = rb_downloads_at(app->downloads, i);
+        if (dl != NULL) rb_downloads_add_row(list, dl);
+    }
+    if (n == 0) {
+        GtkWidget *row = gtk_list_box_row_new();
+        gtk_container_add(GTK_CONTAINER(row),
+                          gtk_label_new("(no downloads yet)"));
+        gtk_list_box_insert(GTK_LIST_BOX(list), row, -1);
+    }
+
+    clear = gtk_button_new_with_label("Clear list");
+    g_signal_connect(clear, "clicked", G_CALLBACK(on_dl_clear_clicked), app);
+    g_signal_connect(dlg, "response", G_CALLBACK(on_dialog_response), NULL);
+
+    gtk_container_add(GTK_CONTAINER(scroll), list);
+    gtk_container_add(GTK_CONTAINER(gtk_dialog_get_content_area(GTK_DIALOG(dlg))),
+                      scroll);
+    /* get_action_area is deprecated since GTK 3.12 (GtkHeaderBar is the
+     * replacement) but the classic action area is still what a GtkDialog
+     * builds, and the deprecation is silenced the same way the menu popup
+     * one is below. */
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+    gtk_container_add(GTK_CONTAINER(gtk_dialog_get_action_area(GTK_DIALOG(dlg))),
+                      clear);
+    G_GNUC_END_IGNORE_DEPRECATIONS
+    gtk_widget_show_all(dlg);
+}
+
+static void on_menu_downloads(GtkMenuItem *item, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    (void)item;
+    rb_show_downloads_dialog(app);
+}
+
 static void on_menu_history(GtkMenuItem *item, gpointer user_data)
 {
     App *app = (App *)user_data;
@@ -605,6 +1046,10 @@ static void rb_build_menu(App *app)
 
     item = gtk_menu_item_new_with_label("Recent history");
     g_signal_connect(item, "activate", G_CALLBACK(on_menu_history), app);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = gtk_menu_item_new_with_label("Downloads");
+    g_signal_connect(item, "activate", G_CALLBACK(on_menu_downloads), app);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
@@ -737,7 +1182,7 @@ void rb_on_activate(GtkApplication *gtk_app, gpointer user_data)
         return;
     }
 
-    rb_css_load();
+    rb_css_load(app);
 
     app->app = gtk_app;
     app->win = GTK_APPLICATION_WINDOW(gtk_application_window_new(gtk_app));
@@ -793,6 +1238,7 @@ void rb_on_activate(GtkApplication *gtk_app, gpointer user_data)
                      G_CALLBACK(on_omni_key), app);
 
     rb_build_menu(app);
+    rb_gw_downloads_init(app);
 
     gtk_box_pack_start(GTK_BOX(toolbar), app->back, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), app->fwd, FALSE, FALSE, 0);
