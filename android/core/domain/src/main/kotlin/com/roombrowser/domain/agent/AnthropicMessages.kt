@@ -86,8 +86,7 @@ object AnthropicMessages {
      * Consecutive `role: "tool"` messages are collapsed into ONE user message
      * carrying a `tool_result` block each — the reason is in the class comment.
      */
-    private fun conversation(messages: List<ChatMessage>): JsonArray {
-        val out = buildJsonArray()
+    private fun conversation(messages: List<ChatMessage>): JsonArray = buildJsonArray {
         var i = 0
         while (i < messages.size) {
             val m = messages[i]
@@ -95,38 +94,39 @@ object AnthropicMessages {
                 "system" -> i++   // lifted to the top-level field by buildRequest
 
                 "tool" -> {
-                    // Collect the whole run of results answering one turn.
-                    val blocks = buildJsonArray()
-                    while (i < messages.size && messages[i].role == "tool") {
-                        val t = messages[i]
-                        val id = t.toolCallId
-                        if (!id.isNullOrBlank()) {
-                            blocks.add(buildJsonObject {
-                                put("type", "tool_result")
-                                put("tool_use_id", id)
-                                put("content", t.content.orEmpty())
-                            })
+                    // Collect the whole run of results answering one turn into
+                    // ONE user message carrying a tool_result block each.
+                    val blocks = buildJsonArray {
+                        while (i < messages.size && messages[i].role == "tool") {
+                            val t = messages[i]
+                            val id = t.toolCallId
+                            if (!id.isNullOrBlank()) {
+                                addJsonObject {
+                                    put("type", "tool_result")
+                                    put("tool_use_id", id)
+                                    put("content", t.content.orEmpty())
+                                }
+                            }
+                            i++
                         }
-                        i++
                     }
                     if (blocks.isNotEmpty()) {
-                        out.add(buildJsonObject {
+                        addJsonObject {
                             put("role", "user")
                             put("content", blocks)
-                        })
+                        }
                     }
                 }
 
                 else -> {
-                    out.add(buildJsonObject {
+                    addJsonObject {
                         put("role", m.role)
                         put("content", contentOf(m))
-                    })
+                    }
                     i++
                 }
             }
         }
-        return out
     }
 
     /**
