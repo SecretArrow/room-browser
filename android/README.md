@@ -1,4 +1,8 @@
-# Room Browser
+# Room Browser (Android)
+
+> This directory holds the **Android app** of the Room Browser monorepo.
+> The desktop (Windows/Ubuntu) edition lives in [`../desktop/`](../desktop/);
+> repo-wide CI/CD lives in [`../.github/workflows/`](../.github/workflows/).
 
 **One Android browser, multiple completely isolated profiles.**
 
@@ -151,14 +155,19 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
 
 See `PROFILE_ISOLATION.md`, `SECURITY.md` and `PRIVACY.md` for full details.
 
-## Repository layout
+## Repository layout (relative to `android/`)
 
 ```
-app/                 Android application (Compose UI, browser engine, Room DB)
-core/domain/         Pure-Kotlin domain logic (JVM-testable, no Android deps)
-tools/profile-test-site/   Local profile-isolation test website
-.github/workflows/   CI/CD (quality gates + signed per-ABI release builds)
+android/
+├── app/                 Android application (Compose UI, browser engine, Room DB)
+├── core/domain/         Pure-Kotlin domain logic (JVM-testable, no Android deps)
+├── tools/               profile-test-site + GitHub-secret helper scripts
+├── docs/                feature docs (AI agents, local AI, themes)
+└── BUILD.md RELEASE.md TESTING.md …
 ```
+
+The CI/CD pipeline (quality gates + signed per-ABI release builds) lives at the
+repo root: `../.github/workflows/ci.yml`.
 
 ## Building
 
