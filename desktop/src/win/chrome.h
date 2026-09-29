@@ -68,6 +68,13 @@ extern "C" {
 #define IDM_HIST_FIRST 3100
 #define RB_HIST_MENU_MAX 16
 
+/* The Profiles submenu: one item per profile, then "Add profile".  The ids
+ * are a contiguous range so the handler can turn one back into an index, the
+ * same way the history items work. */
+#define IDM_PROF_FIRST 3200
+#define IDM_PROF_ADD   3199
+#define RB_PROF_MENU_MAX 24
+
 #define RB_OMNI_SUBID 1
 
 /* ------------------------------------------------------------------ */
@@ -128,6 +135,9 @@ typedef struct App {
 
     char *hist_menu[RB_HIST_MENU_MAX];  /* URL snapshot for the menu */
     int   hist_menu_n;
+
+    char *prof_menu[RB_PROF_MENU_MAX];  /* profile-id snapshot for the menu */
+    int   prof_menu_n;
 
     int wv_failed;    /* WebView2 unavailable - message shown once */
 } App;
@@ -199,11 +209,17 @@ void rb_update_all(App *app);
 
 /* Actions shared by buttons, menu items and keyboard shortcuts. */
 void rb_do_new_tab(App *app);
+void rb_do_add_tab(App *app, const char *url);   /* NULL = the homepage */
 void rb_do_close_tab(App *app, long id);
 void rb_do_activate(App *app, long id);
 void rb_do_navigate(App *app, const char *url);
 void rb_do_toggle_bookmark(App *app);
 void rb_do_reload_or_stop(App *app);
+
+/* Runs the core's switch protocol: every step in order, the same one the GTK
+ * edition runs, so the two editions cannot diverge on what switching a
+ * profile means.  A no-op when `to_id` is already active. */
+void rb_do_switch_profile(App *app, const char *to_id);
 
 #ifdef __cplusplus
 }

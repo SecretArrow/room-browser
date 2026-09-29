@@ -39,6 +39,7 @@ void rb_wv_goback(App *app);
 void rb_wv_gofwd(App *app);
 void rb_wv_reload(App *app);
 void rb_wv_stop(App *app);
+void rb_wv_stop_all(App *app);   /* every view; the profile switch needs it */
 void rb_wv_can_nav(App *app, int *can_back, int *can_fwd);
 
 /* Re-applies the active profile's per-webview settings (JavaScript, the

@@ -1723,6 +1723,20 @@ void rb_wv_stop(App *app)
     if (tv && tv->wv) tv->wv->lpVtbl->Stop(tv->wv);
 }
 
+/* Stops every view, not just the visible one.  The profile switch needs this
+ * before it tears the environment down: a hidden webview still loading would
+ * otherwise be handed a released environment. */
+void rb_wv_stop_all(App *app)
+{
+    struct RbViews *v = app ? app->views : NULL;
+    int i;
+    if (v == NULL) return;
+    for (i = 0; i < v->n; i++) {
+        TabView *tv = &v->items[i];
+        if (tv->wv != NULL) tv->wv->lpVtbl->Stop(tv->wv);
+    }
+}
+
 void rb_wv_can_nav(App *app, int *can_back, int *can_fwd)
 {
     TabView *tv = rb_active_view(app);

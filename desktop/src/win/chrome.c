@@ -270,6 +270,11 @@ void rb_data_free(App *app)
         app->hist_menu[i] = NULL;
     }
     app->hist_menu_n = 0;
+    for (i = 0; i < RB_PROF_MENU_MAX; i++) {
+        free(app->prof_menu[i]);
+        app->prof_menu[i] = NULL;
+    }
+    app->prof_menu_n = 0;
     free(app->path_history);   app->path_history = NULL;
     free(app->path_bookmarks); app->path_bookmarks = NULL;
     free(app->path_settings);  app->path_settings = NULL;
@@ -555,9 +560,18 @@ void rb_update_all(App *app)
 
 void rb_do_new_tab(App *app)
 {
-    long id = rb_tabs_add(app->tabs, "New Tab",
-                          app->home_url ? app->home_url : "https://duckduckgo.com",
-                          rb_profile_now_ms());
+    rb_do_add_tab(app, NULL);
+}
+
+/* Adds a tab pointing at `url` (NULL means the homepage) and makes it
+ * active.  Split out of rb_do_new_tab because the session restore has a URL
+ * for every tab it re-creates and the homepage is only the fallback. */
+void rb_do_add_tab(App *app, const char *url)
+{
+    const char *target = (url != NULL && url[0] != '\0')
+        ? url
+        : (app->home_url ? app->home_url : "https://duckduckgo.com");
+    long id = rb_tabs_add(app->tabs, "New Tab", target, rb_profile_now_ms());
     app->active_id = id;
     rb_tabs_rebuild(app);
     rb_update_all(app);
@@ -622,6 +636,251 @@ void rb_do_navigate(App *app, const char *url)
     rb_update_omni(app, target);
     rb_wv_navigate(app, target);
     free(upgraded);
+}
+
+/* ------------------------------------------------------------------ */
+/* Profile switching.
+ *
+ * The steps are the core's (rb_switch_step), and each one does here what the
+ * GTK edition does there.  The reason the protocol exists at all is the user
+ * data folder: WebView2 binds cookies, storage and the cache to the
+ * environment, and an environment can never be reused for a second profile.
+ * So a switch tears the whole browser context down and builds a new one —
+ * which is also why the tabs are saved, destroyed and restored around it
+ * rather than kept. */
+
+/* Open tabs and the active index are desktop-only keys: Android keeps its
+ * tabs in a per-profile Room database, the desktop keeps them in the
+ * profile's own settings.  The NAMES are a file format shared with the GTK
+ * edition, so they are spelled identically in both. */
+#define RB_PREF_OPEN_TABS_LOCAL  "open_tabs"    /* '\n'-separated URLs */
+#define RB_PREF_ACTIVE_TAB_LOCAL "active_tab"   /* index into open_tabs  */
+
+static void rb_tabs_save_state(App *app)
+{
+    size_t cap = 1;
+    char *joined;
+    char *w;
+    int i;
+    int n;
+    int active = 0;
+    int written = 0;
+
+    /* Sizing pass, then one write: the URLs can be long and there are as
+     * many of them as the user has tabs. */
+    n = rb_tabs_count(app->tabs);
+    for (i = 0; i < n; i++) {
+        const rb_tab *t = rb_tabs_at(app->tabs, i);
+        if (t && t->url && t->url[0]) cap += strlen(t->url) + 1;
+    }
+    joined = (char *)malloc(cap);
+    if (joined == NULL) return;
+    w = joined;
+    for (i = 0; i < n; i++) {
+        const rb_tab *t = rb_tabs_at(app->tabs, i);
+        size_t len;
+        if (!t || !t->url || !t->url[0]) continue;
+        /* The index has to be into what was WRITTEN, not into the store:
+         * the restore reads it back positionally. */
+        if (t->id == app->active_id) active = written;
+        len = strlen(t->url);
+        memcpy(w, t->url, len);
+        w += len;
+        *w++ = '\n';
+        written++;
+    }
+    *w = '\0';
+
+    rb_pref_set(app, RB_PREF_OPEN_TABS_LOCAL, joined);
+    rb_pref_set_int(app, RB_PREF_ACTIVE_TAB_LOCAL, active);
+    free(joined);
+}
+
+/* Re-opens the tabs the profile had.  `want` is the index into the list that
+ * was written, which is why the restore counts as it opens rather than
+ * trusting the store's ordering. */
+static void rb_tabs_restore_state(App *app)
+{
+    const char *joined = rb_pref(app, RB_PREF_OPEN_TABS_LOCAL, NULL);
+    int want = rb_pref_int(app, RB_PREF_ACTIVE_TAB_LOCAL, 0);
+    long open_ids[64];
+    int opened = 0;
+
+    if (joined != NULL && joined[0] != '\0') {
+        const char *a = joined;
+        while (*a != '\0' && opened < 64) {
+            const char *b = strchr(a, '\n');
+            size_t len = (b != NULL) ? (size_t)(b - a) : strlen(a);
+            if (len > 0) {
+                char *url = (char *)malloc(len + 1);
+                if (url == NULL) break;
+                memcpy(url, a, len);
+                url[len] = '\0';
+                rb_do_add_tab(app, url);
+                open_ids[opened] = app->active_id;
+                opened++;
+                free(url);
+            }
+            if (b == NULL) break;
+            a = b + 1;
+        }
+    }
+    if (opened == 0) {
+        rb_do_add_tab(app, NULL);   /* a fresh profile opens on the homepage */
+        return;
+    }
+    if (want >= 0 && want < opened) {
+        rb_do_activate(app, open_ids[want]);
+    }
+}
+
+/* Removes every tab and drops its view.  The views have to be gone before the
+ * environment they were built on is released. */
+static void rb_tabs_destroy_all(App *app)
+{
+    app->active_id = 0;
+    app->loading = 0;
+    while (rb_tabs_count(app->tabs) > 0) {
+        const rb_tab *t = rb_tabs_at(app->tabs, 0);
+        long id;
+        if (t == NULL) break;
+        id = t->id;   /* close() frees the row this pointer names */
+        rb_wv_drop_tab(app, id);
+        rb_tabs_close(app->tabs, id, rb_profile_now_ms());
+    }
+    rb_tabs_forget_closed(app->tabs);
+    rb_tabs_rebuild(app);
+    rb_update_all(app);
+}
+
+void rb_do_switch_profile(App *app, const char *to_id)
+{
+    char from_id[RB_PROFILE_ID_LEN + 1];
+    int rc;
+    int step;
+
+    if (app == NULL || app->switcher == NULL || to_id == NULL) return;
+    if (app->active_profile_id == NULL) return;
+    if (strcmp(app->active_profile_id, to_id) == 0) return;
+
+    /* Copy the id out: the switch replaces app->active_profile_id, and the
+     * registry row it points into can be relocated by a mutation. */
+    snprintf(from_id, sizeof from_id, "%s", app->active_profile_id);
+
+    /* Begin requires IDLE, and a finished switch stays COMPLETE until it is
+     * reset — so the log is cleared here rather than before each step. */
+    rb_switch_reset(app->switcher);
+    rc = rb_switch_begin(app->switcher, from_id, to_id);
+    if (rc != 0) {
+        const char *why = (rc == RB_SWITCH_ERR_BUSY) ? "a switch is already running"
+                        : (rc == RB_SWITCH_ERR_SAME) ? "that profile is already active"
+                                                     : "no profile was given";
+        rb_warn(app, "Cannot switch profile", why);
+        return;
+    }
+
+    while ((step = rb_switch_step_of(app->switcher)) >= 0) {
+        switch (step) {
+        case RB_SWITCH_STOP_NAVIGATION:
+            rb_wv_stop_all(app);
+            break;
+        case RB_SWITCH_SAVE_TAB_STATE:
+            /* The OLD profile is still active, so the tabs land in its own
+             * settings — which is the whole point of the step. */
+            rb_tabs_save_state(app);
+            break;
+        case RB_SWITCH_DESTROY_BROWSER_CONTEXT:
+            rb_tabs_destroy_all(app);
+            /* Releases the environment, the controllers and the views.  The
+             * user data folder it was bound to is left on disk, which is
+             * what makes the profile still there when it is switched back
+             * to. */
+            rb_wv_shutdown(app);
+            break;
+        case RB_SWITCH_FLUSH_PROFILE_STATE:
+            rb_data_shutdown(app);
+            break;
+        case RB_SWITCH_RELEASE_PROFILE_RESOURCES:
+            /* The in-memory stores that were the old profile's view of the
+             * world.  History and bookmarks are installation-wide on the
+             * desktop, so they stay; the session state does not. */
+            rb_https_clear(app->https);
+            break;
+        case RB_SWITCH_LOAD_NEW_PROFILE_CONTEXT:
+            rb_set_str(&app->active_profile_id, rb_strdup(to_id));
+            rb_profile_touch(app->profiles, to_id);
+            /* Re-read everything the new profile owns.  This has to happen
+             * BEFORE the environment is created, because the environment is
+             * what the settings are applied to. */
+            app->js_enabled = rb_pref_int(app, RB_PREF_JAVASCRIPT, 1);
+            rb_set_str(&app->home_url,
+                       rb_strdup(rb_pref(app, RB_PREF_HOME_LOCAL,
+                                         "https://duckduckgo.com")));
+            rb_set_str(&app->download_dir, NULL);
+            rb_downloads_dir_init(app);
+            rb_theme_apply(app);       /* the new profile's palette */
+            rb_profiles_save(app);
+            /* A fresh environment on the new profile's own user data folder.
+             * This is the step that actually isolates the profile. */
+            rb_wv_init(app);
+            break;
+        case RB_SWITCH_RESTORE_NEW_PROFILE_TABS:
+            rb_tabs_restore_state(app);
+            break;
+        default:
+            break;
+        }
+        if (rb_switch_step_done(app->switcher) != 0) break;
+    }
+
+    if (rb_switch_state_of(app->switcher) == RB_SWITCH_FAILED) {
+        const char *err = rb_switch_error(app->switcher);
+        rb_warn(app, "Profile switch failed", err ? err : "unknown error");
+    }
+    /* Leave the machine ready for the next switch.  reset() clears the
+     * snapshot, so it is read above, before this. */
+    rb_switch_reset(app->switcher);
+    rb_update_all(app);
+}
+
+/* Creates a profile and leaves it in the menu without switching to it — the
+ * row is how the user sees which profile they landed in, so switching
+ * straight from the click would take that away. */
+static void rb_profiles_add(App *app, const char *suffix)
+{
+    char name[64];
+    char id[RB_PROFILE_ID_LEN + 1];
+    int n;
+    int made;
+
+    if (app == NULL || app->profiles == NULL) return;
+    n = rb_profile_count(app->profiles);
+    snprintf(name, sizeof name, "%s %d",
+             (suffix != NULL && suffix[0]) ? suffix : "Profile", n + 1);
+    id[0] = '\0';
+    /* create() refuses a name that is already taken, so a user who renamed a
+     * profile to "Profile 2" makes this call fail — bump the number until it
+     * does not, which is what the GTK edition and the Android sheet do,
+     * rather than refusing to add a profile at all. */
+    for (;;) {
+        made = rb_profile_create(app->profiles, name, NULL, 0, 1);
+        if (made == 0 || n >= 99) break;
+        n++;
+        snprintf(name, sizeof name, "%s %d",
+                 (suffix != NULL && suffix[0]) ? suffix : "Profile", n + 1);
+    }
+    if (made != 0) {
+        rb_warn(app, "Cannot add a profile",
+                "The browser could not create another profile.");
+        return;
+    }
+    {
+        const rb_profile *p =
+            rb_profile_at(app->profiles, rb_profile_count(app->profiles) - 1);
+        if (p != NULL) snprintf(id, sizeof id, "%s", p->id);
+    }
+    if (id[0] == '\0') return;
+    rb_profiles_save(app);
 }
 
 void rb_do_toggle_bookmark(App *app)
@@ -816,6 +1075,7 @@ static void rb_menu_show(App *app)
 {
     HMENU m = CreatePopupMenu();
     HMENU hist = CreatePopupMenu();
+    HMENU prof = CreatePopupMenu();
     int i, n = 0;
     const rb_hist_entry *rec;
     RECT r;
@@ -847,6 +1107,40 @@ static void rb_menu_show(App *app)
         AppendMenuW(hist, MF_STRING | MF_GRAYED, 0, L"(empty)");
     }
     AppendMenuW(m, MF_POPUP, (UINT_PTR)hist, L"Recent history");
+
+    /* The profile list, ticked on the active one.  Like the history items
+       these carry a snapshot rather than a live pointer, because the registry
+       row can be relocated by a mutation between the menu opening and the
+       click landing. */
+    for (i = 0; i < app->prof_menu_n; i++) {
+        free(app->prof_menu[i]);
+        app->prof_menu[i] = NULL;
+    }
+    app->prof_menu_n = 0;
+    for (i = 0; i < rb_profile_count(app->profiles) && i < RB_PROF_MENU_MAX; i++) {
+        const rb_profile *p = rb_profile_at(app->profiles, i);
+        char label[128];
+        wchar_t *wl;
+        UINT flags = MF_STRING;
+        if (p == NULL) continue;
+        snprintf(label, sizeof label, "%s%s",
+                 (p->name && p->name[0]) ? p->name : "Profile",
+                 (p->is_locked) ? "  (locked)" : "");
+        wl = rb_utf8_to_wide(label);
+        if (wl == NULL) continue;
+        if (app->active_profile_id != NULL &&
+            strcmp(app->active_profile_id, p->id) == 0) {
+            flags |= MF_CHECKED;
+        }
+        app->prof_menu[i] = rb_strdup(p->id);
+        app->prof_menu_n++;
+        AppendMenuW(prof, flags, IDM_PROF_FIRST + i, wl);
+        free(wl);
+    }
+    AppendMenuW(prof, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(prof, MF_STRING, IDM_PROF_ADD, L"Add profile");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)prof, L"Profile");
+
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, IDM_ABOUT, L"About");
 
@@ -880,6 +1174,11 @@ static void rb_on_command(App *app, int id, int notify)
         rb_do_toggle_bookmark(app);
     } else if (id == IDM_ABOUT) {
         rb_show_about(app);
+    } else if (id == IDM_PROF_ADD) {
+        rb_profiles_add(app, "Profile");
+    } else if (id >= IDM_PROF_FIRST && id < IDM_PROF_FIRST + app->prof_menu_n) {
+        const char *pid = app->prof_menu[id - IDM_PROF_FIRST];
+        if (pid) rb_do_switch_profile(app, pid);
     } else if (id >= IDM_HIST_FIRST && id < IDM_HIST_FIRST + app->hist_menu_n) {
         const char *url = app->hist_menu[id - IDM_HIST_FIRST];
         if (url) rb_do_navigate(app, url);
