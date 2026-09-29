@@ -30,6 +30,27 @@ class UrlIntelligenceTest {
     }
 
     @Test
+    fun `upgrade keeps explicit non-default ports on http - compatibility first`() {
+        // CI-proven: upgrading http://host:port in place sends TLS at a
+        // plaintext endpoint, which can hang with NO error callback on old
+        // WebView stacks (BrowserNavigationE2eTest, WebView 83 emulator).
+        val kept = UrlIntelligence.upgrade("http://localhost:48869/page2")
+        assertThat(kept.url).isEqualTo("http://localhost:48869/page2")
+        assertThat(kept.upgradedToHttps).isFalse()
+
+        val keptNoPath = UrlIntelligence.upgrade("http://192.168.1.1:8080")
+        assertThat(keptNoPath.url).isEqualTo("http://192.168.1.1:8080")
+        assertThat(keptNoPath.upgradedToHttps).isFalse()
+    }
+
+    @Test
+    fun `upgrade of port 80 strips the default port cleanly`() {
+        val upgraded = UrlIntelligence.upgrade("http://example.com:80/path")
+        assertThat(upgraded.url).isEqualTo("https://example.com/path")
+        assertThat(upgraded.upgradedToHttps).isTrue()
+    }
+
+    @Test
     fun `bare host gets https scheme`() {
         val (input, url) = UrlIntelligence.classify("example.com")
         assertThat(input).isInstanceOf(Input.Web::class.java)

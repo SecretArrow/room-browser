@@ -85,14 +85,34 @@ object UrlIntelligence {
         return Input.Search(raw) to SearchEngines.buildSearchUrl(searchEngineId, raw)
     }
 
-    /** Upgrade an http URL to https when requested. */
+    /** Upgrade an http URL to https when requested.
+     *
+     *  Explicit NON-DEFAULT ports are left untouched (compatibility-first,
+     *  the same philosophy as the off-by-default shields): a port was spelled
+     *  out precisely because the endpoint is non-standard — localhost dev
+     *  servers, router/IoT admin panels, local tooling — and TLS on such
+     *  ports is rare. Upgrading them in place (port kept) has been proven to
+     *  dead-end: the TLS attempt against a plaintext endpoint can hang for
+     *  a very long time on older WebView stacks with NO error callback, so
+     *  the page silently never loads (CI-proven by BrowserNavigationE2eTest
+     *  against a plain-http MockWebServer on a WebView 83 emulator).
+     *  Default-port URLs (no port, or :80) upgrade to clean https. */
     fun upgrade(url: String): Input.Web {
         val trimmed = url.trim()
-        return if (trimmed.startsWith("http://", ignoreCase = true)) {
-            Input.Web("https" + trimmed.substring(4), upgradedToHttps = true)
-        } else {
-            Input.Web(trimmed, upgradedToHttps = false)
+        if (!trimmed.startsWith("http://", ignoreCase = true)) {
+            return Input.Web(trimmed, upgradedToHttps = false)
         }
+        val rest = trimmed.substring(7)
+        val slash = rest.indexOf('/')
+        val authority = if (slash >= 0) rest.substring(0, slash) else rest
+        val path = if (slash >= 0) rest.substring(slash) else ""
+        val colon = authority.lastIndexOf(':')
+        val port = if (colon >= 0) authority.substring(colon + 1) else ""
+        if (port.isNotEmpty() && port != "80") {
+            return Input.Web(trimmed, upgradedToHttps = false)
+        }
+        val host = if (colon >= 0 && port == "80") authority.substring(0, colon) else authority
+        return Input.Web("https://$host$path", upgradedToHttps = true)
     }
 
     /** Extract a registered-ish host from a URL (null when unparseable). */
