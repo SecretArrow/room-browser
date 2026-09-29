@@ -84,6 +84,40 @@ class OnDeviceDownloadControllerTest {
     }
 
     @Test
+    fun `a quick download still reports a settle after its row is gone`() {
+        // The exact shape the UI missed in CI: the whole download — enqueue,
+        // body, rename, row removal — finishes before anything collects, so
+        // `entries` goes 0 → 1 → 0 with no window in which a collector can see
+        // the 1. A UI that inferred "a download settled" by comparing list
+        // SIZES therefore saw 0 → 0 and never re-listed, leaving the Installed
+        // chip unset for a model already on disk.
+        //
+        // `settled` is the signal that survives that: it is monotonic, so its
+        // value still differs from the 0 the UI last read no matter how many
+        // intermediate states were conflated away.
+        val body = "F".repeat(4 * 1024)
+        server.enqueue(MockResponse().setBody(body))
+
+        val controller = OnDeviceDownloadController(dir, OkHttpClient())
+        // What a freshly composed UI reads before the user taps Install.
+        assertThat(controller.settled.value).isEqualTo(0L)
+
+        controller.start(server.url("/fast.gguf").toString(), "fast.gguf")
+        awaitUntil { controller.settled.value == 1L }
+
+        // The event arrived — and the row that carried it is already gone,
+        // which is precisely what made a list comparison blind to it.
+        assertThat(controller.entries.value).isEmpty()
+        assertThat(File(dir, "fast.gguf").readText()).isEqualTo(body)
+
+        // Monotonic on every settle, not just the first: cancelling the row is
+        // a settle too (a paused/orphaned row leaves the list), so a UI that
+        // has already seen 1 still sees the value CHANGE for the next event.
+        controller.cancel("fast.gguf")
+        assertThat(controller.settled.value).isEqualTo(2L)
+    }
+
+    @Test
     fun `resume sends a range header and completes the file`() {
         val full = "B".repeat(10_000) + "C".repeat(15_000)
         // Leg 1: the connection dies partway through the body → the controller

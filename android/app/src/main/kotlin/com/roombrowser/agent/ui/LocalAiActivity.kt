@@ -635,13 +635,17 @@ private fun OnDeviceEngineSection(
     }
     LaunchedEffect(Unit) { downloads.refreshListFromDisk() }
     // The controller DROPS an entry the moment its download completes (the
-    // model then surfaces through the store's list()) — so a SHRINKING
-    // entries list is the honest "a download settled" signal (finished or
-    // canceled; a re-list is cheap and harmless either way).
-    var lastEntryCount by remember { mutableStateOf(0) }
-    LaunchedEffect(entries.size) {
-        if (entries.size < lastEntryCount) modelsRefresh++
-        lastEntryCount = entries.size
+    // model then surfaces through the store's list()) — so "a download
+    // settled" is what the re-list keys on. That signal is the controller's
+    // monotonic `settled` counter, NOT a shrinking entries list: a small model
+    // served from a local or very fast registry adds and removes its row
+    // inside one frame, and a conflated StateFlow of a LIST never shows the
+    // intermediate 1, so a size comparison would see only 0 → 0 and never
+    // re-list — leaving the model installed on disk but the UI still offering
+    // Install. The counter's value always differs from the last one collected.
+    val settled by downloads.settled.collectAsState()
+    LaunchedEffect(settled) {
+        if (settled > 0L) modelsRefresh++
     }
 
     // ---- Try-model diagnostics: load + one 24-token generation, result in
@@ -1300,19 +1304,19 @@ private fun CatalogSection(
     // ---- Which catalog tags are already in the BUILT-IN engine's directory.
     // Install targets the on-device engine (the whole point of this screen on
     // a phone: no Termux, no server), so "Installed" is the store's list, NOT
-    // the Ollama server's. Re-listed whenever a download settles — the
-    // controller DROPS an entry on completion, so a shrinking list is the
-    // honest "something finished" signal (same hook as the engine section).
-    val entries by downloads.entries.collectAsState()
+    // the Ollama server's. Re-listed whenever a download settles — keyed on
+    // the controller's monotonic `settled` counter rather than on a shrinking
+    // entries list, which a download that finishes inside a single frame (the
+    // common case for a small preset, and for a resumed `.part` with one chunk
+    // left) never produces. See OnDeviceDownloadController.settled.
     var installedRefresh by remember { mutableStateOf(0) }
     var onDeviceIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     LaunchedEffect(installedRefresh) {
         onDeviceIds = withContext(Dispatchers.IO) { store.list().map { it.id }.toSet() }
     }
-    var lastEntryCount by remember { mutableStateOf(0) }
-    LaunchedEffect(entries.size) {
-        if (entries.size < lastEntryCount) installedRefresh++
-        lastEntryCount = entries.size
+    val settled by downloads.settled.collectAsState()
+    LaunchedEffect(settled) {
+        if (settled > 0L) installedRefresh++
     }
 
     // Tags with a registry resolve in flight, so a card can show it is busy

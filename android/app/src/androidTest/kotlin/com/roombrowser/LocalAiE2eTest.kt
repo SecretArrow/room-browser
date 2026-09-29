@@ -19,6 +19,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -184,6 +185,28 @@ class LocalAiE2eTest {
         /** Download-side hits — 0 with manifestHits > 0 means the blob URL was wrong. */
         val blobHits = AtomicInteger()
 
+        /**
+         * POST /api/pull count. Printed in the failure messages next to
+         * [pullTags]: hits > 0 with an empty tag list means the request
+         * arrived but its body did not carry the model name.
+         */
+        val pullHits = AtomicInteger()
+
+        /**
+         * Tags seen in a /api/pull BODY, in arrival order.
+         *
+         * The durable half of "the Pull-to-server tap worked". The UI evidence
+         * for a server pull (a Downloads row) renders at the TOP of the screen
+         * while the pull buttons live deep in the catalog, so a probe parked on
+         * the catalog cannot see it without scrolling back — and on the instant
+         * fake the row is already finished by then. What the request body says
+         * is immune to both, and it also cross-checks that the tag on the
+         * button is the tag that actually got pulled.
+         */
+        private val pullTagLog = ConcurrentLinkedQueue<String>()
+
+        fun pullTags(): List<String> = pullTagLog.toList()
+
         override fun dispatch(request: RecordedRequest): MockResponse {
             val path = request.path ?: ""
             return when {
@@ -236,10 +259,14 @@ class LocalAiE2eTest {
                 }
 
                 path.startsWith("/api/pull") -> {
+                    pullHits.incrementAndGet()
                     val body = request.body.readUtf8()
                     Regex(""""model"\s*:\s*"([^"]+)"""").find(body)
                         ?.groupValues?.get(1)
-                        ?.let { tag -> synchronized(pulled) { pulled.add(tag) } }
+                        ?.let { tag ->
+                            pullTagLog.add(tag)
+                            synchronized(pulled) { pulled.add(tag) }
+                        }
                     MockResponse()
                         .setHeader("Content-Type", "application/x-ndjson")
                         .setBody(
@@ -557,6 +584,7 @@ class LocalAiE2eTest {
         }.getOrDefault(emptyList())
         return "libraryHits=${fake.libraryHits.get()} refreshBtn=$refreshBtn " +
             "manifests=${fake.manifestHits.get()} blobs=${fake.blobHits.get()} " +
+            "pulls=${fake.pullHits.get()} pulledTags=${fake.pullTags()} " +
             "texts=[${texts.joinToString(" | ")}]"
     }
 
@@ -687,33 +715,60 @@ class LocalAiE2eTest {
         return null
     }
 
-    /** PROOF that a SERVER pull for [tag] started/ran: the Downloads row exposes
-     *  a Pause button while STARTING/DOWNLOADING/VERIFYING, a Clear button on
-     *  the kept SUCCESS row, a Resume button when PAUSED/FAILED, a Cancel
-     *  button throughout. Any of them settles within [timeoutMs] on the instant
-     *  fake server.
-     *
-     *  The catalog's Installed chip is deliberately NOT a probe here: on this
-     *  screen it now means "in the BUILT-IN engine's directory", which a
-     *  server-side pull never changes (see the class KDoc). */
-    private fun serverPullEvidence(tag: String, timeoutMs: Long): Boolean {
+    /** Polls [condition] every 200 ms until it holds or [timeoutMs] elapses. */
+    private fun waitUntil(timeoutMs: Long, condition: () -> Boolean): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
-        val probes = listOf(
-            "localai_pause_$tag",
-            "localai_resume_$tag",
-            "localai_clear_$tag",
-            "localai_cancel_$tag"
-        )
         while (System.currentTimeMillis() < deadline) {
-            for (probe in probes) {
-                val found = runCatching {
-                    device.findObjects(By.descContains(probe))
-                }.getOrDefault(emptyList())
-                if (found.isNotEmpty()) return true
-            }
-            try { Thread.sleep(300) } catch (_: InterruptedException) { }
+            if (condition()) return true
+            try { Thread.sleep(200) } catch (_: InterruptedException) { }
         }
-        return false
+        return condition()
+    }
+
+    /** The four DownloadRow action descs for [tag] (see [serverPullEvidence]). */
+    private fun serverPullProbes(tag: String): List<String> = listOf(
+        "localai_pause_$tag",
+        "localai_resume_$tag",
+        "localai_clear_$tag",
+        "localai_cancel_$tag"
+    )
+
+    /** True when any DownloadRow action for [tag] is in the CURRENT viewport. */
+    private fun serverPullProbesVisible(tag: String): Boolean =
+        serverPullProbes(tag).any { probe ->
+            runCatching { device.findObjects(By.descContains(probe)) }
+                .getOrDefault(emptyList())
+                .isNotEmpty()
+        }
+
+    /**
+     * UI PROOF that a SERVER pull for [tag] produced a Downloads row: the row
+     * exposes a Pause button while STARTING/DOWNLOADING/VERIFYING, a Resume
+     * button when PAUSED/FAILED, a Cancel button throughout, and a Clear button
+     * on the kept SUCCESS row.
+     *
+     * SCROLL-AWARE, and that is the point: the Downloads section sits near the
+     * TOP of the screen (right after "Installed models") while every
+     * "Pull to Ollama server instead" button lives deep inside the catalog
+     * below it. A probe that only looked at the current viewport therefore
+     * reported "the pull never started" for a pull that had started, finished
+     * and been rendered several screens above — the viewport is parked on the
+     * catalog when the tap happens. So: current viewport first (cheap, and
+     * correct when the caller is already up there), then climb to the top and
+     * sweep back down.
+     *
+     * The catalog's Installed chip is deliberately NOT a probe here: on this
+     * screen it means "in the BUILT-IN engine's directory", which a server-side
+     * pull never changes (see the class KDoc).
+     */
+    private fun serverPullEvidence(tag: String, timeoutMs: Long): Boolean {
+        if (waitUntil(timeoutMs / 2) { serverPullProbesVisible(tag) }) return true
+        scrollToTop()
+        repeat(14) {
+            if (serverPullProbesVisible(tag)) return true
+            dragUpQuarter()
+        }
+        return waitUntil(timeoutMs / 2) { serverPullProbesVisible(tag) }
     }
 
     /** Probes the local-AI nodes for readable failure messages. */
@@ -726,7 +781,19 @@ class LocalAiE2eTest {
             "localai_connect" to By.desc("localai_connect"),
             "localai_status" to By.desc("localai_status"),
             "localai_installed_list" to By.desc("localai_installed_list"),
-            "localai_install_qwen2.5:0.5b" to By.descContains("localai_install_")
+            // Prefix probes — the LABEL is the prefix, so count is how many
+            // nodes matched it: "[localai_install_] count=3" is three Install
+            // buttons on screen, NOT one card rendered three times. The row
+            // that used to be labelled with a whole tag ("localai_install_…")
+            // read as a duplicate card for exactly that reason.
+            "[localai_install_]" to By.descContains("localai_install_"),
+            "[localai_installed_]" to By.descContains("localai_installed_"),
+            // The downloads section is the FIRST thing these tests need and the
+            // LAST thing a viewport parked on the catalog can see, so a dump
+            // without it cannot tell "no row" from "row above the fold".
+            "[localai_pull_server_]" to By.descContains("localai_pull_server_"),
+            "[localai_cancel_]" to By.descContains("localai_cancel_"),
+            "[localai_clear_]" to By.descContains("localai_clear_")
         )) {
             val nodes = runCatching { device.findObjects(probe.second) }.getOrDefault(emptyList())
             sb.append(probe.first).append(": count=").append(nodes.size)
@@ -817,22 +884,43 @@ class LocalAiE2eTest {
         // tap on this busy screen (13 preset cards + chips recomposing while
         // the a11y tree is polled — observed in CI: the tap landed dead-on
         // the button and the download coroutine never started). So each round
-        // clicks, then waits for PROOF that the pull started: the row's Pause
-        // button while running, its Clear button once finished, a Resume
-        // button if it failed. No proof → the tap was lost → find the button
-        // again and tap again.
+        // clicks, then waits for PROOF that the pull started. The verdict is
+        // DURABLE — the fake RECEIVING POST /api/pull with this tag — because
+        // two earlier versions of this check could not see a tap that had
+        // worked:
+        //   * it looked for the Downloads row WITHOUT scrolling — that row
+        //     renders just under "Installed models", near the top of the
+        //     screen, while every pull button is deep inside the catalog, so
+        //     it was off-screen by construction;
+        //   * it clicked through UiAutomator gesture injection, the very
+        //     channel this suite documents as PHANTOM-dropped on this busy
+        //     screen (see scrollAndShellTap). It now uses the shell `input tap`
+        //     channel that is proven to land here.
         var pullStarted = false
         for (round in 1..3) {
-            clickDescContainsWithScroll(pullDesc, attempts = 12)
-            if (serverPullEvidence(pulledTag, 8_000)) {
+            // Round 1 starts where the search above left the viewport (on the
+            // button). A failed round's sweep has moved on past it, so later
+            // rounds climb back to the top before searching down again.
+            if (round > 1) scrollToTop()
+            scrollAndShellTap(pullDesc, "Pull to Ollama server instead", attempts = 14)
+            if (waitUntil(8_000) { fake.pullTags().contains(pulledTag) }) {
                 pullStarted = true
                 break
             }
         }
         assertTrue(
-            "Pull-to-server tap must start the pull for $pulledTag " +
-                "(no Pause/Clear/Resume/Cancel evidence after 3 taps); UI:\n" + uiTree(),
+            "Tapping 'Pull to Ollama server instead' for $pulledTag must POST " +
+                "/api/pull with that tag (fake saw ${fake.pullTags()}); UI:\n" + uiTree(),
             pullStarted
+        )
+        // The user-visible half of the same fact, checked ONCE rather than per
+        // round: the Downloads row exists. It lives above the catalog, so this
+        // probe has to climb back up to see it, and the row is KEPT once the
+        // pull succeeds (that is what its Clear button clears) — which is what
+        // makes the check deterministic even though the fake answers instantly.
+        assertTrue(
+            "A server pull must render a Downloads row for $pulledTag; UI:\n" + uiTree(),
+            serverPullEvidence(pulledTag, 12_000)
         )
 
         // The fake daemon lists every pulled model in /api/tags from the moment
@@ -845,7 +933,10 @@ class LocalAiE2eTest {
 
         // Pause/resume buttons are intentionally NOT asserted here — see the
         // class KDoc: instant MockWebServer bodies make the DOWNLOADING phase
-        // too short to observe deterministically (unit-tested instead).
+        // too short to observe deterministically (unit-tested instead). The
+        // assertion above is weaker and that is deliberate: it asks only that
+        // the row EXISTS, which the kept SUCCESS row satisfies whatever the
+        // phase did in between.
     }
 
     // =====================================================================
@@ -953,7 +1044,20 @@ class LocalAiE2eTest {
         val installDesc = "localai_install_$tag"
         var installed = false
         for (round in 1..3) {
+            // A failed round sweeps 12 drags down the screen, which leaves the
+            // card far ABOVE the viewport — and none of the scroll-aware
+            // helpers here can search upward, so without this reset rounds 2
+            // and 3 would silently tap nothing (CI: manifests stayed at 1
+            // through all three rounds).
+            if (round > 1) scrollToTop()
             clickDescContainsWithScroll(installDesc, attempts = 12)
+            // In place FIRST: the chip replaces the Install button inside the
+            // card that is already on screen, and the download can finish
+            // before the first sweep's drag — so sweep only as a fallback.
+            if (hasDescContains("localai_installed_$tag", 5_000)) {
+                installed = true
+                break
+            }
             if (hasDescContainsWithScroll("localai_installed_$tag", attempts = 12)) {
                 installed = true
                 break

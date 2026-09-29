@@ -100,6 +100,34 @@ class OnDeviceDownloadController internal constructor(
     /** Live download rows; conflated like every StateFlow. */
     val entries: StateFlow<List<OnDeviceDownloadEntry>> = state
 
+    private val settledCount = MutableStateFlow(0L)
+
+    /**
+     * Monotonic count of downloads that have SETTLED since construction —
+     * completed, failed, paused, or cancelled. Every settle also removes or
+     * rewrites a row in [entries], so why a second signal?
+     *
+     * Because [entries] is a conflated StateFlow of a LIST, and "something
+     * finished" is a question about a TRANSITION, not about the current value.
+     * A download that completes between two collections (a few-KiB model from
+     * a local registry, a resumed `.part` with one chunk left, a very fast
+     * link) goes 0 → 1 → 0 rows without any collector ever seeing the 1, and
+     * a UI that infers "a download settled" from a shrinking list then misses
+     * it completely — leaving the card offering Install for a model that is
+     * already on disk.
+     *
+     * A monotonic counter survives that conflation: whatever the intermediate
+     * values were, the latest value DIFFERS from the last one collected, so a
+     * `LaunchedEffect` keyed on it still re-runs. Readers should compare
+     * against a remembered previous value (or just treat any change as "an
+     * event happened"), never against a hard-coded count.
+     */
+    val settled: StateFlow<Long> = settledCount
+
+    private fun noteSettled() {
+        settledCount.value = settledCount.value + 1
+    }
+
     /** Active download job per fileName (the cancellation handle for pause). */
     private val jobs = mutableMapOf<String, Job>()
 
@@ -196,6 +224,7 @@ class OnDeviceDownloadController internal constructor(
                 cancelRequested.remove(fileName)
                 state.value = state.value.filterNot { it.fileName == fileName }
                 File(dir, "$fileName.part").delete()
+                noteSettled()
                 return
             }
             cancelRequested.add(fileName)
@@ -335,6 +364,7 @@ class OnDeviceDownloadController internal constructor(
                         pauseRequested.remove(fileName)
                         cancelRequested.remove(fileName)
                         state.value = state.value.filterNot { it.fileName == fileName }
+                        noteSettled()
                     }
                 } finally {
                     runCatching { response.close() }
@@ -422,6 +452,9 @@ class OnDeviceDownloadController internal constructor(
      * Terminal bookkeeping shared by the pause/cancel/error stop paths:
      * pause → paused row, kept .part; cancel → row gone, .part deleted;
      * anything else → honest error row, .part kept (still resumable).
+     *
+     * Every branch here is a settle, so [noteSettled] fires for each: a UI that
+     * missed the row being created must still learn that it is over.
      */
     private fun handleStop(fileName: String, call: Call?, fallbackError: String?) {
         synchronized(lock) {
@@ -449,6 +482,7 @@ class OnDeviceDownloadController internal constructor(
                         } else entry
                     }
             }
+            noteSettled()
         }
     }
 
