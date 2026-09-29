@@ -176,7 +176,7 @@ object AnthropicMessages {
     /** Parses a NON-streaming `POST /messages` response into the app's model. */
     fun parseResponse(body: String): ChatMessage {
         val root = runCatching { AgentJson.parseToJsonElement(body.trim()).jsonObject }
-            .getOrElse { return ChatMessage(role = "assistant", content = "") }
+            .getOrElse { return ChatMessage(role = "assistant") }   // null content, like an empty parsed message
         return messageOf(root["content"] as? JsonArray)
     }
 
