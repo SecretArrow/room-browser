@@ -17,6 +17,14 @@
 #include <unistd.h>
 #endif
 
+/* MSVC's CRT has no S_ISDIR (POSIX-only; mingw has it, MSVC does not —
+ * LNK2019 CI-proven). Test the _S_IFDIR bit directly on Windows. */
+#ifdef _WIN32
+#define RB_S_ISDIR(m) (((m) & _S_IFDIR) != 0)
+#else
+#define RB_S_ISDIR(m) S_ISDIR(m)
+#endif
+
 static char *rb_paths_strdup(const char *s)
 {
     size_t n;
@@ -43,7 +51,7 @@ static int rb_mkdir_one(const char *path)
     struct stat st;
 
     if (stat(path, &st) == 0) {
-        return S_ISDIR(st.st_mode) ? 0 : -1;
+        return RB_S_ISDIR(st.st_mode) ? 0 : -1;
     }
 #ifdef _WIN32
     if (CreateDirectoryA(path, NULL) == 0) {

@@ -305,7 +305,7 @@ jobs:
           if ($p.ExitCode -ne 0) { Write-Host "exit code: $($p.ExitCode)"; exit 1 }
           $line = Get-Content version-out.txt -ErrorAction SilentlyContinue
           Write-Host "version output: $line"
-          if (-not ($line -match "Room Browser .+ windows")) { Write-Host "unexpected --version output"; exit 1 }
+          if (-not ($line -match "Room Browser .+\(windows x86_64\)")) { Write-Host "unexpected --version output"; exit 1 }
 
       - name: Stage WebView2 loader DLL next to the exe
         shell: pwsh
@@ -368,7 +368,7 @@ jobs:
       - name: Smoke test (--version)
         run: |
           ./desktop/build/roombrowser --version | tee version-out.txt
-          grep -E 'Room Browser .+ linux' version-out.txt
+          grep -E 'Room Browser .+\(linux x86_64\)' version-out.txt
 
       - name: Package (deb + tar.gz)
         run: |
