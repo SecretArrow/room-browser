@@ -81,8 +81,11 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    app->app = gtk_application_new("com.roombrowser.Desktop",
-                                    G_APPLICATION_FLAGS_NONE);
+    /* 0 is G_APPLICATION_FLAGS_NONE.  Spelled as the literal rather than the
+     * enumerator because GLib deprecated that name in 2.74 in favour of
+     * G_APPLICATION_DEFAULT_FLAGS, and the literal is correct — and
+     * warning-free — against every GLib this app builds on. */
+    app->app = gtk_application_new("com.roombrowser.Desktop", 0);
     g_signal_connect(app->app, "activate", G_CALLBACK(rb_on_activate), app);
     g_signal_connect(app->app, "shutdown", G_CALLBACK(rb_on_shutdown), app);
 

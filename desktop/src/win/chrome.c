@@ -299,11 +299,11 @@ void rb_do_toggle_bookmark(App *app)
 {
     rb_tab *t = app->active_id ? rb_tabs_get(app->tabs, app->active_id) : NULL;
     if (!t || !t->url || !t->url[0]) return;
-    if (rb_bookmarks_contains(app->bookmarks, t->url)) {
-        rb_bookmarks_remove(app->bookmarks, t->url);
-    } else {
-        rb_bookmarks_add(app->bookmarks, t->url, t->title && t->title[0] ? t->title : t->url);
-    }
+    /* BrowserViewModel.toggleBookmark, policy included: the same call stars
+     * and unstars, and a blank title falls back to the URL. */
+    (void)rb_bookmarks_toggle(app->bookmarks, t->url,
+                              t->title && t->title[0] ? t->title : t->url,
+                              rb_profile_now_ms());
     if (app->path_bookmarks) rb_bookmarks_save(app->bookmarks, app->path_bookmarks);
     rb_update_star(app);
 }

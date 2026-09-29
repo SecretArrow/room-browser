@@ -6,10 +6,10 @@
  * never disabled by default (project policy); the menu toggle (and the
  * persisted "javascript" setting) is the only way to turn it off.
  *
- * The core stores (tabs / history / bookmarks / settings / url / paths) are
- * implemented in desktop/src/core and linked as rb_core. The declarations
- * below mirror the agreed core API contract verbatim so this platform layer
- * compiles against the exact ABI.
+ * The core stores (tabs / history / bookmarks / settings / profiles / url /
+ * paths / filters / themes) are implemented in desktop/src/core and linked as
+ * rb_core.  Their declarations are pulled in from <core/rb_core.h> rather than
+ * repeated here, so this layer cannot drift out of step with the core ABI.
  */
 #ifndef RB_GTK_CHROME_H
 #define RB_GTK_CHROME_H
@@ -17,63 +17,11 @@
 #include <gtk/gtk.h>
 #include <webkit2/webkit2.h>
 
+#include "core/rb_core.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* ------------------------------------------------------------------ */
-/* Core API contract (implemented by desktop/src/core, target rb_core) */
-
-typedef struct { long id; char *title; char *url; } rb_tab;
-typedef struct { char *url; char *title; long long visited_at; } rb_hist_entry;
-
-typedef struct rb_tabs rb_tabs;
-rb_tabs *rb_tabs_new(void);
-void rb_tabs_free(rb_tabs *t);
-long rb_tabs_add(rb_tabs *t, const char *title, const char *url);
-int rb_tabs_count(const rb_tabs *t);
-int rb_tabs_close(rb_tabs *t, long id);
-rb_tab *rb_tabs_get(rb_tabs *t, long id);
-const rb_tab *rb_tabs_at(const rb_tabs *t, int index);
-
-typedef struct rb_history rb_history;
-rb_history *rb_history_new(void);
-void rb_history_free(rb_history *h);
-void rb_history_append(rb_history *h, const char *url, const char *title);
-int rb_history_count(const rb_history *h);
-const rb_hist_entry *rb_history_recent(const rb_history *h, int n, int *out_n);
-int rb_history_load(rb_history *h, const char *path);
-int rb_history_save(const rb_history *h, const char *path);
-
-typedef struct rb_bookmarks rb_bookmarks;
-rb_bookmarks *rb_bookmarks_new(void);
-void rb_bookmarks_free(rb_bookmarks *b);
-int rb_bookmarks_add(rb_bookmarks *b, const char *url, const char *title);
-int rb_bookmarks_remove(rb_bookmarks *b, const char *url);
-int rb_bookmarks_contains(const rb_bookmarks *b, const char *url);
-int rb_bookmarks_count(const rb_bookmarks *b);
-const char *rb_bookmarks_url_at(const rb_bookmarks *b, int index);
-const char *rb_bookmarks_title_at(const rb_bookmarks *b, int index);
-int rb_bookmarks_load(rb_bookmarks *b, const char *path);
-int rb_bookmarks_save(const rb_bookmarks *b, const char *path);
-
-typedef struct rb_settings rb_settings;
-rb_settings *rb_settings_new(void);
-void rb_settings_free(rb_settings *s);
-const char *rb_settings_get(const rb_settings *s, const char *key, const char *fallback);
-int rb_settings_get_int(const rb_settings *s, const char *key, int fallback);
-void rb_settings_set(rb_settings *s, const char *key, const char *value);
-void rb_settings_set_int(rb_settings *s, const char *key, int value);
-int rb_settings_load(rb_settings *s, const char *path);
-int rb_settings_save(const rb_settings *s, const char *path);
-
-char *rb_paths_data_dir(void);
-void rb_paths_free(char *p);
-
-int  rb_url_is_probably_url(const char *input);
-char *rb_url_normalize(const char *input);
-char *rb_url_build_search(const char *query);
-char *rb_url_decide(const char *input);
 
 /* ------------------------------------------------------------------ */
 /* Layout constants (mirror the Windows chrome) */
@@ -105,12 +53,25 @@ typedef struct App {
     rb_tabs      *store;
     rb_history   *history;
     rb_bookmarks *bookmarks;
-    rb_settings  *settings;
+    rb_downloads *downloads;
+    rb_settings  *settings;     /* the GLOBAL settings (BrowserGlobalSettings) */
+    rb_profile_registry *profiles;
+    rb_switch_machine   *switcher;
+    rb_https_pending    *https;  /* the https upgrades this window may retry */
 
     char *home_url;
     char *path_history;
     char *path_bookmarks;
     char *path_settings;
+    char *path_profiles;
+    char *path_downloads;
+    char *download_dir;         /* where finished files are written */
+
+    /* The profile every tab in this window is running as.  Never NULL once
+     * rb_data_init() has succeeded: a fresh data directory gets one created
+     * for it.  Switching it goes through rb_switch_* and the platform steps
+     * in chrome.c, never by assigning here. */
+    char *active_profile_id;
 
     long active_id;   /* 0 = none */
     int  loading;
@@ -131,10 +92,34 @@ int  rb_data_init(App *app);
 void rb_data_shutdown(App *app);   /* final save (on "shutdown" of the app) */
 void rb_data_free(App *app);       /* release everything */
 
+/* The active profile, or NULL when the registry is empty.  The pointer is
+ * INTO the registry: it dies at the next registry mutation. */
+const rb_profile *rb_active_profile(App *app);
+
+/* A setting of the ACTIVE PROFILE, with `fallback` when it is absent (or
+ * when there is no active profile).  This is the desktop's spelling of the
+ * Android app reading its ProfileSettings, and it is what every feature
+ * switch below should go through rather than touching rb_settings directly. */
+const char *rb_pref(App *app, const char *key, const char *fallback);
+int         rb_pref_int(App *app, const char *key, int fallback);
+
+/* Writes a per-profile setting back and persists the registry. */
+void rb_pref_set(App *app, const char *key, const char *value);
+void rb_pref_set_int(App *app, const char *key, int value);
+
+/* Persists the profile registry (settings live inside it). */
+void rb_profiles_save(App *app);
+
+/* The active profile's effective User-Agent, malloc'd — or NULL when the
+ * engine default should be sent untouched (mode "default", a preset with an
+ * empty value, or a blank custom string).  Caller frees. */
+char *rb_ua_current(App *app);
+
 /* Chrome construction + refresh. */
 void rb_on_activate(GtkApplication *gtk_app, gpointer user_data);
 void rb_on_shutdown(GtkApplication *gtk_app, gpointer user_data);
-void rb_css_load(void);
+void rb_css_load(App *app);       /* (re)loads the stylesheet from the theme */
+const rb_theme *rb_theme_current(App *app);  /* the active profile's theme */
 void rb_update_omni(App *app, const char *url);
 void rb_update_titlebar(App *app);
 void rb_update_nav(App *app);
