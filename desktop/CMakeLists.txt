@@ -26,6 +26,13 @@ if(WIN32)
         ${CMAKE_CURRENT_BINARY_DIR}/app.rc)
     target_include_directories(RoomBrowser PRIVATE ${WEBVIEW2_INCLUDE_DIR} src/win)
     target_link_libraries(RoomBrowser PRIVATE rb_core user32 gdi32 comctl32 dwmapi shell32 ole32 oleaut32)
+    # The manifest is embedded ONCE via the rc resource (1 RT_MANIFEST).
+    # MSVC's linker would additionally auto-generate AND embed its own
+    # manifest -> CVTRES CVT1100 "duplicate resource MANIFEST/1" (CI-proven).
+    # Disable the linker manifest; the rc-embedded one stays authoritative.
+    if(MSVC)
+        target_link_options(RoomBrowser PRIVATE "/MANIFEST:NO")
+    endif()
 endif()
 
 if(UNIX AND NOT APPLE)
