@@ -23,6 +23,12 @@ void rb_gw_apply_js(App *app);
 
 /* Re-applies the active profile's User-Agent to every open webview. */
 void rb_gw_apply_ua(App *app);
+
+/* Re-applies every preference that lives on WebKitSettings (JavaScript,
+ * WebRTC, DNS prefetching) to the open views, and the profile's cookie policy
+ * to its data manager.  Idempotent, so a preferences change calls this rather
+ * than working out which switch moved. */
+void rb_gw_apply_web_settings(App *app);
 /* Wires the download-started signal on the app's context so every download
  * is recorded in app->downloads.  Called by rb_gw_context_new. */
 void rb_gw_downloads_init(App *app);

@@ -147,6 +147,13 @@ void rb_update_star(App *app);
 void rb_update_reloadbtn(App *app);
 void rb_update_all(App *app);
 
+/* A modal message box parented to the window.  `body` is secondary text and
+ * may be NULL. */
+void rb_warn(App *app, const char *title, const char *body);
+
+/* The per-profile preferences editor (Android's ProfileSettingsScreen). */
+void rb_show_prefs_dialog(App *app);
+
 /* Actions. */
 void rb_do_new_tab(App *app);
 void rb_do_add_tab(App *app, const char *url);   /* NULL/"" -> the homepage */

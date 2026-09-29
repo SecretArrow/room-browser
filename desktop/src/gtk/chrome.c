@@ -865,16 +865,36 @@ static void rb_tabs_destroy_all(App *app)
     rb_update_all(app);
 }
 
-static void rb_switch_error_dialog(App *app, const char *title,
-                                   const char *body)
+static void rb_msg(App *app, GtkMessageType type, const char *title,
+                   const char *body)
 {
-    GtkWidget *dlg = gtk_message_dialog_new(GTK_WINDOW(app->win),
+    GtkWidget *dlg;
+
+    /* A policy decision can fire before the window exists; a message that
+     * cannot be shown must still not be lost. */
+    if (app == NULL || app->win == NULL) {
+        fprintf(stderr, "roombrowser: %s%s%s\n", title ? title : "",
+                (body && body[0]) ? ": " : "", (body && body[0]) ? body : "");
+        return;
+    }
+    dlg = gtk_message_dialog_new(GTK_WINDOW(app->win),
         GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-        GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE, "%s", title);
+        type, GTK_BUTTONS_CLOSE, "%s", title ? title : "");
     gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dlg), "%s",
                                              body ? body : "");
     g_signal_connect_swapped(dlg, "response", G_CALLBACK(gtk_widget_destroy), dlg);
     gtk_widget_show(dlg);
+}
+
+void rb_warn(App *app, const char *title, const char *body)
+{
+    rb_msg(app, GTK_MESSAGE_WARNING, title, body);
+}
+
+static void rb_switch_error_dialog(App *app, const char *title,
+                                   const char *body)
+{
+    rb_msg(app, GTK_MESSAGE_ERROR, title, body);
 }
 
 void rb_do_switch_profile(App *app, const char *to_id)
@@ -1086,6 +1106,573 @@ static void on_dialog_response(GtkWidget *widget, gint response_id,
     gtk_widget_destroy(widget);
 }
 
+/* ------------------------------------------------------------------ */
+/* Preferences
+ *
+ * The desktop counterpart of Android's ProfileSettingsScreen.  Every control
+ * writes through rb_pref_set() or rb_pref_set_int(), so a change lands in the
+ * PROFILE it was made in — which is the whole point of the per-profile
+ * settings the rest of this file reads.
+ *
+ * After a write the affected subsystem is refreshed immediately rather than
+ * at the next navigation, so the switch does what it says while the user is
+ * looking at it. */
+
+/* Applies whatever a preference key controls to the running browser.  A key
+ * with no live effect (a stored-only setting) falls through to the sweep at
+ * the end, which is idempotent and cheap.
+ *
+ * The comparisons are exact strings, not a switch on the first letter: the
+ * keys share initials ("theme" and "translate_target_language", "download_
+ * subfolder" and "dns_mode"), and a prefix test would apply the wrong one. */
+static void rb_prefs_apply_key(App *app, const char *key)
+{
+    if (app == NULL || key == NULL) return;
+
+    if (strcmp(key, RB_PREF_JAVASCRIPT) == 0) {
+        app->js_enabled = rb_pref_int(app, RB_PREF_JAVASCRIPT, 1);
+        rb_gw_apply_js(app);
+    } else if (strcmp(key, RB_PREF_HOME_LOCAL) == 0) {
+        rb_set_str(&app->home_url,
+                   rb_strdup(rb_pref(app, RB_PREF_HOME_LOCAL,
+                                     "https://duckduckgo.com")));
+    } else if (strcmp(key, RB_PREF_UA_MODE) == 0 ||
+               strcmp(key, RB_PREF_UA_PRESET_ID) == 0 ||
+               strcmp(key, RB_PREF_CUSTOM_USER_AGENT) == 0) {
+        rb_gw_apply_ua(app);
+    } else if (strcmp(key, RB_PREF_THEME) == 0 ||
+               strcmp(key, RB_PREF_ACCENT_ARGB) == 0) {
+        rb_css_load(app);
+    } else if (strcmp(key, RB_PREF_DOWNLOAD_SUBFOLDER) == 0) {
+        /* rb_downloads_dir_init assigns rather than appends, so the old path
+         * has to go first. */
+        rb_set_str(&app->download_dir, NULL);
+        rb_downloads_dir_init(app);
+    }
+
+    /* Everything the content blocker's rules or the WebKit view settings
+     * depend on is re-applied wholesale: it is idempotent, so there is no
+     * need to work out here which switch moved. */
+    rb_gw_apply_web_settings(app);
+    rb_gw_content_blocking_apply(app);
+    rb_profiles_save(app);
+}
+
+/* Rows carry their preference key on the widget, so one callback serves every
+ * switch in the dialog. */
+static void on_pref_switch(GObject *obj, GParamSpec *pspec, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    const char *key = (const char *)g_object_get_data(obj, "rb-pref-key");
+    (void)pspec;
+    if (key == NULL) return;
+    rb_pref_set_int(app, key, gtk_switch_get_active(GTK_SWITCH(obj)) ? 1 : 0);
+    rb_prefs_apply_key(app, key);
+}
+
+/* A labelled switch row.  `fallback` is what the core's default is, so a
+ * profile that never changed the key still shows the right state. */
+static void rb_pref_row(GtkWidget *grid, int row, App *app, const char *key,
+                        int fallback, const char *title, const char *subtitle)
+{
+    GtkWidget *label;
+    GtkWidget *sw;
+    char *markup;
+
+    markup = g_markup_printf_escaped("<b>%s</b>%s%s",
+        title,
+        (subtitle != NULL) ? "\n" : "",
+        (subtitle != NULL) ? subtitle : "");
+    label = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(label), markup);
+    g_free(markup);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(label), TRUE);
+    gtk_widget_set_hexpand(label, TRUE);
+    gtk_grid_attach(GTK_GRID(grid), label, 0, row, 1, 1);
+
+    sw = gtk_switch_new();
+    gtk_widget_set_valign(sw, GTK_ALIGN_CENTER);
+    gtk_switch_set_active(GTK_SWITCH(sw), rb_pref_int(app, key, fallback) ? TRUE : FALSE);
+    g_object_set_data_full(G_OBJECT(sw), "rb-pref-key", rb_strdup(key), free);
+    g_signal_connect(sw, "notify::active", G_CALLBACK(on_pref_switch), app);
+    gtk_grid_attach(GTK_GRID(grid), sw, 1, row, 1, 1);
+}
+
+/* A combo row whose options are (id, label) pairs terminated by a NULL id.
+ * One callback serves all of them; the key and the value list ride on the
+ * widget. */
+typedef struct {
+    const char *key;
+    const char *const *ids;    /* ids[i] pairs with labels[i] */
+    const char *const *labels;
+} rb_pref_choices;
+
+static void on_pref_combo(GtkComboBox *combo, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    rb_pref_choices *ch = (rb_pref_choices *)g_object_get_data(G_OBJECT(combo),
+                                                              "rb-pref-choices");
+    char *active;
+    if (ch == NULL) return;
+    active = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(combo));
+    if (active == NULL) return;
+    /* The visible text is the label; the id is the label's twin by index. */
+    {
+        int i;
+        for (i = 0; ch->labels[i] != NULL; i++) {
+            if (strcmp(ch->labels[i], active) == 0) {
+                rb_pref_set(app, ch->key, ch->ids[i]);
+                rb_prefs_apply_key(app, ch->key);
+                break;
+            }
+        }
+    }
+    g_free(active);
+}
+
+static void rb_pref_combo_row(GtkWidget *grid, int row, App *app,
+                              const char *key, const char *const *ids,
+                              const char *const *labels, const char *current,
+                              const char *title)
+{
+    GtkWidget *label = gtk_label_new(title);
+    GtkWidget *combo = gtk_combo_box_text_new();
+    rb_pref_choices *ch = g_new0(rb_pref_choices, 1);
+    int i;
+    int sel = 0;
+
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_widget_set_hexpand(label, TRUE);
+    gtk_grid_attach(GTK_GRID(grid), label, 0, row, 1, 1);
+
+    ch->key = key;
+    ch->ids = ids;
+    ch->labels = labels;
+    for (i = 0; labels[i] != NULL; i++) {
+        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(combo), labels[i]);
+        if (current != NULL && ids[i] != NULL && strcmp(ids[i], current) == 0) {
+            sel = i;
+        }
+    }
+    gtk_combo_box_set_active(GTK_COMBO_BOX(combo), sel);
+    g_object_set_data_full(G_OBJECT(combo), "rb-pref-choices", ch, g_free);
+    g_signal_connect(combo, "changed", G_CALLBACK(on_pref_combo), app);
+    gtk_grid_attach(GTK_GRID(grid), combo, 1, row, 1, 1);
+}
+
+/* An entry row with an Apply button: the value is written when Apply is
+ * pressed, not on every keystroke, so a half-typed URL is never saved. */
+static void on_pref_entry_apply(GtkButton *btn, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    const char *key = (const char *)g_object_get_data(G_OBJECT(btn), "rb-pref-key");
+    GtkWidget *entry = (GtkWidget *)g_object_get_data(G_OBJECT(btn), "rb-pref-entry");
+    const char *text;
+    if (key == NULL || entry == NULL) return;
+    text = gtk_entry_get_text(GTK_ENTRY(entry));
+    rb_pref_set(app, key, (text != NULL) ? text : "");
+    rb_prefs_apply_key(app, key);
+}
+
+static void rb_pref_entry_row(GtkWidget *grid, int row, App *app,
+                              const char *key, const char *current,
+                              const char *title)
+{
+    GtkWidget *label = gtk_label_new(title);
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *entry = gtk_entry_new();
+    GtkWidget *apply = gtk_button_new_with_label("Apply");
+
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_grid_attach(GTK_GRID(grid), label, 0, row, 2, 1);
+
+    gtk_entry_set_text(GTK_ENTRY(entry), (current != NULL) ? current : "");
+    gtk_widget_set_hexpand(entry, TRUE);
+    gtk_box_pack_start(GTK_BOX(box), entry, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(box), apply, FALSE, FALSE, 0);
+    g_object_set_data_full(G_OBJECT(apply), "rb-pref-key", rb_strdup(key), free);
+    g_object_set_data(G_OBJECT(apply), "rb-pref-entry", entry);
+    g_signal_connect(apply, "clicked", G_CALLBACK(on_pref_entry_apply), app);
+    gtk_grid_attach(GTK_GRID(grid), box, 0, row + 1, 2, 1);
+}
+
+static GtkWidget *rb_pref_page(void)
+{
+    GtkWidget *grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 8);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
+    gtk_container_set_border_width(GTK_CONTAINER(grid), 12);
+    gtk_widget_set_margin_end(grid, 12);
+    return grid;
+}
+
+static GtkWidget *rb_pref_scrolled(GtkWidget *child)
+{
+    GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_container_add(GTK_CONTAINER(sw), child);
+    return sw;
+}
+
+/* --- Danger zone: clear browsing data ---
+ *
+ * Android's ClearDataSection.  The WebKit half is real per-profile work
+ * (cookies, cache and site storage live in the profile's data directories),
+ * and the store half is the core's own files. */
+
+typedef struct {
+    App *app;
+    GtkWidget *history, *cookies, *cache, *site_data, *downloads;
+} rb_clear_widgets;
+
+static void on_clear_data(GtkButton *btn, gpointer user_data)
+{
+    rb_clear_widgets *w = (rb_clear_widgets *)user_data;
+    App *app = w->app;
+    const rb_profile *p = rb_active_profile(app);
+    GString *done = g_string_new("");
+    WebKitWebsiteDataTypes types = 0;
+
+    if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w->history)) &&
+        app->history != NULL) {
+        int n = rb_history_clear(app->history);
+        if (app->path_history) rb_history_save(app->history, app->path_history);
+        g_string_append_printf(done, "history (%d)\n", n);
+    }
+    if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w->cookies))) {
+        types |= WEBKIT_WEBSITE_DATA_COOKIES;
+        /* The core keeps no cookie jar — WebKit owns it — so there is nothing
+         * to clear here beyond the data manager below. */
+    }
+    if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w->cache))) {
+        types |= WEBKIT_WEBSITE_DATA_MEMORY_CACHE | WEBKIT_WEBSITE_DATA_DISK_CACHE;
+    }
+    if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w->site_data))) {
+        types |= WEBKIT_WEBSITE_DATA_LOCAL_STORAGE |
+                 WEBKIT_WEBSITE_DATA_INDEXEDDB_DATABASES |
+                 WEBKIT_WEBSITE_DATA_WEBSQL_DATABASES |
+                 WEBKIT_WEBSITE_DATA_SESSION_STORAGE |
+                 WEBKIT_WEBSITE_DATA_SERVICE_WORKER_REGISTRATIONS |
+                 WEBKIT_WEBSITE_DATA_DOM_CACHE;
+    }
+    if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w->downloads)) &&
+        app->downloads != NULL && p != NULL) {
+        int n = rb_downloads_clear_profile(app->downloads, p->id);
+        if (app->path_downloads) {
+            rb_downloads_save(app->downloads, app->path_downloads);
+        }
+        /* Records only: the FILES the user downloaded are never deleted by a
+         * "clear browsing data" — that is the user's data, not the browser's. */
+        g_string_append_printf(done, "download records (%d)\n", n);
+    }
+
+    if (types != 0 && app->ctx != NULL) {
+        WebKitWebsiteDataManager *dm =
+            webkit_web_context_get_website_data_manager(app->ctx);
+        if (dm != NULL) {
+            /* Every profile's data lives under its own directories, so this
+             * reaches this profile's cookies and cache and no other's. */
+            webkit_website_data_manager_clear(dm, types, 0, NULL, NULL, NULL);
+            g_string_append(done, "cookies / cache / site data\n");
+        }
+    }
+
+    if (done->len > 0) {
+        g_string_prepend(done, "Cleared:\n");
+        rb_warn(app, "Browsing data", done->str);
+    } else {
+        rb_warn(app, "Browsing data", "Nothing was selected.");
+    }
+    g_string_free(done, TRUE);
+    (void)btn;
+}
+
+/* --- the dialog --- */
+
+static void rb_show_prefs_dialog_impl(App *app)
+{
+    GtkWidget *dlg;
+    GtkWidget *notebook;
+    GtkWidget *grid;
+    GtkWidget *area;
+    int r;
+
+    const rb_theme *theme;
+
+    if (app == NULL || app->win == NULL) return;
+
+    dlg = gtk_dialog_new_with_buttons("Profile Settings", GTK_WINDOW(app->win),
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT | GTK_DIALOG_USE_HEADER_BAR,
+        "_Close", GTK_RESPONSE_CLOSE, NULL);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 720, 560);
+    g_signal_connect(dlg, "response", G_CALLBACK(on_dialog_response), NULL);
+
+    notebook = gtk_notebook_new();
+    area = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    gtk_box_pack_start(GTK_BOX(area), notebook, TRUE, TRUE, 0);
+
+    /* ---- Appearance ---- */
+    grid = rb_pref_page();
+    r = 0;
+    {
+        /* The theme list is the core's registry, so the desktop offers the
+         * same presets the Android theme studio is built from. */
+        static const char *ids[64];
+        static const char *labels[64];
+        int n = rb_theme_count();
+        int i;
+        if (n > 63) n = 63;
+        for (i = 0; i < n; i++) {
+            const rb_theme *t = rb_theme_at(i);
+            ids[i] = (t != NULL) ? t->id : "";
+            labels[i] = (t != NULL && t->name != NULL) ? t->name : "";
+        }
+        ids[n] = NULL;
+        labels[n] = NULL;
+        theme = rb_theme_current(app);
+        rb_pref_combo_row(grid, r++, app, RB_PREF_THEME, ids, labels,
+                          (theme != NULL) ? theme->id : NULL, "Theme");
+    }
+    rb_pref_row(grid, r++, app, RB_PREF_REDUCED_MOTION, 0, "Reduce motion",
+                "Turns off the transitions the chrome animates");
+    rb_pref_row(grid, r++, app, RB_PREF_HIGH_CONTRAST, 0, "High contrast",
+                "Strengthens the contrast between text and its background");
+    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), rb_pref_scrolled(grid),
+                             gtk_label_new("Appearance"));
+
+    /* ---- Search ---- */
+    grid = rb_pref_page();
+    r = 0;
+    {
+        static const char *ids[64];
+        static const char *labels[64];
+        int n = rb_search_count();
+        int i;
+        if (n > 63) n = 63;
+        for (i = 0; i < n; i++) {
+            const rb_search_engine *e = rb_search_at(i);
+            ids[i] = (e != NULL) ? e->id : "";
+            labels[i] = (e != NULL && e->label != NULL) ? e->label : "";
+        }
+        ids[n] = NULL;
+        labels[n] = NULL;
+        rb_pref_combo_row(grid, r++, app, RB_PREF_SEARCH_ENGINE, ids, labels,
+                          rb_pref(app, RB_PREF_SEARCH_ENGINE, "duckduckgo"),
+                          "Search engine");
+    }
+    rb_pref_row(grid, r++, app, RB_PREF_SEARCH_SUGGESTIONS, 0,
+                "Search suggestions",
+                "Sends what you type to the search engine as you type it");
+    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), rb_pref_scrolled(grid),
+                             gtk_label_new("Search"));
+
+    /* ---- Privacy & Blocking ---- */
+    grid = rb_pref_page();
+    r = 0;
+    rb_pref_row(grid, r++, app, RB_PREF_BLOCK_ADS, 0, "Block ads",
+                "Blocks known ad hosts from the bundled offline list");
+    rb_pref_row(grid, r++, app, RB_PREF_BLOCK_TRACKERS, 0, "Block trackers",
+                NULL);
+    rb_pref_row(grid, r++, app, RB_PREF_BLOCK_CROSS_SITE, 0,
+                "Block cross-site trackers", NULL);
+    rb_pref_row(grid, r++, app, RB_PREF_BLOCK_POPUPS, 0, "Block popups", NULL);
+    rb_pref_row(grid, r++, app, RB_PREF_BLOCK_MALICIOUS, 1,
+                "Block malicious websites",
+                "A top-level navigation into a listed malicious host is refused");
+    rb_pref_row(grid, r++, app, RB_PREF_HTTPS_UPGRADE, 1, "HTTPS upgrades",
+                "Upgrades http to https and falls back to http when the secure "
+                "version is unreachable");
+    rb_pref_row(grid, r++, app, RB_PREF_BLOCK_THIRD_PARTY_COOKIES, 0,
+                "Block third-party cookies",
+                "Off by default for compatibility: many logins and embeds need them");
+    /* Shown even though it does nothing here: hiding it would let a user
+     * believe their profile has no such setting, and the note says plainly
+     * that this edition cannot honour it. */
+    rb_pref_row(grid, r++, app, RB_PREF_BLOCK_MIXED_CONTENT, 0,
+                "Block mixed content",
+                "Stored and honoured on Android; WebKitGTK exposes no switch for "
+                "it, so it has no effect on this edition");
+    rb_pref_row(grid, r++, app, RB_PREF_JAVASCRIPT, 1, "JavaScript enabled",
+                "Never disabled by default");
+    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), rb_pref_scrolled(grid),
+                             gtk_label_new("Privacy"));
+
+    /* ---- User-Agent ---- */
+    grid = rb_pref_page();
+    r = 0;
+    {
+        static const char *ids[4] = { "default", "preset", "custom", NULL };
+        static const char *labels[4] = { "Default (WebKit)",
+                                         "Preset", "Custom", NULL };
+        rb_pref_combo_row(grid, r++, app, RB_PREF_UA_MODE, ids, labels,
+                          rb_pref(app, RB_PREF_UA_MODE, "default"),
+                          "User-Agent mode");
+    }
+    {
+        static const char *ids[64];
+        static const char *labels[64];
+        static char buf[64][128];
+        int n = rb_ua_count();
+        int i;
+        if (n > 63) n = 63;
+        for (i = 0; i < n; i++) {
+            const rb_ua_preset *p = rb_ua_at(i);
+            ids[i] = (p != NULL) ? p->id : "";
+            snprintf(buf[i], sizeof buf[i], "%s%s",
+                     (p != NULL && p->label != NULL) ? p->label : "",
+                     (p != NULL && p->is_desktop) ? "  (desktop)" : "");
+            labels[i] = buf[i];
+        }
+        ids[n] = NULL;
+        labels[n] = NULL;
+        rb_pref_combo_row(grid, r++, app, RB_PREF_UA_PRESET_ID, ids, labels,
+                          rb_pref(app, RB_PREF_UA_PRESET_ID, ""), "Preset");
+    }
+    rb_pref_entry_row(grid, r, app, RB_PREF_CUSTOM_USER_AGENT,
+                      rb_pref(app, RB_PREF_CUSTOM_USER_AGENT, ""),
+                      "Custom User-Agent");
+    r += 2;
+    {
+        char *ua = rb_ua_current(app);
+        GtkWidget *note = gtk_label_new(NULL);
+        char *markup = g_markup_printf_escaped(
+            "<small>Current: %s\nChanging the User-Agent string does not change "
+            "any other platform or device characteristic.</small>",
+            (ua != NULL) ? ua : "the engine default");
+        gtk_label_set_markup(GTK_LABEL(note), markup);
+        gtk_label_set_xalign(GTK_LABEL(note), 0.0f);
+        gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);
+        g_free(markup);
+        free(ua);
+        gtk_grid_attach(GTK_GRID(grid), note, 0, r++, 2, 1);
+    }
+    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), rb_pref_scrolled(grid),
+                             gtk_label_new("User-Agent"));
+
+    /* ---- DNS & Network ---- */
+    grid = rb_pref_page();
+    r = 0;
+    {
+        static const char *ids[5] = { "system", "auto", "doh", "dot", NULL };
+        static const char *labels[5] = { "System",
+                                         "Use the global browser setting",
+                                         "DNS-over-HTTPS",
+                                         "DNS-over-TLS", NULL };
+        rb_pref_combo_row(grid, r++, app, RB_PREF_DNS_MODE, ids, labels,
+                          rb_pref(app, RB_PREF_DNS_MODE, "system"), "DNS mode");
+    }
+    rb_pref_entry_row(grid, r, app, RB_PREF_DOH_URL,
+                      rb_pref(app, RB_PREF_DOH_URL, ""), "DNS-over-HTTPS URL");
+    r += 2;
+    rb_pref_entry_row(grid, r, app, RB_PREF_DOT_HOSTNAME,
+                      rb_pref(app, RB_PREF_DOT_HOSTNAME, ""),
+                      "DNS-over-TLS hostname");
+    r += 2;
+    {
+        GtkWidget *note = gtk_label_new(NULL);
+        gtk_label_set_markup(GTK_LABEL(note),
+            "<small>Stored and shown so the two editions agree; this build does "
+            "not resolve names itself — it leaves DNS to the system resolver. "
+            "See README.md.</small>");
+        gtk_label_set_xalign(GTK_LABEL(note), 0.0f);
+        gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);
+        gtk_grid_attach(GTK_GRID(grid), note, 0, r++, 2, 1);
+    }
+    rb_pref_row(grid, r++, app, RB_PREF_NET_PROTECT_GLOBAL, 1,
+                "Network protection: use the global setting", NULL);
+    rb_pref_row(grid, r++, app, RB_PREF_NET_PROTECT_ENABLED, 1,
+                "IP conflict warning enabled",
+                "Warns when the address this profile resolved to is also in use "
+                "on the local network");
+    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), rb_pref_scrolled(grid),
+                             gtk_label_new("Network"));
+
+    /* ---- Homepage, tabs & language ---- */
+    grid = rb_pref_page();
+    r = 0;
+    rb_pref_entry_row(grid, r, app, RB_PREF_HOME_LOCAL,
+                      rb_pref(app, RB_PREF_HOME_LOCAL, "https://duckduckgo.com"),
+                      "Homepage");
+    r += 2;
+    rb_pref_row(grid, r++, app, RB_PREF_HOMEPAGE_ENABLED, 1, "Show homepage",
+                NULL);
+    rb_pref_row(grid, r++, app, RB_PREF_SHOW_PRIVACY_STATS, 1,
+                "Show privacy statistics", NULL);
+    rb_pref_row(grid, r++, app, RB_PREF_SHOW_RECENT_SITES, 1,
+                "Show recent sites", NULL);
+    rb_pref_row(grid, r++, app, RB_PREF_SHOW_CLOCK, 1, "Show clock", NULL);
+    rb_pref_row(grid, r++, app, RB_PREF_DESKTOP_MODE_DEFAULT, 0,
+                "Request desktop sites by default", NULL);
+    rb_pref_row(grid, r++, app, RB_PREF_AUTOFILL_ENABLED, 0,
+                "Autofill integration",
+                "Android delegates this to the system autofill framework, which "
+                "a desktop browser has no equivalent of — this edition stores no "
+                "credentials and does not fill forms");
+    rb_pref_entry_row(grid, r, app, RB_PREF_DOWNLOAD_SUBFOLDER,
+                      rb_pref(app, RB_PREF_DOWNLOAD_SUBFOLDER, "RoomBrowser"),
+                      "Downloads subfolder");
+    r += 2;
+    rb_pref_entry_row(grid, r, app, RB_PREF_TRANSLATE_TARGET,
+                      rb_pref(app, RB_PREF_TRANSLATE_TARGET, "id"),
+                      "Translate target language (e.g. id)");
+    r += 2;
+    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), rb_pref_scrolled(grid),
+                             gtk_label_new("Homepage & Languages"));
+
+    /* ---- Danger zone ---- */
+    grid = rb_pref_page();
+    r = 0;
+    {
+        static const char *names[] = { "History", "Cookies", "Cache",
+                                       "Site data (local storage, IndexedDB)",
+                                       "Download records" };
+        GtkWidget *boxes[5];
+        rb_clear_widgets *w = g_new0(rb_clear_widgets, 1);
+        GtkWidget *btn;
+        GtkWidget *note;
+        int i;
+        static const int defaults[5] = { 1, 1, 1, 0, 0 };
+
+        w->app = app;
+        for (i = 0; i < 5; i++) {
+            boxes[i] = gtk_check_button_new_with_label(names[i]);
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(boxes[i]),
+                                         defaults[i] ? TRUE : FALSE);
+            gtk_grid_attach(GTK_GRID(grid), boxes[i], 0, r++, 2, 1);
+        }
+        w->history = boxes[0];
+        w->cookies = boxes[1];
+        w->cache = boxes[2];
+        w->site_data = boxes[3];
+        w->downloads = boxes[4];
+
+        note = gtk_label_new(NULL);
+        gtk_label_set_markup(GTK_LABEL(note),
+            "<small>This clears the data of the ACTIVE PROFILE only; every other "
+            "profile keeps its own cookies and cache. Downloaded files are never "
+            "deleted — only the records of them.</small>");
+        gtk_label_set_xalign(GTK_LABEL(note), 0.0f);
+        gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);
+        gtk_grid_attach(GTK_GRID(grid), note, 0, r++, 2, 1);
+
+        btn = gtk_button_new_with_label("Clear selected data");
+        g_signal_connect(btn, "clicked", G_CALLBACK(on_clear_data), w);
+        g_signal_connect_swapped(dlg, "destroy", G_CALLBACK(g_free), w);
+        gtk_grid_attach(GTK_GRID(grid), btn, 0, r++, 2, 1);
+    }
+    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), rb_pref_scrolled(grid),
+                             gtk_label_new("Clear data"));
+
+    gtk_widget_show_all(dlg);
+}
+
+void rb_show_prefs_dialog(App *app)
+{
+    rb_show_prefs_dialog_impl(app);
+}
+
 static void rb_show_about(App *app)
 {
     GtkWidget *dlg = gtk_about_dialog_new();
@@ -1272,6 +1859,13 @@ static void on_menu_downloads(GtkMenuItem *item, gpointer user_data)
     rb_show_downloads_dialog(app);
 }
 
+static void on_menu_prefs(GtkMenuItem *item, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    (void)item;
+    rb_show_prefs_dialog(app);
+}
+
 /* ------------------------------------------------------------------ */
 /* Profiles menu
 
@@ -1406,6 +2000,10 @@ static void rb_build_menu(App *app)
 
     item = gtk_menu_item_new_with_label("Downloads");
     g_signal_connect(item, "activate", G_CALLBACK(on_menu_downloads), app);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = gtk_menu_item_new_with_label("Preferences");
+    g_signal_connect(item, "activate", G_CALLBACK(on_menu_prefs), app);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());

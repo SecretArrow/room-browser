@@ -525,3 +525,139 @@ const char *rb_filter_category_name(rb_filter_category cat)
     default:                            return "None";
     }
 }
+
+/* ------------------------------------------------------------------ */
+/* Suspicious-site signals (FilterEngine.suspiciousSignals) */
+
+/* Kotlin's Regex("^https?://[0-9]{1,3}(\\.[0-9]{1,3}){3}") — `containsMatchIn`
+ * with a leading ^ anchor, so it is a prefix test.  Written out rather than
+ * pulled from a regex library: the core has no regex dependency, the pattern
+ * is fixed, and spelling it out is what makes it reviewable.
+ *
+ * It is intentionally as loose as the Kotlin one: each octet is 1-3 digits
+ * and is NOT range-checked, so "999.999.999.999" counts.  That is a signal
+ * ("looks like a bare address"), not a validation, and mirroring it exactly
+ * keeps the two editions warning about the same pages. */
+static int rb_suspicious_is_ip_host(const char *lowered)
+{
+    const char *p = lowered;
+    int octet;
+
+    if (strncmp(p, "http://", 7) == 0) {
+        p += 7;
+    } else if (strncmp(p, "https://", 8) == 0) {
+        p += 8;
+    } else {
+        return 0;
+    }
+
+    for (octet = 0; octet < 4; octet++) {
+        int digits = 0;
+        while (digits < 3 && p[digits] >= '0' && p[digits] <= '9') {
+            digits++;
+        }
+        if (digits == 0) {
+            return 0;
+        }
+        p += digits;
+        if (octet < 3) {
+            if (*p != '.') {
+                return 0;
+            }
+            p++;
+        }
+    }
+    return 1;   /* the four octets are there; whatever follows is not this
+                 * check's business — Kotlin does not anchor the end either */
+}
+
+unsigned int rb_filters_suspicious_signals(const char *url)
+{
+    unsigned int signals = RB_SUSPICIOUS_NONE;
+    char *lowered;
+    size_t n;
+    size_t i;
+
+    if (url == NULL || url[0] == '\0') {
+        return RB_SUSPICIOUS_NONE;
+    }
+    /* Kotlin lowercases the whole URL once and tests that; the same string is
+     * built here so the three checks see exactly what the Kotlin ones see. */
+    n = strlen(url);
+    lowered = (char *)malloc(n + 1);
+    if (lowered == NULL) {
+        return RB_SUSPICIOUS_NONE;
+    }
+    for (i = 0; i < n; i++) {
+        lowered[i] = (char)tolower((unsigned char)url[i]);
+    }
+    lowered[n] = '\0';
+
+    if (strncmp(lowered, "http://", 7) == 0) {
+        signals |= RB_SUSPICIOUS_INSECURE_HTTP;
+    }
+    if (rb_suspicious_is_ip_host(lowered)) {
+        signals |= RB_SUSPICIOUS_IP_HOST;
+    }
+    /* strstr, not a token check: Kotlin's contains() is a plain substring
+     * test, so "xn--" anywhere in the URL counts. */
+    if (strstr(lowered, "xn--") != NULL) {
+        signals |= RB_SUSPICIOUS_PUNYCODE;
+    }
+
+    free(lowered);
+    return signals;
+}
+
+const char *rb_suspicious_signal_name(rb_suspicious_signal signal)
+{
+    switch (signal) {
+    case RB_SUSPICIOUS_INSECURE_HTTP: return "insecure http connection";
+    case RB_SUSPICIOUS_IP_HOST:       return "IP address used instead of a domain name";
+    case RB_SUSPICIOUS_PUNYCODE:      return "punycode domain (possible homograph)";
+    case RB_SUSPICIOUS_NONE:
+    default:                          return NULL;
+    }
+}
+
+char *rb_filters_suspicious_text(unsigned int signals)
+{
+    /* The three names, in the order Kotlin appends them, so the joined string
+     * reads the same on both editions. */
+    static const rb_suspicious_signal ORDER[] = {
+        RB_SUSPICIOUS_INSECURE_HTTP,
+        RB_SUSPICIOUS_IP_HOST,
+        RB_SUSPICIOUS_PUNYCODE
+    };
+    size_t cap = 1;
+    size_t i;
+    char *out;
+    char *w;
+
+    for (i = 0; i < sizeof ORDER / sizeof ORDER[0]; i++) {
+        if (signals & (unsigned int)ORDER[i]) {
+            cap += strlen(rb_suspicious_signal_name(ORDER[i])) + 2;
+        }
+    }
+    out = (char *)malloc(cap);
+    if (out == NULL) {
+        return NULL;
+    }
+    w = out;
+    *w = '\0';
+    for (i = 0; i < sizeof ORDER / sizeof ORDER[0]; i++) {
+        const char *name;
+        if (!(signals & (unsigned int)ORDER[i])) {
+            continue;
+        }
+        name = rb_suspicious_signal_name(ORDER[i]);
+        if (w != out) {
+            *w++ = ',';
+            *w++ = ' ';
+        }
+        memcpy(w, name, strlen(name));
+        w += strlen(name);
+        *w = '\0';
+    }
+    return out;
+}

@@ -11,6 +11,11 @@
 #include "chrome.h"
 #include "webview.h"
 
+/* Defined below, next to the doc comment that explains what they may and may
+ * not do; the context and view constructors need them first. */
+static void rb_gw_web_settings_to(App *app, WebKitSettings *s);
+static void rb_gw_cookie_policy_apply(App *app);
+
 /* ------------------------------------------------------------------ */
 /* Tab resolution (by webview pointer) */
 
@@ -371,6 +376,135 @@ void rb_gw_downloads_init(App *app)
 }
 
 /* ------------------------------------------------------------------ */
+/* Navigation policy
+ *
+ * The half of Android's WebViewClient that WebKitGTK splits differently.
+ * Android's shouldInterceptRequest sees every subresource (that half is the
+ * content blocker above); shouldOverrideUrlLoading sees main-frame
+ * navigations, and this is its GTK counterpart.
+ *
+ * Mirrored from WebClients.kt exactly:
+ *   - a main-frame navigation into a MALICIOUS host is blocked outright when
+ *     block-malicious is on, and a suspicious-looking one is allowed but
+ *     reported (Android's onSuspiciousSite);
+ *   - a popup is blocked when block-popups is on, counted, and reported
+ *     (Android's onPopupBlocked), and otherwise becomes a tab.
+ *
+ * The subresource switches do NOT apply here: Android returns early for the
+ * main frame ("if (request.isForMainFrame) return null"), so a page is never
+ * blocked by the ad or tracker list merely for being navigated to.  The
+ * content blocker's rules exclude documents for exactly that reason. */
+
+static gboolean on_decide_policy(WebKitWebView *wv, WebKitPolicyDecision *decision,
+                                 WebKitPolicyDecisionType type, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    rb_filter_options opts;
+    char *uri = NULL;
+    char *host = NULL;
+    gboolean handled = FALSE;
+
+    (void)wv;
+    if (app == NULL || decision == NULL) return FALSE;
+    opts = rb_filter_opts(app);
+
+    if (type == WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION) {
+        WebKitNavigationAction *action =
+            webkit_navigation_policy_decision_get_navigation_action(
+                WEBKIT_NAVIGATION_POLICY_DECISION(decision));
+        WebKitURIRequest *req =
+            (action != NULL) ? webkit_navigation_action_get_request(action) : NULL;
+        if (req != NULL) uri = rb_strdup(webkit_uri_request_get_uri(req));
+    } else if (type == WEBKIT_POLICY_DECISION_TYPE_NEW_WINDOW_ACTION) {
+        WebKitNavigationAction *action =
+            webkit_navigation_policy_decision_get_navigation_action(
+                WEBKIT_NAVIGATION_POLICY_DECISION(decision));
+        WebKitURIRequest *req =
+            (action != NULL) ? webkit_navigation_action_get_request(action) : NULL;
+        if (req != NULL) uri = rb_strdup(webkit_uri_request_get_uri(req));
+
+        if (opts.block_popups) {
+            webkit_policy_decision_ignore(decision);
+            if (app->filters != NULL) {
+                rb_filters_count_block(app->filters, RB_FILTER_POPUP);
+            }
+            handled = TRUE;
+        }
+    } else {
+        return FALSE;   /* responses are WebKit's business */
+    }
+
+    if (!handled && uri != NULL && uri[0] != '\0') {
+        host = rb_url_host_of(uri);
+        if (host != NULL && host[0] != '\0' && opts.block_malicious &&
+            app->filters != NULL) {
+            /* blockedCategory only consults the malicious list here, because
+             * that is the list a main frame is allowed to be judged by. */
+            rb_filter_category cat = rb_filters_blocked_category(app->filters, host);
+            if (cat == RB_FILTER_MALICIOUS) {
+                rb_filters_count_block(app->filters, RB_FILTER_MALICIOUS);
+                webkit_policy_decision_ignore(decision);
+                rb_warn(app, "Blocked a malicious site",
+                        "This address is on the malicious-site blocklist, so "
+                        "the page was not loaded.");
+                handled = TRUE;
+            }
+        }
+        if (!handled && host != NULL && host[0] != '\0') {
+            /* Not on any list: the heuristics still get to speak, and the
+             * page is allowed through — a warning, not a block. */
+            unsigned int signals = rb_filters_suspicious_signals(uri);
+            if (signals != RB_SUSPICIOUS_NONE) {
+                char *text = rb_filters_suspicious_text(signals);
+                if (text != NULL && text[0] != '\0') {
+                    char *body = (char *)malloc(strlen(text) + 64);
+                    if (body != NULL) {
+                        sprintf(body, "Caution: %s", text);
+                        rb_warn(app, "Suspicious address", body);
+                        free(body);
+                    }
+                }
+                free(text);
+            }
+        }
+    }
+
+    free(host);
+    free(uri);
+    return handled;
+}
+
+/* A page asking for a window becomes a tab, which is what Android does with
+ * a popup that the profile has not blocked.  Returning NULL would drop it
+ * silently. */
+static WebKitWebView *on_create(WebKitWebView *wv, WebKitNavigationAction *action,
+                                gpointer user_data)
+{
+    App *app = (App *)user_data;
+    WebKitURIRequest *req;
+    const char *uri;
+    GtkTab *gt;
+
+    (void)wv;
+    if (app == NULL || action == NULL) return NULL;
+    req = webkit_navigation_action_get_request(action);
+    uri = (req != NULL) ? webkit_uri_request_get_uri(req) : NULL;
+    if (uri == NULL || uri[0] == '\0') return NULL;
+
+    rb_do_add_tab(app, uri);
+    gt = rb_active_tab(app);
+    return (gt != NULL) ? gt->wv : NULL;
+}
+
+static gboolean on_close_view(WebKitWebView *wv, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    GtkTab *gt = rb_tab_by_view(app, wv);
+    if (gt != NULL) rb_do_close_tab_id(app, gt->id);
+    return TRUE;   /* this layer took care of it */
+}
+
+/* ------------------------------------------------------------------ */
 /* Content blocking
  *
  * Android blocks in shouldInterceptRequest, where the engine hands it every
@@ -435,9 +569,15 @@ static size_t rb_cb_rule(char *out, size_t out_len, const char *host, int comma)
     int n;
 
     if (!rb_cb_escape_host(host, esc, sizeof esc)) return 0;
+    /* "resource-type" excludes "document": Android never lets the host list
+     * judge a main-frame navigation ("if (request.isForMainFrame) return
+     * null"), and a content blocker would otherwise apply the same rules to
+     * top-level loads and blank out pages the user typed. */
     n = snprintf(out, out_len,
                  "%s{\"trigger\":{\"url-filter\":\"^https?://([^/]+\\\\.)?%s([/:]|$)\","
-                 "\"url-filter-is-case-sensitive\":false},"
+                 "\"url-filter-is-case-sensitive\":false,"
+                 "\"resource-type\":[\"image\",\"style-sheet\",\"script\",\"font\","
+                 "\"media\",\"raw\",\"svg-document\",\"popup\"]},"
                  "\"action\":{\"type\":\"block\"}}",
                  comma ? "," : "", esc);
     if (n < 0 || (size_t)n >= out_len) return 0;
@@ -672,6 +812,7 @@ void rb_gw_context_new(App *app)
     app->ctx = webkit_web_context_new_with_website_data_manager(manager);
     g_object_unref(manager);
     rb_gw_downloads_init(app);
+    rb_gw_cookie_policy_apply(app);
     rb_gw_content_blocking_apply(app);
 }
 
@@ -751,6 +892,13 @@ WebKitWebView *rb_gw_new_view(App *app)
     g_signal_connect(wv, "notify::uri", G_CALLBACK(on_notify_uri), app);
     g_signal_connect(wv, "load-changed", G_CALLBACK(on_load_changed), app);
     g_signal_connect(wv, "load-failed", G_CALLBACK(on_load_failed), app);
+    g_signal_connect(wv, "decide-policy", G_CALLBACK(on_decide_policy), app);
+    g_signal_connect(wv, "create", G_CALLBACK(on_create), app);
+    g_signal_connect(wv, "close", G_CALLBACK(on_close_view), app);
+    /* The switches that live on WebKitSettings are applied to THIS view's
+     * settings — the view is not in app->tabs yet, so the sweep over the open
+     * views would miss it. */
+    rb_gw_web_settings_to(app, settings);
     return wv;
 }
 
@@ -766,6 +914,77 @@ void rb_gw_apply_js(App *app)
             }
         }
     }
+}
+
+/* Pushes every per-view WebKit setting that a profile preference controls
+ * onto the open views, and the per-profile cookie policy onto the data
+ * manager.  Idempotent: it reads the preferences and applies all of them, so
+ * a caller never has to work out which one changed.
+ *
+ * NOT PORTED, and deliberately not faked:
+ *   - block-mixed-content.  WebKitGTK blocks active mixed content always and
+ *     allows passive mixed content; it exposes no switch, so the profile
+ *     preference is stored (and honoured by the Android edition) but has no
+ *     effect here.  Pretending otherwise would be a lie in the UI.
+ *   - WebRTC local-IP restrictions.  WebKitSettings has one on/off switch, so
+ *     "restrict_local_ip" and "default" both leave WebRTC on; only "disabled"
+ *     is expressible.  The Android edition documents the same class of
+ *     limitation for WebView. */
+
+static void rb_gw_web_settings_to(App *app, WebKitSettings *s)
+{
+    const char *webrtc;
+    gboolean webrtc_on = TRUE;
+
+    if (s == NULL) return;
+    webrtc = rb_pref(app, RB_PREF_WEBRTC_POLICY, "default");
+    if (webrtc != NULL && strcmp(webrtc, "disabled") == 0) {
+        webrtc_on = FALSE;
+    }
+
+    g_object_set(s, "enable-javascript", app->js_enabled ? TRUE : FALSE, NULL);
+    g_object_set(s, "enable-webrtc", webrtc_on, NULL);
+    /* Android's search-suggestions switch is about whether typed text leaves
+     * the device; DNS prefetching is the same class of background request, so
+     * it follows the same switch. */
+    g_object_set(s, "enable-dns-prefetching",
+                 rb_pref_int(app, RB_PREF_SEARCH_SUGGESTIONS, 0) ? TRUE : FALSE,
+                 NULL);
+    /* Never enabled: a page must not be able to open windows by itself.  A
+     * popup the profile ALLOWS still becomes a tab — that goes through the
+     * "create" handler, which the user's own click triggers. */
+    g_object_set(s, "javascript-can-open-windows-automatically", FALSE, NULL);
+}
+
+/* The cookie policy lives on the data manager, so it is a property of the
+ * profile's context rather than of any one view. */
+static void rb_gw_cookie_policy_apply(App *app)
+{
+    WebKitWebsiteDataManager *dm;
+    WebKitCookieManager *cm;
+
+    if (app == NULL || app->ctx == NULL) return;
+    dm = webkit_web_context_get_website_data_manager(app->ctx);
+    if (dm == NULL) return;
+    cm = webkit_website_data_manager_get_cookie_manager(dm);
+    if (cm == NULL) return;
+    webkit_cookie_manager_set_accept_policy(cm,
+        rb_pref_int(app, RB_PREF_BLOCK_THIRD_PARTY_COOKIES, 0)
+            ? WEBKIT_COOKIE_POLICY_ACCEPT_NO_THIRD_PARTY
+            : WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS);
+}
+void rb_gw_apply_web_settings(App *app)
+{
+    int i;
+
+    if (app == NULL) return;
+    for (i = 0; i < app->tabs_n; i++) {
+        if (app->tabs[i].wv != NULL) {
+            rb_gw_web_settings_to(app,
+                webkit_web_view_get_settings(app->tabs[i].wv));
+        }
+    }
+    rb_gw_cookie_policy_apply(app);
 }
 
 void rb_gw_navigate(App *app, const char *url)

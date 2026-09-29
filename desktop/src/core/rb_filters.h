@@ -94,6 +94,34 @@ int  rb_filters_stat_total(const rb_filters *f);
 /* Stable, human-readable category name ("Ads", "Trackers", ...). */
 const char *rb_filter_category_name(rb_filter_category cat);
 
+/* --- suspicious-site signals ---
+ *
+ * Port of FilterEngine.suspiciousSignals: heuristics used when a host is on
+ * no list at all, so the user is warned about a page rather than blocked from
+ * it.  Returned as a bitmask because Kotlin returns a list the UI joins.
+ *
+ * The checks are deliberately the same three, with the same spelling and the
+ * same ORDER, as the Android edition.  The IP-address rule is the same
+ * deliberately loose one: it accepts 999.999.999.999, because tightening it
+ * here would make the two editions disagree about which pages warn. */
+typedef enum {
+    RB_SUSPICIOUS_NONE          = 0,
+    RB_SUSPICIOUS_INSECURE_HTTP = 1 << 0, /* "insecure http connection" */
+    RB_SUSPICIOUS_IP_HOST       = 1 << 1, /* "IP address used instead of a domain name" */
+    RB_SUSPICIOUS_PUNYCODE      = 1 << 2  /* "punycode domain (possible homograph)" */
+} rb_suspicious_signal;
+
+/* The signals `url` carries, as a bitmask of rb_suspicious_signal. */
+unsigned int rb_filters_suspicious_signals(const char *url);
+
+/* The Kotlin list element for one signal, or NULL when it is not one. */
+const char *rb_suspicious_signal_name(rb_suspicious_signal signal);
+
+/* All of them joined the way Kotlin's joinToString() does — ", " between,
+ * nothing around — in the declaration order above.  malloc'd; "" when the
+ * mask is empty.  Caller frees. */
+char *rb_filters_suspicious_text(unsigned int signals);
+
 #ifdef __cplusplus
 }
 #endif

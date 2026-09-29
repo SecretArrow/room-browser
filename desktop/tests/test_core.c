@@ -1849,6 +1849,79 @@ static void test_rb_filters(void)
     CHECK(STREQ(rb_filter_category_name(RB_FILTER_AD), "Ads"));
     CHECK(rb_filter_category_name(RB_FILTER_NONE) != NULL);
 
+    /* suspicious-site signals: the three heuristics, in the Kotlin order */
+    {
+        char *text;
+
+        CHECK(rb_filters_suspicious_signals("https://example.com/") ==
+              RB_SUSPICIOUS_NONE);
+        CHECK(rb_filters_suspicious_signals(NULL) == RB_SUSPICIOUS_NONE);
+        CHECK(rb_filters_suspicious_signals("") == RB_SUSPICIOUS_NONE);
+
+        CHECK(rb_filters_suspicious_signals("http://example.com/") ==
+              RB_SUSPICIOUS_INSECURE_HTTP);
+        /* https is not insecure, so the scheme test is on http alone */
+        CHECK((rb_filters_suspicious_signals("https://example.com/") &
+               RB_SUSPICIOUS_INSECURE_HTTP) == 0);
+
+        CHECK(rb_filters_suspicious_signals("http://127.0.0.1/x") ==
+              (RB_SUSPICIOUS_INSECURE_HTTP | RB_SUSPICIOUS_IP_HOST));
+        CHECK(rb_filters_suspicious_signals("https://10.0.0.1/") ==
+              RB_SUSPICIOUS_IP_HOST);
+        /* Kotlin's octet test is 1-3 digits and is NOT range-checked, so an
+         * out-of-range address still counts. Mirroring that is the point. */
+        CHECK(rb_filters_suspicious_signals("https://999.999.999.999/") ==
+              RB_SUSPICIOUS_IP_HOST);
+        /* four octets are required: three, or a trailing letter, is not one */
+        CHECK(rb_filters_suspicious_signals("https://1.2.3/") ==
+              RB_SUSPICIOUS_NONE);
+        CHECK(rb_filters_suspicious_signals("https://1.2.3.4a/") ==
+              RB_SUSPICIOUS_IP_HOST); /* nothing anchors the end, as in Kotlin */
+        CHECK(rb_filters_suspicious_signals("https://1234.5.6.7/") ==
+              RB_SUSPICIOUS_NONE);
+        CHECK(rb_filters_suspicious_signals("https://1.2.3.4.example.com/") ==
+              RB_SUSPICIOUS_IP_HOST);
+
+        CHECK(rb_filters_suspicious_signals("https://xn--80ak6aa92e.com/") ==
+              RB_SUSPICIOUS_PUNYCODE);
+        /* uppercase is folded first, exactly as Kotlin lowercases the URL */
+        CHECK(rb_filters_suspicious_signals("https://XN--80AK6AA92E.com/") ==
+              RB_SUSPICIOUS_PUNYCODE);
+
+        /* the IP test is anchored at the start exactly as Kotlin's ^ is, so
+         * an address that is not the first thing after the scheme is not a
+         * signal at all */
+        CHECK(rb_filters_suspicious_signals("http://xn--a.1.2.3.4/") ==
+              (RB_SUSPICIOUS_INSECURE_HTTP | RB_SUSPICIOUS_PUNYCODE));
+        CHECK(rb_filters_suspicious_signals("http://1.2.3.4/xn--a/") ==
+              (RB_SUSPICIOUS_INSECURE_HTTP | RB_SUSPICIOUS_IP_HOST |
+               RB_SUSPICIOUS_PUNYCODE));
+
+        CHECK(STREQ(rb_suspicious_signal_name(RB_SUSPICIOUS_INSECURE_HTTP),
+                    "insecure http connection"));
+        CHECK(rb_suspicious_signal_name(RB_SUSPICIOUS_NONE) == NULL);
+
+        text = rb_filters_suspicious_text(RB_SUSPICIOUS_INSECURE_HTTP |
+                                          RB_SUSPICIOUS_PUNYCODE);
+        CHECK(text != NULL &&
+              STREQ(text, "insecure http connection, "
+                          "punycode domain (possible homograph)"));
+        free(text);
+        text = rb_filters_suspicious_text(RB_SUSPICIOUS_NONE);
+        CHECK(text != NULL && STREQ(text, ""));
+        free(text);
+        /* the join order is the declaration order, not the order the bits
+         * happen to be passed in */
+        text = rb_filters_suspicious_text(RB_SUSPICIOUS_PUNYCODE |
+                                          RB_SUSPICIOUS_INSECURE_HTTP |
+                                          RB_SUSPICIOUS_IP_HOST);
+        CHECK(text != NULL &&
+              STREQ(text, "insecure http connection, "
+                          "IP address used instead of a domain name, "
+                          "punycode domain (possible homograph)"));
+        free(text);
+    }
+
     /* NULL-safety: every entry point survives a NULL engine */
     CHECK(rb_filters_decide(NULL, "example.com", NULL, "/", NULL, NULL) ==
           RB_FILTER_NONE);
