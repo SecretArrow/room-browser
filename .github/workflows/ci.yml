@@ -295,17 +295,28 @@ jobs:
           cmake --build desktop/build --config Release
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-      - name: Smoke test (--version)
+      - name: Smoke test (--version, retried)
         shell: pwsh
-        timeout-minutes: 3
+        timeout-minutes: 5
         run: |
           $exe = Join-Path $PWD "desktop\build\Release\RoomBrowser.exe"
           if (-not (Test-Path $exe)) { Write-Host "RoomBrowser.exe missing"; exit 1 }
-          $p = Start-Process -FilePath $exe -ArgumentList "--version","--out","version-out.txt" -PassThru -Wait
-          if ($p.ExitCode -ne 0) { Write-Host "exit code: $($p.ExitCode)"; exit 1 }
-          $line = Get-Content version-out.txt -ErrorAction SilentlyContinue
-          Write-Host "version output: $line"
-          if (-not ($line -match "Room Browser .+\(windows x86_64\)")) { Write-Host "unexpected --version output"; exit 1 }
+          $out = Join-Path $PWD "version-out.txt"
+          $ok = $false
+          # A freshly-linked unsigned exe can hit transient AV/Defender handle
+          # races on the runner (CI-proven: identical commit green one run,
+          # empty --out file the next). Retry at the process level and key
+          # off BOTH the exit code and the file content.
+          foreach ($attempt in 1..3) {
+            Remove-Item -Path $out -ErrorAction SilentlyContinue
+            $p = Start-Process -FilePath $exe -ArgumentList "--version","--out","$out" -PassThru -Wait
+            $line = Get-Content $out -ErrorAction SilentlyContinue
+            Write-Host "attempt $attempt exit code: $($p.ExitCode)"
+            Write-Host "attempt $attempt version output: $line"
+            if (($p.ExitCode -eq 0) -and ($line -match "Room Browser .+\(windows x86_64\)")) { $ok = $true; break }
+            Start-Sleep -Seconds 5
+          }
+          if (-not $ok) { Write-Host "smoke test failed after 3 attempts"; exit 1 }
 
       - name: Stage WebView2 loader DLL next to the exe
         shell: pwsh

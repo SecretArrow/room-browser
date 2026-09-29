@@ -37,7 +37,12 @@ static int rb_version_requested(int argc, LPWSTR *argv, const wchar_t **out_path
     return hit;
 }
 
-static void rb_version_output(const wchar_t *out_path)
+/* Writes the version line. Returns 0 on success, 1 when an --out path
+ * was requested but could not be written (honest failure: CI's smoke
+ * test keys off the exit code AND the file; a transient AV/Defender
+ * handle race on a freshly-linked unsigned exe must not read as OK).
+ * Retries briefly: 5 attempts, 100 ms apart. */
+static int rb_version_output(const wchar_t *out_path)
 {
     char line[192];
     int n = snprintf(line, sizeof line, "Room Browser %s %s\n",
@@ -64,14 +69,21 @@ static void rb_version_output(const wchar_t *out_path)
     }
 
     if (out_path && out_path[0]) {
-        HANDLE f = CreateFileW(out_path, GENERIC_WRITE, 0, NULL,
-                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (f != INVALID_HANDLE_VALUE) {
-            DWORD written = 0;
-            WriteFile(f, line, (DWORD)n, &written, NULL);
-            CloseHandle(f);
+        int attempt;
+        for (attempt = 0; attempt < 5; attempt++) {
+            HANDLE f = CreateFileW(out_path, GENERIC_WRITE, 0, NULL,
+                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (f != INVALID_HANDLE_VALUE) {
+                DWORD written = 0;
+                WriteFile(f, line, (DWORD)n, &written, NULL);
+                CloseHandle(f);
+                return 0;
+            }
+            Sleep(100);
         }
+        return 1;
     }
+    return 0;
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
@@ -92,8 +104,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         int version = rb_version_requested(argc, argv, &out_path);
         LocalFree(argv);
         if (version) {
-            rb_version_output(out_path);
-            return 0;
+            return rb_version_output(out_path);
         }
     }
 
