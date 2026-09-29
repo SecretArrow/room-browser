@@ -175,6 +175,7 @@ class BrowserNavigationE2eTest {
                 it.contains("chromium", true) || it.contains("ERR_", true) ||
                     it.contains("SSL", true) || it.contains("cr_")
             }
+            .toList()
             .takeLast(80)
             .joinToString("\n")
     } catch (_: Exception) {
