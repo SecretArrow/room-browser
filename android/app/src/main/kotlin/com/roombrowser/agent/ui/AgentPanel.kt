@@ -67,6 +67,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
@@ -658,6 +659,17 @@ private fun ApprovalCard(approval: com.roombrowser.agent.AgentApproval, agent: B
 
 // ------------------------------------------------------------------- composer
 
+// Green for the INCLUDED state (user request: "jika include page
+// di-ikutkan maka warna hijau" — an included page must show green).
+// Material-tuned pair for the dark-centric palette (primary #A78BFA on
+// dark surface #1D1D27): muted green container + mint content in dark
+// theme, pastel container + deep green content in light theme — the same
+// container/on-container contrast logic Theme.kt uses for its schemes.
+private val IncludeGreenDarkContainer = Color(0xFF2F6B33)
+private val IncludeGreenDarkContent = Color(0xFFD7F5DC)
+private val IncludeGreenLightContainer = Color(0xFFB9F6CA)
+private val IncludeGreenLightContent = Color(0xFF0A3818)
+
 @Composable
 private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Modifier) {
     var input by rememberSaveable { mutableStateOf("") }
@@ -696,13 +708,27 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
             // field lives on its own full-width row below, so it now reaches
             // the panel edges ("lebar sampai ke pinggir layar").
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // Included page = GREEN (user request: "jika include page
+                // di-ikutkan maka warna hijau") — green container + green
+                // label/leading icon, and the page icon swaps for a check so
+                // the state is unmistakable even without color vision.
+                val dark = LocalRoomExtras.current.dark
                 FilterChip(
                     selected = includePage,
                     onClick = { includePage = !includePage },
                     label = { Text("Include page") },
                     leadingIcon = {
-                        Icon(Icons.Filled.Description, contentDescription = null, modifier = Modifier.size(16.dp))
-                    }
+                        Icon(
+                            if (includePage) Icons.Filled.Check else Icons.Filled.Description,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = if (dark) IncludeGreenDarkContainer else IncludeGreenLightContainer,
+                        selectedLabelColor = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent,
+                        selectedLeadingIconColor = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent
+                    )
                 )
                 Spacer(Modifier.width(8.dp))
                 FilledTonalIconButton(

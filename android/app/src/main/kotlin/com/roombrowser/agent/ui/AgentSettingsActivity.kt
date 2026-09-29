@@ -45,6 +45,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -56,6 +58,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -64,6 +67,7 @@ import androidx.compose.ui.unit.dp
 import com.roombrowser.agent.AgentSettingsController
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.ui.common.EmptyState
+import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.SectionHeader
 import com.roombrowser.ui.common.SettingActionRow
@@ -339,9 +343,10 @@ private fun AgentSettingsRoot(
                 checked = controller.settings.confirmActions,
                 onCheckedChange = { checked -> controller.updateSettings { s -> s.copy(confirmActions = checked) } }
             )
-            SettingSwitchRow(
-                title = "Include current page by default",
-                subtitle = "Attach a page snapshot to the first message of each turn",
+            // Included page = GREEN (user request: "jika include page
+            // di-ikutkan maka warna hijau") — local twin of SettingSwitchRow
+            // with a green checked switch, matching the panel chip.
+            IncludePageSwitchRow(
                 checked = controller.settings.includePageContext,
                 onCheckedChange = { checked -> controller.updateSettings { s -> s.copy(includePageContext = checked) } }
             )
@@ -406,6 +411,58 @@ private fun AgentSettingsRoot(
                 }) { Text("Delete") }
             },
             dismissButton = { TextButton(onClick = { confirmClearSessions = false }) { Text("Cancel") } }
+        )
+    }
+}
+
+// Green for the INCLUDED state — same user request behind the panel chip
+// ("jika include page di-ikutkan maka warna hijau"); mirrors the constants
+// in AgentPanel.kt so the chip and this switch always agree.
+private val IncludeGreenDarkContainer = Color(0xFF2F6B33)
+private val IncludeGreenDarkContent = Color(0xFFD7F5DC)
+private val IncludeGreenLightContainer = Color(0xFFB9F6CA)
+private val IncludeGreenLightContent = Color(0xFF0A3818)
+
+/**
+ * "Include current page by default" — a local twin of the shared
+ * [com.roombrowser.ui.common.SettingSwitchRow] whose switch is GREEN when
+ * checked (user request: an included page reads green, matching the panel's
+ * "Include page" chip). Layout, padding and semantics match the shared row
+ * one-for-one; only the checked switch colors differ.
+ */
+@Composable
+private fun IncludePageSwitchRow(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    val extras = LocalRoomExtras.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) }
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .semantics { contentDescription = "Include current page by default switch, ${if (checked) "on" else "off"}" },
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("Include current page by default", style = MaterialTheme.typography.bodyLarge, color = extras.textPrimary)
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "Attach a page snapshot to the first message of each turn",
+                style = MaterialTheme.typography.bodySmall,
+                color = extras.textSecondary
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedTrackColor = if (extras.dark) IncludeGreenDarkContainer else IncludeGreenLightContainer,
+                checkedThumbColor = if (extras.dark) IncludeGreenDarkContent else IncludeGreenLightContent,
+                uncheckedTrackColor = extras.surfaceAlt,
+                uncheckedThumbColor = extras.icon
+            )
         )
     }
 }

@@ -46,7 +46,8 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
   for you: navigate, read pages, click, fill forms and manage tabs while
   you watch. Chat panel with streaming answers, tool-step cards, session
   history and Allow/Deny action approvals. The composer supports
-  **file attachments** (attach icon next to "Include page") — text files
+  **file attachments** (attach icon next to "Include page", which turns
+  green with a check icon when the page is included) — text files
   are inlined into the prompt so the agent can work with them. **Social automation tools**
   (`auto_like`, `auto_repost`, `auto_reply`, `auto_post`) complete
   like/repost/reply/post tasks on any social feed, and turns **keep

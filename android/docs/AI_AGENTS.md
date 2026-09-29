@@ -120,14 +120,16 @@ agent task.
 
 ## File attachments in the composer
 
-Next to the "Include page" toggle there is an attach (📎) button: pick any
-files from the device (SAF picker, multi-select). Text-like files (txt, md,
-json, csv, xml, yaml, html, source files… up to 256 KB each) are read and
-inlined into the turn's prompt (capped at 20 000 chars per file and ~60 000
-chars per turn); binary files contribute name/size metadata only. Attached
-chips can be removed before sending; the user bubble and the persisted chat
-row list the file names. Content-URIs are not persisted across process
-death — attachments live until sent.
+The "Include page" chip turns green and shows a check icon while the
+current page is included in the next turn. Next to the chip there is an
+attach (📎) button: pick any files from the device (SAF picker,
+multi-select). Text-like files (txt, md, json, csv, xml, yaml, html,
+source files… up to 256 KB each) are read and inlined into the turn's
+prompt (capped at 20 000 chars per file and ~60 000 chars per turn);
+binary files contribute name/size metadata only. Attached chips can be
+removed before sending; the user bubble and the persisted chat row list
+the file names. Content-URIs are not persisted across process death —
+attachments live until sent.
 
 ## Copy any chat message (re-use prompts)
 
@@ -159,7 +161,8 @@ change is picked up by the running browser instantly.
 * **Confirm actions** — require Allow/Deny approval before every click,
   type or submit (off by default = fully autonomous within the step budget).
 * **Include current page by default** — attaches a page snapshot to the
-  first message of each turn.
+  first message of each turn (the switch shows green when on, matching the
+  panel chip's included state).
 * **Temperature** (0–1) and **max steps per turn** (5–50, default 25) —
   the step budget bounds cost and runaway loops; when exhausted the agent
   is asked once more, without tools, to produce a final answer.
