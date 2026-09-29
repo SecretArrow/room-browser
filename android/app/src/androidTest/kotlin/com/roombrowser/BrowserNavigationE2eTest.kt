@@ -401,9 +401,20 @@ class BrowserNavigationE2eTest {
             "'Back to start page' must be clickable\n${uiTree()}",
             clickText("Back to start page", 5_000)
         )
+        // Homepage marker — the SAME hedge the older E2EBrowseFlowTest uses
+        // (engineUiUp): on the Compose a11y bridge the omnibox placeholder
+        // is frequently MERGED into the address-bar row's semantics and not
+        // exposed as a standalone text node, so assert by homepage-only
+        // texts first (CI dump-proven: Privacy Dashboard / Quick Access /
+        // Good morning were all visible while "Search or type URL" wasn't).
         assertTrue(
-            "The start page (omnibox placeholder) must be visible after 'Back to start page'\n${uiTree()}",
-            hasText("Search or type URL", 15_000)
+            "The start page must be visible after 'Back to start page'\n${uiTree()}",
+            waitUntil(15_000) {
+                device.findObjects(By.text("Privacy Dashboard")).isNotEmpty() ||
+                    device.findObjects(By.text("Quick Access")).isNotEmpty() ||
+                    device.findObjects(By.textContains("Search or type URL")).isNotEmpty() ||
+                    device.findObjects(By.descContains("Address bar: search or type URL")).isNotEmpty()
+            }
         )
 
         // ---- 10. Homepage Back: instant background (existing contract) ----
