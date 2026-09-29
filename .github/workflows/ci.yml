@@ -140,7 +140,18 @@ jobs:
 
       - name: Unit tests (domain + app)
         working-directory: android
-        run: ./gradlew testDebugUnitTest :core:domain:test --console=plain
+        # --continue so a failure in one module still reports the other's
+        # result instead of hiding it, and one retry because several tests in
+        # this suite assert on HOW FAST a coroutine abort propagates (the
+        # pause/resume contract in OllamaLocalTest). A CPU-starved shared
+        # runner can fail those with no code being wrong — that has happened
+        # twice. A genuinely broken test fails both attempts, so the gate
+        # still holds; the annotation keeps the retry visible, not silent.
+        run: |
+          ./gradlew testDebugUnitTest :core:domain:test --console=plain --continue || {
+            echo "::warning title=Unit tests flaked::First attempt failed — retrying once. A load-induced flake passes now; a real failure fails again."
+            ./gradlew testDebugUnitTest :core:domain:test --console=plain --continue
+          }
 
       - name: Debug build (all ABIs)
         working-directory: android
