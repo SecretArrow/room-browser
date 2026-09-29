@@ -1271,7 +1271,29 @@ static void on_pref_entry_apply(GtkButton *btn, gpointer user_data)
     const char *text;
     if (key == NULL || entry == NULL) return;
     text = gtk_entry_get_text(GTK_ENTRY(entry));
-    rb_pref_set(app, key, (text != NULL) ? text : "");
+    if (text == NULL) text = "";
+
+    /* The two DNS fields are checked before they are stored, with the same
+     * validator the Android edition uses.  A value that could never be used
+     * is refused here rather than saved, so the settings screen never shows a
+     * "protected" DNS mode that silently is not one.  Empty is allowed: it
+     * means "not configured". */
+    if (strcmp(key, RB_PREF_DOH_URL) == 0 && text[0] != '\0' &&
+        !rb_dns_valid_doh_url(text)) {
+        rb_warn(app, "Not a valid DNS-over-HTTPS URL",
+                "It has to be an https:// URL with a host, for example "
+                "https://dns.example/dns-query.  Left unchanged.");
+        return;
+    }
+    if (strcmp(key, RB_PREF_DOT_HOSTNAME) == 0 && text[0] != '\0' &&
+        !rb_dns_valid_dot_hostname(text)) {
+        rb_warn(app, "Not a valid DNS-over-TLS hostname",
+                "Expected a hostname, optionally with a port, for example "
+                "dns.example or dns.example:853.  Left unchanged.");
+        return;
+    }
+
+    rb_pref_set(app, key, text);
     rb_prefs_apply_key(app, key);
 }
 
@@ -1571,13 +1593,36 @@ static void rb_show_prefs_dialog_impl(App *app)
                       "DNS-over-TLS hostname");
     r += 2;
     {
+        /* The effective mode, computed exactly as the Android settings screen
+         * computes it (profile mode, then the global one, then validation).
+         * Shown so the DNS fields above are not dead text: the user can see
+         * what the profile would actually resolve with, including the
+         * MISCONFIGURED case a half-typed URL produces. */
+        const char *gm = (app->settings != NULL)
+            ? rb_settings_get(app->settings, RB_GPREF_DNS_MODE, "system") : "system";
+        const char *gd = (app->settings != NULL)
+            ? rb_settings_get(app->settings, RB_GPREF_DOH_URL, "") : "";
+        const char *gh = (app->settings != NULL)
+            ? rb_settings_get(app->settings, RB_GPREF_DOT_HOSTNAME, "") : "";
+        rb_dns_effective eff = rb_dns_resolve(
+            rb_pref(app, RB_PREF_DNS_MODE, "system"),
+            rb_pref(app, RB_PREF_DOH_URL, ""),
+            rb_pref(app, RB_PREF_DOT_HOSTNAME, ""),
+            gm, gd, gh);
         GtkWidget *note = gtk_label_new(NULL);
-        gtk_label_set_markup(GTK_LABEL(note),
-            "<small>Stored and shown so the two editions agree; this build does "
-            "not resolve names itself — it leaves DNS to the system resolver. "
-            "See README.md.</small>");
+        char *markup = g_markup_printf_escaped(
+            "<small>Effective mode: %s\n%s</small>",
+            rb_dns_status_name(eff.status),
+            (eff.status == RB_DNS_STATUS_MISCONFIGURED)
+                ? "The configured value is not usable, so name resolution falls "
+                  "back to the system resolver."
+                : "This build does not resolve names itself — page loads use the "
+                  "system resolver either way. See README.md.");
+        gtk_label_set_markup(GTK_LABEL(note), markup);
         gtk_label_set_xalign(GTK_LABEL(note), 0.0f);
         gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);
+        g_free(markup);
+        rb_dns_effective_free(&eff);
         gtk_grid_attach(GTK_GRID(grid), note, 0, r++, 2, 1);
     }
     rb_pref_row(grid, r++, app, RB_PREF_NET_PROTECT_GLOBAL, 1,
