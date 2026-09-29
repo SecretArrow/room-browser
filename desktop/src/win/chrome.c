@@ -17,6 +17,8 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <shellapi.h>
+#include <shlobj.h>
+#include <objbase.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -113,40 +115,141 @@ void rb_mkdirs_utf8(const char *path)
 /* ------------------------------------------------------------------ */
 /* Persistence: load at startup, save on change (and a final save at quit). */
 
+/* The key the desktop stores its single homepage under, inside the profile.
+ * It is a DESKTOP EXTENSION: the Android edition has no single home URL, it
+ * has RB_PREF_HOMEPAGE_ENABLED plus a list of RB_PREF_HOMEPAGE_SHORTCUTS. */
+#define RB_PREF_HOME_LOCAL "home"
+
+/* The name given to the profile created for a data directory that has none.
+ * Android calls its first profile "Personal" too (ProfileManager.create()). */
+#define RB_PROFILE_FIRST_NAME "Personal"
+
+/* Where downloads land: the user's Downloads folder, under the subfolder
+ * the profile names in RB_PREF_DOWNLOAD_SUBFOLDER ("RoomBrowser" by
+ * default) — the same place, and the same setting, as the Android edition.
+ * Falls back to <data dir>/downloads when the known folder is unavailable. */
+static void rb_downloads_dir_init(App *app)
+{
+    const char *sub = rb_pref(app, RB_PREF_DOWNLOAD_SUBFOLDER, "RoomBrowser");
+    PWSTR wide = NULL;
+
+    if (sub == NULL) sub = "RoomBrowser";
+    if (SUCCEEDED(SHGetKnownFolderPath(&FOLDERID_Downloads, 0, NULL, &wide)) &&
+        wide != NULL) {
+        char *base = rb_wide_to_utf8(wide);
+        CoTaskMemFree(wide);
+        if (base != NULL) {
+            app->download_dir = (sub[0] != '\0')
+                ? rb_paths_join(base, sub) : base;
+            if (sub[0] != '\0') free(base);
+        }
+    } else {
+        char *data = rb_paths_data_dir();
+        app->download_dir = data ? rb_paths_join(data, "downloads") : NULL;
+        if (data) rb_paths_free(data);
+    }
+    if (app->download_dir != NULL) {
+        rb_mkdirs_utf8(app->download_dir);
+    }
+}
+
 int rb_data_init(App *app)
 {
     char *dir = rb_paths_data_dir();
-    size_t n;
+    int fresh_profiles = 0;
 
     app->tabs = rb_tabs_new();
     app->history = rb_history_new();
     app->bookmarks = rb_bookmarks_new();
     app->settings = rb_settings_new();
-    if (!app->tabs || !app->history || !app->bookmarks || !app->settings) return -1;
-
+    app->profiles = rb_profile_registry_new();
+    app->switcher = rb_switch_new();
+    app->https = rb_https_pending_new();
+    app->downloads = rb_downloads_new();
+    app->filters = rb_filters_new();
+    if (!app->tabs || !app->history || !app->bookmarks || !app->settings ||
+        !app->profiles || !app->switcher || !app->https || !app->downloads ||
+        !app->filters) {
+        return -1;
+    }
+    /* The bundled list, compiled in: no network, no update check, the same
+     * hosts the Android edition ships.  Loading it is what makes the filter
+     * engine able to answer at all — the per-profile switches decide which
+     * of its categories are consulted. */
+    rb_filters_load_builtin(app->filters);
     if (!dir) return -1;
-    rb_mkdirs_utf8(dir);
-    n = strlen(dir) + 32;
 
-    app->path_history = (char *)malloc(n);
-    app->path_bookmarks = (char *)malloc(n);
-    app->path_settings = (char *)malloc(n);
-    if (!app->path_history || !app->path_bookmarks || !app->path_settings) {
+    app->path_history = rb_paths_join(dir, "history.jsonl");
+    app->path_bookmarks = rb_paths_join(dir, "bookmarks.jsonl");
+    app->path_settings = rb_paths_join(dir, "settings.txt");
+    app->path_profiles = rb_paths_join(dir, "profiles.jsonl");
+    app->path_downloads = rb_paths_join(dir, "downloads.jsonl");
+    if (!app->path_history || !app->path_bookmarks || !app->path_settings ||
+        !app->path_profiles || !app->path_downloads) {
         rb_paths_free(dir);
         return -1;
     }
-    snprintf(app->path_history, n, "%s\\history.jsonl", dir);
-    snprintf(app->path_bookmarks, n, "%s\\bookmarks.jsonl", dir);
-    snprintf(app->path_settings, n, "%s\\settings.txt", dir);
-    rb_paths_free(dir);
+    rb_mkdirs_utf8(dir);
 
+    /* The GLOBAL store is BrowserGlobalSettings: the handful of settings that
+     * belong to the installation rather than to a profile (DNS overrides,
+     * network-change retention, telemetry).  Everything a user toggles in the
+     * menu lives in the active profile — see rb_pref(). */
+    rb_prefs_global_defaults(app->settings);
     rb_settings_load(app->settings, app->path_settings);
+
     rb_history_load(app->history, app->path_history);
     rb_bookmarks_load(app->bookmarks, app->path_bookmarks);
+    rb_downloads_load(app->downloads, app->path_downloads);
 
-    app->home_url = rb_strdup(rb_settings_get(app->settings, "home", "https://duckduckgo.com"));
+    rb_profile_registry_load(app->profiles, app->path_profiles);
+    if (rb_profile_count(app->profiles) == 0) {
+        /* A data directory with no profiles.jsonl (a fresh install, or one
+         * written by an older desktop build) gets the first profile here,
+         * exactly as the Android edition does. */
+        fresh_profiles = 1;
+        if (rb_profile_create(app->profiles, RB_PROFILE_FIRST_NAME, NULL, 0, 1) < 0) {
+            rb_paths_free(dir);
+            return -1;
+        }
+    }
+
+    {
+        const rb_profile *first = rb_profile_default(app->profiles);
+        if (first == NULL) first = rb_profile_at(app->profiles, 0);
+        if (first == NULL) { rb_paths_free(dir); return -1; }
+        app->active_profile_id = rb_strdup(first->id);
+        if (!app->active_profile_id) { rb_paths_free(dir); return -1; }
+
+        /* Settings written by a desktop build older than the profile registry
+         * lived in settings.txt under bare keys ("home", "javascript").  Carry
+         * them over rather than dropping the user's homepage and JavaScript
+         * choice on the floor; the file itself is left where it is. */
+        if (fresh_profiles) {
+            rb_settings *ps = first->settings;
+            if (ps) {
+                if (rb_settings_get(app->settings, RB_PREF_HOME_LOCAL, NULL)) {
+                    rb_settings_set(ps, RB_PREF_HOME_LOCAL,
+                        rb_settings_get(app->settings, RB_PREF_HOME_LOCAL, ""));
+                }
+                if (rb_settings_get(app->settings, RB_PREF_JAVASCRIPT, NULL)) {
+                    rb_settings_set_int(ps, RB_PREF_JAVASCRIPT,
+                        rb_settings_get_int(app->settings, RB_PREF_JAVASCRIPT, 1));
+                }
+            }
+        }
+    }
+
     /* Project policy: JavaScript is NEVER disabled by default. */
-    app->js_enabled = rb_settings_get_int(app->settings, "javascript", 1);
+    app->js_enabled = rb_pref_int(app, RB_PREF_JAVASCRIPT, 1);
+    app->home_url = rb_strdup(rb_pref(app, RB_PREF_HOME_LOCAL,
+                                      "https://duckduckgo.com"));
+    rb_downloads_dir_init(app);
+    /* The palette is resolved (and its brushes built) by rb_theme_apply()
+     * from rb_chrome_create: there is no window to repaint yet. */
+
+    rb_profiles_save(app);
+    rb_paths_free(dir);
     return 0;
 }
 
@@ -155,6 +258,8 @@ void rb_data_shutdown(App *app)
     if (app->history && app->path_history) rb_history_save(app->history, app->path_history);
     if (app->bookmarks && app->path_bookmarks) rb_bookmarks_save(app->bookmarks, app->path_bookmarks);
     if (app->settings && app->path_settings) rb_settings_save(app->settings, app->path_settings);
+    if (app->downloads && app->path_downloads) rb_downloads_save(app->downloads, app->path_downloads);
+    rb_profiles_save(app);
 }
 
 void rb_data_free(App *app)
@@ -168,11 +273,20 @@ void rb_data_free(App *app)
     free(app->path_history);   app->path_history = NULL;
     free(app->path_bookmarks); app->path_bookmarks = NULL;
     free(app->path_settings);  app->path_settings = NULL;
+    free(app->path_profiles);  app->path_profiles = NULL;
+    free(app->path_downloads); app->path_downloads = NULL;
+    free(app->download_dir);   app->download_dir = NULL;
     free(app->home_url);       app->home_url = NULL;
+    free(app->active_profile_id); app->active_profile_id = NULL;
     if (app->tabs)      { rb_tabs_free(app->tabs);        app->tabs = NULL; }
     if (app->history)   { rb_history_free(app->history);  app->history = NULL; }
     if (app->bookmarks) { rb_bookmarks_free(app->bookmarks); app->bookmarks = NULL; }
+    if (app->downloads) { rb_downloads_free(app->downloads); app->downloads = NULL; }
     if (app->settings)  { rb_settings_free(app->settings); app->settings = NULL; }
+    if (app->profiles)  { rb_profile_registry_free(app->profiles); app->profiles = NULL; }
+    if (app->switcher)  { rb_switch_free(app->switcher);  app->switcher = NULL; }
+    if (app->https)     { rb_https_pending_free(app->https); app->https = NULL; }
+    if (app->filters)   { rb_filters_free(app->filters);  app->filters = NULL; }
     free(app->tab_btns);   app->tab_btns = NULL;
     free(app->tab_closes); app->tab_closes = NULL;
     app->tab_slots = 0;
@@ -183,6 +297,199 @@ void rb_data_free(App *app)
     if (app->br_accent)  { DeleteObject(app->br_accent);  app->br_accent = NULL; }
     if (app->fnt_ui)     { DeleteObject(app->fnt_ui);     app->fnt_ui = NULL; }
     if (app->fnt_omni)   { DeleteObject(app->fnt_omni);   app->fnt_omni = NULL; }
+}
+
+/* ------------------------------------------------------------------ */
+/* Profile-scoped settings.
+ *
+ * Android reads every feature switch off the active ProfileSettings.  These
+ * are the Win32 spelling of that read, so a feature never has to know
+ * whether a profile exists, and a missing key falls back to the same default
+ * the Android edition uses. */
+
+const rb_profile *rb_active_profile(App *app)
+{
+    if (!app || !app->profiles || !app->active_profile_id) return NULL;
+    return rb_profile_by_id(app->profiles, app->active_profile_id);
+}
+
+const char *rb_pref(App *app, const char *key, const char *fallback)
+{
+    const rb_profile *p = rb_active_profile(app);
+    if (!p || !p->settings) return fallback;
+    return rb_settings_get(p->settings, key, fallback);
+}
+
+int rb_pref_int(App *app, const char *key, int fallback)
+{
+    const rb_profile *p = rb_active_profile(app);
+    if (!p || !p->settings) return fallback;
+    return rb_settings_get_int(p->settings, key, fallback);
+}
+
+void rb_pref_set(App *app, const char *key, const char *value)
+{
+    const rb_profile *p = rb_active_profile(app);
+    if (!p) return;
+    /* rb_profile_by_id hands out a const row, but the settings store it
+     * points at is not itself const: the pointer member is what carries the
+     * qualification, so reading it out yields a mutable rb_settings *.  The
+     * registry owns the store, so it is saved with the profile. */
+    rb_settings_set(p->settings, key, value);
+    rb_profiles_save(app);
+}
+
+void rb_pref_set_int(App *app, const char *key, int value)
+{
+    const rb_profile *p = rb_active_profile(app);
+    if (!p) return;
+    rb_settings_set_int(p->settings, key, value);
+    rb_profiles_save(app);
+}
+
+void rb_profiles_save(App *app)
+{
+    if (app && app->profiles && app->path_profiles) {
+        rb_profile_registry_save(app->profiles, app->path_profiles);
+    }
+}
+
+char *rb_ua_current(App *app)
+{
+    const char *mode = rb_pref(app, RB_PREF_UA_MODE, "default");
+    rb_ua_mode m = RB_UA_MODE_DEFAULT;
+
+    if (mode != NULL) {
+        if (strcmp(mode, "preset") == 0) m = RB_UA_MODE_PRESET;
+        else if (strcmp(mode, "custom") == 0) m = RB_UA_MODE_CUSTOM;
+    }
+    return rb_ua_effective(m, rb_pref(app, RB_PREF_UA_PRESET_ID, NULL),
+                           rb_pref(app, RB_PREF_CUSTOM_USER_AGENT, NULL));
+}
+
+rb_filter_options rb_filter_opts(App *app)
+{
+    /* The compatibility-first defaults the engine ships, then the profile's
+     * own overrides.  Reading through rb_pref_int means a profile that has
+     * never touched these keys gets exactly the engine default. */
+    rb_filter_options o = rb_filter_options_default();
+
+    o.block_ads        = rb_pref_int(app, RB_PREF_BLOCK_ADS, o.block_ads);
+    o.block_trackers   = rb_pref_int(app, RB_PREF_BLOCK_TRACKERS, o.block_trackers);
+    o.block_cross_site = rb_pref_int(app, RB_PREF_BLOCK_CROSS_SITE, o.block_cross_site);
+    o.block_malicious  = rb_pref_int(app, RB_PREF_BLOCK_MALICIOUS, o.block_malicious);
+    o.block_popups     = rb_pref_int(app, RB_PREF_BLOCK_POPUPS, o.block_popups);
+    return o;
+}
+
+/* ------------------------------------------------------------------ */
+/* Theme.
+ *
+ * The profile stores only the theme id (inside its theme_json); the palette
+ * itself is compiled into the core.  Win32 has no stylesheet, so the theme
+ * shows up as the brush set plus the text colour the owner-draw code uses —
+ * which is why the palette is kept in App rather than recomputed per paint.
+ */
+
+const rb_theme *rb_theme_current(App *app)
+{
+    const rb_profile *p = rb_active_profile(app);
+    const char *json = (p && p->theme_json) ? p->theme_json : "";
+    size_t pos = 0;
+    char *id = NULL;
+    const rb_theme *t;
+
+    if (json[0] != '\0' && rb_json_find_key(json, "id", &pos) &&
+        rb_json_parse_string(json, &pos, &id) && id != NULL) {
+        t = rb_theme_by_id(id);
+        free(id);
+        return t ? t : rb_theme_default();
+    }
+    return rb_theme_default();
+}
+
+/* "system|light|dark|amoled" -> the core's mode enum. */
+static rb_theme_mode rb_theme_mode_of(App *app)
+{
+    const char *m = rb_pref(app, RB_PREF_THEME, "system");
+    if (m != NULL) {
+        if (strcmp(m, "light") == 0)  return RB_THEME_LIGHT;
+        if (strcmp(m, "dark") == 0)   return RB_THEME_DARK;
+        if (strcmp(m, "amoled") == 0) return RB_THEME_AMOLED;
+    }
+    return RB_THEME_AUTO;
+}
+
+/* Whether the OS is currently in its dark app mode.  AUTO consults this and
+ * nothing else; the other modes ignore it. */
+static int rb_system_is_dark(void)
+{
+    DWORD light = 1;
+    DWORD n = sizeof light;
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                      0, KEY_QUERY_VALUE, &k) == ERROR_SUCCESS) {
+        RegQueryValueExW(k, L"AppsUseLightTheme", NULL, NULL, (LPBYTE)&light, &n);
+        RegCloseKey(k);
+    }
+    return light == 0;
+}
+
+static COLORREF rb_col(unsigned int argb)
+{
+    int r = 0, g = 0, b = 0;
+    rb_theme_rgb(argb, &r, &g, &b);
+    return RGB(r, g, b);
+}
+
+void rb_theme_apply(App *app)
+{
+    const rb_theme *t = rb_theme_current(app);
+
+    app->pal = rb_theme_palette(t, rb_theme_mode_of(app), rb_system_is_dark());
+
+    if (app->br_chrome)   DeleteObject(app->br_chrome);
+    if (app->br_toolbar)  DeleteObject(app->br_toolbar);
+    if (app->br_tab_idle) DeleteObject(app->br_tab_idle);
+    if (app->br_omni)     DeleteObject(app->br_omni);
+    if (app->br_accent)   DeleteObject(app->br_accent);
+    /* The token mapping the Win32 chrome has always used: the window is the
+     * background, the toolbar and the active tab are the surface, idle tabs
+     * are the tab bar, the omnibox is the address bar and the accent is the
+     * theme's primary.  With the default theme this reproduces the hard-coded
+     * Brave-inspired palette these brushes used to be built from. */
+    app->br_chrome   = CreateSolidBrush(rb_col(app->pal.background));
+    app->br_toolbar  = CreateSolidBrush(rb_col(app->pal.surface));
+    app->br_tab_idle = CreateSolidBrush(rb_col(app->pal.tab_bar));
+    app->br_omni     = CreateSolidBrush(rb_col(app->pal.address_bar));
+    app->br_accent   = CreateSolidBrush(rb_col(app->pal.primary));
+
+    if (app->hwnd) {
+        InvalidateRect(app->hwnd, NULL, TRUE);
+        /* The toolbar buttons and tab strip are owner-drawn but read the
+         * palette, so they need a repaint too. */
+        rb_tabs_rebuild(app);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Message box.  Falls back to a stderr line when there is no window yet
+ * (a preference applied before the chrome exists, a startup failure). */
+
+void rb_warn(App *app, const char *title, const char *body)
+{
+    wchar_t *wt = rb_utf8_to_wide(title ? title : "Room Browser");
+    wchar_t *wb = rb_utf8_to_wide(body ? body : "");
+
+    if (app && app->hwnd && wt) {
+        MessageBoxW(app->hwnd, wb ? wb : L"", wt, MB_OK | MB_ICONWARNING);
+    } else {
+        fprintf(stderr, "%s: %s\n", title ? title : "Room Browser",
+                body ? body : "");
+    }
+    free(wt);
+    free(wb);
 }
 
 /* ------------------------------------------------------------------ */
@@ -454,7 +761,7 @@ static LRESULT rb_draw_button(App *app, const DRAWITEMSTRUCT *dis)
     }
 
     SetBkMode(dis->hDC, TRANSPARENT);
-    SetTextColor(dis->hDC, RB_COL_TEXT);
+    SetTextColor(dis->hDC, rb_col(app->pal.text_primary));
     old = (HFONT)SelectObject(dis->hDC, app->fnt_ui);
     if (is_tab) {
         tr.left += 8;
@@ -668,8 +975,8 @@ static LRESULT CALLBACK rb_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_CTLCOLOREDIT:
         if (app && (HWND)lp == app->omni) {
-            SetTextColor((HDC)wp, RB_COL_TEXT);
-            SetBkColor((HDC)wp, RB_COL_OMNI_BG);
+            SetTextColor((HDC)wp, rb_col(app->pal.text_primary));
+            SetBkColor((HDC)wp, rb_col(app->pal.address_bar));
             return (LRESULT)app->br_omni;
         }
         break;
@@ -758,11 +1065,11 @@ int rb_chrome_create(App *app)
     cls = RegisterClassExW(&wc);
     if (!cls) return -1;
 
-    app->br_chrome  = CreateSolidBrush(RB_COL_CHROME);
-    app->br_toolbar = CreateSolidBrush(RB_COL_TOOLBAR);
-    app->br_tab_idle = CreateSolidBrush(RB_COL_TAB_IDLE);
-    app->br_omni    = CreateSolidBrush(RB_COL_OMNI_BG);
-    app->br_accent  = CreateSolidBrush(RB_COL_ACCENT);
+    app->br_chrome  = NULL;   /* built by rb_theme_apply() below */
+    app->br_toolbar = NULL;
+    app->br_tab_idle = NULL;
+    app->br_omni    = NULL;
+    app->br_accent  = NULL;
     app->fnt_ui = CreateFontW(-15, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
                               OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                               CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
@@ -780,6 +1087,10 @@ int rb_chrome_create(App *app)
     if (!app->hwnd) return -1;
 
     rb_apply_dark_titlebar(app->hwnd);
+    /* Builds the palette brushes from the active profile's theme.  This is
+     * the only place they are created, so a theme change goes through
+     * rb_theme_apply() too rather than duplicating the mapping. */
+    rb_theme_apply(app);
 
     app->back   = rb_mk_button(app, L"\x2190", IDC_BACK);
     app->fwd    = rb_mk_button(app, L"\x2192", IDC_FWD);

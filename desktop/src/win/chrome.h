@@ -24,20 +24,28 @@ extern "C" {
 #endif
 
 /* ------------------------------------------------------------------ */
-/* Layout + palette (Brave-inspired dark, purple accent) */
+/* Layout constants (mirror the GTK chrome) */
 
 #define RB_WINDOW_W     1280
 #define RB_WINDOW_H     800
 #define RB_TABSTRIP_H   34
 #define RB_TOOLBAR_H    40
 
-#define RB_COL_CHROME     RGB(32, 33, 36)     /* #202124 */
-#define RB_COL_TOOLBAR    RGB(41, 42, 45)     /* #292A2D */
-#define RB_COL_TAB_ACTIVE RGB(41, 42, 45)     /* #292A2D */
-#define RB_COL_TAB_IDLE   RGB(24, 25, 28)     /* #18191C */
-#define RB_COL_OMNI_BG    RGB(60, 61, 65)     /* #3C3D41 */
-#define RB_COL_TEXT       RGB(232, 234, 237)  /* #E8EAED */
-#define RB_COL_ACCENT     RGB(167, 139, 250)  /* #A78BFA */
+/* ------------------------------------------------------------------ */
+/* Palette.
+ *
+ * The colours are no longer constants: they come from the active profile's
+ * theme (rb_theme_current), resolved into App::pal and turned into brushes by
+ * rb_theme_apply().  The values below are what the DEFAULT theme ("obsidian")
+ * resolves to — the Brave-inspired dark chrome with the #A78BFA accent — and
+ * are kept as documentation of that look, not as code to draw with. */
+
+#define RB_DEFAULT_BG      RGB(32, 33, 36)     /* #202124 */
+#define RB_DEFAULT_SURFACE RGB(41, 42, 45)     /* #292A2D */
+#define RB_DEFAULT_TABBAR  RGB(24, 25, 28)     /* #18191C */
+#define RB_DEFAULT_OMNI    RGB(60, 61, 65)     /* #3C3D41 */
+#define RB_DEFAULT_TEXT    RGB(232, 234, 237)  /* #E8EAED */
+#define RB_DEFAULT_ACCENT  RGB(167, 139, 250)  /* #A78BFA */
 
 /* ------------------------------------------------------------------ */
 /* Control and command identifiers */
@@ -83,12 +91,34 @@ typedef struct App {
     rb_tabs      *tabs;
     rb_history   *history;
     rb_bookmarks *bookmarks;
-    rb_settings  *settings;
+    rb_settings  *settings;   /* the GLOBAL settings (BrowserGlobalSettings) */
+
+    /* Per-profile state.  The Win32 layer is a second skin over the same
+     * core the GTK layer uses, so it carries the same stores: without the
+     * registry there is nowhere for a profile's settings to live, and the
+     * filter engine cannot answer at all. */
+    rb_profile_registry *profiles;
+    rb_switch_machine   *switcher;  /* the profile-switch protocol */
+    rb_https_pending    *https;     /* the https upgrades this window may retry */
+    rb_filters          *filters;   /* the bundled host list, loaded once */
+    rb_downloads        *downloads;
 
     char *home_url;
     char *path_history;
     char *path_bookmarks;
     char *path_settings;
+    char *path_profiles;
+    char *path_downloads;
+    char *download_dir;         /* where finished files are written */
+
+    /* The profile every tab in this window is running as.  Never NULL once
+     * rb_data_init() has succeeded.  Switching it goes through the switch
+     * protocol in chrome.c, never by assigning here. */
+    char *active_profile_id;
+
+    /* The ACTIVE profile's resolved palette.  The brushes below are built
+     * from it, so a theme change recreates them (rb_theme_apply). */
+    rb_theme_colors pal;
 
     long active_id;   /* 0 = none */
     int  loading;
@@ -118,6 +148,41 @@ void     rb_mkdirs_wide(const wchar_t *path);  /* recursive mkdir, best effort *
 int  rb_data_init(App *app);
 void rb_data_shutdown(App *app);   /* final save (WM_DESTROY) */
 void rb_data_free(App *app);       /* release everything (after the message loop) */
+
+/* The active profile, or NULL when the registry is empty.  The pointer is
+ * INTO the registry: it dies at the next registry mutation. */
+const rb_profile *rb_active_profile(App *app);
+
+/* A setting of the ACTIVE PROFILE, with `fallback` when it is absent (or
+ * when there is no active profile).  This is the Win32 spelling of the
+ * Android app reading its ProfileSettings, and it is what every feature
+ * switch should go through rather than touching rb_settings directly. */
+const char *rb_pref(App *app, const char *key, const char *fallback);
+int         rb_pref_int(App *app, const char *key, int fallback);
+
+/* Writes a per-profile setting back and persists the registry. */
+void rb_pref_set(App *app, const char *key, const char *value);
+void rb_pref_set_int(App *app, const char *key, int value);
+
+/* Persists the profile registry (settings live inside it). */
+void rb_profiles_save(App *app);
+
+/* The ACTIVE profile's content-blocking switches, as the filter engine
+ * wants them.  Never NULL-safe: returns the compatibility defaults when
+ * there is no active profile. */
+rb_filter_options rb_filter_opts(App *app);
+
+/* The active profile's effective User-Agent, malloc'd — or NULL when the
+ * engine default should be sent untouched (mode "default", a preset with an
+ * empty value, or a blank custom string).  Caller frees. */
+char *rb_ua_current(App *app);
+
+/* The active profile's theme, and the palette resolved from it. */
+const rb_theme *rb_theme_current(App *app);
+void rb_theme_apply(App *app);     /* rebuild palette + brushes, repaint */
+
+/* A modal message box parented to the window. */
+void rb_warn(App *app, const char *title, const char *body);
 
 /* Chrome construction + layout. */
 int  rb_chrome_create(App *app);

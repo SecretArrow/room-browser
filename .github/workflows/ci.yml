@@ -318,6 +318,27 @@ jobs:
           }
           if (-not $ok) { Write-Host "smoke test failed after 3 attempts"; exit 1 }
 
+      # --version only proves the exe links and starts. This drives the
+      # profile registry, the per-profile settings, the filter engine and the
+      # theme against a scratch data directory, so a regression in the Win32
+      # state layer fails the build instead of shipping. It runs without a
+      # window, so it needs neither the WebView2 runtime nor a desktop.
+      - name: Self-test (--selftest)
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $exe = Join-Path $PWD "desktop\build\Release\RoomBrowser.exe"
+          $out = Join-Path $PWD "selftest-out.txt"
+          Remove-Item -Path $out -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath $exe -ArgumentList "--selftest","--out","$out" -PassThru -Wait
+          $line = Get-Content $out -ErrorAction SilentlyContinue
+          Write-Host "selftest exit code: $($p.ExitCode)"
+          Write-Host "selftest output: $line"
+          if ($p.ExitCode -ne 0) { Write-Host "selftest failed"; exit 1 }
+          if ($line -notmatch "selftest: \d+ checks, 0 failed") {
+            Write-Host "selftest did not report a clean pass"; exit 1
+          }
+
       - name: Stage WebView2 loader DLL next to the exe
         shell: pwsh
         run: |
