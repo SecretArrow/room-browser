@@ -63,7 +63,13 @@ static int rb_mkdir_one(const char *path)
     }
 #ifdef _WIN32
     if (CreateDirectoryA(path, NULL) == 0) {
-        return -1;
+        /* ERROR_ALREADY_EXISTS is a success in disguise: the component is
+         * there, stat() just did not resolve it (a bare drive designator is
+         * the case in point).  It also covers another instance creating the
+         * same directory between the stat() above and this call. */
+        if (GetLastError() != ERROR_ALREADY_EXISTS) {
+            return -1;
+        }
     }
     return 0;
 #else
@@ -81,7 +87,20 @@ static int rb_mkdirs(char *path)
 
     for (p = path + 1; *p != '\0'; p++) {
         if (*p == '/' || *p == '\\') {
-            char saved = *p;
+            char saved;
+
+            /* "C:\Users\..." — the separator that closes a drive designator
+             * does not end a directory that can be created: the designator
+             * itself always "exists", and asking for it is what used to
+             * abort this whole walk, and with it rb_paths_data_dir(), which
+             * then returned NULL for every absolute Windows path.  A POSIX
+             * absolute path starts with a separator, so a colon can never
+             * sit at path[1] there and this test is inert on the other
+             * platform. */
+            if (p == path + 2 && path[1] == ':') {
+                continue;
+            }
+            saved = *p;
             *p = '\0';
             if (rb_mkdir_one(path) != 0) {
                 *p = saved;

@@ -342,10 +342,18 @@ jobs:
           $out = Join-Path $PWD "selftest-out.txt"
           Remove-Item -Path $out -ErrorAction SilentlyContinue
           $p = Start-Process -FilePath $exe -ArgumentList "--selftest","--out","$out" -PassThru -Wait
-          $line = Get-Content $out -ErrorAction SilentlyContinue
+          # @() so a single-line report is still an array. Start-Process
+          # detaches the child, so its stderr (which carries the per-check
+          # FAIL lines) never reaches this log: the report file is the only
+          # channel, which is why the summary names every failing check and
+          # the environment it ran against. Echo the whole thing.
+          $lines = @(Get-Content $out -ErrorAction SilentlyContinue)
           Write-Host "selftest exit code: $($p.ExitCode)"
-          Write-Host "selftest output: $line"
+          if ($lines.Count -eq 0) { Write-Host "selftest wrote no report"; exit 1 }
+          $lines | ForEach-Object { Write-Host "selftest | $_" }
+          $line = $lines[0]
           if ($p.ExitCode -ne 0) { Write-Host "selftest failed"; exit 1 }
+          if ($lines.Count -ne 1) { Write-Host "selftest reported failures yet exited 0"; exit 1 }
           if ($line -notmatch "selftest: \d+ checks, 0 failed") {
             Write-Host "selftest did not report a clean pass"; exit 1
           }

@@ -136,11 +136,48 @@ static int rb_version_output(const wchar_t *out_path)
 
 static int rb_st_total, rb_st_fail;
 
+/* The failing checks are COLLECTED, not merely printed.  CI starts this
+ * binary as a detached process (Start-Process), so its stderr never reaches
+ * the job log — only the file named by --out does.  A run that said
+ * "27 checks, 17 failed" and nothing else is what that costs: seventeen
+ * invisible failures that can only be guessed at, one CI cycle each.  The
+ * names ride along in the summary instead. */
+#define RB_ST_MAX_FAILURES 32
+static char rb_st_failures[RB_ST_MAX_FAILURES][160];
+static int rb_st_fail_n;
+
+static void rb_st_note_failure(const char *file, int line, const char *expr)
+{
+    if (rb_st_fail_n >= RB_ST_MAX_FAILURES) {
+        return;
+    }
+    snprintf(rb_st_failures[rb_st_fail_n], sizeof rb_st_failures[0],
+             "FAIL %s:%d: %s", file, line, expr);
+    rb_st_fail_n++;
+}
+
+/* Appends to a NUL-terminated report, truncating rather than overflowing. */
+static void rb_st_append(char *buf, size_t cap, size_t *len, const char *s)
+{
+    size_t n = strlen(s);
+
+    if (*len + 1 >= cap) {
+        return;
+    }
+    if (n > cap - 1 - *len) {
+        n = cap - 1 - *len;
+    }
+    memcpy(buf + *len, s, n);
+    *len += n;
+    buf[*len] = '\0';
+}
+
 #define ST_CHECK(cond)                                                       \
     do {                                                                     \
         rb_st_total++;                                                       \
         if (!(cond)) {                                                       \
             rb_st_fail++;                                                    \
+            rb_st_note_failure(__FILE__, __LINE__, #cond);                   \
             fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);  \
         }                                                                    \
     } while (0)
@@ -157,7 +194,6 @@ static int rb_selftest(const wchar_t *out_path)
     const char *old_appdata;
     rb_filter_options fo;
     char *ua;
-    char summary[192];
     int rc;
 
     rb_st_total = 0;
@@ -266,6 +302,44 @@ static int rb_selftest(const wchar_t *out_path)
     rc = rb_st_fail;
     rb_data_free(app);
 
+    /* Built while the scratch %APPDATA% is still in place: when a path the
+     * state layer stores comes back NULL, the value it was derived from is
+     * the first thing anyone reading the log needs to see. */
+    {
+        char report[4096];
+        char line[224];
+        size_t used = 0;
+        const char *scratch = getenv("APPDATA");
+        char *data_dir;
+        int i;
+
+        report[0] = '\0';
+        snprintf(line, sizeof line, "selftest: %d checks, %d failed\n",
+                 rb_st_total, rc);
+        rb_st_append(report, sizeof report, &used, line);
+        for (i = 0; i < rb_st_fail_n; i++) {
+            rb_st_append(report, sizeof report, &used, rb_st_failures[i]);
+            rb_st_append(report, sizeof report, &used, "\n");
+        }
+        if (rc != 0) {
+            if (rb_st_fail > rb_st_fail_n) {
+                snprintf(line, sizeof line, "... and %d further failures\n",
+                         rb_st_fail - rb_st_fail_n);
+                rb_st_append(report, sizeof report, &used, line);
+            }
+            snprintf(line, sizeof line, "APPDATA=%s\n",
+                     (scratch && scratch[0]) ? scratch : "(unset)");
+            rb_st_append(report, sizeof report, &used, line);
+            data_dir = rb_paths_data_dir();
+            snprintf(line, sizeof line, "data dir=%s\n",
+                     data_dir ? data_dir : "(NULL - could not be created)");
+            rb_st_append(report, sizeof report, &used, line);
+            if (data_dir) rb_paths_free(data_dir);
+        }
+        rb_write_console(report);
+        if (rb_write_file(out_path, report) != 0) rc = 1;
+    }
+
     if (saved) {
         _putenv_s("APPDATA", saved);
         free(saved);
@@ -275,10 +349,6 @@ static int rb_selftest(const wchar_t *out_path)
     rb_paths_remove_tree(tmp_u8);
     free(tmp_u8);
 
-    snprintf(summary, sizeof summary, "selftest: %d checks, %d failed\n",
-             rb_st_total, rc);
-    rb_write_console(summary);
-    if (rb_write_file(out_path, summary) != 0) return 1;
     return rc ? 1 : 0;
 }
 
