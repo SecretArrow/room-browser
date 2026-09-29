@@ -1,15 +1,19 @@
 package com.roombrowser.main.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -20,9 +24,6 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -31,15 +32,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.SettingsBackupRestore
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -57,7 +56,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -69,6 +67,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
@@ -76,6 +75,7 @@ import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.profile.CopyOptions
 import com.roombrowser.main.MainViewModel
 import com.roombrowser.main.MainActivity
+import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.ProfileAvatar
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -107,6 +107,7 @@ fun MainScreen(
 ) {
     val profiles = viewModel.profiles
     val firstRunDone = viewModel.firstRunDone
+    val extras = com.roombrowser.ui.common.LocalRoomExtras.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val message = viewModel.message
@@ -140,7 +141,7 @@ fun MainScreen(
                     IconButton(
                         onClick = { showImport = true },
                         modifier = Modifier.semantics { contentDescription = "Import profile settings" }
-                    ) { Icon(Icons.Filled.Add, contentDescription = null) }
+                    ) { Icon(Icons.Filled.SettingsBackupRestore, contentDescription = null) }
                 }
             )
         }
@@ -173,17 +174,18 @@ fun MainScreen(
             Text(
                 "Each profile is a fully isolated browsing environment — separate cookies, storage, history and settings.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = extras.textSecondary,
                 modifier = Modifier.padding(horizontal = 16.dp)
             )
 
             if (profiles.isEmpty()) {
-                Box(Modifier.fillMaxWidth().padding(48.dp), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("No profiles yet", style = MaterialTheme.typography.titleMedium)
-                        Spacer(Modifier.height(8.dp))
-                        Button(onClick = { showCreate = true }) { Text("Create Profile") }
-                    }
+                Column(
+                    Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    EmptyState(title = "No profiles yet", subtitle = "Create one to start isolated browsing")
+                    Spacer(Modifier.height(12.dp))
+                    Button(onClick = { showCreate = true }) { Text("Create Profile") }
                 }
             } else {
                 profiles.forEach { profile ->
@@ -229,8 +231,15 @@ fun MainScreen(
             url = pendingUrl,
             profiles = profiles,
             onChoose = { profile ->
-                viewModel.consumeExternalUrl()
-                onOpenProfile(profile.id.value, pendingUrl)
+                if (profile.isLocked) {
+                    activity.gateProfile(profile.name) {
+                        viewModel.consumeExternalUrl()
+                        onOpenProfile(profile.id.value, pendingUrl)
+                    }
+                } else {
+                    viewModel.consumeExternalUrl()
+                    onOpenProfile(profile.id.value, pendingUrl)
+                }
             },
             onDismiss = { viewModel.consumeExternalUrl() }
         )
@@ -400,7 +409,14 @@ private fun ProfileCard(
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(profile.name, style = MaterialTheme.typography.titleMedium, color = extras.textPrimary)
+                        Text(
+                            profile.name,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = extras.textPrimary,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                         if (profile.isLocked) {
                             Spacer(Modifier.width(6.dp))
                             Icon(
@@ -423,7 +439,9 @@ private fun ProfileCard(
                     Text(
                         "$tabCount tabs · Last active ${timeFormat.format(Date(profile.lastActiveAt))}",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = extras.textSecondary
+                        color = extras.textSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
                 Box {
@@ -480,7 +498,7 @@ private fun ProfileCard(
                     }
                 }
             }
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(12.dp))
             Button(
                 onClick = onOpen,
                 modifier = Modifier
@@ -506,20 +524,34 @@ private fun OpenWithProfileSheet(
             Text(
                 url,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
             )
             Spacer(Modifier.height(12.dp))
-            profiles.forEach { profile ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onChoose(profile) }
-                        .padding(vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    ProfileAvatar(profile.icon, profile.colorArgb, size = 36)
-                    Spacer(Modifier.width(12.dp))
-                    Text(profile.name, style = MaterialTheme.typography.bodyLarge)
+            Column(
+                Modifier
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                profiles.forEach { profile ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onChoose(profile) }
+                            .padding(vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        ProfileAvatar(profile.icon, profile.colorArgb, size = 36)
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            profile.name,
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
             Spacer(Modifier.height(24.dp))
@@ -527,6 +559,7 @@ private fun OpenWithProfileSheet(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CreateProfileDialog(
     onDismiss: () -> Unit,
@@ -535,6 +568,7 @@ private fun CreateProfileDialog(
     var name by remember { mutableStateOf("") }
     var icon by remember { mutableStateOf(PROFILE_ICONS.first()) }
     var color by remember { mutableStateOf(PROFILE_COLORS.first()) }
+    val extras = com.roombrowser.ui.common.LocalRoomExtras.current
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Create Profile") },
@@ -549,11 +583,10 @@ private fun CreateProfileDialog(
                 )
                 Spacer(Modifier.height(12.dp))
                 Text("Icon", style = MaterialTheme.typography.labelLarge)
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(6),
-                    modifier = Modifier.height(56.dp)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(PROFILE_ICONS) { candidate ->
+                    PROFILE_ICONS.forEach { candidate ->
                         Text(
                             candidate,
                             style = MaterialTheme.typography.titleLarge,
@@ -575,9 +608,14 @@ private fun CreateProfileDialog(
                     PROFILE_COLORS.take(5).forEach { c ->
                         Box(
                             modifier = Modifier
-                                .size(32.dp)
+                                .size(40.dp)
                                 .clip(CircleShape)
                                 .background(Color(c.toInt()))
+                                .border(
+                                    2.dp,
+                                    if (c == color) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                    CircleShape
+                                )
                                 .clickable { color = c }
                         )
                     }
@@ -587,9 +625,14 @@ private fun CreateProfileDialog(
                     PROFILE_COLORS.drop(5).forEach { c ->
                         Box(
                             modifier = Modifier
-                                .size(32.dp)
+                                .size(40.dp)
                                 .clip(CircleShape)
                                 .background(Color(c.toInt()))
+                                .border(
+                                    2.dp,
+                                    if (c == color) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                    CircleShape
+                                )
                                 .clickable { color = c }
                         )
                     }
@@ -598,7 +641,7 @@ private fun CreateProfileDialog(
                 Text(
                     "Defaults: DuckDuckGo search, recommended privacy shields, system DNS.",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = extras.textSecondary
                 )
             }
         },
@@ -612,6 +655,7 @@ private fun CreateProfileDialog(
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun EditProfileDialog(
     profile: Profile,
@@ -637,11 +681,10 @@ private fun EditProfileDialog(
                 Text("Renaming never changes the profile's storage identity (UUID).")
                 Spacer(Modifier.height(12.dp))
                 Text("Icon", style = MaterialTheme.typography.labelLarge)
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(6),
-                    modifier = Modifier.height(56.dp)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(PROFILE_ICONS) { candidate ->
+                    PROFILE_ICONS.forEach { candidate ->
                         Text(
                             candidate,
                             style = MaterialTheme.typography.titleLarge,
@@ -663,9 +706,14 @@ private fun EditProfileDialog(
                     PROFILE_COLORS.take(5).forEach { c ->
                         Box(
                             modifier = Modifier
-                                .size(32.dp)
+                                .size(40.dp)
                                 .clip(CircleShape)
                                 .background(Color(c.toInt()))
+                                .border(
+                                    2.dp,
+                                    if (c == color) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                    CircleShape
+                                )
                                 .clickable { color = c }
                         )
                     }
@@ -689,6 +737,7 @@ private fun DuplicateProfileDialog(
 ) {
     var copyBookmarks by remember { mutableStateOf(true) }
     var copyHistory by remember { mutableStateOf(false) }
+    val extras = com.roombrowser.ui.common.LocalRoomExtras.current
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Duplicate \"${profile.name}\"") },
@@ -696,14 +745,32 @@ private fun DuplicateProfileDialog(
             Column {
                 Text("The duplicate gets a NEW isolated storage namespace (fresh cookies and site data).")
                 Spacer(Modifier.height(12.dp))
-                LabeledCheckboxRow("Settings", true, {}) // always copied
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Lock,
+                        contentDescription = null,
+                        tint = extras.secondary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "Settings, theme and shields are copied too",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = extras.textSecondary
+                    )
+                }
                 LabeledCheckboxRow("Bookmarks", copyBookmarks) { copyBookmarks = it }
                 LabeledCheckboxRow("History", copyHistory) { copyHistory = it }
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "Cookies, cache, sessions and site data are never copied between profiles.",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = extras.textSecondary
                 )
             }
         },

@@ -31,19 +31,25 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.agent.AgentSettingsController
+import com.roombrowser.data.db.AgentSessionEntity
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.RoomBrowserTheme
 import java.text.SimpleDateFormat
@@ -108,6 +114,9 @@ private fun AgentSessionsRoot(
     onClose: () -> Unit
 ) {
     val dateFormat = remember { SimpleDateFormat("dd MMM yyyy · HH:mm", Locale.getDefault()) }
+    // Destructive action guard: the delete icon only ARMS the confirmation
+    // dialog — the actual delete runs after the user confirms.
+    var deleteTarget by remember { mutableStateOf<AgentSessionEntity?>(null) }
 
     Scaffold(
         // Insets are applied EXPLICITLY below (TopAppBar handles the status
@@ -175,7 +184,7 @@ private fun AgentSessionsRoot(
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
-                        IconButton(onClick = { controller.deleteSession(session.id) }) {
+                        IconButton(onClick = { deleteTarget = session }) {
                             Icon(Icons.Filled.Delete, contentDescription = "Delete chat")
                         }
                     }
@@ -183,5 +192,22 @@ private fun AgentSessionsRoot(
                 item { Spacer(Modifier.height(24.dp)) }
             }
         }
+    }
+
+    deleteTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("Delete chat?") },
+            text = { Text("This permanently removes the chat history.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    controller.deleteSession(target.id)
+                    deleteTarget = null
+                }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text("Cancel") }
+            }
+        )
     }
 }

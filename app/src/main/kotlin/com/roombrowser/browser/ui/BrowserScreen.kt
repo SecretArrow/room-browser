@@ -2,7 +2,6 @@ package com.roombrowser.browser.ui
 
 import android.app.Activity
 import android.content.Intent
-import android.speech.RecognizerIntent
 import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.FrameLayout
@@ -30,19 +29,14 @@ import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -69,20 +63,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.roombrowser.browser.BrowserViewModel
-import com.roombrowser.browser.PageError
-import com.roombrowser.browser.StatCategories
 import com.roombrowser.browser.engine.NetworkIdentity
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.qr.QrCodeGenerator
-import com.roombrowser.qr.QrScannerActivity
-import com.roombrowser.ui.common.LoadingBar
 import com.roombrowser.ui.common.LocalRoomExtras
-import com.roombrowser.ui.common.StatTile
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /** Screen routing inside the browser activity. */
 sealed interface BrowserRoute {
@@ -140,20 +126,12 @@ fun BrowserScreen(
     var showFindBar by remember { mutableStateOf(false) }
     var showTranslateDialog by remember { mutableStateOf(false) }
     var showQrDialog by remember { mutableStateOf(false) }
-    var showIpWarning by remember { mutableStateOf(true) }
+    var showIpWarning by rememberSaveable { mutableStateOf(true) }
     // System-Back exit confirmation — a page with no back history left must
     // NEVER leave the app without an explicit user decision (user mandate:
     // "kalau yang dibuka bukan url dasar jangan keluarkan app, cukup tampilkan
     // konfirmasi dulu").
     var showExitConfirm by remember { mutableStateOf(false) }
-
-    val qrLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        result.data?.getStringExtra(QrScannerActivity.EXTRA_QR_TEXT)?.let { text ->
-            viewModel.onQrResult(text)
-        }
-    }
 
     // AI settings & chat history live in their OWN activities (default
     // process) — the browser surface simply launches them and, for chat
@@ -185,14 +163,6 @@ fun BrowserScreen(
                 )
             }
         )
-    }
-    val voiceLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        result.data
-            ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-            ?.firstOrNull()
-            ?.let { viewModel.onOmniBoxInput(it) }
     }
 
     Scaffold(
@@ -240,26 +210,7 @@ fun BrowserScreen(
                 BrowserRoute.Browser -> BrowserContent(
                     viewModel = viewModel,
                     onShowShields = { showShields = true },
-                    onOpenPrivacyDashboard = { route = BrowserRoute.PrivacyDashboard },
-                    onOpenDownloads = { route = BrowserRoute.Downloads },
-                    onOpenHistory = { route = BrowserRoute.History },
-                    onQrScan = {
-                        qrLauncher.launch(Intent(activity, QrScannerActivity::class.java))
-                    },
-                    onVoiceInput = {
-                        runCatching {
-                            val speechIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                                putExtra(
-                                    RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-                                )
-                                putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak now")
-                            }
-                            voiceLauncher.launch(speechIntent)
-                        }.onFailure {
-                            viewModel.snackbar.value = "Voice input unavailable"
-                        }
-                    }
+                    onOpenPrivacyDashboard = { route = BrowserRoute.PrivacyDashboard }
                 )
                 BrowserRoute.Tabs -> TabGridScreen(viewModel = viewModel, onClose = { route = BrowserRoute.Browser })
                 BrowserRoute.Bookmarks -> BookmarksScreen(viewModel = viewModel, onClose = { route = BrowserRoute.Browser })
@@ -323,6 +274,10 @@ fun BrowserScreen(
                 showFindBar = false
             }
             agentPanelExpanded -> agentPanelExpanded = false
+            // Sub-screens whose in-app back returns to their PARENT screen
+            // (ProfileSettings / About open from the Settings screen) must
+            // land in the SAME place from the system Back gesture.
+            route == BrowserRoute.ProfileSettings || route == BrowserRoute.About -> route = BrowserRoute.Settings
             route != BrowserRoute.Browser -> route = BrowserRoute.Browser
             viewModel.pageState.canGoBack -> viewModel.goBack()
             !viewModel.pageState.isHomepage -> showExitConfirm = true
@@ -346,7 +301,8 @@ fun BrowserScreen(
             onOpenAgentSettings = { launchAgentSettings(); showPageActions = false },
             onOpenAgentSessions = { launchAgentSessions(); showPageActions = false },
             onOpenBookmarks = { route = BrowserRoute.Bookmarks; showPageActions = false },
-            onShowQuickSwitcher = { showQuickSwitcher = true; showPageActions = false }
+            onShowQuickSwitcher = { showQuickSwitcher = true; showPageActions = false },
+            onShowShields = { showShields = true; showPageActions = false }
         )
     }
 
@@ -407,18 +363,10 @@ fun BrowserScreen(
             onDismissRequest = { showExitConfirm = false },
             title = { Text("Exit Room Browser?") },
             text = {
-                Column {
-                    Text(
-                        (if (host.isBlank()) "" else "$host ") +
-                            "This page has no back history left. Your tabs and the engine stay alive in the background."
-                    )
-                    TextButton(
-                        onClick = {
-                            showExitConfirm = false
-                            viewModel.goHome()
-                        }
-                    ) { Text("Back to start page") }
-                }
+                Text(
+                    (if (host.isBlank()) "" else "$host ") +
+                        "This page has no back history left. Your tabs and the engine stay alive in the background."
+                )
             },
             confirmButton = {
                 TextButton(
@@ -429,7 +377,15 @@ fun BrowserScreen(
                 ) { Text("Exit") }
             },
             dismissButton = {
-                TextButton(onClick = { showExitConfirm = false }) { Text("Cancel") }
+                Column {
+                    TextButton(
+                        onClick = {
+                            showExitConfirm = false
+                            viewModel.goHome()
+                        }
+                    ) { Text("Back to start page") }
+                    TextButton(onClick = { showExitConfirm = false }) { Text("Cancel") }
+                }
             }
         )
     }

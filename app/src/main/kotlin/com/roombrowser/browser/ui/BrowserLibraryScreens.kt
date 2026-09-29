@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -150,7 +151,7 @@ fun TabGridScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             onClose = onClose,
             actions = {
                 IconButton(onClick = { viewModel.reopenClosedTab() }) {
-                    Icon(Icons.Filled.Add, contentDescription = "Reopen closed tab")
+                    Icon(Icons.Filled.Restore, contentDescription = "Reopen closed tab")
                 }
                 TextButton(onClick = { viewModel.startPrivateTab() }) { Text("Private") }
                 IconButton(onClick = { viewModel.loadUrl("about:home", newTab = true) }) {
@@ -178,7 +179,10 @@ fun TabGridScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                         onClick = { viewModel.selectTab(tab.id); onClose() },
                         onClose = { viewModel.closeTab(tab.id) },
                         onPin = { viewModel.pinTab(tab.id) },
-                        onDuplicate = { viewModel.duplicateTab() },
+                        // duplicateTab() duplicates the ACTIVE tab — select
+                        // this card's tab first so the menu acts on the card
+                        // it was opened from.
+                        onDuplicate = { viewModel.selectTab(tab.id); viewModel.duplicateTab() },
                         onGroup = { viewModel.groupTab(tab.id, it) }
                     )
                 }
@@ -196,12 +200,12 @@ fun TabGridScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                             .clip(rowShape)
                             .background(extras.surface)
                             .border(
-                                if (tab.id == viewModel.activeTabId) 1.2.dp else 0.5.dp,
+                                if (tab.id == viewModel.activeTabId) 1.5.dp else 0.5.dp,
                                 if (tab.id == viewModel.activeTabId) extras.primary else extras.border,
                                 rowShape
                             )
                             .clickable { viewModel.selectTab(tab.id); onClose() }
-                            .padding(start = 12.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
+                            .padding(start = 12.dp, end = 4.dp, top = 12.dp, bottom = 12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         // Favicon circle
@@ -386,7 +390,7 @@ private fun TabCard(
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(start = 12.dp, top = 10.dp, end = 2.dp, bottom = 8.dp),
+                .padding(start = 12.dp, top = 12.dp, end = 2.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f)) {
@@ -415,6 +419,8 @@ private fun TabCard(
         if (group != null) {
             Text(
                 "Group: $group",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.labelSmall,
                 color = extras.primary,
                 modifier = Modifier.padding(start = 12.dp, bottom = 10.dp)
@@ -436,7 +442,7 @@ fun BookmarksScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
         } else {
             val byFolder = bookmarks.groupBy { it.folder }
             LazyColumn(
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 16.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 byFolder.forEach { (folder, items) ->
@@ -467,12 +473,13 @@ fun BookmarksScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
 fun HistoryScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
     val history = viewModel.recentHistory
     val extras = LocalRoomExtras.current
+    var confirmClear by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().background(extras.background)) {
         LibraryTopBar(
             title = "History",
             onClose = onClose,
             actions = {
-                TextButton(onClick = { viewModel.clearHistory(0) }) { Text("Clear all") }
+                TextButton(onClick = { confirmClear = true }) { Text("Clear all") }
             }
         )
         if (history.isEmpty()) {
@@ -495,6 +502,18 @@ fun HistoryScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             }
         }
     }
+    if (confirmClear) {
+        com.roombrowser.main.ui.ConfirmDialog(
+            title = "Clear history?",
+            text = "Removes the browsing history of this profile.",
+            confirmLabel = "Clear",
+            onDismiss = { confirmClear = false },
+            onConfirm = {
+                viewModel.clearHistory(0)
+                confirmClear = false
+            }
+        )
+    }
 }
 
 /** Bookmarks / history row: rounded card, tinted icon tile, trailing delete. */
@@ -513,7 +532,7 @@ private fun LibraryListRow(
             Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onClick)
-                .padding(start = 12.dp, top = 10.dp, end = 4.dp, bottom = 10.dp),
+                .padding(start = 12.dp, top = 12.dp, end = 4.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
@@ -598,7 +617,7 @@ private fun DownloadRow(
         Column(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp)
+                .padding(12.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
@@ -646,6 +665,8 @@ private fun DownloadRow(
             }
             Text(
                 statusText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodySmall,
                 color = extras.textSecondary,
                 modifier = Modifier.padding(top = 6.dp)
@@ -660,40 +681,33 @@ private fun DownloadRow(
                 when (status) {
                     DownloadStatus.RUNNING.name, DownloadStatus.QUEUED.name -> {
                         TextButton(
-                            onClick = { viewModel.pauseDownload(id) },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            onClick = { viewModel.pauseDownload(id) }
                         ) { Text("Pause") }
                         TextButton(
-                            onClick = { viewModel.cancelDownload(id) },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            onClick = { viewModel.cancelDownload(id) }
                         ) { Text("Cancel") }
                     }
                     DownloadStatus.PAUSED.name -> {
                         TextButton(
-                            onClick = { viewModel.resumeDownload(id) },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            onClick = { viewModel.resumeDownload(id) }
                         ) { Text("Resume") }
                     }
                     DownloadStatus.FAILED.name, DownloadStatus.CANCELLED.name -> {
                         TextButton(
-                            onClick = { viewModel.retryDownload(id) },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            onClick = { viewModel.retryDownload(id) }
                         ) { Text("Retry") }
                     }
                     DownloadStatus.COMPLETED.name -> {
                         TextButton(
-                            onClick = { viewModel.openDownload(id) },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            onClick = { viewModel.openDownload(id) }
                         ) { Text("Open") }
                         TextButton(
-                            onClick = { viewModel.shareDownload(id) },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            onClick = { viewModel.shareDownload(id) }
                         ) { Text("Share") }
                     }
                 }
                 TextButton(
-                    onClick = { viewModel.deleteDownload(id) },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    onClick = { viewModel.deleteDownload(id) }
                 ) { Text("Delete") }
             }
         }
@@ -706,15 +720,13 @@ private fun DownloadRow(
 fun PrivacyDashboardScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
     val stats = viewModel.privacyStats
     val extras = LocalRoomExtras.current
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(extras.background)
-            .verticalScroll(rememberScrollState())
-    ) {
+    Column(Modifier.fillMaxSize().background(extras.background)) {
         LibraryTopBar(title = "Privacy Dashboard", onClose = onClose)
         Column(
-            Modifier.padding(horizontal = 16.dp),
+            Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Spacer(Modifier.height(4.dp))
@@ -752,7 +764,7 @@ fun PrivacyDashboardScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 Column(
                     Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                        .padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(

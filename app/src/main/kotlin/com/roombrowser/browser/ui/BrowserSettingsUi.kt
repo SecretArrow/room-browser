@@ -45,6 +45,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.engine.ProfileEngine
@@ -80,7 +81,7 @@ import kotlinx.coroutines.launch
 private fun SettingsTopBar(title: String, onClose: () -> Unit) {
     val extras = LocalRoomExtras.current
     TopAppBar(
-        title = { Text(title) },
+        title = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         navigationIcon = {
             IconButton(onClick = onClose) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close")
@@ -283,21 +284,32 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 }
             )
             val engines = remember { ProfileEngine.installedWebViewEngines(context) }
-            var enginePick by remember {
-                mutableStateOf(
-                    engines.firstOrNull { it.isCurrent }?.packageName
-                        ?: engines.firstOrNull()?.packageName ?: ""
+            // Honest display-only row: Android decides the active WebView
+            // provider, so a picker here could never take effect (see the
+            // InfoNote below). We simply show the current engine as text.
+            val currentEngine = engines.firstOrNull { it.isCurrent } ?: engines.firstOrNull()
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Engine",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = extras.textPrimary,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    currentEngine?.let { "${it.packageName} ${it.versionName}" }.orEmpty(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = extras.textSecondary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1.5f)
                 )
             }
-            DropdownRow(
-                label = "Engine",
-                options = engines.map { engine ->
-                    engine.packageName to "${engine.packageName} ${engine.versionName}" +
-                        if (engine.isCurrent) " (active)" else ""
-                },
-                selected = enginePick,
-                onSelect = { enginePick = it } // informational only — Android manages the provider
-            )
         }
         InfoNote("Read-only diagnostics — Android decides the active WebView provider; Room Browser cannot switch it.")
 
@@ -481,8 +493,10 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             }
         }
         val effective = UserAgents.effectiveUserAgent(settings)
-        InfoNote("Current: ${effective ?: "Android WebView default"}")
-        InfoNote("Changing the User-Agent string does not change other platform/device characteristics (screen, APIs, capabilities).")
+        InfoNote(
+            "Current: ${effective ?: "Android WebView default"}\n" +
+                "Changing the User-Agent string does not change other platform/device characteristics (screen, APIs, capabilities)."
+        )
 
         SectionHeader("Profile DNS")
         SettingsGroup {
@@ -641,9 +655,13 @@ fun RadioRow(label: String, selected: Boolean, onSelect: () -> Unit) {
             .padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        RadioButton(selected = selected, onClick = onSelect)
+        // Single touch target: the whole row toggles; the radio itself is
+        // display-only (onClick = null) so there is no nested clickable.
+        RadioButton(selected = selected, onClick = null)
         Text(
             label,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             style = MaterialTheme.typography.bodyLarge,
             color = extras.textPrimary,
             modifier = Modifier.padding(start = 8.dp)
@@ -676,6 +694,8 @@ private fun DropdownRow(
     ) {
         Text(
             label,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             style = MaterialTheme.typography.bodyLarge,
             color = extras.textPrimary,
             modifier = Modifier.weight(1f)
@@ -690,7 +710,8 @@ private fun DropdownRow(
                 value = selectedDisplay,
                 onValueChange = {},
                 readOnly = true,
-                singleLine = true,
+                singleLine = false,
+                maxLines = 2,
                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = extras.textPrimary),
                 trailingIcon = {
                     Icon(
@@ -785,7 +806,7 @@ fun AboutScreen(onClose: () -> Unit) {
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 6.dp)
         ) {
-            Column(Modifier.padding(18.dp)) {
+            Column(Modifier.padding(12.dp)) {
                 Text(
                     "Room Browser 1.0.0",
                     style = MaterialTheme.typography.headlineSmall,

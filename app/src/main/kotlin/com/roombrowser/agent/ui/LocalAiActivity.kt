@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
@@ -513,6 +514,8 @@ private fun ConnectionStatusText(
                 connection is LocalAiController.ConnectionState.Online -> MaterialTheme.colorScheme.primary
                 else -> MaterialTheme.colorScheme.onSurfaceVariant
             },
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.semantics { contentDescription = "localai_status" }
         )
     }
@@ -530,6 +533,7 @@ private fun SetupGuideCard() {
             Row(
                 Modifier
                     .fillMaxWidth()
+                    .padding(vertical = 8.dp)
                     .clickable { expanded = !expanded },
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -641,7 +645,10 @@ private fun OnDeviceEngineSection(
                 Text(
                     output,
                     style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.semantics { contentDescription = "localengine_try_output" }
+                    modifier = Modifier
+                        .heightIn(max = 280.dp)
+                        .verticalScroll(rememberScrollState())
+                        .semantics { contentDescription = "localengine_try_output" }
                 )
             },
             confirmButton = {
@@ -752,7 +759,7 @@ private fun OnDeviceEngineSection(
     RoomCard(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .padding(horizontal = 16.dp, vertical = 6.dp)
     ) {
         Column(Modifier.padding(12.dp)) {
             Text(
@@ -780,6 +787,8 @@ private fun OnDeviceEngineSection(
                         "Loaded model: $it",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(top = 2.dp)
                     )
                 }
@@ -789,6 +798,8 @@ private fun OnDeviceEngineSection(
                     it,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 2.dp)
                 )
             }
@@ -879,7 +890,9 @@ private fun OnDeviceEngineSection(
                     onNotice("The URL must start with http:// or https://")
                 }
             },
-            modifier = Modifier.semantics { contentDescription = "localengine_download" }
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { contentDescription = "localengine_download" }
         ) {
             Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(6.dp))
@@ -948,9 +961,9 @@ private fun OnDeviceModelRow(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Row(
+            FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
                 modifier = Modifier.padding(top = 6.dp)
             ) {
                 OutlinedButton(
@@ -976,7 +989,7 @@ private fun OnDeviceModelRow(
             OutlinedButton(
                 onClick = onExport,
                 modifier = Modifier
-                    .padding(top = 4.dp)
+                    .padding(top = 6.dp)
                     .semantics { contentDescription = "localengine_export_${model.id}" }
             ) {
                 Icon(Icons.Filled.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -1002,7 +1015,9 @@ private fun OnDeviceDownloadRow(
         Text(
             entry.fileName,
             style = MaterialTheme.typography.bodyLarge,
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
         val status = when {
             entry.error != null -> "Error: ${entry.error}"
@@ -1019,7 +1034,9 @@ private fun OnDeviceDownloadRow(
             status,
             style = MaterialTheme.typography.bodySmall,
             color = if (entry.error != null) MaterialTheme.colorScheme.error
-            else MaterialTheme.colorScheme.onSurfaceVariant
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
         )
         val knownTotal = entry.total?.takeIf { it > 0 }
         if (knownTotal != null) {
@@ -1075,40 +1092,48 @@ private fun InstalledModelRow(
     onUseInChat: () -> Unit,
     onDelete: () -> Unit
 ) {
-    Column(
+    // Same RoomCard treatment as OnDeviceModelRow — the two model lists are
+    // siblings on one screen and must read as one design system.
+    RoomCard(
         Modifier
             .fillMaxWidth()
-            .padding(vertical = 8.dp)
+            .padding(vertical = 6.dp)
     ) {
-        Text(
-            model.name,
-            style = MaterialTheme.typography.bodyLarge,
-            fontWeight = FontWeight.Bold
-        )
-        val details = listOf(
-            formatBytes(model.sizeBytes),
-            model.family,
-            model.parameterSize,
-            model.quantizationLevel
-        ).filter { it.isNotBlank() }.joinToString(" · ")
-        Text(
-            details.ifBlank { "—" },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(top = 4.dp)
-        ) {
-            OutlinedButton(
-                onClick = onUseInChat,
-                modifier = Modifier.semantics { contentDescription = "localai_use_${model.name}" }
-            ) { Text("Use in chat") }
-            IconButton(
-                onClick = onDelete,
-                modifier = Modifier.semantics { contentDescription = "localai_delete_${model.name}" }
-            ) { Icon(Icons.Filled.Delete, contentDescription = "Delete model") }
+        Column(Modifier.padding(12.dp)) {
+            Text(
+                model.name,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            val details = listOf(
+                formatBytes(model.sizeBytes),
+                model.family,
+                model.parameterSize,
+                model.quantizationLevel
+            ).filter { it.isNotBlank() }.joinToString(" · ")
+            Text(
+                details.ifBlank { "—" },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(top = 6.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onUseInChat,
+                    modifier = Modifier.semantics { contentDescription = "localai_use_${model.name}" }
+                ) { Text("Use in chat") }
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.semantics { contentDescription = "localai_delete_${model.name}" }
+                ) { Icon(Icons.Filled.Delete, contentDescription = "Delete model") }
+            }
         }
     }
 }
@@ -1133,12 +1158,16 @@ private fun DownloadRow(
         Text(
             tag,
             style = MaterialTheme.typography.bodyLarge,
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
         Text(
             state.statusLine,
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
         )
         Spacer(Modifier.height(6.dp))
         val knownTotal = state.totalBytes
@@ -1166,6 +1195,8 @@ private fun DownloadRow(
                 "Error: $it",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 2.dp)
             )
         }
@@ -1242,7 +1273,7 @@ private fun CatalogSection(
             tier.label,
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(start = 16.dp, top = 14.dp)
+            modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp)
         )
         Text(
             tier.hint,
@@ -1598,7 +1629,9 @@ private fun TuningSection(
     // Local editable copy — committed by the Apply button below.
     var gpuAuto by remember(controller.tuning) { mutableStateOf(controller.tuning.gpuLayers == null) }
     var gpuLayers by remember(controller.tuning) {
-        mutableStateOf((controller.tuning.gpuLayers ?: 0).coerceIn(0, 99))
+        // When the user switches Auto off for the first time, offer a sane
+        // phone default (8 layers) instead of a meaningless 0.
+        mutableStateOf((controller.tuning.gpuLayers ?: 8).coerceIn(0, 99))
     }
     var cpuAuto by remember(controller.tuning) { mutableStateOf(controller.tuning.cpuThreads == null) }
     var cpuThreads by remember(controller.tuning) {
@@ -1613,8 +1646,9 @@ private fun TuningSection(
 
     Text(
         "GPU layers to offload",
-        style = MaterialTheme.typography.bodyLarge,
-        modifier = Modifier.padding(horizontal = 16.dp)
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(horizontal = 16.dp, top = 12.dp)
     )
     SettingSwitchRow(
         title = "Auto (server decides)",
@@ -1635,8 +1669,9 @@ private fun TuningSection(
 
     Text(
         "CPU threads",
-        style = MaterialTheme.typography.bodyLarge,
-        modifier = Modifier.padding(horizontal = 16.dp)
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(horizontal = 16.dp, top = 12.dp)
     )
     SettingSwitchRow(
         title = "Auto (server decides)",
@@ -1703,7 +1738,7 @@ private fun TuningSlider(
     steps: Int,
     onValueChange: (Float) -> Unit
 ) {
-    Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
             Text(

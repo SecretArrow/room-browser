@@ -225,7 +225,7 @@ private fun ThemeStudioRoot(controller: ThemeStudioController, onDone: () -> Uni
                     "Open the studio from a profile to apply themes to it.",
                 style = MaterialTheme.typography.bodySmall,
                 color = LocalRoomExtras.current.textSecondary,
-                modifier = Modifier.padding(horizontal = 20.dp)
+                modifier = Modifier.padding(horizontal = 16.dp)
             )
 
             // ---------- Mode -------------------------------------------------
@@ -407,9 +407,9 @@ private fun ThemeStudioRoot(controller: ThemeStudioController, onDone: () -> Uni
             )
 
             // ---------- Save / import / export ------------------------------
-            SectionHeader("My themes")
+            SectionHeader("Save & share")
             Row(
-                Modifier.padding(horizontal = 16.dp),
+                Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Button(onClick = { saveAsOpen = true }) {
@@ -694,13 +694,15 @@ private fun ThemeCard(
             }
             if (isCustom) {
                 Box(Modifier.align(Alignment.BottomEnd)) {
+                    // 40dp visual = at least a 40dp touch target (the old 26dp
+                    // chip was unreachable for anyone with normal fingers).
                     IconButton(
                         onClick = { menuOpen = true },
                         modifier = Modifier
-                            .size(26.dp)
+                            .size(40.dp)
                             .background(extras.background.copy(alpha = 0.55f), CircleShape)
                     ) {
-                        Icon(Icons.Filled.Edit, contentDescription = "Custom theme actions", modifier = Modifier.size(14.dp))
+                        Icon(Icons.Filled.Edit, contentDescription = "Custom theme actions", modifier = Modifier.size(16.dp))
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         DropdownMenuItem(
@@ -832,7 +834,7 @@ private fun ColorRow(label: String, color: Long, onClick: () -> Unit) {
         Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 10.dp),
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -897,7 +899,7 @@ private fun ColorPickerDialog(
                         val selected = swatch == initial
                         Box(
                             Modifier
-                                .size(34.dp)
+                                .size(40.dp)
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(Color(swatch))
                                 .border(
@@ -950,9 +952,16 @@ private fun SliderRow(
     onValueChange: (Float) -> Unit
 ) {
     val extras = LocalRoomExtras.current
-    Column(Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) {
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(label, style = MaterialTheme.typography.bodyLarge, color = extras.textPrimary)
+            Text(
+                label,
+                style = MaterialTheme.typography.bodyLarge,
+                color = extras.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
             Text("${value.toInt()}$suffix", style = MaterialTheme.typography.labelMedium, color = extras.primary)
         }
         Slider(
@@ -990,7 +999,8 @@ private fun NameDialog(
                 value = name,
                 onValueChange = { name = it },
                 singleLine = true,
-                label = { Text("Name") }
+                label = { Text("Name") },
+                modifier = Modifier.fillMaxWidth()
             )
         },
         confirmButton = {

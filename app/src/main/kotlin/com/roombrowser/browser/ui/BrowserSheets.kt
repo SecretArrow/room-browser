@@ -4,6 +4,7 @@ import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,11 +36,14 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.FindInPage
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Refresh
@@ -95,7 +99,9 @@ import java.util.Locale
  * per-profile theme.
  *
  * Brave-style navigation bar: Back / Forward / Refresh / Tabs / Share /
- * More — 6 × 48dp touch targets fit even 320dp screens. Bookmarks and
+ * More — 6 × 48dp touch targets (288dp) + 2×10dp outer + 2×6dp inner
+ * padding = exactly 320dp, the smallest common screen width; 360dp
+ * screens get comfortable ~8dp gaps between buttons. Bookmarks and
  * profile switching moved into the Page Actions sheet so the bar stays
  * lean while the omnibox above reclaims the width the nav arrows used
  * to eat.
@@ -117,12 +123,12 @@ fun BrowserBottomBar(
     GlassBar(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 14.dp, vertical = 8.dp)
+            .padding(horizontal = 10.dp, vertical = 8.dp)
     ) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 4.dp),
+                .padding(horizontal = 6.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -185,7 +191,6 @@ fun BrowserBottomBar(
                     ) {
                         Text(
                             viewModel.tabs.size.coerceAtMost(99).toString(),
-                            fontSize = 9.sp,
                             color = extras.onButton,
                             style = MaterialTheme.typography.labelSmall
                         )
@@ -233,7 +238,8 @@ fun PageActionsSheet(
     onOpenAgentSettings: () -> Unit,
     onOpenAgentSessions: () -> Unit,
     onOpenBookmarks: () -> Unit,
-    onShowQuickSwitcher: () -> Unit
+    onShowQuickSwitcher: () -> Unit,
+    onShowShields: () -> Unit = {}
 ) {
     val context = LocalContext.current
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -247,7 +253,7 @@ fun PageActionsSheet(
             SheetAction(Icons.AutoMirrored.Filled.ArrowForward, "Forward") { viewModel.goForward(); onDismiss() }
             SheetAction(Icons.Filled.Add, "New tab") { viewModel.loadUrl("about:home", newTab = true); onDismiss() }
             SheetAction(Icons.Filled.Lock, "New private tab") { viewModel.startPrivateTab(); onDismiss() }
-            SheetAction(Icons.Filled.SafetyCheck, "Shields") { onDismiss(); viewModel.setSiteSetting { it } }
+            SheetAction(Icons.Filled.SafetyCheck, "Shields") { onDismiss(); onShowShields() }
             SheetAction(Icons.Filled.FindInPage, "Find in page") { onShowFindBar() }
             SheetAction(Icons.Filled.Language, "Translate") { onTranslate() }
             SheetAction(Icons.Filled.DesktopWindows, if (viewModel.pageState.desktopMode) "Desktop site: ON" else "Desktop site: OFF") {
@@ -307,9 +313,9 @@ fun PageActionsSheet(
 
             SheetSectionLabel("Settings")
             SheetAction(Icons.Filled.Settings, "Browser settings") { onOpenSettings() }
-            SheetAction(Icons.Filled.Settings, "Profile settings") { onOpenProfileSettings() }
+            SheetAction(Icons.Filled.Person, "Profile settings") { onOpenProfileSettings() }
             SheetAction(Icons.Filled.SwapHoriz, "Switch profile") { onShowQuickSwitcher(); onDismiss() }
-            SheetAction(Icons.Filled.Settings, "About Room Browser") { onOpenAbout() }
+            SheetAction(Icons.Filled.Info, "About Room Browser") { onOpenAbout() }
             Spacer(Modifier.height(24.dp))
         }
     }
@@ -442,7 +448,7 @@ fun ProfileQuickSwitcherSheet(
                             color = if (current) extras.primary else extras.textPrimary
                         )
                         Text(
-                            "${viewModel.tabs.size} tabs in current profile",
+                            "Switch to this profile",
                             style = MaterialTheme.typography.labelMedium,
                             color = extras.textSecondary
                         )
@@ -548,7 +554,7 @@ fun FindInPageBar(
                 modifier = Modifier.weight(1f)
             )
             IconButton(onClick = { onPrevious(query) }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Previous match", tint = extras.icon) }
-            IconButton(onClick = { onNext(query) }) { Icon(Icons.Filled.Close, contentDescription = "Next match", tint = extras.icon) }
+            IconButton(onClick = { onNext(query) }) { Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Next match", tint = extras.icon) }
             IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close find bar", tint = extras.icon) }
         }
     }
@@ -670,7 +676,8 @@ fun ReaderScreen(
                         .union(WindowInsets.displayCutout)
                         .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
                 )
-                .padding(12.dp),
+                .padding(12.dp)
+                .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             OutlinedButton(onClick = { if (fontSize > 12f) fontSize -= 2f }) { Text("A-") }

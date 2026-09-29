@@ -68,6 +68,7 @@ import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.SectionHeader
 import com.roombrowser.ui.common.SettingActionRow
 import com.roombrowser.ui.common.SettingSwitchRow
+import com.roombrowser.ui.common.SettingsGroup
 import kotlinx.coroutines.launch
 
 /**
@@ -196,78 +197,83 @@ private fun AgentSettingsRoot(
                     subtitle = "Add Z.ai, OpenAI, OpenRouter, Groq, DeepSeek, Ollama, LM Studio or any custom endpoint."
                 )
             }
-            controller.providers.forEach { provider ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable { onEditProvider(provider) }
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    RadioButton(
-                        selected = controller.settings.defaultProviderId == provider.id,
-                        onClick = {
-                            controller.setDefault(provider, provider.defaultModel)
-                            notice = "Default: ${provider.name}"
-                        }
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    // 3-LINE provider card — Name → Model → Base URL, so long
-                    // URLs and model ids never cramp into one overlapping
-                    // "url · model" line (same fix as the model picker sheet).
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                provider.name,
-                                style = MaterialTheme.typography.bodyLarge,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
-                            )
-                            if (provider.protocol == AgentProviderEntity.PROTOCOL_OPENCODE) {
-                                Spacer(Modifier.width(6.dp))
+            // Provider list lives in ONE card (SettingsGroup) — the rows are
+            // not bare list items floating on the background anymore.
+            SettingsGroup {
+                controller.providers.forEach { provider ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onEditProvider(provider) }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = controller.settings.defaultProviderId == provider.id,
+                            onClick = {
+                                controller.setDefault(provider, provider.defaultModel)
+                                notice = "Default: ${provider.name}"
+                            }
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        // 3-LINE provider card — Name → Model → Base URL, so long
+                        // URLs and model ids never cramp into one overlapping
+                        // "url · model" line (same fix as the model picker sheet).
+                        Column(Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    "OpenCode",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary
+                                    provider.name,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
                                 )
+                                if (provider.protocol == AgentProviderEntity.PROTOCOL_OPENCODE) {
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        "OpenCode",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
                             }
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                provider.defaultModel,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                provider.baseUrl,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            provider.defaultModel,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            provider.baseUrl,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        IconButton(
+                            onClick = { onEditProvider(provider) },
+                            modifier = Modifier.semantics { contentDescription = "edit_provider_${provider.id}" }
+                        ) { Icon(Icons.Filled.Edit, contentDescription = null) }
+                        IconButton(
+                            onClick = {
+                                scope.launch {
+                                    controller.deleteProvider(provider.id)
+                                    notice = "Removed ${provider.name}"
+                                }
+                            },
+                            modifier = Modifier.semantics { contentDescription = "delete_provider_${provider.id}" }
+                        ) { Icon(Icons.Filled.Delete, contentDescription = "Delete provider") }
                     }
-                    IconButton(
-                        onClick = { onEditProvider(provider) },
-                        modifier = Modifier.semantics { contentDescription = "edit_provider_${provider.id}" }
-                    ) { Icon(Icons.Filled.Edit, contentDescription = null) }
-                    IconButton(
-                        onClick = {
-                            scope.launch {
-                                controller.deleteProvider(provider.id)
-                                notice = "Removed ${provider.name}"
-                            }
-                        },
-                        modifier = Modifier.semantics { contentDescription = "delete_provider_${provider.id}" }
-                    ) { Icon(Icons.Filled.Delete, contentDescription = "Delete provider") }
                 }
             }
             Button(
                 onClick = onAddProvider,
                 modifier = Modifier
                     .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .fillMaxWidth()
                     .semantics { contentDescription = "add_provider" }
             ) {
                 Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -278,11 +284,26 @@ private fun AgentSettingsRoot(
             // ================= Default model =================
             SectionHeader("Default model")
             val defaultProvider = controller.activeProvider
-            SettingActionRow(
-                title = "Provider · model",
-                subtitle = if (defaultProvider == null) "Not set" else "${defaultProvider.name} · ${controller.activeModel ?: defaultProvider.defaultModel}",
-                onClick = { }
-            )
+            // Read-only summary row — NOT clickable, no chevron (it used to
+            // look tappable while the onClick did nothing). Picking a model
+            // happens in the agent panel's provider · model line (see tip).
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Provider · model", style = MaterialTheme.typography.bodyLarge)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    if (defaultProvider == null) "Not set"
+                    else "${defaultProvider.name} · ${controller.activeModel ?: defaultProvider.defaultModel}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             Text(
                 "Tip: open the AI Agent panel and tap the provider · model line to pick a model fetched from the provider's /models list.",
                 style = MaterialTheme.typography.bodySmall,
@@ -344,7 +365,7 @@ private fun AgentSettingsRoot(
                 onCommit = { controller.updateSettings { s -> s.copy(maxSteps = it.toInt()) } }
             )
 
-            SystemPromptSection(controller)
+            SystemPromptSection(controller, onApplied = { notice = "System prompt applied" })
 
             // ================= Data & privacy =================
             SectionHeader("Data & privacy")
@@ -416,7 +437,10 @@ private fun SliderRow(
 }
 
 @Composable
-private fun SystemPromptSection(controller: AgentSettingsController) {
+private fun SystemPromptSection(
+    controller: AgentSettingsController,
+    onApplied: () -> Unit
+) {
     var prompt by remember(controller.settings.systemPromptOverride) {
         mutableStateOf(controller.settings.systemPromptOverride ?: "")
     }
@@ -440,6 +464,7 @@ private fun SystemPromptSection(controller: AgentSettingsController) {
         Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
             TextButton(onClick = {
                 controller.updateSettings { it.copy(systemPromptOverride = prompt.trim().ifBlank { null }) }
+                onApplied()
             }) { Text("Apply") }
             TextButton(onClick = {
                 prompt = ""

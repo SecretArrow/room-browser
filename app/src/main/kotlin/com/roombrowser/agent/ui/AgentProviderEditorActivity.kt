@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -67,7 +68,6 @@ import com.roombrowser.agent.AgentSettingsController
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.localai.store.OnDeviceModelStore
 import com.roombrowser.ui.common.RoomBrowserTheme
-import com.roombrowser.ui.common.SettingActionRow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -357,11 +357,27 @@ private fun ProviderEditorRoot(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                SettingActionRow(
-                    title = "Manage local models →",
-                    subtitle = "Open the Local AI menu — install, pause/resume, import/export",
-                    onClick = { LocalAiActivity.launch(context, null) }
-                )
+                // Inline row (NOT SettingActionRow): the scroll column already
+                // pads 16dp horizontally — SettingActionRow would add its own
+                // 16dp, pushing this entry to a 32dp inset, misaligned with the
+                // fields above it.
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { LocalAiActivity.launch(context, null) }
+                        .padding(vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Manage local models →", style = MaterialTheme.typography.bodyLarge)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "Open the Local AI menu — install, pause/resume, import/export",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             }
             if (protocol == AgentProviderEntity.PROTOCOL_LOCAL) {
                 Spacer(Modifier.height(6.dp))
@@ -374,18 +390,35 @@ private fun ProviderEditorRoot(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                SettingActionRow(
-                    title = "Manage on-device models →",
-                    subtitle = "Open the Local AI screen — import, download, test models",
-                    onClick = { LocalAiActivity.launch(context, null) }
-                )
+                // Inline row (NOT SettingActionRow): same alignment fix as the
+                // Ollama entry above — flush with the form's 16dp column padding.
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { LocalAiActivity.launch(context, null) }
+                        .padding(vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Manage on-device models →", style = MaterialTheme.typography.bodyLarge)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "Open the Local AI screen — import, download, test models",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             }
             Spacer(Modifier.height(12.dp))
 
             // ---- Presets ----
             Text("Presets", style = MaterialTheme.typography.labelLarge)
             Spacer(Modifier.height(4.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
                 PROVIDER_PRESETS.forEach { preset ->
                     FilterChip(
                         selected = preset.url.isNotBlank() && preset.url == baseUrl && preset.protocol == protocol,
@@ -522,7 +555,10 @@ private fun ProviderEditorRoot(
                     Text(
                         if (protocol == AgentProviderEntity.PROTOCOL_LOCAL) "Reading on-device models…"
                         else "Contacting provider…",
-                        style = MaterialTheme.typography.bodyMedium
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }

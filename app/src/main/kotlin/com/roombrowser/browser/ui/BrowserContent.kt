@@ -81,11 +81,7 @@ import java.util.Locale
 fun BrowserContent(
     viewModel: BrowserViewModel,
     onShowShields: () -> Unit,
-    onOpenPrivacyDashboard: () -> Unit,
-    onOpenDownloads: () -> Unit,
-    onOpenHistory: () -> Unit,
-    onQrScan: () -> Unit,
-    onVoiceInput: () -> Unit
+    onOpenPrivacyDashboard: () -> Unit
 ) {
     val page = viewModel.pageState
     val extras = LocalRoomExtras.current
@@ -335,7 +331,7 @@ private fun Homepage(
                 style = MaterialTheme.typography.headlineSmall,
                 color = extras.textPrimary
             )
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(20.dp))
         }
         if (viewModel.pageState.isPrivate) {
             RoomCard {
@@ -358,7 +354,7 @@ private fun Homepage(
                     )
                 }
             }
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(20.dp))
         }
 
         if (settings.showPrivacyStats) {
@@ -381,7 +377,7 @@ private fun Homepage(
                 )
             }
             TextButton(onClick = onOpenPrivacyDashboard) { Text("Privacy Dashboard") }
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(20.dp))
         }
 
         if (settings.homepageShortcuts.isNotEmpty()) {
@@ -402,7 +398,7 @@ private fun Homepage(
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
-                            .weight(1f)
+                            .weight(1f, fill = false)
                             .clip(RoundedCornerShape(18.dp))
                             .clickable { viewModel.loadUrl(url) }
                             .padding(6.dp)
@@ -435,7 +431,7 @@ private fun Homepage(
         }
 
         if (settings.showRecentSites && viewModel.recentHistory.isNotEmpty()) {
-            Spacer(Modifier.height(22.dp))
+            Spacer(Modifier.height(20.dp))
             Text(
                 "Recent",
                 style = MaterialTheme.typography.labelMedium,

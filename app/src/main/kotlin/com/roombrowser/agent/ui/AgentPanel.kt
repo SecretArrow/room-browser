@@ -35,6 +35,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -86,6 +87,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -106,6 +108,7 @@ import com.roombrowser.agent.BrowserAgentController
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.domain.agent.AgentTools
+import com.roombrowser.ui.common.LocalRoomExtras
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -285,9 +288,11 @@ private fun AgentPanelHeader(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
-                    .padding(vertical = 2.dp)
+                    // clickable BEFORE padding so the vertical padding counts
+                    // toward the touch target (taller, ≥32dp effective row).
                     .clickable(enabled = provider != null) { showModelPicker = true }
                     .semantics { contentDescription = "agent_model" }
+                    .padding(vertical = 8.dp)
             )
         }
         IconButton(onClick = onNewSession, modifier = Modifier.size(40.dp)) {
@@ -321,8 +326,14 @@ private fun AgentConversation(
     val entries = agent.entries
 
     // Live auto-scroll: instant while streaming, animated for new entries.
-    LaunchedEffect(entries.size, entries.lastOrNull()) {
-        if (entries.isNotEmpty()) listState.scrollToItem(entries.size - 1)
+    // The ApprovalCard is composed as the item AFTER the last entry — when it
+    // is showing it is the true last item, so scroll past the last entry
+    // (index = entries.size) to keep the approval card above the fold.
+    LaunchedEffect(entries.size, entries.lastOrNull(), agent.approval) {
+        if (entries.isNotEmpty()) {
+            val lastItem = if (agent.approval != null) entries.size else entries.size - 1
+            listState.scrollToItem(lastItem)
+        }
     }
 
     if (entries.isEmpty()) {
@@ -399,7 +410,7 @@ private fun CopyTextButton(
         IconButton(
             onClick = onCopy,
             modifier = Modifier
-                .size(32.dp)
+                .size(40.dp)
                 .semantics { contentDescription = desc }
         ) {
             Icon(
@@ -435,7 +446,9 @@ private fun UserBubble(entry: AgentEntry.User) {
             shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp),
             color = MaterialTheme.colorScheme.primaryContainer,
             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-            modifier = Modifier.widthIn(max = 320.dp)
+            // Fractional width instead of a fixed 320dp cap so user bubbles
+            // keep a sensible share of the panel on tablets as well.
+            modifier = Modifier.fillMaxWidth(0.85f)
         ) {
             Text(
                 entry.text,
@@ -498,7 +511,9 @@ private fun AssistantMessage(entry: AgentEntry.Assistant) {
 
 @Composable
 private fun ThinkingBlock(thinking: String) {
-    var open by rememberSaveable(thinking) { mutableStateOf(false) }
+    // NOT keyed on `thinking`: during streaming a new key per token would
+    // reset the rememberSaveable and collapse the user's expanded state.
+    var open by rememberSaveable { mutableStateOf(false) }
     Column(
         Modifier
             .fillMaxWidth()
@@ -612,6 +627,8 @@ private fun NoticeLine(entry: AgentEntry.Notice) {
         entry.text,
         style = MaterialTheme.typography.labelMedium,
         color = if (entry.error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 6,
+        overflow = TextOverflow.Ellipsis,
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 2.dp)
@@ -674,7 +691,7 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
     }
 
     Surface(color = MaterialTheme.colorScheme.surface) {
-        Column(modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Column(modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             // Row 1 — controls: "Include page" toggle + file upload. The text
             // field lives on its own full-width row below, so it now reaches
             // the panel edges ("lebar sampai ke pinggir layar").
@@ -717,7 +734,14 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
                         InputChip(
                             selected = false,
                             onClick = { attachments = attachments.filterIndexed { i, _ -> i != index } },
-                            label = { Text(attachment.name) },
+                            label = {
+                                Text(
+                                    attachment.name,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.widthIn(max = 160.dp)
+                                )
+                            },
                             trailingIcon = {
                                 Icon(
                                     Icons.Filled.Close,
@@ -899,6 +923,10 @@ fun ModelPickerSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
         Column(
             Modifier
                 .padding(16.dp)
+                // The sheet body must scroll: with several providers and long
+                // model lists (100+ chips) the manual-entry row would otherwise
+                // be unreachable below the fold.
+                .verticalScroll(rememberScrollState())
                 .padding(bottom = 24.dp)
         ) {
             Text("Select model", style = MaterialTheme.typography.titleLarge)
@@ -928,7 +956,13 @@ fun ModelPickerSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
                 loading -> Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("Fetching models from ${selected!!.name}…", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Fetching models from ${selected!!.name}…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
                 else -> {
                     error?.let {
@@ -971,7 +1005,8 @@ fun ModelPickerSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
                                     agent.setDefault(selected!!, manual.trim())
                                     onDismiss()
                                 }
-                            }
+                            },
+                            enabled = manual.isNotBlank()
                         ) { Text("Use") }
                     }
                 }
@@ -1057,7 +1092,12 @@ private fun ProviderPickRow(
  */
 @Composable
 fun MarkdownText(text: String, style: androidx.compose.ui.text.TextStyle, color: androidx.compose.ui.graphics.Color) {
-    val annotated = remember(text) { renderMarkdown(text) }
+    // Theme-aware inline-code background (was a hardcoded translucent gray
+    // that clashed with per-profile themes). LocalRoomExtras carries a dark
+    // fallback default, so this never crashes outside the browser theme.
+    val extras = LocalRoomExtras.current
+    val codeBackground = extras.surfaceAlt.copy(alpha = 0.35f)
+    val annotated = remember(text, codeBackground) { renderMarkdown(text, codeBackground) }
     androidx.compose.material3.Text(
         text = annotated,
         style = style,
@@ -1066,10 +1106,10 @@ fun MarkdownText(text: String, style: androidx.compose.ui.text.TextStyle, color:
     )
 }
 
-internal fun renderMarkdown(text: String): AnnotatedString = buildAnnotatedString {
+internal fun renderMarkdown(text: String, codeBackground: Color = Color(0x14808080)): AnnotatedString = buildAnnotatedString {
     val codeStyle = SpanStyle(
         fontFamily = FontFamily.Monospace,
-        background = androidx.compose.ui.graphics.Color(0x14808080)
+        background = codeBackground
     )
     text.lines().forEachIndexed { index, rawLine ->
         val line = rawLine.trimStart()

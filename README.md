@@ -93,6 +93,17 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
   WebView engine — web history never leaks across tabs, switching tabs
   never reloads a still-live page, and a live-engine budget (LRU, max 4)
   keeps memory bounded; evicted tabs rebuild lazily on return.
+- **Layout & interaction polish pass** — every activity audited and
+  tidied: long model names/URLs/errors ellipsize instead of pushing rows
+  off-screen, the agent model-picker sheet and profile-picker sheet now
+  scroll instead of clipping, locked profiles are biometric-gated even
+  when opened via external links, the profile icon picker shows all 12
+  icons, the reader toolbar and bottom bar fit 320dp-class screens, the
+  find-bar "next match" icon no longer looks like Close, "Shields" in the
+  page-actions sheet actually opens the shields sheet, per-card tab
+  Duplicate duplicates THAT tab, destructive actions (clear history,
+  delete chat) ask for confirmation first, and touch targets meet the
+  40dp floor everywhere (copy buttons, color swatches, theme menu).
 - **Per-profile Theme System** — 18 hand-tuned built-in themes (Obsidian,
   Arctic, Ocean, Emerald, Midnight, Aurora, Sunset, Cyber, Royal, Sakura,
   Forest, Aqua, Crimson, Golden, Slate, Lavender, Coffee, Rose), each with
