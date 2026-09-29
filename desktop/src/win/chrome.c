@@ -249,7 +249,8 @@ void rb_update_all(App *app)
 void rb_do_new_tab(App *app)
 {
     long id = rb_tabs_add(app->tabs, "New Tab",
-                          app->home_url ? app->home_url : "https://duckduckgo.com");
+                          app->home_url ? app->home_url : "https://duckduckgo.com",
+                          rb_profile_now_ms());
     app->active_id = id;
     rb_tabs_rebuild(app);
     rb_update_all(app);
@@ -259,7 +260,7 @@ void rb_do_new_tab(App *app)
 void rb_do_close_tab(App *app, long id)
 {
     rb_wv_drop_tab(app, id);
-    rb_tabs_close(app->tabs, id);
+    rb_tabs_close(app->tabs, id, rb_profile_now_ms());
     if (app->active_id == id) app->active_id = 0;
     if (rb_tabs_count(app->tabs) == 0) {
         rb_do_new_tab(app);
