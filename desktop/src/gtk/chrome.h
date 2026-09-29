@@ -58,6 +58,21 @@ typedef struct App {
     rb_profile_registry *profiles;
     rb_switch_machine   *switcher;
     rb_https_pending    *https;  /* the https upgrades this window may retry */
+    rb_filters          *filters; /* the bundled host list, loaded once */
+
+    /* The ACTIVE profile's WebKit context and the data manager it is built
+     * on.  Owned here; every view is created from it, and a profile switch
+     * tears it down and builds the next profile's.  This is what keeps
+     * cookies, cache and site storage from crossing profiles. */
+    WebKitWebContext *ctx;
+
+    /* The ACTIVE profile's compiled content blocker, and the JSON it was
+     * compiled from.  Both are per profile because the rules are filtered by
+     * that profile's switches.  Owned here; replaced on a settings change and
+     * dropped on a switch. */
+    WebKitUserContentFilter *cb_filter;
+    char *cb_json;
+    WebKitUserContentFilterStore *cb_store;
 
     char *home_url;
     char *path_history;
@@ -110,6 +125,11 @@ void rb_pref_set_int(App *app, const char *key, int value);
 /* Persists the profile registry (settings live inside it). */
 void rb_profiles_save(App *app);
 
+/* The ACTIVE profile's content-blocking switches, as the filter engine wants
+ * them.  Never NULL-safe: returns the compatibility defaults when there is no
+ * active profile. */
+rb_filter_options rb_filter_opts(App *app);
+
 /* The active profile's effective User-Agent, malloc'd — or NULL when the
  * engine default should be sent untouched (mode "default", a preset with an
  * empty value, or a blank custom string).  Caller frees. */
@@ -129,9 +149,11 @@ void rb_update_all(App *app);
 
 /* Actions. */
 void rb_do_new_tab(App *app);
+void rb_do_add_tab(App *app, const char *url);   /* NULL/"" -> the homepage */
 void rb_do_close_tab_id(App *app, long id);
 void rb_do_navigate(App *app, const char *url);
 void rb_do_toggle_bookmark(App *app);
+void rb_do_switch_profile(App *app, const char *to_id);
 GtkTab *rb_tab_by_widget(App *app, GtkWidget *w);  /* resolve a tab by any of its widgets */
 GtkTab *rb_active_tab(App *app);
 

@@ -274,10 +274,17 @@ int rb_data_init(App *app)
     app->switcher = rb_switch_new();
     app->https = rb_https_pending_new();
     app->downloads = rb_downloads_new();
+    app->filters = rb_filters_new();
     if (!app->store || !app->history || !app->bookmarks || !app->settings ||
-        !app->profiles || !app->switcher || !app->https || !app->downloads) {
+        !app->profiles || !app->switcher || !app->https || !app->downloads ||
+        !app->filters) {
         return -1;
     }
+    /* The bundled list, compiled in: no network, no update check, same hosts
+     * the Android edition ships.  Loading it is what makes the filter engine
+     * able to answer at all — the per-profile switches decide which of its
+     * categories are consulted. */
+    rb_filters_load_builtin(app->filters);
     if (!dir) return -1;
 
     app->path_history = rb_path_join(dir, "history.jsonl");
@@ -410,6 +417,9 @@ void rb_data_free(App *app)
     if (app->profiles)  { rb_profile_registry_free(app->profiles); app->profiles = NULL; }
     if (app->switcher)  { rb_switch_free(app->switcher);    app->switcher = NULL; }
     if (app->https)     { rb_https_pending_free(app->https); app->https = NULL; }
+    if (app->filters)   { rb_filters_free(app->filters); app->filters = NULL; }
+    rb_gw_content_blocking_clear(app);
+    if (app->cb_store)  { g_object_unref(app->cb_store); app->cb_store = NULL; }
     free(app->tabs);
     app->tabs = NULL;
     app->tabs_n = 0;
@@ -489,6 +499,21 @@ char *rb_ua_current(App *app)
     }
     return rb_ua_effective(m, rb_pref(app, RB_PREF_UA_PRESET_ID, NULL),
                            rb_pref(app, RB_PREF_CUSTOM_USER_AGENT, NULL));
+}
+
+rb_filter_options rb_filter_opts(App *app)
+{
+    /* The compatibility-first defaults the engine ships, then the profile's
+     * own overrides.  Reading through rb_pref_int means a profile that has
+     * never touched these keys gets exactly the engine default. */
+    rb_filter_options o = rb_filter_options_default();
+
+    o.block_ads        = rb_pref_int(app, RB_PREF_BLOCK_ADS, o.block_ads);
+    o.block_trackers   = rb_pref_int(app, RB_PREF_BLOCK_TRACKERS, o.block_trackers);
+    o.block_cross_site = rb_pref_int(app, RB_PREF_BLOCK_CROSS_SITE, o.block_cross_site);
+    o.block_malicious  = rb_pref_int(app, RB_PREF_BLOCK_MALICIOUS, o.block_malicious);
+    o.block_popups     = rb_pref_int(app, RB_PREF_BLOCK_POPUPS, o.block_popups);
+    return o;
 }
 
 /* ------------------------------------------------------------------ */
@@ -585,9 +610,18 @@ static void rb_do_reload_or_stop(App *app)
 
 void rb_do_new_tab(App *app)
 {
+    rb_do_add_tab(app, NULL);
+}
+
+/* Opens a tab at `url`, or at the profile's homepage when `url` is NULL or
+ * blank.  Everything that adds a tab goes through here so the notebook, the
+ * app->tabs array and the rb_tabs store can never disagree on the index. */
+void rb_do_add_tab(App *app, const char *url)
+{
     WebKitWebView *wv;
     GtkWidget *hbox, *lbl, *close;
     const char *home = app->home_url ? app->home_url : "https://duckduckgo.com";
+    const char *target = (url && url[0]) ? url : home;
     long id;
     int idx;
 
@@ -616,7 +650,7 @@ void rb_do_new_tab(App *app)
         app->tabs_cap = cap;
     }
 
-    id = rb_tabs_add(app->store, "New Tab", home, rb_profile_now_ms());
+    id = rb_tabs_add(app->store, "New Tab", target, rb_profile_now_ms());
     app->tabs[app->tabs_n].id = id;
     app->tabs[app->tabs_n].wv = wv;
     app->tabs[app->tabs_n].label = lbl;
@@ -634,7 +668,7 @@ void rb_do_new_tab(App *app)
         gtk_notebook_set_current_page(GTK_NOTEBOOK(app->notebook), idx);
     }
     rb_update_all(app);
-    webkit_web_view_load_uri(wv, home);
+    webkit_web_view_load_uri(wv, target);
 }
 
 void rb_do_close_tab_id(App *app, long id)
@@ -713,6 +747,227 @@ void rb_do_toggle_bookmark(App *app)
         rb_bookmarks_save(app->bookmarks, app->path_bookmarks);
     }
     rb_update_star(app);
+}
+
+/* ------------------------------------------------------------------ */
+/* Profile switching
+ *
+ * The seven-step protocol lives in rb_switch (a port of
+ * ProfileSwitchStateMachine); this is the platform half.  Android restarts
+ * the browser process at the end because WebView's data-directory suffix is
+ * process-wide — on GTK each profile owns a WebKitWebContext built on its own
+ * WebsiteDataManager, so the same protocol runs in-process and the destroy
+ * before load rule still holds: a context is never reused for another
+ * profile. */
+
+/* Closed tabs and the tab list of a profile are desktop-only keys: Android
+ * keeps tabs in a per-profile Room database, the desktop keeps them in the
+ * profile's own settings. */
+#define RB_PREF_OPEN_TABS_LOCAL  "open_tabs"    /* '\n'-separated URLs */
+#define RB_PREF_ACTIVE_TAB_LOCAL "active_tab"   /* index into open_tabs  */
+
+static void rb_tabs_save_state(App *app)
+{
+    size_t cap = 1;
+    char *joined;
+    char *w;
+    int i;
+    int active = 0;
+    int written = 0;
+
+    /* Sizing pass, then one write: the URLs can be long and there are as
+     * many of them as the user has tabs. */
+    for (i = 0; i < app->tabs_n; i++) {
+        rb_tab *t = rb_tabs_get(app->store, app->tabs[i].id);
+        if (t && t->url && t->url[0]) cap += strlen(t->url) + 1;
+    }
+    joined = (char *)malloc(cap);
+    if (joined == NULL) return;
+    w = joined;
+    for (i = 0; i < app->tabs_n; i++) {
+        rb_tab *t = rb_tabs_get(app->store, app->tabs[i].id);
+        size_t n;
+        if (!t || !t->url || !t->url[0]) continue;
+        /* The index has to be into what was WRITTEN, not into app->tabs:
+         * the restore reads it back positionally. */
+        if (app->tabs[i].id == app->active_id) active = written;
+        n = strlen(t->url);
+        memcpy(w, t->url, n);
+        w += n;
+        *w++ = '\n';
+        written++;
+    }
+    *w = '\0';
+
+    rb_pref_set(app, RB_PREF_OPEN_TABS_LOCAL, joined);
+    rb_pref_set_int(app, RB_PREF_ACTIVE_TAB_LOCAL, active);
+    free(joined);
+}
+
+static void rb_tabs_restore_state(App *app)
+{
+    const char *joined = rb_pref(app, RB_PREF_OPEN_TABS_LOCAL, NULL);
+    int want = rb_pref_int(app, RB_PREF_ACTIVE_TAB_LOCAL, 0);
+    int opened = 0;
+
+    if (joined != NULL && joined[0] != '\0') {
+        const char *a = joined;
+        while (*a != '\0') {
+            const char *b = strchr(a, '\n');
+            size_t n = (b != NULL) ? (size_t)(b - a) : strlen(a);
+            if (n > 0) {
+                char *url = (char *)malloc(n + 1);
+                if (url == NULL) break;
+                memcpy(url, a, n);
+                url[n] = '\0';
+                rb_do_add_tab(app, url);
+                free(url);
+                opened++;
+            }
+            if (b == NULL) break;
+            a = b + 1;
+        }
+    }
+    if (opened == 0) {
+        rb_do_add_tab(app, NULL);   /* a fresh profile opens on the homepage */
+        return;
+    }
+    if (want >= 0 && want < app->tabs_n) {
+        app->active_id = app->tabs[want].id;
+        app->silent = 1;
+        gtk_notebook_set_current_page(GTK_NOTEBOOK(app->notebook), want);
+        app->silent = 0;
+        rb_update_all(app);
+    }
+}
+
+/* Removes every tab and its view.  The views must be gone before the context
+ * they were built on is released. */
+static void rb_tabs_destroy_all(App *app)
+{
+    app->silent = 1;
+    while (app->tabs_n > 0) {
+        gtk_notebook_remove_page(GTK_NOTEBOOK(app->notebook), app->tabs_n - 1);
+        app->tabs_n--;
+    }
+    app->silent = 0;
+    app->active_id = 0;
+    app->loading = 0;
+    while (rb_tabs_count(app->store) > 0) {
+        const rb_tab *t = rb_tabs_at(app->store, 0);
+        long id;
+        if (t == NULL) break;
+        id = t->id;   /* close() frees the row this pointer names */
+        rb_tabs_close(app->store, id, rb_profile_now_ms());
+    }
+    rb_tabs_forget_closed(app->store);
+    rb_https_clear(app->https);
+    rb_update_all(app);
+}
+
+static void rb_switch_error_dialog(App *app, const char *title,
+                                   const char *body)
+{
+    GtkWidget *dlg = gtk_message_dialog_new(GTK_WINDOW(app->win),
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE, "%s", title);
+    gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dlg), "%s",
+                                             body ? body : "");
+    g_signal_connect_swapped(dlg, "response", G_CALLBACK(gtk_widget_destroy), dlg);
+    gtk_widget_show(dlg);
+}
+
+void rb_do_switch_profile(App *app, const char *to_id)
+{
+    char from_id[RB_PROFILE_ID_LEN + 1];
+    int rc;
+    int step;
+
+    if (app == NULL || app->switcher == NULL || to_id == NULL) return;
+    if (app->active_profile_id == NULL) return;
+    if (strcmp(app->active_profile_id, to_id) == 0) return;
+
+    /* Copy the id out: the switch replaces app->active_profile_id, and the
+     * registry row it points into can be relocated by a mutation. */
+    snprintf(from_id, sizeof from_id, "%s", app->active_profile_id);
+
+    /* Begin requires IDLE, and a finished switch stays COMPLETE until it is
+     * reset — so the log is cleared here rather than before each step. */
+    rb_switch_reset(app->switcher);
+    rc = rb_switch_begin(app->switcher, from_id, to_id);
+    if (rc != 0) {
+        const char *why = (rc == RB_SWITCH_ERR_BUSY) ? "a switch is already running"
+                        : (rc == RB_SWITCH_ERR_SAME) ? "that profile is already active"
+                                                     : "no profile was given";
+        rb_switch_error_dialog(app, "Cannot switch profile", why);
+        return;
+    }
+
+    while ((step = rb_switch_step_of(app->switcher)) >= 0) {
+        switch (step) {
+        case RB_SWITCH_STOP_NAVIGATION:
+            {
+                int i;
+                for (i = 0; i < app->tabs_n; i++) {
+                    if (app->tabs[i].wv) {
+                        webkit_web_view_stop_loading(app->tabs[i].wv);
+                    }
+                }
+            }
+            break;
+        case RB_SWITCH_SAVE_TAB_STATE:
+            /* The OLD profile is still active, so the tabs land in its own
+             * settings — which is the whole point of the step. */
+            rb_tabs_save_state(app);
+            break;
+        case RB_SWITCH_DESTROY_BROWSER_CONTEXT:
+            rb_tabs_destroy_all(app);
+            rb_gw_context_free(app);
+            break;
+        case RB_SWITCH_FLUSH_PROFILE_STATE:
+            rb_data_shutdown(app);
+            break;
+        case RB_SWITCH_RELEASE_PROFILE_RESOURCES:
+            /* The in-memory stores that were the old profile's view of the
+             * world.  History and bookmarks are installation-wide on the
+             * desktop, so they stay; the session state does not. */
+            rb_https_clear(app->https);
+            break;
+        case RB_SWITCH_LOAD_NEW_PROFILE_CONTEXT:
+            rb_set_str(&app->active_profile_id, rb_strdup(to_id));
+            rb_profile_touch(app->profiles, to_id);
+            rb_gw_context_new(app);
+            /* Re-read everything the new profile owns. */
+            app->js_enabled = rb_pref_int(app, RB_PREF_JAVASCRIPT, 1);
+            rb_set_str(&app->home_url,
+                       rb_strdup(rb_pref(app, RB_PREF_HOME_LOCAL,
+                                         "https://duckduckgo.com")));
+            rb_set_str(&app->download_dir, NULL);
+            rb_downloads_dir_init(app);
+            rb_css_load(app);          /* the new profile's theme */
+            if (g_js_item != NULL) {
+                gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(g_js_item),
+                                               app->js_enabled ? TRUE : FALSE);
+            }
+            break;
+        case RB_SWITCH_RESTORE_NEW_PROFILE_TABS:
+            rb_tabs_restore_state(app);
+            break;
+        default:
+            break;
+        }
+        if (rb_switch_step_done(app->switcher) != 0) break;
+    }
+
+    if (rb_switch_state_of(app->switcher) == RB_SWITCH_FAILED) {
+        const char *err = rb_switch_error(app->switcher);
+        rb_switch_error_dialog(app, "Profile switch failed",
+                               err ? err : "unknown error");
+    }
+    /* Leave the machine ready for the next switch.  reset() clears the
+     * snapshot, so it is read above, before this. */
+    rb_switch_reset(app->switcher);
+    rb_update_all(app);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1017,6 +1272,107 @@ static void on_menu_downloads(GtkMenuItem *item, gpointer user_data)
     rb_show_downloads_dialog(app);
 }
 
+/* ------------------------------------------------------------------ */
+/* Profiles menu
+
+ * Android's profile switcher (a sheet listing every profile, the active one
+ * ticked, plus "add profile").  The desktop builds the same list as a
+ * submenu; each item carries its profile id as object data, because the
+ * registry row a pointer would name can move when the registry grows. */
+
+static void rb_build_menu(App *app);   /* rebuilt when the profile list grows */
+
+static gboolean rb_rebuild_menu_idle(gpointer data)
+{
+    rb_build_menu((App *)data);
+    return G_SOURCE_REMOVE;
+}
+
+static void on_menu_profile(GtkMenuItem *item, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    const char *id = (const char *)g_object_get_data(G_OBJECT(item),
+                                                     "rb-profile-id");
+    if (id != NULL) rb_do_switch_profile(app, id);
+}
+
+static void on_menu_new_profile(GtkMenuItem *item, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    rb_profile_registry *reg;
+    char name[64];
+    char id[RB_PROFILE_ID_LEN + 1];
+    int n;
+    int made;
+    (void)item;
+
+    if (app == NULL || app->profiles == NULL) return;
+    reg = app->profiles;
+    n = rb_profile_count(reg);
+    /* The new profile is created but NOT switched to: the row appears in the
+     * menu, and activating it runs the full switch protocol.  Switching
+     * straight from a menu click would leave the user with no way to see
+     * which profile they landed in. */
+    snprintf(name, sizeof name, "Profile %d", n + 1);
+    id[0] = '\0';
+    /* create() refuses a name that is already taken, so a user who renamed a
+     * profile to "Profile 2" makes this call fail — bump the number until it
+     * does not, which is the same thing the Android sheet does rather than
+     * refusing to add a profile at all. */
+    for (;;) {
+        made = rb_profile_create(reg, name, NULL, 0, 1);
+        if (made == 0 || n >= 99) break;
+        n++;
+        snprintf(name, sizeof name, "Profile %d", n + 1);
+    }
+    if (made != 0) {
+        rb_switch_error_dialog(app, "Cannot add a profile",
+            "The browser could not create another profile.");
+        return;
+    }
+    {
+        const rb_profile *p = rb_profile_at(reg, rb_profile_count(reg) - 1);
+        if (p != NULL) snprintf(id, sizeof id, "%s", p->id);
+    }
+    if (id[0] == '\0') return;
+    rb_profiles_save(app);
+    /* The list is built from the registry, so it has to be rebuilt — but
+     * this runs inside the activation of an item in the popup being
+     * replaced, so the rebuild is deferred to the next main-loop turn
+     * rather than destroying the menu under the signal that is emitting. */
+    g_idle_add(rb_rebuild_menu_idle, app);
+}
+
+static void rb_profile_append_items(GtkWidget *menu, App *app)
+{
+    int i;
+    int n = rb_profile_count(app->profiles);
+    GSList *group = NULL;
+
+    for (i = 0; i < n; i++) {
+        const rb_profile *p = rb_profile_at(app->profiles, i);
+        GtkWidget *item;
+        char label[128];
+        if (p == NULL) continue;
+        snprintf(label, sizeof label, "%s%s",
+                 (p->name && p->name[0]) ? p->name : "Profile",
+                 (p->is_locked) ? "  (locked)" : "");
+        item = gtk_radio_menu_item_new_with_label(group, label);
+        /* The radio group is what puts the tick on the active profile, so it
+         * has to be threaded through every item by hand — GTK takes the list
+         * head, not a widget. */
+        group = gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(item));
+        if (app->active_profile_id != NULL &&
+            strcmp(app->active_profile_id, p->id) == 0) {
+            gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item), TRUE);
+        }
+        g_object_set_data_full(G_OBJECT(item), "rb-profile-id",
+                               rb_strdup(p->id), free);
+        g_signal_connect(item, "activate", G_CALLBACK(on_menu_profile), app);
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+    }
+}
+
 static void on_menu_history(GtkMenuItem *item, gpointer user_data)
 {
     App *app = (App *)user_data;
@@ -1051,6 +1407,23 @@ static void rb_build_menu(App *app)
     item = gtk_menu_item_new_with_label("Downloads");
     g_signal_connect(item, "activate", G_CALLBACK(on_menu_downloads), app);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+
+    {
+        GtkWidget *sub = gtk_menu_new();
+        GtkWidget *top = gtk_menu_item_new_with_label("Profiles");
+        rb_profile_append_items(sub, app);
+        gtk_menu_shell_append(GTK_MENU_SHELL(sub),
+                              gtk_separator_menu_item_new());
+        item = gtk_menu_item_new_with_label("Add profile");
+        g_signal_connect(item, "activate",
+                         G_CALLBACK(on_menu_new_profile), app);
+        gtk_menu_shell_append(GTK_MENU_SHELL(sub), item);
+        gtk_widget_show_all(sub);
+        gtk_menu_item_set_submenu(GTK_MENU_ITEM(top), sub);
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), top);
+    }
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 
@@ -1238,7 +1611,7 @@ void rb_on_activate(GtkApplication *gtk_app, gpointer user_data)
                      G_CALLBACK(on_omni_key), app);
 
     rb_build_menu(app);
-    rb_gw_downloads_init(app);
+    rb_gw_context_new(app);
 
     gtk_box_pack_start(GTK_BOX(toolbar), app->back, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), app->fwd, FALSE, FALSE, 0);

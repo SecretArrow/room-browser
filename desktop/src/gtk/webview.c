@@ -361,12 +361,329 @@ static void on_download_started(WebKitWebContext *context,
 
 void rb_gw_downloads_init(App *app)
 {
-    /* The default context is shared by every view, so this is wired once. */
-    WebKitWebContext *ctx = webkit_web_context_get_default();
-    if (ctx != NULL) {
-        g_signal_connect(ctx, "download-started",
+    /* Every profile has its OWN context, so this is wired once per context,
+     * from rb_gw_context_new — never on the shared default context, which
+     * this build does not use. */
+    if (app != NULL && app->ctx != NULL) {
+        g_signal_connect(app->ctx, "download-started",
                          G_CALLBACK(on_download_started), app);
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Content blocking
+ *
+ * Android blocks in shouldInterceptRequest, where the engine hands it every
+ * subresource URL.  WebKitGTK has no such hook — decide-policy covers
+ * navigations and responses, not subresources — so the same host list is
+ * handed to WebKit as a content blocker instead.  WebKit compiles it and
+ * applies it to subresources in its own process, which is strictly broader
+ * than decide-policy could reach, and it is the mechanism Safari uses for the
+ * same job.
+ *
+ * The rules come from the SAME bundled list the Android edition ships
+ * (RB_FILTERLIST_LINES), selected by the profile's own switches, so the two
+ * editions block the same hosts — and neither ever fetches a list at runtime.
+ *
+ * The compile is asynchronous.  A view whose load starts before it finishes
+ * is unfiltered for that load only; rb_gw_new_view installs the compiled
+ * filter on every later view, and the callback below installs it on every
+ * view that already exists. */
+
+/* Hosts in the bundled list are plain DNS names, so the only regex
+ * metacharacter that can appear is '.' — but a malformed line must never
+ * produce a rule that matches more than it should, so anything unexpected is
+ * refused outright rather than escaped and hoped for. */
+static int rb_cb_escape_host(const char *host, char *out, size_t out_len)
+{
+    size_t o = 0;
+    const char *p;
+
+    if (host == NULL || host[0] == '\0') return 0;
+    for (p = host; *p != '\0'; p++) {
+        unsigned char c = (unsigned char)*p;
+        int alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') || c == '-' || c == '_';
+        if (c == '.') {
+            if (o + 3 >= out_len) return 0;
+            out[o++] = '\\';
+            out[o++] = '.';
+        } else if (alnum) {
+            if (o + 2 >= out_len) return 0;
+            out[o++] = (char)c;
+        } else {
+            return 0;   /* not a DNS name: refuse rather than guess */
+        }
+    }
+    out[o] = '\0';
+    return o > 0;
+}
+
+/* One rule per host, covering the host and its subdomains over http(s).
+ * "([^/]+\.)?" is the subdomain part; it cannot match across a '/' so it
+ * stays inside the authority, and "([/:]|$)" ends the match at the port or
+ * the path so "example.com.evil.test" is not caught by "example.com". */
+
+/* The rule one host contributes, written into `out` (which must hold at least
+ * RB_CB_RULE_MAX bytes).  Returns the length, or 0 when the host is not a
+ * plain DNS name and therefore contributes nothing. */
+#define RB_CB_RULE_MAX 512
+
+static size_t rb_cb_rule(char *out, size_t out_len, const char *host, int comma)
+{
+    char esc[256];
+    int n;
+
+    if (!rb_cb_escape_host(host, esc, sizeof esc)) return 0;
+    n = snprintf(out, out_len,
+                 "%s{\"trigger\":{\"url-filter\":\"^https?://([^/]+\\\\.)?%s([/:]|$)\","
+                 "\"url-filter-is-case-sensitive\":false},"
+                 "\"action\":{\"type\":\"block\"}}",
+                 comma ? "," : "", esc);
+    if (n < 0 || (size_t)n >= out_len) return 0;
+    return (size_t)n;
+}
+
+/* Selects the lines the profile's switches ask for.  A category the profile
+ * has NOT enabled produces no rule at all — the list is not a floor.
+ *
+ * Built with malloc/free rather than GString: the result is handed to
+ * rb_set_str() and freed with free(), and mixing GLib's allocator with it
+ * would be a latent hazard for no benefit. */
+static char *rb_cb_build_json(const rb_filter_options *o)
+{
+    char rule[RB_CB_RULE_MAX];
+    size_t cap = 3;   /* "[" + "]" + NUL */
+    char *json;
+    char *w;
+    int first = 1;
+    int i;
+
+    for (i = 0; RB_FILTERLIST_LINES[i] != NULL; i++) {
+        const char *line = RB_FILTERLIST_LINES[i];
+        const char *bar;
+        size_t cat_len;
+        int want = 0;
+
+        if (line[0] == '#' || line[0] == '\0') continue;
+        bar = strchr(line, '|');
+        if (bar == NULL || bar[1] == '\0') continue;
+        cat_len = (size_t)(bar - line);
+        if (cat_len == 2 && strncmp(line, "ad", 2) == 0) {
+            want = o->block_ads;
+        } else if (cat_len == 7 && strncmp(line, "tracker", 7) == 0) {
+            want = o->block_trackers;
+        } else if (cat_len == 9 && strncmp(line, "malicious", 9) == 0) {
+            want = o->block_malicious;
+        }
+        if (want) cap += rb_cb_rule(rule, sizeof rule, bar + 1, 1);
+    }
+
+    json = (char *)malloc(cap);
+    if (json == NULL) return NULL;
+    w = json;
+    *w++ = '[';
+    for (i = 0; RB_FILTERLIST_LINES[i] != NULL; i++) {
+        const char *line = RB_FILTERLIST_LINES[i];
+        const char *bar;
+        size_t cat_len;
+        int want = 0;
+        size_t n;
+
+        if (line[0] == '#' || line[0] == '\0') continue;
+        bar = strchr(line, '|');
+        if (bar == NULL || bar[1] == '\0') continue;
+        cat_len = (size_t)(bar - line);
+        if (cat_len == 2 && strncmp(line, "ad", 2) == 0) {
+            want = o->block_ads;
+        } else if (cat_len == 7 && strncmp(line, "tracker", 7) == 0) {
+            want = o->block_trackers;
+        } else if (cat_len == 9 && strncmp(line, "malicious", 9) == 0) {
+            want = o->block_malicious;
+        }
+        if (!want) continue;
+        n = rb_cb_rule(w, (size_t)(json + cap - w), bar + 1, !first);
+        if (n == 0) continue;
+        w += n;
+        first = 0;
+    }
+    *w++ = ']';
+    *w = '\0';
+    return json;
+}
+
+typedef struct {
+    App *app;
+    char *json;
+    char identifier[RB_PROFILE_ID_LEN + 32];
+} rb_cb_job;
+
+static void rb_cb_saved(GObject *src, GAsyncResult *res, gpointer user_data)
+{
+    rb_cb_job *job = (rb_cb_job *)user_data;
+    App *app = job->app;
+    GError *err = NULL;
+    WebKitUserContentFilter *filter;
+
+    filter = webkit_user_content_filter_store_save_finish(
+        WEBKIT_USER_CONTENT_FILTER_STORE(src), res, &err);
+    if (filter == NULL) {
+        fprintf(stderr, "roombrowser: content blocker not applied: %s\n",
+                (err != NULL) ? err->message : "unknown error");
+        g_clear_error(&err);
+        free(job->json);
+        free(job);
+        return;
+    }
+
+    /* The compile finished after the request that asked for it may have been
+     * superseded — by a preference change or a profile switch.  Comparing the
+     * JSON is what stops a stale compile from overwriting newer rules. */
+    if (app != NULL && app->cb_json != NULL &&
+        strcmp(app->cb_json, job->json) == 0) {
+        int i;
+        if (app->cb_filter != NULL) g_object_unref(app->cb_filter);
+        app->cb_filter = filter;   /* takes the reference save_finish gave us */
+        for (i = 0; i < app->tabs_n; i++) {
+            if (app->tabs[i].wv != NULL) {
+                WebKitUserContentManager *ucm =
+                    webkit_web_view_get_user_content_manager(app->tabs[i].wv);
+                webkit_user_content_manager_remove_all_filters(ucm);
+                webkit_user_content_manager_add_filter(ucm, app->cb_filter);
+            }
+        }
+    } else {
+        g_object_unref(filter);
+    }
+
+    free(job->json);
+    free(job);
+}
+
+void rb_gw_content_blocking_clear(App *app)
+{
+    if (app == NULL) return;
+    if (app->cb_filter != NULL) {
+        g_object_unref(app->cb_filter);
+        app->cb_filter = NULL;
+    }
+    rb_set_str(&app->cb_json, NULL);
+}
+
+void rb_gw_content_blocking_apply(App *app)
+{
+    rb_filter_options opts;
+    char *json;
+    rb_cb_job *job;
+    char *data;
+    char *store_path;
+
+    if (app == NULL || app->filters == NULL) return;
+
+    opts = rb_filter_opts(app);
+    json = rb_cb_build_json(&opts);
+    if (json == NULL) return;
+
+    /* Unchanged switches: keep the compiled rules and skip the round trip.
+     * WebKit's compile is not free and it happens on every window activation
+     * and every profile switch otherwise. */
+    if (app->cb_json != NULL && strcmp(app->cb_json, json) == 0) {
+        free(json);
+        return;
+    }
+    rb_set_str(&app->cb_json, json);   /* takes ownership; json is now app's */
+
+    if (app->cb_store == NULL) {
+        /* One store per run, under the user's cache dir: the compiled blobs
+         * are a cache, so they belong where a cache belongs. */
+        data = g_build_filename(g_get_user_cache_dir(), "roombrowser",
+                                "content-filters", NULL);
+        store_path = data;
+        g_mkdir_with_parents(store_path, 0700);
+        app->cb_store = webkit_user_content_filter_store_new(store_path);
+        g_free(store_path);
+    }
+
+    job = g_new0(rb_cb_job, 1);
+    job->app = app;
+    job->json = rb_strdup(app->cb_json);
+    /* The identifier carries the profile so two profiles' rules never share
+     * a compiled blob in the store. */
+    snprintf(job->identifier, sizeof job->identifier, "rb-%s",
+             (app->active_profile_id != NULL) ? app->active_profile_id : "none");
+
+    {
+        GBytes *bytes = g_bytes_new(job->json, strlen(job->json));
+        webkit_user_content_filter_store_save(app->cb_store, job->identifier,
+                                              bytes, NULL, rb_cb_saved, job);
+        g_bytes_unref(bytes);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Per-profile WebKit contexts
+ *
+ * The desktop counterpart of Android's per-profile WebView data-directory
+ * suffix: each profile gets a WebsiteDataManager rooted in its own
+ * browser_data / cache directories, so cookies, HTTP cache, localStorage and
+ * IndexedDB of one profile are unreachable from another.  That is also what
+ * makes the switch protocol's DESTROY_BROWSER_CONTEXT / LOAD_NEW_PROFILE_
+ * CONTEXT steps real work here rather than a process restart.
+ *
+ * Everything created here is released by rb_gw_context_free, which the
+ * switch calls only after every view built on it is gone. */
+
+void rb_gw_context_new(App *app)
+{
+    const rb_profile *p;
+    char *data = NULL;
+    char *data_dir = NULL;
+    char *cache_dir = NULL;
+    WebKitWebsiteDataManager *manager;
+
+    if (app == NULL || app->ctx != NULL) return;
+    p = rb_active_profile(app);
+    if (p == NULL) return;
+
+    data = rb_paths_data_dir();
+    if (data != NULL && rb_profile_ensure_dirs(data, p->id) == 0) {
+        data_dir = rb_profile_subdir(data, p->id, RB_PROFILE_DIR_BROWSER_DATA);
+        cache_dir = rb_profile_subdir(data, p->id, RB_PROFILE_DIR_CACHE);
+    }
+    if (data != NULL) rb_paths_free(data);
+
+    if (data_dir != NULL && cache_dir != NULL) {
+        manager = webkit_website_data_manager_new(
+            "base-data-directory", data_dir,
+            "base-cache-directory", cache_dir,
+            NULL);
+    } else {
+        /* The profile directories could not be created.  Fall back to a
+         * manager with the default locations, which means this run has NO
+         * profile isolation — say so rather than pretend. */
+        fprintf(stderr, "roombrowser: cannot create profile directories for "
+                        "%s; the profile will share the default site data\n",
+                p->id);
+        manager = webkit_website_data_manager_new(NULL);
+    }
+    free(data_dir);
+    free(cache_dir);
+
+    app->ctx = webkit_web_context_new_with_website_data_manager(manager);
+    g_object_unref(manager);
+    rb_gw_downloads_init(app);
+    rb_gw_content_blocking_apply(app);
+}
+
+void rb_gw_context_free(App *app)
+{
+    if (app == NULL || app->ctx == NULL) return;
+    /* The views built on it must already be destroyed; WebKit holds a
+     * reference while any of them is alive, so this only drops ours. */
+    g_object_unref(app->ctx);
+    app->ctx = NULL;
+    /* The rules describe the profile that just went away. */
+    rb_gw_content_blocking_clear(app);
 }
 
 /* ------------------------------------------------------------------ */
@@ -407,8 +724,13 @@ void rb_gw_apply_ua(App *app)
 
 WebKitWebView *rb_gw_new_view(App *app)
 {
-    WebKitSettings *settings = webkit_settings_new();
-    WebKitWebView *wv;
+    WebKitWebContext *ctx = (app->ctx != NULL) ? app->ctx
+                                               : webkit_web_context_get_default();
+    /* The settings object belongs to the view, so they are applied to it
+     * rather than to a separate WebKitSettings the view is built from —
+     * that is what lets the view come from the profile's context. */
+    WebKitWebView *wv = WEBKIT_WEB_VIEW(webkit_web_view_new_with_context(ctx));
+    WebKitSettings *settings = webkit_web_view_get_settings(wv);
 
     /* Project policy: JavaScript is NEVER disabled by default. The persisted
        setting is the only way to turn it off and it is applied both to new
@@ -417,8 +739,13 @@ WebKitWebView *rb_gw_new_view(App *app)
     g_object_set(settings, "enable-developer-extras", FALSE, NULL);
     rb_gw_ua_apply_to(app, settings);
 
-    wv = WEBKIT_WEB_VIEW(webkit_web_view_new_with_settings(settings));
-    g_object_unref(settings);
+    /* A view created after the rules were compiled gets them immediately;
+     * one created while the compile is still running picks them up from the
+     * save callback instead. */
+    if (app->cb_filter != NULL) {
+        webkit_user_content_manager_add_filter(
+            webkit_web_view_get_user_content_manager(wv), app->cb_filter);
+    }
 
     g_signal_connect(wv, "notify::title", G_CALLBACK(on_notify_title), app);
     g_signal_connect(wv, "notify::uri", G_CALLBACK(on_notify_uri), app);

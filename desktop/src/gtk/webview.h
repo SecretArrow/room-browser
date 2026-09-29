@@ -23,10 +23,32 @@ void rb_gw_apply_js(App *app);
 
 /* Re-applies the active profile's User-Agent to every open webview. */
 void rb_gw_apply_ua(App *app);
-/* Wires the shared WebKitWebContext's download-started signal so every
- * download is recorded in app->downloads.  Call once, after the App is
- * initialised. */
+/* Wires the download-started signal on the app's context so every download
+ * is recorded in app->downloads.  Called by rb_gw_context_new. */
 void rb_gw_downloads_init(App *app);
+
+/* Builds the ACTIVE profile's WebKit context, rooted in that profile's
+ * browser_data / cache directories.  No-op when one already exists, or when
+ * there is no active profile. */
+void rb_gw_context_new(App *app);
+
+/* Releases it.  Every view built on it must already be destroyed. */
+void rb_gw_context_free(App *app);
+
+/* ---- content blocking ----
+ *
+ * Compiles the active profile's rules and installs them on every open view.
+ * Asynchronous (WebKit compiles in its own process), so a view created before
+ * the compile finishes picks the rules up on its next load.  Called by
+ * rb_gw_context_new; call it again after a switch or preference changes.
+ *
+ * Also rebuilds the JSON only when the profile's switches actually changed,
+ * so a call on an unchanged profile is nearly free. */
+void rb_gw_content_blocking_apply(App *app);
+
+/* Drops the compiled rules and the JSON.  Called on a profile switch: the
+ * next profile's rules describe different switches. */
+void rb_gw_content_blocking_clear(App *app);
 
 /* Navigation on the ACTIVE tab's webview. */
 void rb_gw_navigate(App *app, const char *url);
