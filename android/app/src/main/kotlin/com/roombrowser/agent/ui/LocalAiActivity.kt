@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -93,6 +94,7 @@ import com.roombrowser.domain.agent.OllamaModelInfo
 import com.roombrowser.domain.agent.OllamaModelPreset
 import com.roombrowser.domain.agent.OllamaModelPresets
 import com.roombrowser.domain.agent.OllamaPresetTier
+import com.roombrowser.domain.agent.OllamaRegistry
 import com.roombrowser.localai.engine.LlamaEngine
 import com.roombrowser.localai.store.OnDeviceDownloadController
 import com.roombrowser.localai.store.OnDeviceDownloadEntry
@@ -119,17 +121,26 @@ import kotlinx.coroutines.withContext
  *      a native-Ollama provider for the model, delete asks first.
  *   3. Downloads — live /api/pull progress with pause / resume / cancel.
  *   4. Model catalog — curated presets that run well on phones, grouped in
- *      tiers and matched against the device's RAM.
+ *      tiers and matched against the device's RAM. Install resolves the tag
+ *      on the PUBLIC registry and downloads the real .gguf onto the BUILT-IN
+ *      engine; "Pull to Ollama server instead" keeps the daemon path.
  *   5. Performance — GPU layers / CPU threads / context window / keep-alive
  *      (applied to native-Ollama provider chats).
  *   6. Import / Export — a small JSON manifest of the whole setup (SAF).
  *
- * HONEST architecture: Room Browser is the MANAGEMENT CLIENT. The models are
- * downloaded TO the Ollama server (Termux on this phone, or a PC on the LAN)
- * — no multi-GB binaries are ever bundled into the APK, and every byte stays
- * on the local network. Pause stops THIS APP's download view; the server
- * keeps already-fetched layers, and Resume re-attaches to continue from the
- * last completed layer.
+ * HONEST architecture: Room Browser is the MANAGEMENT CLIENT. No multi-GB
+ * binaries are ever bundled into the APK. There are TWO destinations, and the
+ * UI never blurs them:
+ *
+ *  - the BUILT-IN on-device engine (the default for a phone): Install resolves
+ *    the catalog tag against registry.ollama.ai — the same source `ollama
+ *    pull` uses — and downloads the real blob over HTTPS into app-private
+ *    storage, no server involved;
+ *  - the user's OWN Ollama daemon (Termux on this phone, or a PC on the LAN),
+ *    for people who run one: "Pull to server" and the Downloads section drive
+ *    `POST /api/pull`. Pause stops THIS APP's download view; the server keeps
+ *    already-fetched layers, and Resume re-attaches and continues from the
+ *    last completed layer.
  *
  * Runs in the DEFAULT process (no WebView here). Tuning and the model list
  * are persisted by [LocalAiController] and shared with the ':browser'
@@ -146,10 +157,17 @@ class LocalAiActivity : ComponentActivity() {
         // Edge-to-edge: insets are consumed by the Compose UI below — nothing
         // ever overlaps the system Back / Home / Recents buttons.
         enableEdgeToEdge()
-        // EXTRA_LIBRARY_URL is a TEST hook (e2e points the live-library
-        // client at a MockWebServer); production launches never set it and
-        // fall back to https://ollama.com.
-        controller = LocalAiController(application, intent.getStringExtra(EXTRA_LIBRARY_URL))
+        // EXTRA_LIBRARY_URL / EXTRA_REGISTRY_URL are TEST hooks (e2e points the
+        // live-library scrape and the model registry at a MockWebServer);
+        // production launches never set them and fall back to ollama.com and
+        // registry.ollama.ai respectively. Without the registry hook an e2e
+        // Install would resolve against the REAL registry and start a
+        // multi-hundred-MB download — the tests must be able to say no.
+        controller = LocalAiController(
+            application,
+            intent.getStringExtra(EXTRA_LIBRARY_URL),
+            intent.getStringExtra(EXTRA_REGISTRY_URL)
+        )
         controller.start()
         // On-device engine store + download controller — owned at the
         // ACTIVITY level (like the Ollama controller) so in-flight .gguf
@@ -179,6 +197,9 @@ class LocalAiActivity : ComponentActivity() {
 
         /** Test-only override of the live-library base URL (see onCreate). */
         const val EXTRA_LIBRARY_URL = "library_url"
+
+        /** Test-only override of the model-registry base URL (see onCreate). */
+        const val EXTRA_REGISTRY_URL = "registry_url"
 
         fun launch(from: Activity, profileId: String?) {
             from.startActivity(Intent(from, LocalAiActivity::class.java).apply {
@@ -276,7 +297,20 @@ private fun LocalAiRoot(
     Scaffold(
         // Keyboard rides under the whole screen (adjustResize semantics).
         modifier = Modifier.imePadding(),
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = {
+            // Padded above the system navigation bar. contentWindowInsets is
+            // zeroed on this Scaffold, so a bare SnackbarHost would draw UNDER
+            // the Back/Home/Recents bar — hiding exactly the install and error
+            // notices the user needs to read.
+            SnackbarHost(
+                snackbarHostState,
+                modifier = Modifier.windowInsetsPadding(
+                    WindowInsets.systemBars
+                        .union(WindowInsets.displayCutout)
+                        .only(WindowInsetsSides.Bottom)
+                )
+            )
+        },
         // Insets are applied EXPLICITLY below (TopAppBar handles the status
         // bar itself) — deterministic, nothing overlaps the nav buttons.
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -412,7 +446,12 @@ private fun LocalAiRoot(
 
             // ================= Model catalog =================
             SectionHeader("Model catalog — best for phones")
-            CatalogSection(controller = controller, onNotice = { notice = it })
+            CatalogSection(
+                controller = controller,
+                store = onDeviceStore,
+                downloads = onDeviceDownloads,
+                onNotice = { notice = it }
+            )
 
             // ================= Performance =================
             SectionHeader("Performance (GPU · CPU)")
@@ -1243,9 +1282,12 @@ private fun DownloadRow(
 @Composable
 private fun CatalogSection(
     controller: LocalAiController,
+    store: OnDeviceModelStore,
+    downloads: OnDeviceDownloadController,
     onNotice: (String) -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val cores = Runtime.getRuntime().availableProcessors()
     val ramGb = remember {
         val activityManager = context.getSystemService(ActivityManager::class.java)
@@ -1254,9 +1296,68 @@ private fun CatalogSection(
         memoryInfo.totalMem / (1024L * 1024L * 1024L)
     }
     val suggestedTier = OllamaModelPresets.suggestedTierForRam(ramGb)
+
+    // ---- Which catalog tags are already in the BUILT-IN engine's directory.
+    // Install targets the on-device engine (the whole point of this screen on
+    // a phone: no Termux, no server), so "Installed" is the store's list, NOT
+    // the Ollama server's. Re-listed whenever a download settles — the
+    // controller DROPS an entry on completion, so a shrinking list is the
+    // honest "something finished" signal (same hook as the engine section).
+    val entries by downloads.entries.collectAsState()
+    var installedRefresh by remember { mutableStateOf(0) }
+    var onDeviceIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    LaunchedEffect(installedRefresh) {
+        onDeviceIds = withContext(Dispatchers.IO) { store.list().map { it.id }.toSet() }
+    }
+    var lastEntryCount by remember { mutableStateOf(0) }
+    LaunchedEffect(entries.size) {
+        if (entries.size < lastEntryCount) installedRefresh++
+        lastEntryCount = entries.size
+    }
+
+    // Tags with a registry resolve in flight, so a card can show it is busy
+    // and a double-tap cannot start two resolves.
+    var resolving by remember { mutableStateOf<Set<String>>(emptySet()) }
+
+    // ---- ONE install path for every card on this screen: the curated presets
+    // AND the live-discovery cards below. Both resolve the tag against the
+    // PUBLIC registry and hand the real blob URL to the on-device download
+    // controller. `POST /api/pull` (the old behaviour) needs an Ollama daemon
+    // on localhost — a server a phone has no reason to be running, which is
+    // why Install used to look like it went nowhere.
+    val install: (tag: String, label: String) -> Unit = { tag, label ->
+        if (tag !in resolving) {
+            resolving = resolving + tag
+            scope.launch {
+                try {
+                    val resolved = controller.resolveOnDeviceDownload(tag)
+                    if (resolved == null) {
+                        onNotice(
+                            "Could not resolve $label — the registry has no " +
+                                "model file for $tag."
+                        )
+                    } else {
+                        downloads.start(resolved.url, resolved.fileName)
+                        onNotice("Downloading $label to the on-device engine…")
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    // A 404 (tag gone), a dead network, a DNS failure — all
+                    // end up here with an honest reason.
+                    onNotice("Install failed: ${t.message ?: t.javaClass.simpleName}")
+                } finally {
+                    resolving = resolving - tag
+                }
+            }
+        }
+    }
+
     Text(
-        "Curated presets that run well on phones, plus a live refresh against " +
-            "ollama.com to discover new models. Sizes are approximate (default 4-bit tags). " +
+        "Curated presets that run well on phones. Install downloads the real .gguf " +
+            "straight from the public Ollama registry onto the BUILT-IN engine — no " +
+            "server, no Termux. (Running your own Ollama daemon? Use “Pull to server”.) " +
+            "Sizes are approximate (default 4-bit tags). " +
             "On this device: ${Build.MODEL} · $cores cores · $ramGb GB — suggested tier: ${suggestedTier.label}.",
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1266,7 +1367,12 @@ private fun CatalogSection(
     // ---- Live discovery: new families from the public ollama.com library.
     // Shown BEFORE the curated tiers — "what's new" is the question this
     // section answers; the tiers below remain the vetted, offline-safe path.
-    RefreshCatalogSection(controller = controller, onNotice = onNotice)
+    RefreshCatalogSection(
+        controller = controller,
+        installedIds = onDeviceIds,
+        busyTags = resolving,
+        onInstall = install
+    )
 
     OllamaPresetTier.values().forEach { tier ->
         Text(
@@ -1284,10 +1390,17 @@ private fun CatalogSection(
         OllamaModelPresets.byTier(tier).forEach { preset ->
             PresetCard(
                 preset = preset,
-                installed = controller.installed.any { it.name == preset.tag },
-                onInstall = {
+                // The store's ids never carry ".gguf" — comparing the raw file
+                // name here would never match (see OllamaRegistry.modelId).
+                installed = OllamaRegistry.modelId(preset.tag) in onDeviceIds,
+                busy = preset.tag in resolving,
+                onInstall = { install(preset.tag, preset.label) },
+                // The server path is kept for users who DO run Ollama (Termux
+                // on the phone, or a PC on the LAN) — same one-tap pull as
+                // before, just no longer the only option.
+                onPullToServer = {
                     controller.pull(preset.tag)
-                    onNotice("Installing ${preset.label}…")
+                    onNotice("Pulling ${preset.label} to the Ollama server…")
                 }
             )
         }
@@ -1304,7 +1417,9 @@ private const val DISCOVERED_CARDS_MAX = 20
 @Composable
 private fun RefreshCatalogSection(
     controller: LocalAiController,
-    onNotice: (String) -> Unit
+    installedIds: Set<String>,
+    busyTags: Set<String>,
+    onInstall: (tag: String, label: String) -> Unit
 ) {
     Column(Modifier.fillMaxWidth()) {
         Row(
@@ -1376,8 +1491,9 @@ private fun RefreshCatalogSection(
                     discovered.take(DISCOVERED_CARDS_MAX).forEach { entry ->
                         LibraryEntryCard(
                             entry = entry,
-                            controller = controller,
-                            onNotice = onNotice
+                            installedIds = installedIds,
+                            busyTags = busyTags,
+                            onInstall = onInstall
                         )
                     }
                     if (discovered.size > DISCOVERED_CARDS_MAX) {
@@ -1398,8 +1514,9 @@ private fun RefreshCatalogSection(
 @Composable
 private fun LibraryEntryCard(
     entry: OllamaLibraryEntry,
-    controller: LocalAiController,
-    onNotice: (String) -> Unit
+    installedIds: Set<String>,
+    busyTags: Set<String>,
+    onInstall: (tag: String, label: String) -> Unit
 ) {
     val phoneSizes = OllamaLibraryHeuristics.phoneSizes(entry)
     val oversized = entry.sizeTags.filterNot { it in phoneSizes }
@@ -1449,9 +1566,11 @@ private fun LibraryEntryCard(
                 )
             }
             // Phone-usable size tags → Install buttons (the badge text IS the
-            // pullable tag suffix, verified against the real library). The
-            // estimated size uses the q4 heuristic and is labeled as such;
-            // the pull progress shows the real bytes.
+            // pullable tag suffix, verified against the real library). Install
+            // resolves the tag on the PUBLIC registry and downloads the real
+            // .gguf onto the BUILT-IN engine — the estimated size uses the q4
+            // heuristic and is labeled as such; the download row shows the real
+            // bytes.
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -1459,7 +1578,8 @@ private fun LibraryEntryCard(
             ) {
                 phoneSizes.forEach { badge ->
                     val fullTag = "${entry.name}:$badge"
-                    val installed = controller.installed.any { it.name == fullTag }
+                    // Store ids carry no ".gguf" — see OllamaRegistry.modelId.
+                    val installed = OllamaRegistry.modelId(fullTag) in installedIds
                     if (installed) {
                         AssistChip(
                             onClick = {},
@@ -1471,10 +1591,8 @@ private fun LibraryEntryCard(
                         )
                     } else {
                         FilledTonalButton(
-                            onClick = {
-                                controller.pull(fullTag)
-                                onNotice("Installing $fullTag…")
-                            },
+                            onClick = { onInstall(fullTag, entry.name) },
+                            enabled = fullTag !in busyTags,
                             modifier = Modifier.semantics {
                                 contentDescription = "localai_install_$fullTag"
                             }
@@ -1520,7 +1638,9 @@ private fun relativeTime(epochMs: Long): String {
 private fun PresetCard(
     preset: OllamaModelPreset,
     installed: Boolean,
-    onInstall: () -> Unit
+    busy: Boolean,
+    onInstall: () -> Unit,
+    onPullToServer: () -> Unit
 ) {
     RoomCard(
         Modifier
@@ -1548,11 +1668,14 @@ private fun PresetCard(
                 } else {
                     Button(
                         onClick = onInstall,
+                        // A resolve is a network round-trip — disable so a
+                        // double-tap cannot start two.
+                        enabled = !busy,
                         modifier = Modifier.semantics { contentDescription = "localai_install_${preset.tag}" }
                     ) {
                         Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("Install")
+                        Text(if (busy) "Resolving…" else "Install")
                     }
                 }
             }
@@ -1590,6 +1713,22 @@ private fun PresetCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp)
             )
+            // Secondary path, kept for users who DO run an Ollama daemon
+            // (Termux on this phone, or a PC on the LAN). Quiet by design —
+            // Install above is the on-device default.
+            TextButton(
+                onClick = onPullToServer,
+                contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
+                modifier = Modifier
+                    .padding(top = 2.dp)
+                    .semantics { contentDescription = "localai_pull_server_${preset.tag}" }
+            ) {
+                Text(
+                    "Pull to Ollama server instead",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }

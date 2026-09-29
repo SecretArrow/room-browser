@@ -165,7 +165,19 @@ private fun AgentSettingsRoot(
     Scaffold(
         // Keyboard rides under the whole screen (adjustResize semantics).
         modifier = Modifier.imePadding(),
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = {
+            // Padded above the system navigation bar. contentWindowInsets is
+            // zeroed on this Scaffold, so a bare SnackbarHost would draw UNDER
+            // the Back/Home/Recents bar.
+            SnackbarHost(
+                snackbarHostState,
+                modifier = Modifier.windowInsetsPadding(
+                    WindowInsets.systemBars
+                        .union(WindowInsets.displayCutout)
+                        .only(WindowInsetsSides.Bottom)
+                )
+            )
+        },
         // Insets are applied EXPLICITLY below (TopAppBar handles the status
         // bar itself) — deterministic, nothing overlaps the nav buttons.
         contentWindowInsets = WindowInsets(0, 0, 0, 0),

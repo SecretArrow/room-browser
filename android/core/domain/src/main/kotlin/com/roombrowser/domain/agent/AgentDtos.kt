@@ -127,9 +127,66 @@ data class FnDelta(
     val arguments: String? = null
 )
 
-/** Provider HTTP failure with the (truncated) body for honest error UI. */
+/**
+ * Provider HTTP failure. [body] is the provider's raw reply (kept whole for
+ * callers that want it), while the EXCEPTION MESSAGE — which is what the UI
+ * renders — carries only the human sentence from it, via [ProviderErrorText].
+ * A refusal otherwise reaches the user as a wall of JSON whose one useful
+ * sentence ("unauthorized client detected, …") is buried in the middle.
+ */
 class AgentHttpException(val code: Int, val body: String) :
-    Exception("HTTP $code${if (body.isBlank()) "" else ": $body"}")
+    Exception("HTTP $code${suffix(body)}") {
+    private companion object {
+        /** ": sentence" when the body says something, "" when it says nothing. */
+        fun suffix(body: String): String {
+            val text = ProviderErrorText.extract(body)
+            return if (text.isBlank()) "" else ": $text"
+        }
+    }
+}
+
+/**
+ * The human sentence inside a provider's error body.
+ *
+ * Every gateway used to hand the raw body to [AgentHttpException], so a
+ * refusal surfaced in the UI as a wall of JSON — for example
+ * `{"error":{"message":"unauthorized client detected, contact support …"},
+ * "message":"UNAUTHENTICATED","success":false}` where the only part worth
+ * reading is one sentence. Providers are also not uniform about where that
+ * sentence lives, hence the several keys.
+ *
+ * Falls back to the trimmed body when nothing recognisable is found: a
+ * confusing-but-complete message beats a swallowed error.
+ */
+object ProviderErrorText {
+
+    /** Longest sentence echoed; a provider cannot flood the UI with a novel. */
+    const val MAX_CHARS: Int = 300
+
+    fun extract(body: String, maxChars: Int = MAX_CHARS): String {
+        val trimmed = body.trim()
+        if (trimmed.isEmpty()) return ""
+        val sentence = runCatching { fromJson(trimmed) }.getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?: trimmed
+        return if (sentence.length <= maxChars) sentence else sentence.take(maxChars) + "…"
+    }
+
+    /** `error.message` → `error` (a bare string) → `message` → `detail`. */
+    private fun fromJson(body: String): String? {
+        val root = AgentJson.parseToJsonElement(body)
+        val obj = root as? JsonObject ?: return null
+        val error = obj["error"]
+        (error as? JsonObject)?.string("message")?.let { return it }
+        (error as? JsonPrimitive)?.contentOrNull?.let { return it }
+        obj.string("message")?.let { return it }
+        obj.string("detail")?.let { return it }
+        return null
+    }
+
+    private fun JsonObject.string(key: String): String? =
+        (this[key] as? JsonPrimitive)?.contentOrNull
+}
 
 /**
  * Parses `/models` responses leniently. Accepted shapes:

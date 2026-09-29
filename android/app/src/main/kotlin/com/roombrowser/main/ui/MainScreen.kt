@@ -129,7 +129,19 @@ fun MainScreen(
     val pendingUrl = viewModel.pendingExternalUrl
 
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = {
+            // Padded above the system navigation bar. contentWindowInsets is
+            // zeroed on this Scaffold, so a bare SnackbarHost would draw UNDER
+            // the Back/Home/Recents bar.
+            SnackbarHost(
+                snackbarHostState,
+                modifier = Modifier.windowInsetsPadding(
+                    WindowInsets.systemBars
+                        .union(WindowInsets.displayCutout)
+                        .only(WindowInsetsSides.Bottom)
+                )
+            )
+        },
         // Insets applied explicitly below (TopAppBar handles the status bar
         // itself) — deterministic on every API level, nothing overlaps the
         // system Back / Home / Recents buttons.

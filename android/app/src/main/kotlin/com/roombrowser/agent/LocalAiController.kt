@@ -15,6 +15,7 @@ import com.roombrowser.domain.agent.OllamaLibraryParser
 import com.roombrowser.domain.agent.OllamaModelInfo
 import com.roombrowser.domain.agent.OllamaModelPresets
 import com.roombrowser.domain.agent.OllamaPullEvent
+import com.roombrowser.domain.agent.OllamaRegistry
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -47,7 +48,8 @@ import okhttp3.OkHttpClient
  */
 class LocalAiController(
     private val application: Application,
-    libraryBaseUrl: String? = null
+    libraryBaseUrl: String? = null,
+    registryBaseUrl: String? = null
 ) {
 
     /** Connection banner state for the screen header. */
@@ -100,6 +102,16 @@ class LocalAiController(
     private val libraryClient = OllamaLibraryClient(
         httpClient,
         libraryBaseUrl ?: OllamaLibraryClient.DEFAULT_BASE
+    )
+
+    /**
+     * PUBLIC registry client (registry.ollama.ai) — resolves a catalog tag to
+     * the real GGUF blob so an install can feed the BUILT-IN on-device engine
+     * without a local Ollama server. Base URL injectable for e2e tests.
+     */
+    private val registryClient = OllamaRegistryClient(
+        httpClient,
+        registryBaseUrl ?: OllamaRegistry.HOST
     )
 
     // ------------------------------------------------------------- UI state
@@ -178,6 +190,20 @@ class LocalAiController(
     }
 
     // ------------------------------------------------------------- pull / pause / resume
+
+    /**
+     * Resolves a catalog tag against the PUBLIC registry to a real GGUF blob
+     * the on-device download controller can fetch.
+     *
+     * This is the path that works on a phone with no Ollama server: instead of
+     * `POST http://localhost:11434/api/pull` (which needs a daemon the user
+     * almost certainly is not running), it returns the same bytes `ollama pull`
+     * would have downloaded, over plain HTTPS. Returns null when the manifest
+     * carries no model layer; throws (e.g. [com.roombrowser.domain.agent.AgentHttpException]
+     * on a 404) when the registry refuses, so the caller can say why.
+     */
+    suspend fun resolveOnDeviceDownload(tag: String): OllamaRegistryClient.RegistryDownload? =
+        registryClient.resolve(tag)
 
     /**
      * Starts (or resumes) a model download. Idempotent: an already-active

@@ -171,7 +171,19 @@ private fun ThemeStudioRoot(controller: ThemeStudioController, onDone: () -> Uni
     Scaffold(
         modifier = Modifier.imePadding(),
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = {
+            // Padded above the system navigation bar. contentWindowInsets is
+            // zeroed on this Scaffold, so a bare SnackbarHost would draw UNDER
+            // the Back/Home/Recents bar.
+            SnackbarHost(
+                snackbarHostState,
+                modifier = Modifier.windowInsetsPadding(
+                    WindowInsets.systemBars
+                        .union(WindowInsets.displayCutout)
+                        .only(WindowInsetsSides.Bottom)
+                )
+            )
+        },
         topBar = {
             TopAppBar(
                 title = { Text("Theme Studio") },

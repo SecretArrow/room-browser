@@ -214,4 +214,78 @@ class AgentDtosTest {
         assertThat(rendered).doesNotContain("{DATE}")
         assertThat(rendered).doesNotContain("{ENGINE}")
     }
+
+    // ---------- ProviderErrorText ----------
+
+    @Test
+    fun `an anthropic style error body yields just its sentence`() {
+        // The real AgentRouter refusal, verbatim — the envelope around the one
+        // useful sentence is exactly what the UI must not show.
+        val body = """{"error":{"message":"unauthorized client detected, contact """ +
+            """support for assistance at https://discord.gg/HgekCyHJqB"},""" +
+            """"message":"UNAUTHENTICATED","success":false,"type":"unauthorized_client_error"}"""
+        assertThat(ProviderErrorText.extract(body))
+            .isEqualTo(
+                "unauthorized client detected, contact support for assistance " +
+                    "at https://discord.gg/HgekCyHJqB"
+            )
+    }
+
+    @Test
+    fun `an openai style error body yields its message`() {
+        assertThat(
+            ProviderErrorText.extract("""{"error":{"message":"bad key","type":"invalid_request_error"}}""")
+        ).isEqualTo("bad key")
+    }
+
+    @Test
+    fun `a bare message field is accepted`() {
+        assertThat(ProviderErrorText.extract("""{"message":"rate limited"}""")).isEqualTo("rate limited")
+        assertThat(ProviderErrorText.extract("""{"detail":"not found"}""")).isEqualTo("not found")
+    }
+
+    @Test
+    fun `an error that is a plain string is accepted`() {
+        assertThat(ProviderErrorText.extract("""{"error":"boom"}""")).isEqualTo("boom")
+    }
+
+    @Test
+    fun `a non-json body passes through trimmed rather than vanishing`() {
+        // An honest ugly message beats a swallowed error.
+        assertThat(ProviderErrorText.extract("  <html>502 Bad Gateway</html>  "))
+            .isEqualTo("<html>502 Bad Gateway</html>")
+    }
+
+    @Test
+    fun `an unrecognised json shape falls back to the whole body`() {
+        assertThat(ProviderErrorText.extract("""{"weird":1}""")).isEqualTo("""{"weird":1}""")
+    }
+
+    @Test
+    fun `an empty body stays empty`() {
+        assertThat(ProviderErrorText.extract("")).isEmpty()
+        assertThat(ProviderErrorText.extract("   ")).isEmpty()
+    }
+
+    @Test
+    fun `a long body is capped`() {
+        val long = "x".repeat(5000)
+        val out = ProviderErrorText.extract(long)
+        assertThat(out.length).isEqualTo(ProviderErrorText.MAX_CHARS + 1) // + the ellipsis
+        assertThat(out).endsWith("…")
+    }
+
+    @Test
+    fun `the exception message is the sentence while the raw body is kept`() {
+        val raw = """{"error":{"message":"unauthorized client detected"}}"""
+        val e = AgentHttpException(401, raw)
+        assertThat(e.message).isEqualTo("HTTP 401: unauthorized client detected")
+        assertThat(e.body).isEqualTo(raw)   // raw body untouched for callers that want it
+        assertThat(e.code).isEqualTo(401)
+    }
+
+    @Test
+    fun `an exception with no body carries only the status`() {
+        assertThat(AgentHttpException(500, "").message).isEqualTo("HTTP 500")
+    }
 }

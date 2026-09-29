@@ -8,10 +8,12 @@ import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
+import com.roombrowser.domain.agent.OllamaRegistry
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
+import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -30,19 +32,29 @@ import java.util.concurrent.atomic.AtomicInteger
  *     -> clear + type the MockWebServer host + Connect
  *     -> status "Connected · Ollama 0.5.7"      (GET /api/version)
  *     -> installed models listed from the server (GET /api/tags → llama3.2:1b)
- *     -> Install a catalog preset               (POST /api/pull, NDJSON stream)
- *     -> after the pull finishes and the model list refreshes, the preset's
- *        Install button flips to the "Installed" chip
- *        (desc "localai_installed_<tag>")
+ *     -> "Pull to Ollama server instead" on a preset
+ *        (POST /api/pull, NDJSON stream)
+ *     -> the Downloads section grows a live row for that tag
  *
  *   Catalog refresh ("Find new models", LocalAiActivity launched directly
- *   with the test-only library_url extra pointing at the same fake server):
+ *   with the test-only library_url AND registry_url extras pointing at the
+ *   same fake server):
  *     -> GET /library?sort=newest → structurally faithful HTML slice
  *     -> preset-covered families (llama3.2) and embedding-only families
  *        (bge-m3) stay hidden; the new phone-suitable family (qwen3.5,
  *        badges 0.8b/2b/27b) is discovered
- *     -> tapping its 0.8b Install button pulls qwen3.5:0.8b on the fake
- *        daemon (same verification-driven pull-evidence pattern)
+ *     -> tapping its 0.8b Install button resolves the tag on the fake REGISTRY
+ *        (GET /v2/library/qwen3.5/manifests/0.8b → the model layer) and
+ *        downloads that blob (GET /v2/…/blobs/…) onto the ON-DEVICE engine,
+ *        so the card flips to the Installed chip
+ *
+ * WHY THE FIRST TEST PULLS TO THE SERVER AND DOES NOT PRESS "Install": the
+ * built-in engine's Install talks to the public model registry. That test
+ * enters LocalAiActivity through the real "Local AI (Ollama)" row, which
+ * carries no registry_url override — pressing Install there would resolve
+ * against the REAL registry.ollama.ai and start a multi-hundred-MB download
+ * inside CI. The registry path is covered by the second test, which launches
+ * the activity directly and CAN redirect it.
  *
  * The fake server is a STATEFUL [Dispatcher], not a strict response queue:
  * the LocalAiController may call /api/version and /api/tags in any order and
@@ -55,8 +67,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * before UiAutomator polls the accessibility tree. Pause/resume semantics
  * (job cancel + re-attach, server-side layer cache) are covered by the
  * controller's unit tests (OllamaLocalTest). The library PARSER itself is
- * unit-tested against a faithful fixture in OllamaDtosTest — the e2e only
- * proves the wire-up (button → fetch → parsed cards → install).
+ * unit-tested against a faithful fixture in OllamaDtosTest, and the registry
+ * translation (tag → manifest URL → blob URL → file id) in
+ * OllamaRegistryTest — the e2e only proves the wire-up (button → fetch →
+ * parsed cards → install → bytes on disk).
  *
  * Compose fields are driven exactly like AgentSettingsE2eTest: semantics
  * content-description nodes + `input text` shell command (WITHOUT quotes —
@@ -146,17 +160,29 @@ class LocalAiE2eTest {
     }
 
     /**
-     * Stateful fake Ollama server:
+     * Stateful fake Ollama server + fake public model registry:
      *  - GET  /api/version → {"version":"0.5.7"}
      *  - GET  /api/tags    → llama3.2:1b + every model pulled so far
      *  - POST /api/pull    → instant NDJSON success stream
      *  - GET  /library     → the faithful HTML slice above (catalog refresh)
+     *  - GET  /v2/<name>/manifests/<ref> → a Docker Registry v2 manifest whose
+     *    model layer is [MODEL_DIGEST] (catalog Install resolution)
+     *  - GET  /v2/<name>/blobs/<digest>  → the model bytes themselves
+     *
+     * The registry routes are what make an Install testable at all: without
+     * them the app would resolve against the real registry.ollama.ai.
      */
     private class OllamaFake(val libraryHtml: String) : Dispatcher() {
         private val pulled = mutableSetOf<String>()
 
         /** Ground truth for the refresh test: GET /library hit count. */
         val libraryHits = AtomicInteger()
+
+        /** Resolve-side hits — 0 means the Install tap never reached the registry. */
+        val manifestHits = AtomicInteger()
+
+        /** Download-side hits — 0 with manifestHits > 0 means the blob URL was wrong. */
+        val blobHits = AtomicInteger()
 
         override fun dispatch(request: RecordedRequest): MockResponse {
             val path = request.path ?: ""
@@ -167,6 +193,29 @@ class LocalAiE2eTest {
                         .setHeader("Content-Type", "text/html")
                         .setBody(libraryHtml)
                 }
+
+                // ---- public registry (Docker Registry v2) ------------------
+                path.contains("/manifests/") -> {
+                    manifestHits.incrementAndGet()
+                    MockResponse()
+                        .setHeader(
+                            "Content-Type",
+                            "application/vnd.docker.distribution.manifest.v2+json"
+                        )
+                        .setBody(manifestJson())
+                }
+
+                path.contains("/blobs/") -> {
+                    blobHits.incrementAndGet()
+                    MockResponse()
+                        .setHeader("Content-Type", "application/octet-stream")
+                        // Deliberately NOT a real GGUF: the store lists any
+                        // *.gguf and reports meta = null for an unparseable
+                        // header, which is exactly the honest behaviour under
+                        // test here (the chip is keyed on the file name).
+                        .setBody(Buffer().write(ByteArray(MODEL_BYTES) { 0x42 }))
+                }
+
                 path.startsWith("/api/version") ->
                     MockResponse()
                         .setHeader("Content-Type", "application/json")
@@ -205,6 +254,22 @@ class LocalAiE2eTest {
             }
         }
 
+        /**
+         * A manifest shaped like the real ones: the weights sit in a layer
+         * whose mediaType is the ollama model type, alongside metadata layers
+         * the client must ignore. The order is deliberately metadata-first —
+         * a client that grabbed `layers[0]` would fail here.
+         */
+        private fun manifestJson() = """
+            {"schemaVersion":2,
+             "mediaType":"application/vnd.docker.distribution.manifest.v2+json",
+             "layers":[
+               {"mediaType":"application/vnd.ollama.image.params","digest":"sha256:params","size":42},
+               {"mediaType":"application/vnd.ollama.image.license","digest":"sha256:license","size":7},
+               {"mediaType":"$MODEL_MEDIA_TYPE","digest":"$MODEL_DIGEST","size":$MODEL_BYTES}
+             ]}
+        """.trimIndent()
+
         private fun llamaModelJson() =
             """{"name":"llama3.2:1b","model":"llama3.2:1b","size":1328238021,""" +
                 """"digest":"sha256:llama","modified_at":"2025-01-01T00:00:00Z",""" +
@@ -214,6 +279,18 @@ class LocalAiE2eTest {
             """{"name":"$tag","model":"$tag","size":494337152,""" +
                 """"digest":"sha256:pulled","modified_at":"2025-01-01T00:00:00Z",""" +
                 """"details":{"family":"qwen2","parameter_size":"0.5B","quantization_level":"Q4_K_M"}}"""
+
+        private companion object {
+            /** The real registry's own media type for the weights layer. */
+            const val MODEL_MEDIA_TYPE: String = OllamaRegistry.MODEL_MEDIA_TYPE
+
+            /** Shaped like a real digest so the blob URL is exercised verbatim. */
+            const val MODEL_DIGEST: String =
+                "sha256:c5396e06af294bd101b30dce59131a76d2b773e76950acc870eda801d3ab0515"
+
+            /** Tiny stand-in for multi-GB weights — completion is what matters. */
+            const val MODEL_BYTES: Int = 4 * 1024
+        }
     }
 
     // =====================================================================
@@ -245,21 +322,25 @@ class LocalAiE2eTest {
     }
 
     /**
-     * Launches LocalAiActivity directly with the TEST-ONLY library_url extra
-     * (mirrors LocalAiActivity.EXTRA_LIBRARY_URL; kept as a literal so the
-     * test reads like the manifest contract) — the catalog refresh then
-     * talks to the fake server instead of ollama.com.
+     * Launches LocalAiActivity directly with the TEST-ONLY library_url and
+     * registry_url extras (mirrors LocalAiActivity.EXTRA_LIBRARY_URL /
+     * EXTRA_REGISTRY_URL; kept as literals so the test reads like the manifest
+     * contract) — the catalog refresh then talks to the fake server instead of
+     * ollama.com, and an Install resolves against the fake registry instead of
+     * the REAL registry.ollama.ai.
      *
      * The PRIMARY path uses FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TASK so
      * an instance left by the earlier test method can never absorb the launch
-     * (a stale, extra-less activity would silently point the refresh at the
-     * real ollama.com). The shell fallback carries the same flags + extra.
+     * (a stale, extra-less activity would silently point BOTH the refresh and
+     * every Install at the real internet). The shell fallback carries the same
+     * flags + extras.
      */
-    private fun launchLocalAiDirectly(libraryUrl: String) {
+    private fun launchLocalAiDirectly(libraryUrl: String, registryUrl: String) {
         runCatching {
             val intent = Intent()
                 .setClassName(targetContext, "com.roombrowser.agent.ui.LocalAiActivity")
             intent.putExtra("library_url", libraryUrl)
+            intent.putExtra("registry_url", registryUrl)
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
             targetContext.startActivity(intent)
         }
@@ -267,7 +348,7 @@ class LocalAiE2eTest {
             // 0x10008000 = FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TASK.
             device.executeShellCommand(
                 "am start -f 0x10008000 -n ${targetContext.packageName}/com.roombrowser.agent.ui.LocalAiActivity" +
-                    " --es library_url $libraryUrl"
+                    " --es library_url $libraryUrl --es registry_url $registryUrl"
             )
             device.waitForIdle(2_000)
         }
@@ -475,6 +556,7 @@ class LocalAiE2eTest {
                 .map { it.take(44) }
         }.getOrDefault(emptyList())
         return "libraryHits=${fake.libraryHits.get()} refreshBtn=$refreshBtn " +
+            "manifests=${fake.manifestHits.get()} blobs=${fake.blobHits.get()} " +
             "texts=[${texts.joinToString(" | ")}]"
     }
 
@@ -593,18 +675,34 @@ class LocalAiE2eTest {
         return null
     }
 
-    /** PROOF that a pull for [tag] started/ran: the download row exposes a
-     *  Pause button while STARTING/DOWNLOADING/VERIFYING, a Clear button on
-     *  the kept SUCCESS row, a Resume button when PAUSED/FAILED — and the
-     *  catalog flips to the Installed chip once /api/tags lists the model.
-     *  Any of the four settles within [timeoutMs] on the instant fake server. */
-    private fun pullEvidence(tag: String, timeoutMs: Long): Boolean {
+    /** First visible "Pull to Ollama server instead" desc, scrolling if needed. */
+    private fun findFirstPullServerButton(): String? {
+        for (i in 1..8) {
+            val nodes = runCatching {
+                device.findObjects(By.descContains("localai_pull_server_"))
+            }.getOrDefault(emptyList())
+            nodes.firstOrNull()?.contentDescription?.let { return it }
+            dragUpQuarter()
+        }
+        return null
+    }
+
+    /** PROOF that a SERVER pull for [tag] started/ran: the Downloads row exposes
+     *  a Pause button while STARTING/DOWNLOADING/VERIFYING, a Clear button on
+     *  the kept SUCCESS row, a Resume button when PAUSED/FAILED, a Cancel
+     *  button throughout. Any of them settles within [timeoutMs] on the instant
+     *  fake server.
+     *
+     *  The catalog's Installed chip is deliberately NOT a probe here: on this
+     *  screen it now means "in the BUILT-IN engine's directory", which a
+     *  server-side pull never changes (see the class KDoc). */
+    private fun serverPullEvidence(tag: String, timeoutMs: Long): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         val probes = listOf(
-            "localai_installed_$tag",
-            "localai_clear_$tag",
             "localai_pause_$tag",
-            "localai_resume_$tag"
+            "localai_resume_$tag",
+            "localai_clear_$tag",
+            "localai_cancel_$tag"
         )
         while (System.currentTimeMillis() < deadline) {
             for (probe in probes) {
@@ -695,48 +793,54 @@ class LocalAiE2eTest {
             hasTextWithScroll("llama3.2:1b", attempts = 16)
         )
 
-        // ---- 6. Install a catalog preset -----------------------------------
-        // Prefer the documented ultra-light preset; fall back to ANY
-        // installable preset so the test does not hard-depend on the exact
-        // preset catalogue ("localai_install_" never matches the installed
-        // chip desc "localai_installed_…").
-        val preferredDesc = "localai_install_qwen2.5:0.5b"
-        val installDesc = if (hasDescContainsWithScroll(preferredDesc, attempts = 20)) {
+        // ---- 6. Pull a catalog preset to the Ollama SERVER -----------------
+        // NOT the Install button: this test reaches LocalAiActivity through the
+        // real "Local AI (Ollama)" row, which carries no registry_url override,
+        // so Install would resolve against the REAL registry.ollama.ai and
+        // start a multi-hundred-MB download inside CI. "Pull to Ollama server
+        // instead" is the path this fake daemon can honestly serve, and it
+        // proves the same wiring: button → POST /api/pull → a live Downloads
+        // row. (The registry Install path is covered end-to-end by the second
+        // test, which launches the activity directly and CAN redirect it.)
+        val preferredDesc = "localai_pull_server_qwen2.5:0.5b"
+        val pullDesc = if (hasDescContainsWithScroll(preferredDesc, attempts = 20)) {
             preferredDesc
         } else {
-            findFirstInstallButton()
-                ?: throw AssertionError("No catalog Install button found; UI:\n" + uiTree())
+            findFirstPullServerButton()
+                ?: throw AssertionError(
+                    "No 'Pull to Ollama server instead' button found; UI:\n" + uiTree()
+                )
         }
-        val installedTag = installDesc.removePrefix("localai_install_")
+        val pulledTag = pullDesc.removePrefix("localai_pull_server_")
 
         // The tap is VERIFICATION-DRIVEN: CI emulators can drop an injected
         // tap on this busy screen (13 preset cards + chips recomposing while
         // the a11y tree is polled — observed in CI: the tap landed dead-on
         // the button and the download coroutine never started). So each round
         // clicks, then waits for PROOF that the pull started: the row's Pause
-        // button while running, its Clear button once finished, the catalog
-        // Installed chip — or a Resume button if it failed. No proof → the
-        // tap was lost → find the button again and tap again.
+        // button while running, its Clear button once finished, a Resume
+        // button if it failed. No proof → the tap was lost → find the button
+        // again and tap again.
         var pullStarted = false
         for (round in 1..3) {
-            clickDescContainsWithScroll(installDesc, attempts = 12)
-            if (pullEvidence(installedTag, 8_000)) {
+            clickDescContainsWithScroll(pullDesc, attempts = 12)
+            if (serverPullEvidence(pulledTag, 8_000)) {
                 pullStarted = true
                 break
             }
         }
         assertTrue(
-            "Install tap must start the pull for $installedTag " +
-                "(no Pause/Clear/Resume/chip evidence after 3 taps); UI:\n" + uiTree(),
+            "Pull-to-server tap must start the pull for $pulledTag " +
+                "(no Pause/Clear/Resume/Cancel evidence after 3 taps); UI:\n" + uiTree(),
             pullStarted
         )
 
-        // ---- 7. Pull finishes → the preset flips to "Installed" -----------
-        // (The fake server lists every pulled model in /api/tags from the
-        // moment its pull request arrives, so ANY refresh timing works.)
+        // The fake daemon lists every pulled model in /api/tags from the moment
+        // its pull request arrives, so the server-side model list picks it up
+        // on the next refresh (which a finished pull triggers itself).
         assertTrue(
-            "Preset $installedTag must flip to the Installed chip after the pull; UI:\n" + uiTree(),
-            hasDescContainsWithScroll("localai_installed_$installedTag", attempts = 20)
+            "The pulled model $pulledTag must appear in the server's installed list; UI:\n" + uiTree(),
+            hasTextWithScroll(pulledTag, attempts = 16)
         )
 
         // Pause/resume buttons are intentionally NOT asserted here — see the
@@ -750,9 +854,10 @@ class LocalAiE2eTest {
 
     @Test
     fun local_ai_catalog_refresh_discovers_and_installs_new_models() {
-        // ---- 1. LocalAiActivity directly, library pointed at the fake server
+        // ---- 1. LocalAiActivity directly, library AND registry on the fake
         device.pressHome()
-        launchLocalAiDirectly(server.url("/").toString().trimEnd('/'))
+        val fakeBase = server.url("/").toString().trimEnd('/')
+        launchLocalAiDirectly(libraryUrl = fakeBase, registryUrl = fakeBase)
         assertTrue(
             "LocalAiActivity must open (host field visible); UI:\n" + uiTree(),
             hasDesc("localai_host_field", 15_000)
@@ -839,28 +944,39 @@ class LocalAiE2eTest {
         )
 
         // ---- 5. Install the discovered family's phone-friendly tag ---------
-        // VERIFICATION-DRIVEN, same as the preset install: tap → proof that
-        // the pull started (Pause/Clear/Resume/chip), retry if the tap was
-        // lost on the busy screen.
-        val installDesc = "localai_install_qwen3.5:0.8b"
-        var pullStarted = false
+        // Install now resolves the tag on the REGISTRY and downloads the real
+        // blob onto the BUILT-IN engine (no Ollama daemon involved), so the
+        // honest proof is the Installed chip flipping — which only happens
+        // once the bytes are on disk and the store has been re-listed.
+        // VERIFICATION-DRIVEN like every other tap here: retry if it was lost.
+        val tag = "qwen3.5:0.8b"
+        val installDesc = "localai_install_$tag"
+        var installed = false
         for (round in 1..3) {
             clickDescContainsWithScroll(installDesc, attempts = 12)
-            if (pullEvidence("qwen3.5:0.8b", 8_000)) {
-                pullStarted = true
+            if (hasDescContainsWithScroll("localai_installed_$tag", attempts = 12)) {
+                installed = true
                 break
             }
         }
+        // The counters separate the failure theories in the message: 0
+        // manifests = the tap never reached the registry (dead tap / resolve
+        // never ran); manifests > 0 with 0 blobs = the resolve worked but the
+        // blob URL did not come back.
         assertTrue(
-            "Install tap must start the pull for qwen3.5:0.8b " +
-                "(no Pause/Clear/Resume/chip evidence after 3 taps); UI:\n" + uiTree(),
-            pullStarted
+            "Install must resolve $tag on the fake registry " +
+                "(manifests=${fake.manifestHits.get()}) and download its blob " +
+                "(blobs=${fake.blobHits.get()}) onto the on-device engine, flipping the " +
+                "card to the Installed chip; UI:\n" + uiTree(),
+            installed
         )
-
-        // ---- 6. Pull finishes → the discovered card flips to Installed -----
         assertTrue(
-            "Discovered tag qwen3.5:0.8b must flip to the Installed chip after the pull; UI:\n" + uiTree(),
-            hasDescContainsWithScroll("localai_installed_qwen3.5:0.8b", attempts = 20)
+            "The registry manifest for $tag must have been fetched; " + screenSummary(),
+            fake.manifestHits.get() > 0
+        )
+        assertTrue(
+            "The registry blob for $tag must have been downloaded; " + screenSummary(),
+            fake.blobHits.get() > 0
         )
     }
 }
