@@ -126,7 +126,7 @@ object OllamaRegistry {
         val (name, reference) = splitTag(tag)
         val flat = name.replace('/', '-')
         val suffix = if (reference == "latest") "" else "-$reference"
-        return "$flat$GGUF_SUFFIX"
+        return "$flat$suffix$GGUF_SUFFIX"
     }
 
     /**
