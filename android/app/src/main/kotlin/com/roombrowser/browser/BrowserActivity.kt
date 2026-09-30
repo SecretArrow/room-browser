@@ -2,10 +2,12 @@ package com.roombrowser.browser
 
 import android.content.Intent
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import com.roombrowser.browser.engine.ProfileEngine
@@ -36,6 +38,10 @@ class BrowserActivity : FragmentActivity() {
     private var initialUrl: String? = null
     private var pendingSwitch = false
     private var browserViewModel: BrowserViewModel? = null
+
+    /** True while the full-screen NetworkWarningActivity is on top. */
+    private var networkWarningRunning = false
+    private lateinit var networkWarningLauncher: ActivityResultLauncher<Intent>
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -84,6 +90,34 @@ class BrowserActivity : FragmentActivity() {
         }
         val viewModel = ViewModelProvider(this, factory)[BrowserViewModel::class.java]
         browserViewModel = viewModel
+
+        // ---- Profile network warning (replaces the old IpWarningDialog) ---
+        // The pending decision is STATE, not a dialog: while the gate stands,
+        // this launcher loop keeps the full-screen warning in place. System
+        // Back finishes it with RESULT_CANCELED — the gate is still armed, so
+        // the warning comes straight back. Only an explicit decision (or a
+        // persisted suppression) releases browsing.
+        networkWarningLauncher = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            networkWarningRunning = false
+            when (result.resultCode) {
+                NetworkWarningActivity.RESULT_CONTINUE ->
+                    viewModel.resolveNetworkWarning(NetworkWarningDecision.CONTINUE)
+                NetworkWarningActivity.RESULT_SWITCH ->
+                    viewModel.resolveNetworkWarning(NetworkWarningDecision.SWITCH)
+                NetworkWarningActivity.RESULT_SUPPRESS ->
+                    viewModel.resolveNetworkWarning(NetworkWarningDecision.SUPPRESS)
+                else -> Unit // Back / cancel: the decision is still pending.
+            }
+            launchNetworkWarningIfNeeded()
+        }
+        lifecycleScope.launch {
+            viewModel.networkGateState.collect { gated ->
+                if (gated) launchNetworkWarningIfNeeded()
+            }
+        }
+
         setContent {
             // Whole-engine theming from THIS profile's theme snapshot —
             // changes live when the Theme Studio (default process) applies a
@@ -112,6 +146,44 @@ class BrowserActivity : FragmentActivity() {
         // Room's multi-instance invalidation ping is lost on slow
         // filesystems (observed on the CI emulator).
         browserViewModel?.agent?.refreshProviders()
+        // A gate armed while paused (a StateFlow collector already consumed
+        // its value) is picked up here instead.
+        launchNetworkWarningIfNeeded()
+    }
+
+    /**
+     * Launches the network warning activity while a decision is pending —
+     * state-driven, called from the result callback, the gate collector and
+     * onResume (never from composition). Privacy toggles shape the extras:
+     * the previous profile's NAME is only included when the user allows it.
+     */
+    private fun launchNetworkWarningIfNeeded() {
+        val viewModel = browserViewModel ?: return
+        if (!viewModel.networkGateState.value || networkWarningRunning) return
+        if (lifecycle.currentState < Lifecycle.State.RESUMED) return
+        val payload = viewModel.pendingNetWarning
+        if (payload == null) {
+            // Pending flag without a decodable payload: the decision cannot
+            // be presented, and holding the gate would brick the profile.
+            // Clear the stale state (documented corruption valve).
+            viewModel.discardUnreadableNetworkWarning()
+            return
+        }
+        networkWarningRunning = true
+        val showName = viewModel.globalSettings.showPreviousProfileName
+        val showLastSeen = viewModel.globalSettings.showLastSeenTime
+        networkWarningLauncher.launch(
+            Intent(this, NetworkWarningActivity::class.java)
+                .putExtra(NetworkWarningActivity.EXTRA_IP, payload.ip)
+                .putExtra(
+                    NetworkWarningActivity.EXTRA_PREVIOUS_PROFILE_NAME,
+                    if (showName) payload.previousProfileName else ""
+                )
+                .putExtra(
+                    NetworkWarningActivity.EXTRA_LAST_SEEN,
+                    if (showLastSeen) payload.lastSeenAt else 0L
+                )
+        )
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -130,7 +202,7 @@ class BrowserActivity : FragmentActivity() {
         if (pendingSwitch) return
         pendingSwitch = true
         val current = boundProfileId ?: return
-        val viewModel = ViewModelProvider(this, browserFactory(boundProfileId!!))[BrowserViewModel::class.java]
+        val viewModel = ViewModelProvider(this, browserFactory(current))[BrowserViewModel::class.java]
 
         val executor = ProfileSwitchExecutor(this)
         executor.switch(

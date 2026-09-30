@@ -1,12 +1,18 @@
 package com.roombrowser.data.repo
 
+import androidx.room.withTransaction
 import com.roombrowser.data.db.AppDatabase
+import com.roombrowser.data.db.BookmarkEntity
 import com.roombrowser.data.db.ProfileEntity
+import com.roombrowser.data.db.SitePermissionEntity
+import com.roombrowser.data.db.SiteSettingEntity
+import com.roombrowser.domain.export.ProfileBackup
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.profile.CopyOptions
 import com.roombrowser.domain.profile.ProfileStore
+import com.roombrowser.security.VaultCrypto
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.json.Json
@@ -18,6 +24,11 @@ import kotlinx.serialization.json.Json
  */
 class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
 
+    /** Kept for the import transaction — the DAO handles below are the same
+     *  database's views, so [importBackup] can wrap them all in ONE
+     *  [withTransaction]. */
+    private val database: AppDatabase = db
+
     private val dao = db.profileDao()
     private val bookmarkDao = db.bookmarkDao()
     private val tabDao = db.tabDao()
@@ -26,6 +37,7 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
     private val ipDao = db.ipHistoryDao()
     private val statsDao = db.statsDao()
     private val downloadDao = db.downloadDao()
+    private val credentialDao = db.credentialDao()
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -56,6 +68,14 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
             ipDao.deleteAllFor(id.value)
             statsDao.deleteAllFor(id.value)
             downloadDao.deleteAllFor(id.value)
+            // Saved logins are profile data too: rows first, THEN the
+            // Keystore key. That order fails closed — if anything dies in
+            // between, any surviving ciphertext stays permanently
+            // undecryptable instead of leaving a decryptable orphan. With
+            // cascadeData=false the key is kept on purpose so the profile's
+            // data (and its passwords) stay recoverable on restore.
+            credentialDao.deleteAllForProfile(id.value)
+            VaultCrypto.deleteKey(id)
         }
     }
 
@@ -100,6 +120,85 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
     /** Persist a full per-profile theme snapshot (Theme Studio "Apply"). */
     suspend fun updateTheme(id: ProfileId, themeJson: String) =
         dao.updateTheme(id.value, themeJson)
+
+    /** What a completed import restored — for the confirmation message. The
+     *  credential count is the caller's to add: only it knows how many rows
+     *  its writeCredentials step carried. */
+    data class ImportSummary(val profile: Profile, val bookmarks: Int)
+
+    /**
+     * ONE Room transaction for a whole backup import: profile row + bookmarks
+     * + site permissions + site settings + (via [writeCredentials]) the
+     * re-encrypted saved logins. Any exception from any write propagates and
+     * Room rolls the transaction back — a half-imported profile (rows without
+     * their passwords, or passwords without their profile) can never exist.
+     *
+     * [profile] must already carry its FINAL identity: the caller mints a
+     * FRESH UUID (the file's UUID is only a collision heuristic, never
+     * reused) and a non-colliding name — this method never overwrites an
+     * existing row because the id is new.
+     *
+     * [writeCredentials] runs INSIDE the transaction block: the caller passes
+     * `credentialRepo.importAll(...)` which re-encrypts every password under
+     * THIS profile's device vault key with fresh UUIDs. importAll hops through
+     * `withContext(Dispatchers.IO)` internally — that is safe here: Room's
+     * suspend DAO layer detects the surrounding transaction via its
+     * TransactionElement (which survives context switches) and dispatches each
+     * DAO call back onto the transaction thread, so those writes join this
+     * transaction and roll back with it.
+     */
+    suspend fun importBackup(
+        profile: Profile,
+        bookmarks: List<ProfileBackup.BookmarkExport>,
+        sitePermissions: List<ProfileBackup.SitePermissionExport>,
+        siteSettings: List<ProfileBackup.SiteSettingExport>,
+        writeCredentials: suspend () -> Unit = {}
+    ): ImportSummary = database.withTransaction {
+        val pid = profile.id.value
+        dao.upsert(profile.toEntity())
+        val now = System.currentTimeMillis()
+        // Positions are preserved from the payload (a fresh profile has no
+        // bookmarks to collide with); createdAt is local because the format
+        // does not carry it.
+        bookmarks.forEach { b ->
+            bookmarkDao.upsert(
+                BookmarkEntity(
+                    profileId = pid,
+                    url = b.url,
+                    title = b.title,
+                    folder = b.folder,
+                    position = b.position,
+                    createdAt = now
+                )
+            )
+        }
+        sitePermissions.forEach { p ->
+            siteSettingsDao.upsertPermission(
+                SitePermissionEntity(
+                    profileId = pid,
+                    host = p.host,
+                    permission = p.permission,
+                    decision = p.decision
+                )
+            )
+        }
+        siteSettings.forEach { s ->
+            siteSettingsDao.upsertSiteSetting(
+                SiteSettingEntity(
+                    profileId = pid,
+                    host = s.host,
+                    shieldsDisabled = s.shieldsDisabled,
+                    jsEnabled = s.jsEnabled,
+                    cookiesBlocked = s.cookiesBlocked,
+                    desktopMode = s.desktopMode,
+                    autoplayBlocked = s.autoplayBlocked,
+                    popupBlocked = s.popupBlocked
+                )
+            )
+        }
+        writeCredentials()
+        ImportSummary(profile, bookmarks.size)
+    }
 
     private fun ProfileEntity.toDomain(): Profile = Profile(
         id = ProfileId(id),

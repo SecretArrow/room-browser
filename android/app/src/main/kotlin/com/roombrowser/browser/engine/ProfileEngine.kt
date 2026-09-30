@@ -10,6 +10,7 @@ import android.webkit.WebViewDatabase
 import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import com.roombrowser.browser.RoomVaultScript
 import com.roombrowser.domain.model.ClaimedScreen
 import com.roombrowser.domain.model.Device
 import com.roombrowser.domain.model.Profile
@@ -44,6 +45,14 @@ object ProfileEngine {
      * live WebView replaces its script instead of adding another one.
      */
     private val deviceShims = java.util.WeakHashMap<WebView, ScriptHandler>()
+
+    /**
+     * The password-manager page bridge script currently installed per
+     * WebView — same replace-on-reconfigure pattern as [deviceShims]: the
+     * script itself is idempotent (window.__roomVaultInstalled guard), but
+     * a reconfigure must never stack a second document-start handler either.
+     */
+    private val vaultScripts = java.util.WeakHashMap<WebView, ScriptHandler>()
 
     /** WebView package name for the diagnostics screen. */
     fun engineName(context: Context): String = runCatching {
@@ -173,6 +182,12 @@ object ProfileEngine {
 
         applyDeviceShim(webView, UserAgents.device(settings), settings.claimedScreen())
 
+        // Password-manager page bridge: a SEPARATE document-start script
+        // from the device shim (installed on every configure, including
+        // reconfigures). Page JS then sees window.RoomVault (added by the
+        // ViewModel's createWebView) + the detection/fill script.
+        applyVaultScript(webView)
+
         // Cookies
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
@@ -216,13 +231,35 @@ object ProfileEngine {
     }
 
     /**
+     * Install the vault bridge script for one WebView. Always installed —
+     * the offer/save surfaces decide themselves whether anything is shown
+     * (a locked vault stays silent), so there is no per-profile toggle here.
+     *
+     * HONEST LIMIT: DOCUMENT_START_SCRIPT is the same WebView feature the
+     * device shim uses; on a WebView too old to support it the script (and
+     * therefore login autofill / save detection) is silently absent — the
+     * native RoomVault interface is still exposed but nothing calls it.
+     */
+    private fun applyVaultScript(webView: WebView) {
+        vaultScripts.remove(webView)?.let { previous ->
+            runCatching { previous.remove() }
+        }
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        runCatching {
+            vaultScripts[webView] = WebViewCompat.addDocumentStartJavaScript(
+                webView, RoomVaultScript.SCRIPT, setOf("*")
+            )
+        }
+    }
+
+    /**
      * Desktop-site toggle for a specific WebView (per-tab / per-site).
      */
     fun applyDesktopMode(webView: WebView, profile: Profile, desktop: Boolean) {
         val s = webView.settings
         val screen = profile.settings.claimedScreen()
         if (desktop) {
-            s.userAgentString = UserAgents.all.first { it.id == "chrome_windows" }.value
+            s.userAgentString = UserAgents.desktopModeUserAgent
             s.useWideViewPort = true
             s.loadWithOverviewMode = false
             // A desktop UA with an Android client-hint set underneath it is a

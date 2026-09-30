@@ -102,6 +102,17 @@ class MainActivity : FragmentActivity() {
         BiometricGate.unlock(this, profileName, onUnlocked, onUnlocked)
     }
 
+    /**
+     * Biometric gate for the password vault (backup export / import of
+     * saved logins). Unlike [gateProfile] — which treats "no biometric
+     * hardware" as proceed — a FAILED vault gate ABORTS the action: the
+     * caller keeps the vault locked and reports the abort (nothing is
+     * read, written or built).
+     */
+    fun gateVault(onSuccess: () -> Unit, onFailure: () -> Unit) {
+        BiometricGate.unlock(this, "Password vault", onSuccess, onFailure)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
     }

@@ -282,18 +282,24 @@ private fun WebViewHost(viewModel: BrowserViewModel) {
             }
         },
         update = { frame ->
-            viewModel.activeWebView?.let { webView ->
-                if (webView.parent != frame) {
-                    (webView.parent as? ViewGroup)?.removeView(webView)
-                    frame.removeAllViews()
-                    frame.addView(
-                        webView,
-                        ViewGroup.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        )
+            val webView = viewModel.activeWebView
+            // Swap-in semantics for the ACTIVE tab's engine: detach it from
+            // any previous parent first (a view that still has a parent can
+            // never be addView'd — the "child already has a parent" crash),
+            // drop the frame's previous child, then attach and re-layout.
+            // activeWebView is Compose state, so this runs on EVERY engine
+            // swap — even when pageState alone would not have recomposed.
+            if (webView != null && webView.parent != frame) {
+                (webView.parent as? ViewGroup)?.removeView(webView)
+                frame.removeAllViews()
+                frame.addView(
+                    webView,
+                    ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
                     )
-                }
+                )
+                webView.requestLayout()
             }
         },
         onRelease = { frame -> frame.removeAllViews() },

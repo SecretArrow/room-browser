@@ -23,6 +23,9 @@ object AppStateKeys {
     const val SESSION_ID = "browser_session_id"
     const val AGENT_SETTINGS = "agent_settings"
     const val LOCAL_AI_SETTINGS = "local_ai_settings"
+
+    /** Pending profile-network decision (NetworkWarningActivity gate). */
+    const val PENDING_NET_DECISION = "net_decision_pending"
 }
 
 /** AI agent behavior settings (app-global, stored as JSON in app_state). */
@@ -83,6 +86,21 @@ data class AgentSettings(
 data class IpCache(val ip: String?, val checkedAt: Long)
 
 /**
+ * The conflict payload behind a PENDING profile-network decision. Stored
+ * under [AppStateKeys.PENDING_NET_DECISION] while the full-screen warning
+ * stands, so process death / activity recreation can never bypass the
+ * decision: BrowserActivity reads it on cold start and re-launches
+ * NetworkWarningActivity until the user decides.
+ */
+@Serializable
+data class PendingNetDecision(
+    val profileId: String,
+    val ip: String,
+    val previousProfileName: String,
+    val lastSeenAt: Long
+)
+
+/**
  * Global settings + app state repository backed by the Room KV table so it
  * can be read from BOTH the main process and the ':browser' process.
  */
@@ -140,6 +158,29 @@ class AppStateRepository(private val dao: AppStateDao) {
 
     suspend fun setIpCache(cache: IpCache) {
         dao.put(AppStateEntity(AppStateKeys.IP_CACHE, json.encodeToString(IpCache.serializer(), cache)))
+    }
+
+    // ---------- Pending profile-network decision ----------
+
+    /** The pending warning payload, or null when no decision is pending. */
+    suspend fun pendingNetDecision(): PendingNetDecision? =
+        dao.get(AppStateKeys.PENDING_NET_DECISION)?.let {
+            runCatching { json.decodeFromString(PendingNetDecision.serializer(), it) }.getOrNull()
+        }
+
+    /** Arms the gate: persists the payload the warning activity needs. */
+    suspend fun setPendingNetDecision(decision: PendingNetDecision) {
+        dao.put(
+            AppStateEntity(
+                AppStateKeys.PENDING_NET_DECISION,
+                json.encodeToString(PendingNetDecision.serializer(), decision)
+            )
+        )
+    }
+
+    /** Releases the gate: the user decided (or the state was unreadable). */
+    suspend fun clearPendingNetDecision() {
+        dao.remove(AppStateKeys.PENDING_NET_DECISION)
     }
 
     suspend fun externalUrl(): String? = dao.get(AppStateKeys.EXTERNAL_URL)

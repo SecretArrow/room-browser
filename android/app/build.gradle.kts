@@ -190,6 +190,8 @@ dependencies {
     testImplementation(libs.truth)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
+    // JVM tests of the data layer fake Room DAOs with mockk (no device needed).
+    testImplementation(libs.mockk)
 
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.junit)

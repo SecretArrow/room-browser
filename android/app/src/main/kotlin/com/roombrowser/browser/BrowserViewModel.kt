@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.net.Uri
 import android.net.http.SslError
+import android.os.Bundle
 import android.os.SystemClock
 import android.view.View
 import android.webkit.CookieManager
@@ -28,7 +29,10 @@ import com.roombrowser.data.db.HistoryEntity
 import com.roombrowser.data.db.SiteSettingEntity
 import com.roombrowser.data.db.TabEntity
 import com.roombrowser.data.repo.BrowserRepository
+import com.roombrowser.data.repo.PendingNetDecision
 import com.roombrowser.data.repo.PermissionKind
+import com.roombrowser.domain.credentials.CredentialDomainMatcher
+import com.roombrowser.domain.credentials.SavedCredential
 import com.roombrowser.domain.engine.FilterEngine
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.model.BrowserGlobalSettings
@@ -42,6 +46,7 @@ import com.roombrowser.domain.theme.RoomThemeSpec
 import com.roombrowser.domain.theme.ThemeJson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -161,9 +166,33 @@ class BrowserViewModel(
      *  can never be overridden by the restore picking the first tab. */
     private val restored = MutableStateFlow(false)
 
+    /**
+     * True while a profile-network warning decision is PENDING: no URL may
+     * load. Armed from a fresh [NetworkIdentity.checkOnOpen] conflict or
+     * from the persisted pending decision (process death can never bypass
+     * it); released only by an explicit user decision in
+     * NetworkWarningActivity.
+     */
+    private val networkGate = MutableStateFlow(false)
+
+    /** Gate as observable state (BrowserActivity re-launches the warning
+     *  activity while it stands — system Back can never dismiss it). */
+    val networkGateState: StateFlow<Boolean> = networkGate
+
+    /** Persisted conflict payload behind the pending decision — feeds the
+     *  NetworkWarningActivity intent extras. */
+    var pendingNetWarning: PendingNetDecision? = null
+        private set
+
+    /** One-shot counter: >0 asks BrowserScreen to (re)open the profile
+     *  quick switcher ("Switch Profile" decision on the network warning). */
+    val quickSwitcherSignal = MutableStateFlow(0)
+
     /** The live WebView of the ACTIVE tab — each tab owns its own engine
-     *  (kept alive in its TabManager session while in the background). */
-    var activeWebView: WebView? = null
+     *  (kept alive in its TabManager session while in the background).
+     *  Compose state, so WebViewHost swaps the attached engine the moment
+     *  this changes (never into a stale parent, never a missed reattach). */
+    var activeWebView: WebView? by mutableStateOf<WebView?>(null)
         private set
 
     /** Latest page-load event (see [PageEvent]) — for the agent's nav waiting. */
@@ -236,6 +265,11 @@ class BrowserViewModel(
             lastPageEvent = PageEvent.Started(url, SystemClock.elapsedRealtime())
             pageError = null
             pageState = pageState.copy(url = url, loading = true, progress = 5, isHomepage = false)
+            // A navigation retires the vault offer: the login field it was
+            // collected for belonged to the outgoing document. The save
+            // prompt deliberately SURVIVES navigation — a form submit is
+            // itself a navigation, and the user must still be able to save.
+            invalidateVaultOfferOnNavigation()
         }
         override fun onPageFinished(url: String, title: String) {
             lastPageEvent = PageEvent.Finished(url, title, SystemClock.elapsedRealtime())
@@ -341,6 +375,19 @@ class BrowserViewModel(
 
     private suspend fun initialize() {
         try {
+            // A pending network decision survives process death: arm the gate
+            // BEFORE anything — the tab restore included — can load a URL.
+            val pendingDecision = appState.pendingNetDecision()
+            if (pendingDecision != null) {
+                if (pendingDecision.profileId == profileId.value) {
+                    pendingNetWarning = pendingDecision
+                    networkGate.value = true
+                } else {
+                    // Stale flag from another profile's context (a switch
+                    // raced the decision) — this profile is not gated by it.
+                    appState.clearPendingNetDecision()
+                }
+            }
             profile = graph.profileRepo.getProfile(profileId) ?: profile
             themeSpec = BuiltInThemes.resolveOrDefault(profile.themeJson)
             webViewClient = RoomWebViewClient(profile, graph.filterEngine, clientCallbacks)
@@ -369,9 +416,13 @@ class BrowserViewModel(
             val open = browserRepo.openTabs(profileId)
             tabManager.restore(open)
             tabs = open
-            activeTabId = open.firstOrNull()?.id
-            if (activeTabId != null) {
-                selectTab(activeTabId!!)
+            // The ACTIVE tab is persisted per profile via last_viewed_at
+            // (touched on every selectTab): restore the most-recently-viewed
+            // open tab, falling back to the first one in display order.
+            val resumeTab = open.maxByOrNull { it.lastViewedAt } ?: open.firstOrNull()
+            activeTabId = resumeTab?.id
+            if (resumeTab != null) {
+                selectTab(resumeTab.id)
             }
             if (open.isEmpty()) {
                 openNewTab("about:home", isPrivate = false)
@@ -427,7 +478,12 @@ class BrowserViewModel(
             appState.globalSettings.collect { globalSettings = it }
         }
         viewModelScope.launch {
-            networkIdentity.netState.collect { netState = it }
+            networkIdentity.netState.collect { state ->
+                netState = state
+                if (state is NetworkIdentity.NetState.Conflict) {
+                    armNetworkWarning(state)
+                }
+            }
         }
         viewModelScope.launch {
             dnsMonitor.state.collect { dnsState = it }
@@ -443,21 +499,33 @@ class BrowserViewModel(
     }
 
     fun loadUrl(url: String, newTab: Boolean = false, isPrivate: Boolean = false) {
-        if (url == "about:home") {
+        if (url == "about:home" && !newTab) {
+            // SAME-tab return to the start page. newTab=true must NEVER take
+            // this branch: it used to reset the CURRENT tab's page state
+            // instead of opening a tab — the "New Tab overwrote my tab" bug.
             pageState = PageState(isPrivate = isPrivate)
             return
         }
         viewModelScope.launch {
-            // Serialize against the persisted-tab restore: an incoming
+            // Serialize against the persisted-tab restore (an incoming
             // initial/QR/share URL must land AFTER the restore chose the
-            // active tab, never before (the restore would override it).
+            // active tab, never before) and against a pending network
+            // decision: while the warning stands, the suspended coroutine
+            // IS the queue — it resumes and loads the moment the user
+            // decides (see resolveNetworkWarning).
             restored.first { it }
-            if (newTab || activeTabId == null) {
+            networkGate.first { !it }
+            val targetId = activeTabId
+            if (newTab || targetId == null) {
                 openNewTab(url, isPrivate)
             } else {
-                val webView = activeWebView ?: createWebView().also {
-                    activeWebView = it
-                    tabManager.attachWebView(activeTabId!!, it)
+                val webView = activeWebView ?: createWebView().also { engine ->
+                    activeWebView = engine
+                    // The engine belongs to THIS tab: its session must exist
+                    // before attaching, or the engine goes untracked (leak +
+                    // state loss on reselect).
+                    tabs.firstOrNull { it.id == targetId }?.let { tabManager.ensureSession(it) }
+                    tabManager.attachWebView(targetId, engine)
                 }
                 webView.loadUrl(url)
             }
@@ -521,10 +589,16 @@ class BrowserViewModel(
         if (url != "about:home") {
             // PER-TAB WebView: every tab gets its OWN engine instance so
             // web history stays tab-scoped (no cross-tab back-stepping) and
-            // switching tabs never reloads a still-live page.
+            // switching tabs never reloads a still-live page. The session is
+            // created BEFORE the attach — an untracked engine was why young
+            // tabs reloaded (and leaked) instead of switching cleanly.
             val webView = createWebView()
             activeWebView = webView
+            tabManager.ensureSession(entity)
             tabManager.attachWebView(entity.id, webView)
+            // Nothing may load while a network decision is pending; the
+            // load fires the moment the user decides.
+            networkGate.first { !it }
             webView.loadUrl(url)
         } else {
             // The previous tab keeps its engine alive in its OWN session;
@@ -546,41 +620,80 @@ class BrowserViewModel(
             loading = false,
             desktopMode = false
         )
-        // Reuse the tab's OWN WebView when it is still alive (instant,
-        // state-preserving switch); lazily create one only for tabs that
-        // never had — or were LRU-evicted from — a live engine.
-        val existing = tabManager.get(id)?.webView
+        // Every selected tab has a session — the engine's lifetime owner.
+        tabManager.ensureSession(tab)
         if (tab.url == "about:home") {
             // Homepage tabs keep no live engine: pageState above already
             // shows the start page; drop any stale engine the session may
             // still hold so switching back never resurrects a dead page.
-            existing?.let { destroyWebViewQuiet(it) }
+            tabManager.get(id)?.webView?.let { destroyWebViewQuiet(it) }
             activeWebView = null
             pageState = pageState.copy(canGoBack = false, canGoForward = false)
         } else {
-            val webView = existing ?: createWebView().also { tabManager.attachWebView(id, it) }
-            activeWebView = webView
-            if (existing == null) webView.loadUrl(tab.url)
-            // History state belongs to the newly-selected tab's engine.
-            pageState = pageState.copy(canGoBack = webView.canGoBack(), canGoForward = webView.canGoForward())
+            // Reuse the tab's OWN WebView when it is still alive (instant,
+            // state-preserving switch); lazily create one only for tabs that
+            // never had — or were LRU-evicted from — a live engine, restoring
+            // the saved back/forward bundle when present (entity-URL reload
+            // as the fallback). While a network decision is pending, no
+            // engine is created at all: nothing may load.
+            val webView = engineFor(tab)
+            if (webView != null) {
+                activeWebView = webView
+                // History state belongs to the selected tab's engine.
+                pageState = pageState.copy(canGoBack = webView.canGoBack(), canGoForward = webView.canGoForward())
+            } else {
+                activeWebView = null
+                pageState = pageState.copy(canGoBack = false, canGoForward = false)
+            }
         }
+        // Persist the ACTIVE tab per profile: initialize() restores the
+        // open tab with the max last_viewed_at (fallback: first).
+        viewModelScope.launch { browserRepo.touchTab(id, System.currentTimeMillis()) }
         applyCurrentSiteSettings()
         evictStaleWebViews(id)
     }
 
+    /**
+     * The tab's own live engine when it has one; otherwise a FRESH engine
+     * created now — restored from the session's saved back/forward bundle
+     * when present (LRU eviction / close), falling back to a reload of the
+     * entity URL. Returns null while a network decision is pending.
+     */
+    private fun engineFor(tab: TabEntity): WebView? {
+        val live = tabManager.get(tab.id)?.webView
+        if (live != null) return live
+        if (networkGate.value) return null
+        val webView = createWebView()
+        tabManager.ensureSession(tab)
+        tabManager.attachWebView(tab.id, webView)
+        val saved = tabManager.engineState(tab.id)
+        var restored = false
+        if (saved != null) {
+            runCatching { webView.restoreState(saved) }
+            restored = webView.copyBackForwardList().size > 0
+        }
+        if (!restored) webView.loadUrl(tab.url)
+        return webView
+    }
+
     fun closeTab(id: String) {
         viewModelScope.launch {
-            // Destroy THIS tab's engine before dropping the session — with
-            // per-tab WebViews the session map no longer shares one engine,
-            // so skipping the destroy would leak it.
-            tabManager.get(id)?.webView?.let { destroyWebViewQuiet(it) }
+            // Destroy THIS tab's engine before dropping the session — its
+            // back/forward state is captured first so reopening the tab
+            // restores the page (and its history) instead of a bare reload.
+            tabManager.get(id)?.webView?.let { webView ->
+                saveEngineStateBeforeDestroy(id, webView)
+                destroyWebViewQuiet(webView)
+            }
             tabManager.remove(id)
             browserRepo.closeTab(id)
             val remaining = browserRepo.openTabs(profileId)
             tabs = remaining
             if (activeTabId == id) {
                 activeWebView = null
-                val next = remaining.lastOrNull()
+                // Activate the most-recently-viewed remaining tab of THIS
+                // profile (last_viewed_at), not just the last in position.
+                val next = remaining.maxByOrNull { it.lastViewedAt }
                 activeTabId = next?.id
                 if (next != null) selectTab(next.id) else pageState = PageState()
             }
@@ -618,8 +731,12 @@ class BrowserViewModel(
                 }
             }.forEach { tab ->
                 // Per-tab engines: release each closed tab's engine + session,
-                // not just its database row.
-                tabManager.get(tab.id)?.webView?.let { destroyWebViewQuiet(it) }
+                // not just its database row — with the history bundle saved
+                // first (a reopened tab gets its page back).
+                tabManager.get(tab.id)?.webView?.let { webView ->
+                    saveEngineStateBeforeDestroy(tab.id, webView)
+                    destroyWebViewQuiet(webView)
+                }
                 tabManager.remove(tab.id)
                 browserRepo.closeTab(tab.id)
             }
@@ -657,6 +774,14 @@ class BrowserViewModel(
         val webView = ProfileEngine.createWebView(getApplication(), profile)
         webView.webViewClient = webViewClient
         webView.webChromeClient = webChromeClient
+        // Password-manager page bridge: page JS sees window.RoomVault (the
+        // document-start detection script comes from ProfileEngine.configure).
+        // Every call is host-validated against THIS WebView's URL inside
+        // RoomVaultBridge before it reaches [vaultCallbacks].
+        webView.addJavascriptInterface(
+            RoomVaultBridge(webView, vaultCallbacks),
+            RoomVaultBridge.JS_INTERFACE_NAME
+        )
         webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
             val name = com.roombrowser.browser.engine.DownloadEngine.guessFileName(url, contentDisposition, mimeType)
             // The WebView's own UA, not a fresh one: the download must present
@@ -687,16 +812,32 @@ class BrowserViewModel(
     /**
      * Live-engine budget: at most [MAX_LIVE_WEBVIEWS] engines stay alive at
      * once (each holds renderer memory). Oldest BACKGROUND tabs are evicted
-     * first; their sessions keep entity + thumbnail and rebuild the engine
-     * (with a reload) when re-selected — graceful degradation, never a leak.
+     * first; their back/forward state is captured into the session BEFORE
+     * the destroy, so re-selecting the tab restores its page and history
+     * (entity-URL reload only when no bundle exists) — graceful
+     * degradation, never a leak, never a lost page.
      */
     private fun evictStaleWebViews(keepId: String) {
         val live = tabManager.liveWebViewSessions()
         if (live.size <= MAX_LIVE_WEBVIEWS) return
         val excess = live.size - MAX_LIVE_WEBVIEWS
         tabManager.lruVictims(keepId).take(excess).forEach { victim ->
-            victim.webView?.let { destroyWebViewQuiet(it) }
+            victim.webView?.let { webView ->
+                saveEngineStateBeforeDestroy(victim.id, webView)
+                destroyWebViewQuiet(webView)
+            }
         }
+    }
+
+    /**
+     * Captures the engine's back/forward state (history stack, scroll and
+     * form data as far as WebView allows) under the OWNING tab's id — a
+     * bundle can never be restored into a different tab.
+     */
+    private fun saveEngineStateBeforeDestroy(id: String, webView: WebView) {
+        val bundle = Bundle()
+        runCatching { webView.saveState(bundle) }
+        if (!bundle.isEmpty) tabManager.saveEngineState(id, bundle)
     }
 
     /** Destroys EVERY live engine (profile switch / final teardown). */
@@ -1103,18 +1244,330 @@ class BrowserViewModel(
         if (url.isNotBlank()) loadUrl(url)
     }
 
-    // ---------- Network identity ----------
+    // ---------- Network identity / warning gate ----------
 
-    fun suppressIpWarning() {
-        viewModelScope.launch { networkIdentity.suppressCurrentIp() }
+    /**
+     * Arms the network-decision gate: the conflict payload is PERSISTED so
+     * process death or activity recreation can never bypass the decision —
+     * BrowserActivity re-launches NetworkWarningActivity while it stands.
+     */
+    private suspend fun armNetworkWarning(conflict: NetworkIdentity.NetState.Conflict) {
+        if (networkGate.value) return
+        val payload = PendingNetDecision(
+            profileId = profileId.value,
+            ip = conflict.currentIp,
+            previousProfileName = conflict.previousProfileName,
+            lastSeenAt = conflict.lastSeenAt
+        )
+        appState.setPendingNetDecision(payload)
+        pendingNetWarning = payload
+        networkGate.value = true
     }
 
-    fun dismissIpWarning() { networkIdentity.dismissWarning() }
+    /**
+     * Applies the user's decision from NetworkWarningActivity: clears the
+     * persisted pending state and the gate, then rebuilds the active tab's
+     * engine (restoring its saved state). Loads that queued while the gate
+     * stood resume on their own — they were suspended on [networkGate].
+     */
+    fun resolveNetworkWarning(decision: NetworkWarningDecision) {
+        viewModelScope.launch {
+            when (decision) {
+                // Persisted suppression: this IP never warns again
+                // (IpConflictDetector honors suppressed IPs).
+                NetworkWarningDecision.SUPPRESS -> networkIdentity.suppressCurrentIp()
+                // Session-level acknowledgement (same semantics the old
+                // dialog's Continue had).
+                else -> networkIdentity.dismissWarning()
+            }
+            appState.clearPendingNetDecision()
+            pendingNetWarning = null
+            networkGate.value = false
+            // Engines withheld while the gate stood are created now. A
+            // queued navigation may already have created one (it resumed
+            // the instant the gate flipped) — selectTab then early-returns.
+            activeTabId?.let { selectTab(it) }
+            if (decision == NetworkWarningDecision.SWITCH) {
+                quickSwitcherSignal.value += 1
+            }
+        }
+    }
 
+    /**
+     * Fallback for a pending flag whose payload can no longer be decoded:
+     * the decision cannot be presented, and holding the gate would brick
+     * the profile — clear the stale state instead (the normal path always
+     * has a payload; this is the documented corruption valve).
+     */
+    fun discardUnreadableNetworkWarning() {
+        viewModelScope.launch {
+            appState.clearPendingNetDecision()
+            pendingNetWarning = null
+            networkGate.value = false
+            emitMessage("Network warning state was unreadable and has been reset")
+        }
+    }
+
+    /** UI message from outside the ViewModel's own flows (sheets, dialogs). */
+    fun postMessage(message: String) {
+        viewModelScope.launch { snackbar.emit(message) }
+    }
+
+    /** Re-check after a network change / from settings (spec 74.6). A fresh
+     *  conflict re-arms the gate and re-launches the warning activity. */
     fun recheckNetwork() {
         viewModelScope.launch {
             val profiles = graph.profileRepo.profiles()
             networkIdentity.recheck(httpClient, profile, globalSettings, profiles)
+        }
+    }
+
+    // ---------- Quick switcher: create profile ----------
+
+    /** Accent colors cycled through by the quick-create dialog. */
+    private val quickCreateColors = longArrayOf(
+        0xFF6750A4L, 0xFF2196F3L, 0xFF00897BL, 0xFF43A047L,
+        0xFFF4511EL, 0xFFD81B60L, 0xFF5C6BC0L
+    )
+
+    /** Default suggestion for the quick-create dialog: first free "Profile N". */
+    fun suggestedProfileName(): String {
+        val taken = allProfiles.map { it.name.lowercase() }.toSet()
+        var n = allProfiles.size + 1
+        while ("profile $n" in taken) n++
+        return "Profile $n"
+    }
+
+    /**
+     * Creates a profile from the quick switcher. AppGraph works in the
+     * ':browser' process (Room multi-instance invalidation), so the row is
+     * visible everywhere immediately. Throws on invalid/duplicate names —
+     * the caller owns the failure UX (snackbar + stay).
+     */
+    suspend fun createProfileFromSwitcher(name: String): Profile {
+        val color = quickCreateColors[allProfiles.size % quickCreateColors.size]
+        val created = graph.profileManager.create(
+            name = name,
+            icon = "\uD83D\uDC64",
+            colorArgb = color
+        )
+        allProfiles = graph.profileRepo.profiles()
+        return created
+    }
+
+    // ---------- Password vault: login autofill + save prompt ----------
+
+    /**
+     * Offer-sheet payload: the logins matching the login form the user just
+     * focused. Holds decrypted [SavedCredential]s (the sheet itself only ever
+     * RENDERS username/title/domain — passwords are passed straight to the
+     * page fill and nowhere else).
+     */
+    data class VaultOffer(
+        val host: String,
+        val credentials: List<SavedCredential>
+    )
+
+    /**
+     * Save-prompt payload. The reported password exists ONLY in this state
+     * (plus the sheet argument) until the user taps Save — never in a log, a
+     * cache or any other field — and disappears with the prompt.
+     */
+    data class VaultSavePrompt(
+        val host: String,
+        val username: String,
+        val password: String
+    )
+
+    /** Offer sheet state (rendered by BrowserScreen → VaultOfferSheet). */
+    var vaultOffer by mutableStateOf<VaultOffer?>(null)
+        private set
+
+    /** Save-prompt sheet state (rendered by BrowserScreen → VaultSaveSheet). */
+    var vaultSavePrompt by mutableStateOf<VaultSavePrompt?>(null)
+        private set
+
+    /**
+     * Hosts whose offer the user dismissed for the CURRENT page — a
+     * re-focused login field must not re-summon a sheet the user just closed.
+     * Cleared on every navigation (a fresh page is a fresh question).
+     */
+    private val dismissedOfferHosts = mutableSetOf<String>()
+
+    /** Wired into every engine in [createWebView] (via RoomVaultBridge). */
+    private val vaultCallbacks = object : RoomVaultBridge.Callbacks {
+        override fun onCredentialsRequested(webView: WebView, host: String, href: String) {
+            handleVaultRequest(webView, host)
+        }
+
+        override fun onCredentialReported(
+            webView: WebView,
+            host: String,
+            username: String,
+            password: String
+        ) {
+            handleVaultReport(webView, host, username, password)
+        }
+    }
+
+    /**
+     * The user focused a password field on [webView]. Offers appear ONLY for
+     * an already-unlocked session: a locked vault answers with silence —
+     * focusing a login field must NEVER trigger a biometric prompt. Only the
+     * ACTIVE tab's engine may surface UI (a background tab's page cannot).
+     */
+    private fun handleVaultRequest(webView: WebView, host: String) {
+        if (webView !== activeWebView) return
+        if (!graph.credentialRepo.isUnlocked.value) return
+        if (vaultOffer != null) return
+        if (host in dismissedOfferHosts) return
+        viewModelScope.launch {
+            val matches = runCatching {
+                graph.credentialRepo.findForDomain(profileId, host)
+            }.getOrNull() ?: return@launch
+            // The active tab may have changed while the lookup ran.
+            if (webView !== activeWebView || matches.isEmpty()) return@launch
+            vaultOffer = VaultOffer(host, matches)
+        }
+    }
+
+    /**
+     * A login form submitted on the active page. POLICY: the save prompt is
+     * allowed to appear while the vault is LOCKED (first-run users have
+     * nothing saved yet — the prompt is the discovery path) and the
+     * biometric gate runs only when the user actually taps Save. Private
+     * tabs persist nothing, so they never prompt. Duplicate suppression
+     * (same profile+domain+username AND same password) needs decrypted rows
+     * and therefore only runs while unlocked; locked reports skip the
+     * comparison and prompt (the check is re-run at Save time).
+     */
+    private fun handleVaultReport(
+        webView: WebView,
+        host: String,
+        username: String,
+        password: String
+    ) {
+        if (webView !== activeWebView) return
+        if (password.isEmpty()) return
+        if (pageState.isPrivate) return
+        viewModelScope.launch {
+            if (graph.credentialRepo.isUnlocked.value) {
+                val duplicate = runCatching {
+                    graph.credentialRepo.findForDomain(profileId, host)
+                }.getOrNull()?.any { it.username == username && it.password == password } == true
+                if (duplicate) return@launch
+            }
+            if (webView !== activeWebView) return@launch
+            vaultSavePrompt = VaultSavePrompt(host, username, password)
+        }
+    }
+
+    /** Offer sheet dismissed (outside tap / Back): same page stays quiet. */
+    fun dismissVaultOffer() {
+        vaultOffer?.let { dismissedOfferHosts.add(it.host) }
+        vaultOffer = null
+    }
+
+    /** "Not now" on the save prompt: forget the reported login entirely. */
+    fun dismissVaultSavePrompt() {
+        vaultSavePrompt = null
+    }
+
+    /** Navigation hook (onPageStarted): retires the offer + its suppressions. */
+    private fun invalidateVaultOfferOnNavigation() {
+        vaultOffer = null
+        dismissedOfferHosts.clear()
+    }
+
+    /**
+     * Fills the picked login into the page that requested it. SECURITY: the
+     * active engine's CURRENT url is re-validated against the offer's host
+     * right before the values are handed to JS — credentials only ever enter
+     * the page that asked for them (the bridge validated the same host family
+     * when the request arrived; this closes the focus→pick window against a
+     * navigation or tab switch in between). The payload is JSON-quoted —
+     * values are never naively interpolated into a JS string.
+     */
+    fun fillVaultCredential(credential: SavedCredential) {
+        val offer = vaultOffer ?: return
+        val webView = activeWebView
+        val currentHost = webView?.url?.let { UrlIntelligence.hostOf(it) }
+        vaultOffer = null
+        if (webView == null || currentHost == null) return
+        if (!CredentialDomainMatcher.matches(offer.host, currentHost)) return
+        val payload = JSONObject()
+            .put("u", credential.username)
+            .put("p", credential.password)
+            .toString()
+        webView.evaluateJavascript(
+            "window.__roomVaultFill && window.__roomVaultFill(${jsStringLiteral(payload)})",
+            null
+        )
+    }
+
+    /** [value] as a double-quoted JS string literal (JSON quoting rules). */
+    private fun jsStringLiteral(value: String): String =
+        JSONObject.quote(value)
+            .replace("\u2028", "\\u2028")
+            .replace("\u2029", "\\u2029")
+
+    /**
+     * "Save" on the save-prompt sheet.
+     *
+     * [gateProvider] runs the biometric / device-credential gate and must
+     * invoke exactly one callback — the gate is UI-owned because the
+     * ViewModel has no Activity (BrowserScreen lends it its own). On gate
+     * success this process's vault is unlocked for the session (repo
+     * contract: the gate must have genuinely passed before unlock()) and the
+     * login is stored; on failure the user sees "Vault locked — not saved"
+     * and nothing is written. The duplicate check is re-run here because the
+     * prompt-time check was skipped while locked.
+     */
+    fun savePromptedLogin(
+        gateProvider: (onSuccess: () -> Unit, onFailure: () -> Unit) -> Unit
+    ) {
+        val prompt = vaultSavePrompt ?: return
+        // The sheet is gone the moment Save is tapped — a cancelled biometric
+        // prompt must not resurrect it.
+        vaultSavePrompt = null
+        val commit: () -> Unit = {
+            if (!graph.credentialRepo.isUnlocked.value) {
+                graph.credentialRepo.unlock()
+            }
+            viewModelScope.launch {
+                val duplicate = runCatching {
+                    graph.credentialRepo.findForDomain(profileId, prompt.host)
+                }.getOrNull()?.any {
+                    it.username == prompt.username && it.password == prompt.password
+                } == true
+                if (duplicate) {
+                    emitMessage("Login already saved")
+                    return@launch
+                }
+                runCatching {
+                    graph.credentialRepo.save(
+                        profileId = profileId,
+                        domain = prompt.host,
+                        username = prompt.username,
+                        password = prompt.password,
+                        title = null
+                    )
+                }.onSuccess {
+                    emitMessage("Login saved for ${prompt.host}")
+                }.onFailure {
+                    emitMessage("Vault locked — not saved")
+                }
+            }
+        }
+        if (graph.credentialRepo.isUnlocked.value) {
+            commit()
+        } else {
+            // Positional call: a function-type value cannot take named
+            // arguments (K2 prohibits them for function types).
+            gateProvider(
+                commit,
+                { emitMessage("Vault locked — not saved") }
+            )
         }
     }
 

@@ -214,7 +214,7 @@ private fun QrCloseOverlay(onClose: () -> Unit) {
         Box(
             Modifier
                 .align(Alignment.TopEnd)
-                .size(44.dp)
+                .size(48.dp)
                 .clip(CircleShape)
                 .background(Color(0x66000000))
                 .clickable(onClick = onClose)

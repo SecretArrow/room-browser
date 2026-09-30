@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
+import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -59,6 +60,35 @@ interface TabDao {
 
     @Update
     suspend fun update(tab: TabEntity)
+
+    /** Marks a tab as the profile's most-recently-viewed one (persisted
+     *  active-tab restore + close-tab neighbour selection read this). */
+    @Query("UPDATE tabs SET last_viewed_at = :ts WHERE id = :id")
+    suspend fun touch(id: String, ts: Long)
+
+    /**
+     * Monotonic, collision-free new-tab insert: the position is
+     * `MAX(position) + 1` over ALL of the profile's rows (closed ones
+     * included), computed inside the SAME statement that inserts —
+     * SQLite evaluates the scalar subquery before the row lands, so two
+     * concurrent newTab calls can never draw the same position, and a
+     * closed tab reopened later can never collide with a newer tab.
+     */
+    @Query(
+        "INSERT INTO tabs (id, profile_id, position, title, url, is_private, is_pinned, group_name, " +
+            "created_at, last_viewed_at, closed_at) VALUES " +
+            "(:id, :profileId, (SELECT IFNULL(MAX(position), -1) + 1 FROM tabs WHERE profile_id = :profileId), " +
+            ":title, :url, :isPrivate, 0, NULL, :createdAt, :lastViewedAt, NULL)"
+    )
+    suspend fun insertNextPosition(
+        id: String,
+        profileId: String,
+        title: String,
+        url: String,
+        isPrivate: Boolean,
+        createdAt: Long,
+        lastViewedAt: Long
+    )
 
     @Query("UPDATE tabs SET closed_at = :ts WHERE id = :id")
     suspend fun close(id: String, ts: Long)
@@ -407,4 +437,51 @@ interface AgentDao {
 
     @Query("DELETE FROM agent_messages")
     suspend fun deleteAllMessages()
+}
+
+// =========================================================================
+// PASSWORD MANAGER (per-profile credential vault)
+// =========================================================================
+
+@Dao
+interface CredentialDao {
+    /** Insert-or-replace by id (save new + edit existing). */
+    @Upsert
+    suspend fun upsert(entity: CredentialEntity)
+
+    @Query(
+        "SELECT * FROM credentials WHERE profile_id = :profileId " +
+            "ORDER BY domain COLLATE NOCASE ASC, username ASC"
+    )
+    fun observe(profileId: String): Flow<List<CredentialEntity>>
+
+    @Query("SELECT * FROM credentials WHERE id = :id")
+    suspend fun byId(id: String): CredentialEntity?
+
+    /**
+     * Substring search over domain / username / title, mirroring
+     * HistoryDao.search's LIKE style. The caller passes the raw needle —
+     * the wildcards live in the SQL so the parameter never needs escaping.
+     */
+    @Query(
+        "SELECT * FROM credentials WHERE profile_id = :profileId AND " +
+            "(domain LIKE '%' || :q || '%' OR username LIKE '%' || :q || '%' " +
+            "OR title LIKE '%' || :q || '%') " +
+            "ORDER BY domain COLLATE NOCASE ASC, username ASC"
+    )
+    suspend fun search(profileId: String, q: String): List<CredentialEntity>
+
+    @Query("DELETE FROM credentials WHERE id = :id")
+    suspend fun delete(id: String)
+
+    /** Profile-deletion cascade. */
+    @Query("DELETE FROM credentials WHERE profile_id = :profileId")
+    suspend fun deleteAllForProfile(profileId: String)
+
+    /** Full scan of one profile's rows — feeds domain matching + export. */
+    @Query("SELECT * FROM credentials WHERE profile_id = :profileId")
+    suspend fun allForProfile(profileId: String): List<CredentialEntity>
+
+    @Query("SELECT COUNT(*) FROM credentials WHERE profile_id = :profileId")
+    suspend fun countForProfile(profileId: String): Int
 }

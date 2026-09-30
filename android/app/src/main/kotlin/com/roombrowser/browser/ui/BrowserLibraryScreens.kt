@@ -76,6 +76,7 @@ import com.roombrowser.data.repo.DownloadStatus
 import com.roombrowser.domain.download.DownloadFormat
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.LocalRoomExtras
+import com.roombrowser.ui.common.RoomBottomSheetShape
 import com.roombrowser.ui.common.RoomCard
 import com.roombrowser.ui.common.SectionHeader
 import com.roombrowser.ui.common.StatTile
@@ -163,8 +164,11 @@ fun TabGridScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 IconButton(onClick = { viewModel.reopenClosedTab() }) {
                     Icon(Icons.Filled.Restore, contentDescription = "Reopen closed tab")
                 }
-                TextButton(onClick = { viewModel.startPrivateTab() }) { Text("Private") }
-                IconButton(onClick = { viewModel.loadUrl("about:home", newTab = true) }) {
+                TextButton(onClick = { viewModel.startPrivateTab(); onClose() }) { Text("Private") }
+                // New tab from the grid: create it AND return to the browser
+                // route so the new tab is visibly the active one (staying on
+                // the grid made the freshly created tab invisible).
+                IconButton(onClick = { viewModel.loadUrl("about:home", newTab = true); onClose() }) {
                     Icon(Icons.Filled.Add, contentDescription = "New tab")
                 }
             }
@@ -834,16 +838,16 @@ private fun DownloadDetailsSheet(
     val total = download.totalBytes
     val percent = DownloadFormat.percent(downloaded, total)
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
         Column(
             Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(start = 20.dp, end = 20.dp, bottom = 28.dp)
+                .padding(horizontal = 16.dp)
         ) {
             Text(
                 download.fileName,
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleLarge,
                 color = extras.textPrimary
             )
             Spacer(Modifier.height(4.dp))
@@ -924,6 +928,7 @@ private fun DownloadDetailsSheet(
                 OutlinedButton(onClick = onCopyLink) { Text("Copy link") }
                 TextButton(onClick = onDelete) { Text("Delete") }
             }
+            Spacer(Modifier.height(24.dp))
         }
     }
 }

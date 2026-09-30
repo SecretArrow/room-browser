@@ -112,6 +112,7 @@ import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.ui.common.LocalRoomExtras
+import com.roombrowser.ui.common.RoomBottomSheetShape
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -298,16 +299,16 @@ private fun AgentPanelHeader(
                     .padding(vertical = 8.dp)
             )
         }
-        IconButton(onClick = onNewSession, modifier = Modifier.size(40.dp)) {
+        IconButton(onClick = onNewSession) {
             Icon(Icons.Filled.Add, contentDescription = "New agent chat")
         }
-        IconButton(onClick = onOpenSessions, modifier = Modifier.size(40.dp)) {
+        IconButton(onClick = onOpenSessions) {
             Icon(Icons.Filled.History, contentDescription = "Agent chat history")
         }
-        IconButton(onClick = onOpenSettings, modifier = Modifier.size(40.dp)) {
+        IconButton(onClick = onOpenSettings) {
             Icon(Icons.Filled.Settings, contentDescription = "Agent settings")
         }
-        IconButton(onClick = onCollapse, modifier = Modifier.size(40.dp)) {
+        IconButton(onClick = onCollapse) {
             Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Minimize agent panel")
         }
     }
@@ -412,9 +413,7 @@ private fun CopyTextButton(
     Row(verticalAlignment = Alignment.CenterVertically) {
         IconButton(
             onClick = onCopy,
-            modifier = Modifier
-                .size(40.dp)
-                .semantics { contentDescription = desc }
+            modifier = Modifier.semantics { contentDescription = desc }
         ) {
             Icon(
                 if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
@@ -752,7 +751,7 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
                 FilledTonalIconButton(
                     onClick = { attachLauncher.launch(arrayOf("*/*")) },
                     modifier = Modifier
-                        .size(40.dp)
+                        .size(48.dp)
                         .semantics { contentDescription = "agent_attach_files" }
                 ) {
                     BadgedBox(
@@ -963,15 +962,14 @@ fun ModelPickerSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
         }
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
         Column(
             Modifier
-                .padding(16.dp)
+                .padding(horizontal = 16.dp)
                 // The sheet body must scroll: with several providers and long
                 // model lists (100+ chips) the manual-entry row would otherwise
                 // be unreachable below the fold.
                 .verticalScroll(rememberScrollState())
-                .padding(bottom = 24.dp)
         ) {
             Text("Select model", style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.height(4.dp))
@@ -1055,6 +1053,7 @@ fun ModelPickerSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
                     }
                 }
             }
+            Spacer(Modifier.height(24.dp))
         }
     }
 }

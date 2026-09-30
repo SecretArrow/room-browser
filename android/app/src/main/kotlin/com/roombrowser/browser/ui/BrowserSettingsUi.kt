@@ -1,7 +1,13 @@
 package com.roombrowser.browser.ui
 
+import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
@@ -17,15 +23,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Palette
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenuItem
@@ -50,6 +55,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -58,9 +64,10 @@ import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.domain.model.BrowserGlobalSettings
 import com.roombrowser.domain.model.ClaimedScreen
-import com.roombrowser.domain.model.Device
-import com.roombrowser.domain.model.Devices
 import com.roombrowser.domain.model.DnsMode
+import com.roombrowser.domain.model.DnsPreset
+import com.roombrowser.domain.model.DnsPresets
+import com.roombrowser.domain.model.LanguagePresets
 import com.roombrowser.domain.model.NetworkRetention
 import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.model.ScreenSizeMode
@@ -79,6 +86,7 @@ import com.roombrowser.ui.common.SectionHeader
 import com.roombrowser.ui.common.SettingActionRow
 import com.roombrowser.ui.common.SettingSwitchRow
 import com.roombrowser.ui.common.SettingsGroup
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -265,6 +273,21 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                     scope.launch { viewModel.updateGlobalSettings(global) }
                 }
             )
+            // Curated DoH resolvers: one tap sets DOH + the preset's URL; the
+            // reset row returns to the OS resolver. The highlight follows the
+            // stored URL, so a custom URL typed below simply un-highlights.
+            DnsPresetRows(
+                currentMode = global.dnsMode,
+                currentDohUrl = global.dohUrl,
+                onPreset = { preset ->
+                    global = global.copy(dnsMode = DnsMode.DOH, dohUrl = preset.dohUrl)
+                    scope.launch { viewModel.updateGlobalSettings(global) }
+                },
+                onReset = {
+                    global = global.copy(dnsMode = DnsMode.SYSTEM)
+                    scope.launch { viewModel.updateGlobalSettings(global) }
+                }
+            )
             if (global.dnsMode == DnsMode.DOH) {
                 DnsUrlField(
                     initial = global.dohUrl ?: "",
@@ -369,14 +392,22 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
         scope.launch { viewModel.updateSettings(new) }
     }
 
-    // Device identity. The catalogue is over a thousand entries, so the
-    // picker is a search field over a list rather than a dropdown, and it
-    // marks the devices other profiles are already presenting as.
+    // Device identity. The catalogue is over a thousand entries, so picking
+    // one is a full-screen activity of its own: a search field over the whole
+    // list, marks for the devices other profiles are already presenting as,
+    // and the current choice highlighted. It returns the picked device id and
+    // the SAME profile-manager path the old dialog used applies it (assigning
+    // a device also clears the UA preset/custom fields).
     val currentDevice = UserAgents.device(settings)
-    var showDevicePicker by remember { mutableStateOf(false) }
-    var inUse by remember { mutableStateOf(emptySet<String>()) }
-    LaunchedEffect(showDevicePicker, currentDevice) {
-        if (showDevicePicker) inUse = viewModel.devicesInUse()
+    val devicePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val picked = result.data?.getStringExtra(DevicePickerActivity.RESULT_DEVICE_ID)
+            if (picked != null) {
+                scope.launch { viewModel.setDevice(picked.ifBlank { null }) }
+            }
+        }
     }
 
     // This phone's own screen, in the CSS pixels a page reads. It is what the
@@ -485,7 +516,19 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 subtitle = "The handset this profile presents itself as. It supplies the " +
                     "User-Agent, platform version and hardware the profile reports.",
                 value = currentDevice?.let { "${it.brand} ${it.model}" } ?: "None",
-                onClick = { showDevicePicker = true }
+                onClick = {
+                    devicePicker.launch(
+                        Intent(context, DevicePickerActivity::class.java).apply {
+                            putExtra(
+                                DevicePickerActivity.EXTRA_PROFILE_ID,
+                                viewModel.profileId.value
+                            )
+                            currentDevice?.let { d ->
+                                putExtra(DevicePickerActivity.EXTRA_CURRENT_DEVICE_ID, d.id)
+                            }
+                        }
+                    )
+                }
             )
             SettingActionRow(
                 title = "Use a device no other profile is using",
@@ -510,16 +553,6 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                     "Android ${currentDevice.androidVersion} — Chrome ${currentDevice.chromeVersion} — " +
                     "${currentDevice.deviceMemoryGb} GB RAM, ${currentDevice.hardwareConcurrency} cores\n" +
                     "${currentDevice.userAgent}"
-            )
-        }
-        if (showDevicePicker) {
-            DevicePickerDialog(
-                inUse = inUse,
-                onDismiss = { showDevicePicker = false },
-                onPick = { device ->
-                    showDevicePicker = false
-                    scope.launch { viewModel.setDevice(device?.id) }
-                }
             )
         }
 
@@ -605,7 +638,7 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             if (settings.uaMode == UaMode.PRESET) {
                 DropdownRow(
                     label = "Preset",
-                    options = UserAgents.all.map { preset ->
+                    options = UserAgents.androidPresets.map { preset ->
                         preset.id to preset.label + if (preset.isDesktop) "  (desktop)" else ""
                     },
                     selected = settings.uaPresetId ?: "",
@@ -614,17 +647,38 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             }
             if (settings.uaMode == UaMode.CUSTOM) {
                 var custom by remember(settings.customUserAgent) { mutableStateOf(settings.customUserAgent ?: "") }
+                var attempted by remember { mutableStateOf(false) }
+                val candidate = custom.trim()
+                val valid = looksLikeUserAgent(candidate)
                 Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
                     OutlinedTextField(
                         value = custom,
-                        onValueChange = { custom = it },
+                        onValueChange = {
+                            custom = it
+                            attempted = false
+                        },
                         label = { Text("Custom User-Agent") },
                         singleLine = true,
+                        isError = !valid && (attempted || candidate.isNotEmpty()),
+                        supportingText = {
+                            if (!valid && (attempted || candidate.isNotEmpty())) {
+                                Text(
+                                    "A User-Agent starts with \"Mozilla/5.0\" and mentions AppleWebKit or Gecko"
+                                )
+                            }
+                        },
                         shape = RoundedCornerShape((extras.radius * 0.6f).dp),
                         modifier = Modifier.fillMaxWidth()
                     )
                     TextButton(
-                        onClick = { update(settings.withCustomUserAgent(custom.trim())) },
+                        onClick = {
+                            if (valid) {
+                                attempted = false
+                                update(settings.withCustomUserAgent(candidate))
+                            } else {
+                                attempted = true
+                            }
+                        },
                         modifier = Modifier.align(Alignment.End)
                     ) { Text("Apply") }
                 }
@@ -652,6 +706,16 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 onSelect = { value ->
                     update(settings.copy(dnsMode = DnsMode.entries.first { it.name == value }))
                 }
+            )
+            // Same curated presets as the global section; picking one pins
+            // THIS profile to DOH + the preset's URL.
+            DnsPresetRows(
+                currentMode = settings.dnsMode,
+                currentDohUrl = settings.dohUrl,
+                onPreset = { preset ->
+                    update(settings.copy(dnsMode = DnsMode.DOH, dohUrl = preset.dohUrl))
+                },
+                onReset = { update(settings.copy(dnsMode = DnsMode.SYSTEM)) }
             )
             if (settings.dnsMode == DnsMode.DOH) {
                 DnsUrlField(initial = settings.dohUrl ?: "", onCommit = { update(settings.copy(dohUrl = it)) })
@@ -687,21 +751,10 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
 
         SectionHeader("Language & Translate")
         SettingsGroup {
-            var target by remember(settings.translateTargetLanguage) { mutableStateOf(settings.translateTargetLanguage) }
-            Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
-                OutlinedTextField(
-                    value = target,
-                    onValueChange = { target = it },
-                    label = { Text("Translate target language (e.g. id)") },
-                    singleLine = true,
-                    shape = RoundedCornerShape((extras.radius * 0.6f).dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                TextButton(
-                    onClick = { update(settings.copy(translateTargetLanguage = target.trim())) },
-                    modifier = Modifier.align(Alignment.End)
-                ) { Text("Apply") }
-            }
+            LanguagePickerField(
+                current = settings.translateTargetLanguage,
+                onCommit = { code -> update(settings.copy(translateTargetLanguage = code)) }
+            )
         }
 
         SectionHeader("Autofill")
@@ -711,6 +764,22 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 subtitle = "Delegates credential storage to the Android system autofill framework — Room Browser never stores passwords itself",
                 checked = settings.autofillEnabled,
                 onCheckedChange = { update(settings.copy(autofillEnabled = it)) }
+            )
+            // Room Browser's OWN per-profile vault — a different feature from
+            // the system-autofill row above (that row stays untouched). The
+            // manager runs in the ':browser' process so its unlock is shared
+            // with the in-page login offers and save prompts.
+            SettingActionRow(
+                title = "Passwords",
+                subtitle = "Per-profile password vault",
+                leadingIcon = Icons.Filled.Key,
+                onClick = {
+                    PasswordsActivity.launch(
+                        context,
+                        profileId = viewModel.profileId.value,
+                        profileName = viewModel.profile.name
+                    )
+                }
             )
         }
 
@@ -888,99 +957,283 @@ private fun DropdownRow(
 }
 
 /**
- * Search-and-pick over the whole device catalogue. A profile per handset is
- * the point of the catalogue, so the ones other profiles already present as
- * are marked rather than hidden — the user can still choose one, they are
- * just told it is a repeat.
+ * Curated DoH resolvers + the one-tap way back to the OS resolver.
+ *
+ * Selecting a preset switches the mode to [DnsMode.DOH] and stores the
+ * preset's [DnsPreset.dohUrl] — the networking layer applies DoH URLs from
+ * the stored settings, so this UI only writes them. The highlight is
+ * derived from the stored URL, so a custom URL typed into the DoH field
+ * simply un-highlights the preset rows. "Reset to system DNS" stores
+ * [DnsMode.SYSTEM].
  */
 @Composable
-private fun DevicePickerDialog(
-    inUse: Set<String>,
-    onDismiss: () -> Unit,
-    onPick: (Device?) -> Unit
+private fun DnsPresetRows(
+    currentMode: DnsMode,
+    currentDohUrl: String?,
+    onPreset: (DnsPreset) -> Unit,
+    onReset: () -> Unit
+) {
+    DnsPresets.all.forEach { preset ->
+        PresetRow(
+            title = "${preset.label} (${preset.primaryIpv4})",
+            subtitle = "IPv4 ${preset.primaryIpv4} / ${preset.secondaryIpv4} · " +
+                "IPv6 ${preset.primaryIpv6} / ${preset.secondaryIpv6}",
+            selected = currentMode == DnsMode.DOH && currentDohUrl == preset.dohUrl,
+            onSelect = { onPreset(preset) }
+        )
+    }
+    PresetRow(
+        title = "Reset to system DNS",
+        subtitle = "Resolve DNS the way the OS does",
+        selected = currentMode == DnsMode.SYSTEM,
+        onSelect = onReset
+    )
+}
+
+/** Radio row with a supporting line — the preset picker's item. */
+@Composable
+private fun PresetRow(
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    onSelect: () -> Unit
 ) {
     val extras = LocalRoomExtras.current
-    var query by remember { mutableStateOf("") }
-    val results = remember(query) {
-        val needle = query.trim().lowercase()
-        if (needle.isEmpty()) {
-            Devices.all
-        } else {
-            Devices.all.filter {
-                it.brand.lowercase().contains(needle) ||
-                    it.model.lowercase().contains(needle) ||
-                    it.code.lowercase().contains(needle) ||
-                    it.year.toString() == needle
-            }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 2.dp)
+            .clip(RoundedCornerShape((extras.radius * 0.7f).dp))
+            .then(
+                if (selected) Modifier.background(extras.primary.copy(alpha = 0.08f))
+                else Modifier
+            )
+            .clickable(onClick = onSelect)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Single touch target: the whole row picks; the radio itself is
+        // display-only (onClick = null) so there is no nested clickable.
+        RadioButton(selected = selected, onClick = null)
+        Column(Modifier.padding(start = 8.dp)) {
+            Text(
+                title,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodyLarge,
+                color = extras.textPrimary
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = extras.textSecondary
+            )
         }
     }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Device (${results.size} of ${Devices.all.size})") },
-        text = {
-            Column {
+}
+
+/**
+ * Translate target language: the curated presets in a compact dropdown with a
+ * search field inside the menu, plus a custom BCP-47 escape hatch.
+ *
+ * Picking a preset saves immediately through [onCommit]. "Other / custom…"
+ * (or an already-custom stored code) reveals a free-text field; its Apply is
+ * refused — with an inline error — unless [LanguagePresets.isSupported]
+ * accepts the trimmed code, so nothing malformed is ever stored.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LanguagePickerField(
+    current: String,
+    onCommit: (String) -> Unit
+) {
+    val extras = LocalRoomExtras.current
+    var expanded by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var customOpen by remember { mutableStateOf(false) }
+    val currentPreset = LanguagePresets.byCode(current)
+    val showCustom = customOpen || (currentPreset == null && current.isNotBlank())
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            "Translate target",
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.bodyLarge,
+            color = extras.textPrimary,
+            modifier = Modifier.weight(1f)
+        )
+        Spacer(Modifier.width(12.dp))
+        ExposedDropdownMenuBox(
+            expanded = expanded,
+            onExpandedChange = { expanded = it },
+            modifier = Modifier.weight(1.5f)
+        ) {
+            OutlinedTextField(
+                value = currentPreset?.let { "${it.displayName} (${it.code})" } ?: current,
+                onValueChange = {},
+                readOnly = true,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = extras.textPrimary),
+                trailingIcon = {
+                    Icon(
+                        Icons.Filled.ArrowDropDown,
+                        contentDescription = "Translate target dropdown",
+                        tint = extras.icon
+                    )
+                },
+                shape = RoundedCornerShape((extras.radius * 0.6f).dp),
+                modifier = Modifier
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                    .fillMaxWidth()
+            )
+            // Bounded height: the menu never grows past a screenful; it
+            // scrolls through its own scrollState. (No LazyColumn in here —
+            // the menu's column measures with IntrinsicSize, which lazy
+            // layouts cannot answer.)
+            ExposedDropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+                modifier = Modifier.heightIn(max = 320.dp)
+            ) {
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
-                    label = { Text("Search brand, model, code or year") },
+                    label = { Text("Search language or code") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    shape = RoundedCornerShape((extras.radius * 0.6f).dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
                 )
-                Spacer(Modifier.height(8.dp))
-                LazyColumn(Modifier.heightIn(max = 360.dp)) {
-                    item {
-                        // "No device" is a real choice: the profile then sends
-                        // whatever the User-Agent setting below says.
-                        TextButton(onClick = { onPick(null) }) {
-                            Text("No device (use the User-Agent setting)")
-                        }
-                    }
-                    items(results, key = { it.id }) { device ->
-                        val taken = device.id in inUse
-                        Column(
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable { onPick(device) }
-                                .padding(horizontal = 4.dp, vertical = 8.dp)
-                        ) {
-                            Text(
-                                "${device.brand} ${device.model}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = extras.textPrimary
-                            )
-                            val marks = buildString {
-                                append(device.code)
-                                append(" · ")
-                                append(device.year)
-                                append(" · Android ")
-                                append(device.androidVersion)
-                                if (device.formFactor == "tablet") append(" · tablet")
-                                if (taken) append(" · used by another profile")
-                            }
-                            Text(
-                                marks,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (taken) extras.primary else extras.textSecondary
-                            )
+                val filtered = remember(query) {
+                    val needle = query.trim().lowercase()
+                    if (needle.isEmpty()) {
+                        LanguagePresets.all
+                    } else {
+                        LanguagePresets.all.filter {
+                            it.displayName.lowercase().contains(needle) ||
+                                it.code.lowercase().contains(needle)
                         }
                     }
                 }
+                filtered.forEach { preset ->
+                    val isCurrent = preset.code == currentPreset?.code
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(
+                                    preset.displayName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (isCurrent) extras.textPrimary else extras.textSecondary
+                                )
+                                Text(
+                                    preset.code,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = extras.textSecondary
+                                )
+                            }
+                        },
+                        onClick = {
+                            expanded = false
+                            customOpen = false
+                            onCommit(preset.code)
+                        }
+                    )
+                }
+                if (filtered.isEmpty()) {
+                    Text(
+                        "No language matches \"${query.trim()}\" — try Other / custom below",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = extras.textSecondary,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                    )
+                }
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            "Other / custom…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = extras.textPrimary
+                        )
+                    },
+                    onClick = {
+                        expanded = false
+                        customOpen = true
+                    }
+                )
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
-    )
+        }
+    }
+
+    if (showCustom) {
+        var custom by remember(current) { mutableStateOf(if (currentPreset == null) current else "") }
+        var attempted by remember { mutableStateOf(false) }
+        val candidate = custom.trim()
+        val valid = LanguagePresets.isSupported(candidate)
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+            OutlinedTextField(
+                value = custom,
+                onValueChange = {
+                    custom = it
+                    attempted = false
+                },
+                label = { Text("Custom language code (e.g. jv)") },
+                singleLine = true,
+                isError = !valid && (attempted || candidate.isNotEmpty()),
+                supportingText = {
+                    if (!valid && (attempted || candidate.isNotEmpty())) {
+                        Text(
+                            "Not a valid language code — pick a preset or type a BCP-47 style tag like \"jv\" or \"en-AU\""
+                        )
+                    }
+                },
+                shape = RoundedCornerShape((extras.radius * 0.6f).dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+            TextButton(
+                onClick = {
+                    if (valid) {
+                        attempted = false
+                        onCommit(candidate)
+                    } else {
+                        attempted = true
+                    }
+                },
+                modifier = Modifier.align(Alignment.End)
+            ) { Text("Apply") }
+        }
+    }
 }
+
+/**
+ * Gentle well-formedness rule for a hand-typed User-Agent: every real browser
+ * UA starts with "Mozilla/5.0" and mentions an engine (AppleWebKit or Gecko).
+ * Anything else is almost certainly a typo, and a typo saved as a UA breaks
+ * every request the profile makes.
+ */
+private fun looksLikeUserAgent(value: String): Boolean =
+    value.startsWith("Mozilla/5.0") &&
+        (value.contains("AppleWebKit") || value.contains("Gecko"))
 
 /**
  * The width/height pair for a manual screen size, plus the one-tap way back to
  * the truth.
  *
- * Input is digits only and four characters at most, and a commit clamps into
- * [ClaimedScreen]'s stored range, so a typed 9999 is stored as 4320 rather than
- * as a screen no device has — which the page would then be told, because the
- * shim only declines sizes that are outside the range in the *stored* setting.
- * The fields reset to whatever was stored, so what they show is always what the
- * profile is actually claiming.
+ * Saving is automatic: a valid pair (both fields parse to integers inside
+ * [ClaimedScreen]'s stored range) is written through the settings update path
+ * ~600 ms after the last keystroke, and a quiet "Saved" receipt fades in
+ * beside the quick action. An invalid entry — empty or out of range — is
+ * never written and never clamped: the error shows inline and the profile
+ * keeps the last valid size it had. The digits-only filter makes non-numeric
+ * input impossible and the 4-digit cap keeps the value parseable, so the only
+ * invalid states are empty and out-of-range. The fields reset to whatever was
+ * stored, so what they show is always what the profile is actually claiming.
  */
 @Composable
 private fun ScreenSizeFields(
@@ -990,13 +1243,44 @@ private fun ScreenSizeFields(
     onCommit: (Int, Int) -> Unit
 ) {
     val extras = LocalRoomExtras.current
-    var w by remember(width) { mutableStateOf(width.toString()) }
-    var h by remember(height) { mutableStateOf(height.toString()) }
-    fun commit() {
-        val nw = (w.toIntOrNull() ?: 0).coerceIn(ClaimedScreen.MIN_PX, ClaimedScreen.MAX_PX)
-        val nh = (h.toIntOrNull() ?: 0).coerceIn(ClaimedScreen.MIN_PX, ClaimedScreen.MAX_PX)
-        onCommit(nw, nh)
+    var w by remember(width) { mutableStateOf(if (width == 0) "" else width.toString()) }
+    var h by remember(height) { mutableStateOf(if (height == 0) "" else height.toString()) }
+
+    // "Saved" receipt: a counter, so every write restarts the fade-out timer.
+    var savedPulse by remember { mutableStateOf(0) }
+    var savedVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(savedPulse) {
+        if (savedPulse > 0) {
+            savedVisible = true
+            delay(1600)
+            savedVisible = false
+        }
     }
+    val savedAlpha by animateFloatAsState(
+        targetValue = if (savedVisible) 1f else 0f,
+        animationSpec = tween(durationMillis = 350),
+        label = "screenSizeSaved"
+    )
+
+    fun parseField(text: String): Int? {
+        val value = text.trim().toIntOrNull() ?: return null
+        return if (value in ClaimedScreen.MIN_PX..ClaimedScreen.MAX_PX) value else null
+    }
+    val parsedW = parseField(w)
+    val parsedH = parseField(h)
+
+    // Auto-save: the effect restarts on every keystroke, which cancels the
+    // previous timer; only a pair that is both valid and different from what
+    // is already stored gets written.
+    LaunchedEffect(w, h) {
+        val nw = parsedW ?: return@LaunchedEffect
+        val nh = parsedH ?: return@LaunchedEffect
+        if (nw == width && nh == height) return@LaunchedEffect
+        delay(600)
+        onCommit(nw, nh)
+        savedPulse++
+    }
+
     Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
@@ -1004,6 +1288,12 @@ private fun ScreenSizeFields(
                 onValueChange = { w = it.filter(Char::isDigit).take(4) },
                 label = { Text("Width (CSS px)") },
                 singleLine = true,
+                isError = parsedW == null,
+                supportingText = {
+                    if (parsedW == null) {
+                        Text("Width must be ${ClaimedScreen.MIN_PX}–${ClaimedScreen.MAX_PX}")
+                    }
+                },
                 modifier = Modifier.weight(1f)
             )
             Spacer(Modifier.width(8.dp))
@@ -1012,19 +1302,45 @@ private fun ScreenSizeFields(
                 onValueChange = { h = it.filter(Char::isDigit).take(4) },
                 label = { Text("Height (CSS px)") },
                 singleLine = true,
+                isError = parsedH == null,
+                supportingText = {
+                    if (parsedH == null) {
+                        Text("Height must be ${ClaimedScreen.MIN_PX}–${ClaimedScreen.MAX_PX}")
+                    }
+                },
                 modifier = Modifier.weight(1f)
             )
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
             TextButton(
                 onClick = {
+                    // The fields update; the debounced auto-save commits them.
                     w = real.first.toString()
                     h = real.second.toString()
-                    onCommit(real.first, real.second)
                 }
             ) { Text("Use this phone's screen (${real.first}x${real.second})") }
             Spacer(Modifier.weight(1f))
-            TextButton(onClick = { commit() }) { Text("Apply") }
+            // Quiet receipt for the auto-save: appears after a write, fades.
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.alpha(savedAlpha)
+            ) {
+                Icon(
+                    Icons.Filled.Check,
+                    contentDescription = null,
+                    tint = extras.primary,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    "Saved",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = extras.primary
+                )
+            }
         }
         Text(
             "On Android one CSS pixel is one dp, so a 393x852 claim is a 393x852 dp screen.",

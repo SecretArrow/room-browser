@@ -43,20 +43,27 @@ class BrowserRepository(private val db: AppDatabase) {
     suspend fun tab(id: String): TabEntity? = tabs.get(id)
 
     suspend fun newTab(profileId: ProfileId, url: String, title: String, isPrivate: Boolean = false): TabEntity {
-        val existing = tabs.openTabs(profileId.value)
-        val entity = TabEntity(
-            id = UUID.randomUUID().toString(),
+        // The id/timestamps are minted here; the POSITION is computed inside
+        // the insert statement itself (max over ALL rows incl. closed) —
+        // see TabDao.insertNextPosition for why that must stay atomic.
+        val id = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        tabs.insertNextPosition(
+            id = id,
             profileId = profileId.value,
-            position = (existing.maxOfOrNull { it.position } ?: -1) + 1,
             title = title,
             url = url,
             isPrivate = isPrivate,
-            createdAt = System.currentTimeMillis(),
-            lastViewedAt = System.currentTimeMillis()
+            createdAt = now,
+            lastViewedAt = now
         )
-        tabs.upsert(entity)
-        return entity
+        // Read back the persisted row (it carries the position SQL chose).
+        return tabs.get(id)
+            ?: throw IllegalStateException("Inserted tab row $id is missing")
     }
+
+    /** Touches ONLY last_viewed_at (never rewrites a whole possibly-stale row). */
+    suspend fun touchTab(id: String, ts: Long) = tabs.touch(id, ts)
 
     suspend fun updateTab(tab: TabEntity) = tabs.update(tab)
     suspend fun closeTab(id: String) = tabs.close(id, System.currentTimeMillis())

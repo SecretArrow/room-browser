@@ -128,6 +128,44 @@
             android:windowSoftInputMode="adjustResize" />
 
         <!--
+          Profile Network Warning — a DEDICATED full-screen activity in the
+          ':browser' process (it must never be shown as a dismissible dialog):
+          while the pending-decision flag stands, browsing is gated and this
+          window is re-launched until the user picks Continue / Switch Profile
+          / Don't-warn-again. Survives rotation, process death and recreation.
+        -->
+        <activity
+            android:name=".browser.NetworkWarningActivity"
+            android:process=":browser"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode|locale|layoutDirection|fontScale"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!--
+          Device picker — its OWN activity (default process, no WebView):
+          full-screen searchable catalogue with "in use" marks; launched for
+          a result from the profile settings screen in ':browser'.
+        -->
+        <activity
+            android:name=".browser.ui.DevicePickerActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!--
+          Password manager — the per-profile vault UI. Runs in the ':browser'
+          process ON PURPOSE: CredentialRepository's session lock is per-process
+          AppGraph state, so unlocking here shares the session with the browsing
+          engine (in-page login offers + save prompts); it never hosts a WebView.
+        -->
+        <activity
+            android:name=".browser.ui.PasswordsActivity"
+            android:process=":browser"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode|locale|layoutDirection|fontScale"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!--
           AI agent background execution: while an agent turn runs, this
           dataSync foreground service keeps the ':browser' process alive and
           holds a partial wake lock, so tasks continue with the app in the

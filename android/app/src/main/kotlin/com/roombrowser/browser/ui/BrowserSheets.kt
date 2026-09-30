@@ -2,7 +2,6 @@ package com.roombrowser.browser.ui
 
 import android.content.Intent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -72,6 +71,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,7 +80,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -90,9 +89,8 @@ import com.roombrowser.qr.QrCodeGenerator
 import com.roombrowser.ui.common.GlassBar
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.ProfileAvatar
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import com.roombrowser.ui.common.RoomBottomSheetShape
+import kotlinx.coroutines.launch
 
 /**
  * Floating browser bottom toolbar (glass bar, themed navBar color,
@@ -245,7 +243,7 @@ fun PageActionsSheet(
     onShowShields: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
         Column(
             Modifier
                 .padding(horizontal = 16.dp)
@@ -347,23 +345,14 @@ private fun addShortcutToHomeScreen(context: android.content.Context, viewModel:
     }
 }
 
+/**
+ * Sheet title block. The drag handle itself comes from ModalBottomSheet's
+ * built-in centered handle (rendered above the content) — the header only
+ * adds the title, so no sheet ever draws two handles.
+ */
 @Composable
 private fun SheetHeader(title: String) {
     val extras = LocalRoomExtras.current
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .padding(bottom = 10.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Box(
-            Modifier
-                .width(36.dp)
-                .height(4.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(extras.icon.copy(alpha = 0.35f))
-        )
-    }
     Text(title, style = MaterialTheme.typography.titleLarge, color = extras.textPrimary)
     Spacer(Modifier.height(8.dp))
 }
@@ -421,7 +410,9 @@ fun ProfileQuickSwitcherSheet(
     onSwitch: (ProfileId) -> Unit
 ) {
     val extras = LocalRoomExtras.current
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    val scope = rememberCoroutineScope()
+    var showCreateDialog by remember { mutableStateOf(false) }
+    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
         Column(
             Modifier
                 .padding(horizontal = 16.dp)
@@ -460,9 +451,102 @@ fun ProfileQuickSwitcherSheet(
                     }
                 }
             }
+            // ---- Create New Profile (always the LAST action) ----------------
+            // Create-then-switch: the new profile row exists (and the dialog
+            // is closed) BEFORE onSwitch runs the profile-switch executor —
+            // the current session is never torn down for a profile that
+            // failed to materialize. On failure the dialog stays and a
+            // snackbar explains.
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape((extras.radius * 0.7f).dp))
+                    .clickable { showCreateDialog = true }
+                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(extras.primary.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = null,
+                        tint = extras.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(
+                        "Create New Profile",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = extras.textPrimary
+                    )
+                    Text(
+                        "Add another profile and switch to it",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = extras.textSecondary
+                    )
+                }
+            }
             Spacer(Modifier.height(24.dp))
         }
     }
+    if (showCreateDialog) {
+        QuickCreateProfileDialog(
+            initialName = viewModel.suggestedProfileName(),
+            onDismiss = { showCreateDialog = false },
+            onCreate = { name ->
+                scope.launch {
+                    runCatching { viewModel.createProfileFromSwitcher(name) }
+                        .onSuccess { created ->
+                            showCreateDialog = false
+                            // EXISTING switch path — BrowserActivity.switchProfile
+                            // runs the 7-step process-restart protocol.
+                            onSwitch(created.id)
+                        }
+                        .onFailure { failure ->
+                            // Snackbar + stay: the dialog remains open, the
+                            // current profile/session is untouched.
+                            viewModel.postMessage(failure.message ?: "Could not create profile")
+                        }
+                }
+            }
+        )
+    }
+}
+
+/**
+ * Minimal create dialog for the quick switcher: a name field only — icon and
+ * color are picked automatically (the full editor lives on the main screen).
+ */
+@Composable
+private fun QuickCreateProfileDialog(
+    initialName: String,
+    onDismiss: () -> Unit,
+    onCreate: (String) -> Unit
+) {
+    var name by remember { mutableStateOf(initialName) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("New Profile") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Name") },
+                singleLine = true
+            )
+        },
+        confirmButton = {
+            Button(onClick = { if (name.isNotBlank()) onCreate(name.trim()) }) { Text("Create") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
 /** Site privacy panel (spec section 11). */
@@ -471,7 +555,7 @@ fun ProfileQuickSwitcherSheet(
 fun ShieldsSheet(viewModel: BrowserViewModel, onDismiss: () -> Unit) {
     val shields = viewModel.shieldsState
     val extras = LocalRoomExtras.current
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
         Column(
             Modifier
                 .padding(horizontal = 16.dp)
@@ -692,51 +776,4 @@ fun ReaderScreen(
             Button(onClick = onClose) { Text("Exit") }
         }
     }
-}
-
-/** Profile Network Warning dialog (spec sections 6 / 74). */
-@Composable
-fun IpWarningDialog(
-    conflict: com.roombrowser.browser.engine.NetworkIdentity.NetState.Conflict,
-    showProfileName: Boolean,
-    showLastSeen: Boolean,
-    onContinue: () -> Unit,
-    onSwitchProfile: () -> Unit,
-    onNetworkSettings: () -> Unit,
-    onDontWarnAgain: () -> Unit,
-    onRecheck: () -> Unit
-) {
-    val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
-    AlertDialog(
-        onDismissRequest = onContinue,
-        title = { Text("\u26A0 Profile Network Warning") },
-        text = {
-            Column {
-                Text(
-                    "This profile is being opened from a public IP previously associated with " +
-                        (if (showProfileName) "the \"${conflict.previousProfileName}\" profile" else "another profile") + "."
-                )
-                Spacer(Modifier.height(8.dp))
-                Text("Current IP: ${conflict.currentIp}")
-                if (showLastSeen) {
-                    Text("Last seen: ${timeFormat.format(Date(conflict.lastSeenAt))}")
-                }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "A shared public IP does not prove that profiles belong to the same person. This is an informational warning only.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        confirmButton = {
-            Column(horizontalAlignment = Alignment.End) {
-                TextButton(onClick = onContinue) { Text("Continue Anyway") }
-                TextButton(onClick = onSwitchProfile) { Text("Switch Profile") }
-                TextButton(onClick = onNetworkSettings) { Text("Network Settings") }
-                TextButton(onClick = onRecheck) { Text("Re-check Network") }
-                TextButton(onClick = onDontWarnAgain) { Text("Don't Warn Again for this IP") }
-            }
-        }
-    )
 }

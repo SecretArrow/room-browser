@@ -33,9 +33,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CustomThemeEntity::class,
         AgentProviderEntity::class,
         AgentSessionEntity::class,
-        AgentMessageEntity::class
+        AgentMessageEntity::class,
+        CredentialEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -50,6 +51,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun appStateDao(): AppStateDao
     abstract fun themeDao(): ThemeDao
     abstract fun agentDao(): AgentDao
+    abstract fun credentialDao(): CredentialDao
 
     companion object {
         const val NAME = "room-browser.db"
@@ -165,6 +167,39 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v6 → v7: adds the password manager `credentials` table. Purely
+         * additive CREATE TABLE + INDEX statements — no existing table is
+         * touched, so the migration is lossless. The column set mirrors
+         * CredentialEntity exactly (snake_case names, NOT NULL on non-null
+         * Kotlin types, nullable title), which is what Room's schema
+         * validation compares against after a migration.
+         */
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `credentials` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`profile_id` TEXT NOT NULL, " +
+                        "`domain` TEXT NOT NULL, " +
+                        "`username` TEXT NOT NULL, " +
+                        "`password_enc` TEXT NOT NULL, " +
+                        "`title` TEXT, " +
+                        "`created_at` INTEGER NOT NULL, " +
+                        "`updated_at` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_credentials_profile_id` " +
+                        "ON `credentials` (`profile_id`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_credentials_profile_id_domain` " +
+                        "ON `credentials` (`profile_id`, `domain`)"
+                )
+            }
+        }
+
         @Volatile
         private var instance: AppDatabase? = null
 
@@ -176,7 +211,10 @@ abstract class AppDatabase : RoomDatabase() {
         private fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, NAME)
                 .enableMultiInstanceInvalidation()
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                .addMigrations(
+                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4,
+                    MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7
+                )
                 .build()
     }
 }

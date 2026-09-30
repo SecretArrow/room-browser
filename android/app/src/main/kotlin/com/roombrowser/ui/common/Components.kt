@@ -52,6 +52,12 @@ import androidx.compose.ui.graphics.RenderEffect as ComposeRenderEffect
  * changes.
  */
 
+/**
+ * All modal bottom sheets share this shape — flat-ish minimal design; bottom
+ * corners stay square (sheet sits at screen bottom).
+ */
+val RoomBottomSheetShape = RoundedCornerShape(topStart = 10.dp, topEnd = 10.dp)
+
 /** A rounded, bordered card surface with optional theme gradient sheen. */
 @Composable
 fun RoomCard(

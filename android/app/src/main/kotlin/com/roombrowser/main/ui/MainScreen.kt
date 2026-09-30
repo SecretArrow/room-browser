@@ -1,5 +1,8 @@
 package com.roombrowser.main.ui
 
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -14,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -26,12 +30,13 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
@@ -59,25 +64,27 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.domain.model.Profile
-import com.roombrowser.domain.model.ProfileId
-import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.profile.CopyOptions
-import com.roombrowser.main.MainViewModel
 import com.roombrowser.main.MainActivity
+import com.roombrowser.main.MainViewModel
+import com.roombrowser.main.PassphrasePrompt
+import com.roombrowser.main.PendingExport
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.ProfileAvatar
-import kotlinx.coroutines.launch
+import com.roombrowser.ui.common.RoomBottomSheetShape
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -109,7 +116,6 @@ fun MainScreen(
     val firstRunDone = viewModel.firstRunDone
     val extras = com.roombrowser.ui.common.LocalRoomExtras.current
     val snackbarHostState = remember { SnackbarHostState() }
-    val scope = rememberCoroutineScope()
     val message = viewModel.message
     LaunchedEffect(message) {
         message?.let {
@@ -125,6 +131,41 @@ fun MainScreen(
     var deleteTarget by remember { mutableStateOf<Profile?>(null) }
     var exportTarget by remember { mutableStateOf<Profile?>(null) }
     var showImport by remember { mutableStateOf(false) }
+
+    // ---- Backup v2 delivery / intake (SAF + share) ----
+    val context = LocalContext.current
+    // Save an export where the user picks (Delivery dialog → "Save as file").
+    val saveExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            viewModel.writeExportTo(uri)
+        } else {
+            // Closing the picker without a location is a cancel, not a failure.
+            viewModel.discardExport()
+        }
+    }
+    // Pick an export file to import — the PRIMARY import path; paste stays
+    // as the secondary one.
+    val pickImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.readImportFile(uri)
+            showImport = false
+        }
+    }
+
+    // The vault's biometric gate is UI-owned: when the ViewModel needs it
+    // (reading/writing saved passwords), run it and report the outcome.
+    LaunchedEffect(viewModel.vaultGateRequest) {
+        viewModel.vaultGateRequest?.let {
+            activity.gateVault(
+                onSuccess = { viewModel.onVaultGateResult(true) },
+                onFailure = { viewModel.onVaultGateResult(false) }
+            )
+        }
+    }
 
     val pendingUrl = viewModel.pendingExternalUrl
 
@@ -171,11 +212,13 @@ fun MainScreen(
                 )
                 .verticalScroll(rememberScrollState())
         ) {
-            if (!firstRunDone) {
-                WelcomeSection(
-                    onSkip = { viewModel.setFirstRunDone() },
-                    onCreate = { showCreate = true }
-                )
+            // Welcome copy only for the very first run on an EMPTY list.
+            // It carries no create button of its own — the single create
+            // affordance is composed exactly once per state further down.
+            // (Once a profile exists the section is omitted entirely: the
+            // skip-then-import case must not resurrect a welcome CTA.)
+            if (!firstRunDone && profiles.isEmpty()) {
+                WelcomeSection(onSkip = { viewModel.setFirstRunDone() })
             }
 
             Text(
@@ -197,7 +240,9 @@ fun MainScreen(
                 ) {
                     EmptyState(title = "No profiles yet", subtitle = "Create one to start isolated browsing")
                     Spacer(Modifier.height(12.dp))
-                    Button(onClick = { showCreate = true }) { Text("Create Profile") }
+                    // Primary CTA of the single empty-state block — the only
+                    // create button composed while no profile exists.
+                    CreateProfileButton(addAnother = false, onCreate = { showCreate = true })
                 }
             } else {
                 profiles.forEach { profile ->
@@ -222,17 +267,11 @@ fun MainScreen(
                         onToggleLock = { viewModel.setLocked(profile.id, !profile.isLocked) }
                     )
                 }
-            }
 
-            OutlinedButton(
-                onClick = { showCreate = true },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp)
-            ) {
-                Icon(Icons.Filled.Add, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Create Profile")
+                // "Add another" affordance below the cards — the SAME
+                // single create entry point, in outlined chrome. It lives in
+                // this branch so it can never stack with the empty-state CTA.
+                CreateProfileButton(addAnother = true, onCreate = { showCreate = true })
             }
         }
     }
@@ -324,14 +363,18 @@ fun MainScreen(
             profile = target,
             onDismiss = { exportTarget = null },
             onExport = { includeBookmarks ->
-                viewModel.exportProfile(target.id, includeBookmarks) { }
                 exportTarget = null
+                // Saved passwords always ride along — the vault gate,
+                // passphrase step and delivery are driven from the ViewModel
+                // (gate via viewModel.vaultGateRequest below).
+                viewModel.startExport(target, includeBookmarks)
             }
         )
     }
 
     if (showImport) {
         ImportProfileDialog(
+            onPickFile = { pickImportLauncher.launch(arrayOf("application/json", "*/*")) },
             onDismiss = { showImport = false },
             onImport = { json ->
                 viewModel.importProfile(json)
@@ -339,10 +382,59 @@ fun MainScreen(
             }
         )
     }
+
+    // A finished export, waiting for its delivery action.
+    viewModel.pendingExport?.let { export ->
+        ExportDeliveryDialog(
+            export = export,
+            onSave = { saveExportLauncher.launch(export.fileName) },
+            onShare = {
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, export.fileName)
+                    putExtra(Intent.EXTRA_TEXT, export.json)
+                }
+                context.startActivity(Intent.createChooser(send, "Share \"${export.fileName}\""))
+                viewModel.consumePendingExport()
+            },
+            onCancel = { viewModel.cancelExport() }
+        )
+    }
+
+    // The passphrase step of an export (set a new one) or import (enter the
+    // file's one).
+    viewModel.passphrasePrompt?.let { prompt ->
+        VaultPassphraseDialog(
+            prompt = prompt,
+            onConfirm = { passphrase ->
+                if (prompt.forExport) {
+                    viewModel.confirmExportPassphrase(passphrase)
+                } else {
+                    viewModel.confirmImportPassphrase(passphrase)
+                }
+            },
+            onDismiss = { viewModel.cancelPassphrasePrompt() }
+        )
+    }
+
+    // Import rejections — shown ONLY when nothing was written.
+    viewModel.importError?.let { error ->
+        ErrorDialog(
+            title = "Import failed",
+            text = error,
+            onDismiss = { viewModel.dismissImportError() }
+        )
+    }
 }
 
+/**
+ * First-run welcome copy. Deliberately carries NO create button: the screen
+ * composes exactly ONE "Create Profile" affordance ([CreateProfileButton]).
+ * This section's own button used to be one of three create buttons rendered
+ * simultaneously on first open.
+ */
 @Composable
-private fun WelcomeSection(onSkip: () -> Unit, onCreate: () -> Unit) {
+private fun WelcomeSection(onSkip: () -> Unit) {
     val extras = com.roombrowser.ui.common.LocalRoomExtras.current
     Column(
         Modifier
@@ -369,11 +461,40 @@ private fun WelcomeSection(onSkip: () -> Unit, onCreate: () -> Unit) {
             color = extras.textSecondary
         )
         Spacer(Modifier.height(18.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onSkip) { Text("Later") }
-            Button(onClick = onCreate) { Text("Create Profile") }
-        }
+        OutlinedButton(onClick = onSkip) { Text("Later") }
     }
+}
+
+/**
+ * The ONE on-screen "Create Profile" affordance — exactly one instance is
+ * composed in any state (the CreateProfileDialog confirm button is the only
+ * other place that label exists). [addAnother] selects the chrome: filled
+ * and centered in the empty state (primary onboarding CTA) vs outlined,
+ * full-width below the profile list ("add another").
+ */
+@Composable
+private fun CreateProfileButton(addAnother: Boolean, onCreate: () -> Unit) {
+    if (addAnother) {
+        OutlinedButton(
+            onClick = onCreate,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            CreateProfileLabel()
+        }
+    } else {
+        Button(onClick = onCreate) { CreateProfileLabel() }
+    }
+}
+
+/** The on-screen create label defined in exactly one place — it cannot
+ *  duplicate even if a second button variant is ever added. */
+@Composable
+private fun CreateProfileLabel() {
+    Text("Create Profile")
 }
 
 @Composable
@@ -530,8 +651,8 @@ private fun OpenWithProfileSheet(
     onChoose: (Profile) -> Unit,
     onDismiss: () -> Unit
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.padding(16.dp)) {
+    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
+        Column(Modifier.padding(horizontal = 16.dp)) {
             Text("Open with profile", style = MaterialTheme.typography.titleLarge)
             Text(
                 url,
@@ -583,7 +704,9 @@ private fun CreateProfileDialog(
     val extras = com.roombrowser.ui.common.LocalRoomExtras.current
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Create Profile") },
+        // Noun title — the "Create Profile" string stays exclusive to the
+        // confirm action below and the single on-screen button.
+        title = { Text("New Profile") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 OutlinedTextField(
@@ -835,6 +958,15 @@ fun ConfirmDialog(
     )
 }
 
+/** Minimum length of a NEW export passphrase (the file's own passphrase is
+ *  only checked by decryption — an importer never re-enforces this). */
+private const val MIN_EXPORT_PASSPHRASE = 8
+
+/** Human-readable size for the delivery dialog. */
+private fun formatSize(bytes: Int): String =
+    if (bytes < 2048) "$bytes B"
+    else String.format(Locale.US, "%.1f KB", bytes / 1024.0)
+
 @Composable
 private fun ExportProfileDialog(
     profile: Profile,
@@ -842,33 +974,183 @@ private fun ExportProfileDialog(
     onExport: (includeBookmarks: Boolean) -> Unit
 ) {
     var includeBookmarks by remember { mutableStateOf(true) }
+    val extras = com.roombrowser.ui.common.LocalRoomExtras.current
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Export \"${profile.name}\" settings") },
+        title = { Text("Export \"${profile.name}\"") },
         text = {
-            Column {
-                Text("The export contains profile settings and optionally bookmarks/site settings. It NEVER contains cookies, sessions or credentials.")
+            Column(Modifier.imePadding()) {
+                Text("Profile settings, site permissions and site settings are always included.")
                 Spacer(Modifier.height(12.dp))
                 LabeledCheckboxRow("Include bookmarks", includeBookmarks) { includeBookmarks = it }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Saved passwords are included too — if the profile has any, you set an " +
+                        "export passphrase for them in the next step. Cookies, sessions and " +
+                        "history are never exported.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = extras.textSecondary
+                )
             }
         },
-        confirmButton = { Button(onClick = { onExport(includeBookmarks) }) { Text("Export") } },
+        confirmButton = { Button(onClick = { onExport(includeBookmarks) }) { Text("Continue") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@Composable
+private fun ExportDeliveryDialog(
+    export: PendingExport,
+    onSave: () -> Unit,
+    onShare: () -> Unit,
+    onCancel: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Export ready") },
+        text = {
+            Column {
+                Text("\"${export.fileName}\" · ${formatSize(export.sizeBytes)}")
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Save it somewhere safe or share it directly. The passwords inside stay " +
+                        "sealed under your export passphrase; cookies, sessions and history " +
+                        "are not in the file.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        },
+        confirmButton = { Button(onClick = onSave) { Text("Save as file") } },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onShare) { Text("Share") }
+                TextButton(onClick = onCancel) { Text("Cancel") }
+            }
+        }
+    )
+}
+
+/**
+ * The passphrase step shared by export (set a NEW passphrase, two fields,
+ * min length, must match) and import (enter the FILE's passphrase, one
+ * field, inline retry on wrong passphrase). Password fields, imePadding so
+ * the keyboard never covers them.
+ */
+@Composable
+private fun VaultPassphraseDialog(
+    prompt: PassphrasePrompt,
+    onConfirm: (passphrase: String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    // Keyed by the prompt so a retry (error copy) resets both fields.
+    var passphrase by remember(prompt) { mutableStateOf("") }
+    var confirmation by remember(prompt) { mutableStateOf("") }
+    val mismatch = prompt.forExport && confirmation.isNotEmpty() && confirmation != passphrase
+    val valid = if (prompt.forExport) {
+        passphrase.length >= MIN_EXPORT_PASSPHRASE && passphrase == confirmation
+    } else {
+        passphrase.isNotEmpty()
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(if (prompt.forExport) "Export passphrase" else "Enter file passphrase")
+        },
+        text = {
+            Column(Modifier.imePadding()) {
+                Text(
+                    if (prompt.forExport) {
+                        "${prompt.credentialCount} saved " +
+                            (if (prompt.credentialCount == 1) "password" else "passwords") +
+                            " of \"${prompt.profileName}\" will be sealed under this passphrase. " +
+                            "You will need it on the receiving device — it cannot be recovered."
+                    } else {
+                        "The export of \"${prompt.profileName}\" carries an encrypted password " +
+                            "vault. Enter the passphrase it was exported with."
+                    }
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = passphrase,
+                    onValueChange = { passphrase = it },
+                    label = {
+                        Text(
+                            if (prompt.forExport) "Passphrase (min $MIN_EXPORT_PASSPHRASE chars)"
+                            else "Passphrase"
+                        )
+                    },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    isError = prompt.error != null,
+                    supportingText = prompt.error?.let { error ->
+                        { Text(error, color = MaterialTheme.colorScheme.error) }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (prompt.forExport) {
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = confirmation,
+                        onValueChange = { confirmation = it },
+                        label = { Text("Repeat passphrase") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        isError = mismatch,
+                        supportingText = if (mismatch) {
+                            { Text("Passphrases do not match", color = MaterialTheme.colorScheme.error) }
+                        } else {
+                            null
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onConfirm(passphrase) }, enabled = valid) {
+                Text(if (prompt.forExport) "Seal & export" else "Unlock & import")
+            }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
 
 @Composable
 private fun ImportProfileDialog(
+    onPickFile: () -> Unit,
     onDismiss: () -> Unit,
     onImport: (json: String) -> Unit
 ) {
     var json by remember { mutableStateOf("") }
+    val extras = com.roombrowser.ui.common.LocalRoomExtras.current
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Import Profile Settings") },
+        title = { Text("Import Profile") },
         text = {
-            Column {
-                Text("Paste a Room Browser profile export (JSON).")
+            Column(
+                Modifier
+                    .imePadding()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    "Restore a profile from a Room Browser export file — settings, bookmarks, " +
+                        "site rules and, with its passphrase, saved passwords."
+                )
+                Spacer(Modifier.height(12.dp))
+                // File picking is the PRIMARY path: a full-width 48dp+ target.
+                OutlinedButton(onClick = onPickFile, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Filled.FolderOpen, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Choose file…")
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "…or paste the export JSON:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = extras.textSecondary
+                )
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = json,
@@ -886,5 +1168,16 @@ private fun ImportProfileDialog(
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+/** A one-button message dialog (import rejections — nothing was written). */
+@Composable
+private fun ErrorDialog(title: String, text: String, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(text) },
+        confirmButton = { Button(onClick = onDismiss) { Text("OK") } }
     )
 }

@@ -35,6 +35,20 @@ class AppGraph(context: Context) {
         com.roombrowser.data.repo.AgentRepository(database)
     }
 
+    /**
+     * Password manager: per-profile credential vault. The DAO is plain Room
+     * (multi-instance invalidation already keeps both processes in sync);
+     * the cryptor is the AndroidKeyStore-backed VaultCrypto. NOTE: the vault
+     * starts LOCKED in each process — the UI layer owns the biometric gate
+     * and calls CredentialRepository.unlock() once per session.
+     */
+    val credentialRepo: com.roombrowser.data.repo.CredentialRepository by lazy {
+        com.roombrowser.data.repo.CredentialRepository(
+            database.credentialDao(),
+            com.roombrowser.security.VaultCrypto
+        )
+    }
+
     val profileManager: ProfileManager by lazy { ProfileManager(profileRepo) }
 
     val filterEngine: FilterEngine by lazy { FilterListLoader.load(appContext) }

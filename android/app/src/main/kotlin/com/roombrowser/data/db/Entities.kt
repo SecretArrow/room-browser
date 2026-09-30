@@ -264,3 +264,35 @@ data class AgentMessageEntity(
     @ColumnInfo(name = "tool_result") val toolResult: String? = null,
     @ColumnInfo(name = "created_at") val createdAt: Long
 )
+
+// =========================================================================
+// PASSWORD MANAGER (per-profile credential vault) — schema v7
+// =========================================================================
+
+/**
+ * One saved login of a profile's password manager.
+ *
+ * The password is stored ONLY as ciphertext: password_enc is the
+ * AndroidKeyStore AES-256-GCM blob produced by the profile's vault key
+ * (alias roomvault-<safeSuffix>, see com.roombrowser.security.VaultCrypto).
+ * A plaintext password never reaches disk in any form — a copied database
+ * file yields no secrets, and deleting the profile deletes its key, which
+ * makes any surviving blob permanently undecryptable.
+ */
+@Entity(
+    tableName = "credentials",
+    indices = [Index("profile_id"), Index("profile_id", "domain")]
+)
+data class CredentialEntity(
+    @PrimaryKey @ColumnInfo(name = "id") val id: String, // UUID; fresh on import
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    /** Canonical host: lowercase, no scheme/path, no trailing dot. */
+    @ColumnInfo(name = "domain") val domain: String,
+    @ColumnInfo(name = "username") val username: String,
+    /** base64(iv||ciphertext+tag) under the profile's vault key. */
+    @ColumnInfo(name = "password_enc") val passwordEnc: String,
+    /** Optional user label; null = no label. */
+    @ColumnInfo(name = "title") val title: String? = null,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long
+)

@@ -41,8 +41,17 @@ class ProfileModelTest {
     fun `effective user agent modes`() {
         assertThat(UserAgents.effectiveUserAgent(ProfileSettings())).isNull()
         assertThat(
+            UserAgents.effectiveUserAgent(ProfileSettings(uaMode = UaMode.PRESET, uaPresetId = "chrome_android"))
+        ).contains("Android")
+        // A preset id that no longer exists — e.g. a stored profile that once
+        // picked a desktop preset — resolves to null, so the WebView default
+        // is used rather than a stale identity.
+        assertThat(
             UserAgents.effectiveUserAgent(ProfileSettings(uaMode = UaMode.PRESET, uaPresetId = "chrome_windows"))
-        ).contains("Windows NT")
+        ).isNull()
+        assertThat(
+            UserAgents.effectiveUserAgent(ProfileSettings(uaMode = UaMode.PRESET, uaPresetId = null))
+        ).isNull()
         assertThat(
             UserAgents.effectiveUserAgent(ProfileSettings(uaMode = UaMode.CUSTOM, customUserAgent = "MyUA/1.0"))
         ).isEqualTo("MyUA/1.0")
@@ -119,13 +128,15 @@ class ProfileModelTest {
     @Test
     fun `compatibility defaults`() {
         val s = ProfileSettings()
-        // Annoyance shields are OFF by default (opt-in via Settings).
+        // Annoyance shields — including the malicious-site block — are OFF by
+        // default (opt-in via Settings); the features stay, only the default
+        // changed, and profiles that stored an explicit value keep it.
         assertThat(s.blockAds).isFalse()
         assertThat(s.blockTrackers).isFalse()
         assertThat(s.blockCrossSiteTrackers).isFalse()
         assertThat(s.blockPopups).isFalse()
-        // Security-grade protections and compatibility stay ON.
-        assertThat(s.blockMalicious).isTrue()
+        assertThat(s.blockMalicious).isFalse()
+        // Compatibility behavior stays on.
         assertThat(s.blockThirdPartyCookies).isFalse()
         assertThat(s.javascriptEnabled).isTrue()
         assertThat(s.httpsUpgrade).isTrue()
@@ -198,8 +209,9 @@ class ProfileModelTest {
             }
             assertThat(p.label).isNotEmpty()
         }
-        assertThat(UserAgents.androidPresets).isNotEmpty()
-        assertThat(UserAgents.desktopPresets).isNotEmpty()
+        // The catalogue is Android/mobile only; the desktop UA lives in
+        // desktopModeUserAgent (covered by UserAgentsTest).
+        assertThat(UserAgents.androidPresets).isEqualTo(UserAgents.all)
         assertThat(UserAgents.byId("no-such-preset")).isNull()
     }
 

@@ -62,11 +62,12 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.fragment.app.FragmentActivity
 import com.roombrowser.browser.BrowserViewModel
-import com.roombrowser.browser.engine.NetworkIdentity
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.qr.QrCodeGenerator
+import com.roombrowser.security.BiometricGate
 import com.roombrowser.ui.common.LocalRoomExtras
 import kotlinx.coroutines.launch
 
@@ -126,12 +127,19 @@ fun BrowserScreen(
     var showFindBar by remember { mutableStateOf(false) }
     var showTranslateDialog by remember { mutableStateOf(false) }
     var showQrDialog by remember { mutableStateOf(false) }
-    var showIpWarning by rememberSaveable { mutableStateOf(true) }
     // System-Back exit confirmation — a page with no back history left must
     // NEVER leave the app without an explicit user decision (user mandate:
     // "kalau yang dibuka bukan url dasar jangan keluarkan app, cukup tampilkan
     // konfirmasi dulu").
     var showExitConfirm by remember { mutableStateOf(false) }
+
+    // "Switch Profile" decision from the network warning activity: re-open
+    // the quick switcher once the engine resumes (counter, so every new
+    // request re-fires the LaunchedEffect).
+    val switcherSignal by viewModel.quickSwitcherSignal.collectAsState()
+    LaunchedEffect(switcherSignal) {
+        if (switcherSignal > 0) showQuickSwitcher = true
+    }
 
     // AI settings & chat history live in their OWN activities (default
     // process) — the browser surface simply launches them and, for chat
@@ -352,6 +360,41 @@ fun BrowserScreen(
         )
     }
 
+    // ---------- Password vault sheets (render points only) ----------
+    // The offer appears when the user focuses a login form on a page whose
+    // host family has saved logins (vault unlocked for the session). The
+    // save prompt appears after a login form submits — including while the
+    // vault is LOCKED; the biometric gate for "Save" needs an Activity,
+    // which the ViewModel does not have, so the sheet's Save action borrows
+    // this one through a callback (never started from recomposition).
+    viewModel.vaultOffer?.let { offer ->
+        VaultOfferSheet(
+            host = offer.host,
+            credentials = offer.credentials,
+            onPick = { viewModel.fillVaultCredential(it) },
+            onDismiss = { viewModel.dismissVaultOffer() }
+        )
+    }
+
+    viewModel.vaultSavePrompt?.let { prompt ->
+        VaultSaveSheet(
+            host = prompt.host,
+            username = prompt.username,
+            onSave = {
+                viewModel.savePromptedLogin { onSuccess, onFailure ->
+                    val fragmentActivity = activity as? FragmentActivity
+                    if (fragmentActivity != null) {
+                        BiometricGate.unlock(fragmentActivity, "Password vault", onSuccess, onFailure)
+                    } else {
+                        // No fragment host = no biometric prompt = no unlock.
+                        onFailure()
+                    }
+                }
+            },
+            onNotNow = { viewModel.dismissVaultSavePrompt() }
+        )
+    }
+
     // ---------- System-Back exit confirmation (non-home, no history) ------
     // Fired by the BackHandler's `!isHomepage` branch: the current page has
     // no back history left, so leaving the app requires an EXPLICIT choice.
@@ -398,24 +441,7 @@ fun BrowserScreen(
             onClose = { viewModel.exitReaderMode() }
         )
     }
-    val netState = viewModel.netState
-    if (netState is NetworkIdentity.NetState.Conflict && showIpWarning) {
-        IpWarningDialog(
-            conflict = netState,
-            showProfileName = viewModel.globalSettings.showPreviousProfileName,
-            showLastSeen = viewModel.globalSettings.showLastSeenTime,
-            onContinue = { viewModel.dismissIpWarning(); showIpWarning = false },
-            onSwitchProfile = {
-                viewModel.dismissIpWarning()
-                showIpWarning = false
-                showQuickSwitcher = true
-            },
-            onNetworkSettings = { viewModel.dismissIpWarning(); showIpWarning = false },
-            onDontWarnAgain = {
-                viewModel.suppressIpWarning()
-                showIpWarning = false
-            },
-            onRecheck = { viewModel.recheckNetwork() }
-        )
-    }
+    // NOTE: the profile network warning is NOT a dialog anymore — a pending
+    // decision launches the full-screen NetworkWarningActivity (BrowserActivity
+    // owns the launch loop; while the gate stands no URL can load).
 }

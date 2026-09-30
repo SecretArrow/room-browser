@@ -165,20 +165,23 @@ data class ProfileSettings(
     // Privacy
     //
     // Compatibility-first defaults (2026-09 revision): the annoyance shields —
-    // ad blocking, tracker blocking, cross-site-tracker blocking and popup
-    // blocking — are now OFF out of the box so sites render exactly as their
-    // authors intended (aggressive blocking broke layouts, login flows and
-    // embedded players on many real sites). Users who want the stricter
-    // behavior can enable each shield per profile in Settings.
+    // ad blocking, tracker blocking, cross-site-tracker blocking, popup
+    // blocking and malicious-site blocking — are now OFF out of the box so
+    // sites render exactly as their authors intended (aggressive blocking
+    // broke layouts, login flows and embedded players on many real sites).
+    // Users who want the stricter behavior can enable each shield per profile
+    // in Settings; the features are NOT removed, only default-off for fresh
+    // installs and newly created profiles (profiles that already stored an
+    // explicit value keep it).
     //
-    // Security-grade protections that never break legitimate sites stay ON:
-    // blockMalicious below, and httpsUpgrade (which falls back to http when
-    // the secure version is unreachable).
+    // What stays ON out of the box is httpsUpgrade, which falls back to http
+    // when the secure version is unreachable and therefore never breaks an
+    // http-only site.
     val blockAds: Boolean = false,
     val blockTrackers: Boolean = false,
     val blockCrossSiteTrackers: Boolean = false,
     val blockPopups: Boolean = false,
-    val blockMalicious: Boolean = true,
+    val blockMalicious: Boolean = false,
     // HTTPS-First: upgrade http navigations to https, then FALL BACK to the
     // original http URL automatically when the secure version is unreachable
     // (HttpsUpgradeFallbackPolicy) — upgrades no longer break http-only sites.
