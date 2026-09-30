@@ -41,6 +41,10 @@
 #define RB_PREFS_DEV_WIN_H  470
 #define RB_PREFS_DEV_BTNW   100
 #define RB_PREFS_DEV_BTNH   26
+#define RB_PREFS_DEV_SEARCH 4620    /* the filter field */
+#define RB_PREFS_DEV_LIST   4621    /* the results */
+#define RB_PREFS_DEV_OK     4622
+#define RB_PREFS_DEV_CANCEL 4623
 
 #define PF_ROW_H   22           /* a switch or a combo */
 #define PF_SUB_H   15           /* the dim line under a switch */
@@ -67,7 +71,7 @@ static const wchar_t *const g_page_names[RB_PREFS_PAGES] = {
 /* ------------------------------------------------------------------ */
 /* State */
 
-typedef enum { RB_PK_SWITCH, RB_PK_COMBO, RB_PK_ENTRY } RbPrefKind;
+typedef enum { RB_PK_SWITCH, RB_PK_COMBO, RB_PK_ENTRY, RB_PK_DEVICE } RbPrefKind;
 
 typedef struct {
     int          id;         /* the control's id (the Apply button for entries) */
@@ -94,14 +98,6 @@ typedef struct {
     int   page_h;
     RbPrefCtl ctl[RB_PREFS_MAX_CTL];
     int   n_ctl;
-
-    /* The device picker's caption table, built from the generated catalogue
-     * and so allocated rather than sized by a constant.  It has to outlive
-     * pf_build_ua because RbPrefCtl::ids points into it, so it is owned here
-     * and released in pf_teardown. */
-    const char **dev_ids;
-    const char **dev_labels;
-    char (*dev_buf)[128];
 } RbPrefs;
 
 /* One editor at a time: the window is modal, so a second request only has to
@@ -640,6 +636,466 @@ static void pf_build_privacy(RbPrefs *pf)
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* The device picker
+ *
+ * A modal window of its own, because the catalogue runs past a thousand
+ * machines and a combo box has no filter: finding one laptop among a
+ * thousand entries means scrolling a list taller than the screen.  This is
+ * the Win32 half of the dialog the GTK edition shows, with the same pieces
+ * in the same order - a search field, the list, and a title reading
+ * "Device (N of M)".
+ *
+ * Like the editor, it is a plain window rather than a DLGTEMPLATE resource,
+ * and for the same reason: the whole chrome is built in code, and a resource
+ * would put half the layout somewhere the Linux CI cannot check.
+ */
+
+typedef struct {
+    RbPrefs *pf;             /* the editor this picker belongs to */
+    HWND     dlg;
+    HWND     search;
+    HWND     list;
+    HFONT    fnt;
+    /* The ids behind the rows now in the list, in listbox order, so item N
+     * is ids[N].  Rebuilt for every query, which is what lets one handler
+     * turn a selection into a device. */
+    char   **ids;
+    int      n;
+    int      cap;
+} RbDevicePicker;
+
+/* One at a time: the picker is modal to the editor, which is itself modal to
+ * the browser. */
+static RbDevicePicker *g_devpick = NULL;
+
+static char *dp_strdup(const char *s)
+{
+    size_t n = strlen(s) + 1;
+    char *p = malloc(n);
+    if (p != NULL) memcpy(p, s, n);
+    return p;
+}
+
+/* ASCII case-insensitive substring search, with an empty needle matching
+ * everything.  Written out rather than using strstr on a lowered copy,
+ * because _strlwr folds by locale and could fold differently from the query
+ * the user typed.  The catalogue is ASCII. */
+static int dp_has(const char *hay, const char *needle)
+{
+    size_t nl, i;
+    const char *p;
+
+    if (needle == NULL || needle[0] == '\0') return 1;
+    if (hay == NULL) return 0;
+    nl = strlen(needle);
+    for (p = hay; *p != '\0'; p++) {
+        for (i = 0; i < nl; i++) {
+            int a = (unsigned char)p[i];
+            int b = (unsigned char)needle[i];
+            if (a == '\0') return 0;
+            if (a >= 'A' && a <= 'Z') a += 'a' - 'A';
+            if (b >= 'A' && b <= 'Z') b += 'a' - 'A';
+            if (a != b) break;
+        }
+        if (i == nl) return 1;
+    }
+    return 0;
+}
+
+/* The name of a DIFFERENT profile already presenting this machine, or NULL.
+ * The active profile is skipped - its own machine is what the row already
+ * shows, and calling a profile's device a repeat of itself would be nonsense
+ * - and so is "no device", which any number of profiles may share without
+ * one of them being a repeat. */
+static const char *dp_used_by(App *app, const char *id)
+{
+    int i, n;
+
+    if (app == NULL || app->profiles == NULL || id == NULL || id[0] == '\0') {
+        return NULL;
+    }
+    n = rb_profile_count(app->profiles);
+    for (i = 0; i < n; i++) {
+        const rb_profile *p = rb_profile_at(app->profiles, i);
+        const char *own;
+
+        if (p == NULL || p->settings == NULL) continue;
+        if (app->active_profile_id != NULL &&
+            strcmp(p->id, app->active_profile_id) == 0) continue;
+        own = rb_settings_get(p->settings, RB_PREF_DEVICE_ID, "");
+        if (own != NULL && strcmp(own, id) == 0) {
+            return (p->name != NULL) ? p->name : "another profile";
+        }
+    }
+    return NULL;
+}
+
+/* The label a machine is shown under, in the row's button and in every row
+ * of the picker: one function, so the two can never disagree about what a
+ * device is called.  An empty id and an id the catalogue no longer carries
+ * both read as "no device", which is exactly what rb_device_ua_for() does
+ * with them. */
+static void dp_label(const char *id, char *buf, size_t cap)
+{
+    const rb_device *d = rb_device_by_id(id);
+
+    if (d == NULL) {
+        snprintf(buf, cap, "No device - use the User-Agent setting");
+        return;
+    }
+    snprintf(buf, cap, "%s %s - %s (%d)",
+             (d->brand != NULL) ? d->brand : "",
+             (d->model != NULL) ? d->model : "",
+             rb_device_os_name(d->os), d->year);
+}
+
+static void dp_ids_reset(RbDevicePicker *dp)
+{
+    int i;
+    for (i = 0; i < dp->n; i++) free(dp->ids[i]);
+    free(dp->ids);
+    dp->ids = NULL;
+    dp->n = 0;
+    dp->cap = 0;
+}
+
+/* Adds one row: the id behind it and the text shown for it.  The wide
+ * conversion happens FIRST, so a label that cannot be built leaves no id
+ * behind it and the listbox index and ids[] cannot drift apart - which
+ * would silently give the profile the wrong machine. */
+static void dp_add(RbDevicePicker *dp, const char *id, const char *label)
+{
+    wchar_t *w = rb_utf8_to_wide(label);
+
+    if (w == NULL) return;
+    if (dp->n == dp->cap) {
+        int want = (dp->cap == 0) ? 64 : dp->cap * 2;
+        char **grown = realloc(dp->ids, (size_t)want * sizeof *grown);
+        if (grown == NULL) {
+            free(w);
+            return;
+        }
+        dp->ids = grown;
+        dp->cap = want;
+    }
+    dp->ids[dp->n] = dp_strdup(id);
+    if (dp->ids[dp->n] == NULL) {
+        free(w);
+        return;
+    }
+    dp->n++;
+    SendMessageW(dp->list, LB_ADDSTRING, 0, (LPARAM)w);
+    free(w);
+}
+
+/* Rebuild the list for the current query, and retitle the window with what
+ * the query left.  The title is the count the Android and GTK pickers show,
+ * in the same words: how many machines matched, out of the whole catalogue. */
+static void dp_refill(RbDevicePicker *dp)
+{
+    wchar_t wquery[128];
+    char query[128];
+    App *app = dp->pf->app;
+    int total = rb_device_count();
+    int shown = 0, i;
+    char title[64];
+
+    wquery[0] = 0;
+    GetWindowTextW(dp->search, wquery, 128);
+    {
+        char *u8 = rb_wide_to_utf8(wquery);
+        if (u8 != NULL) {
+            snprintf(query, sizeof query, "%s", u8);
+            free(u8);
+        } else {
+            query[0] = 0;
+        }
+    }
+
+    SendMessageW(dp->list, LB_RESETCONTENT, 0, 0);
+    dp_ids_reset(dp);
+
+    /* The first row is a real choice rather than a cancel: it clears the
+     * setting, and the User-Agent rows below decide again.  It is in every
+     * result, since "no device" is never filtered out - it is not one of the
+     * machines the query searches. */
+    dp_add(dp, "", "No device - use the User-Agent setting");
+
+    for (i = 0; i < total; i++) {
+        const rb_device *d = rb_device_at(i);
+        char year[16];
+        char label[320];
+        const char *taken;
+
+        if (d == NULL || d->id == NULL) continue;
+        snprintf(year, sizeof year, "%d", d->year);
+        if (!dp_has(d->brand, query) && !dp_has(d->model, query) &&
+            !dp_has(year, query) && !dp_has(rb_device_os_name(d->os), query)) {
+            continue;
+        }
+        shown++;
+
+        /* A machine another profile also presents is marked, not hidden: the
+         * user may still choose it, they are just told it is a repeat. */
+        dp_label(d->id, label, sizeof label);
+        taken = dp_used_by(app, d->id);
+        if (taken != NULL) {
+            size_t used = strlen(label);
+            snprintf(label + used, sizeof label - used,
+                     " - in use by %s", taken);
+        }
+        dp_add(dp, d->id, label);
+    }
+
+    snprintf(title, sizeof title, "Device (%d of %d)", shown, total);
+    {
+        wchar_t *w = rb_utf8_to_wide(title);
+        if (w != NULL) {
+            SetWindowTextW(dp->dlg, w);
+            free(w);
+        }
+    }
+}
+
+/* The caption the row's button shows, always: the initial build and every
+ * choice made in the picker come through here, so the button can never
+ * display a machine the profile is not presenting. */
+static void pf_device_caption_set(RbPrefs *pf)
+{
+    HWND button = pf_ctl_by_key(pf, RB_PREF_DEVICE_ID);
+    char label[320];
+    wchar_t *w;
+
+    if (button == NULL) return;
+    dp_label(rb_pref(pf->app, RB_PREF_DEVICE_ID, ""), label, sizeof label);
+    w = rb_utf8_to_wide(label);
+    if (w == NULL) return;
+    SetWindowTextW(button, w);
+    free(w);
+    pf_refresh_notes(pf);
+}
+
+static void dp_accept(RbDevicePicker *dp)
+{
+    LRESULT sel = SendMessageW(dp->list, LB_GETCURSEL, 0, 0);
+
+    /* A selection that is somehow out of range closes without writing, which
+     * leaves the profile on the machine it already had rather than on an
+     * arbitrary one. */
+    if (sel != LB_ERR && sel >= 0 && sel < dp->n) {
+        /* The empty id is the "No device" row, and it is written as such:
+         * the setting is cleared rather than left as it was. */
+        rb_pref_set(dp->pf->app, RB_PREF_DEVICE_ID, dp->ids[sel]);
+        pf_apply(dp->pf->app, dp->pf, RB_PREF_DEVICE_ID);
+        pf_device_caption_set(dp->pf);
+    }
+    DestroyWindow(dp->dlg);
+}
+
+static void dp_teardown(RbDevicePicker *dp)
+{
+    dp_ids_reset(dp);
+    if (dp->fnt != NULL) DeleteObject(dp->fnt);
+    g_devpick = NULL;
+    free(dp);
+}
+
+static LRESULT CALLBACK dp_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    RbDevicePicker *dp =
+        (RbDevicePicker *)(LONG_PTR)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+    switch (msg) {
+    case WM_ERASEBKGND:
+        if (dp != NULL) {
+            RECT r;
+            GetClientRect(hwnd, &r);
+            FillRect((HDC)wp, &r, dp->pf->app->br_chrome);
+            return 1;
+        }
+        break;
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX:
+        if (dp != NULL) {
+            SetBkMode((HDC)wp, OPAQUE);
+            SetBkColor((HDC)wp, rb_col(dp->pf->app->pal.background));
+            SetTextColor((HDC)wp, rb_col(dp->pf->app->pal.text_primary));
+            return (LRESULT)dp->pf->app->br_chrome;
+        }
+        break;
+    case WM_COMMAND:
+        if (dp == NULL) break;
+        {
+            int id = (int)LOWORD(wp);
+            int code = (int)HIWORD(wp);
+
+            if (id == RB_PREFS_DEV_SEARCH && code == EN_CHANGE) {
+                dp_refill(dp);
+                return 0;
+            }
+            /* Double-clicking a row is the mouse's way of saying "this one",
+             * and the list is the only control here with a selection to
+             * commit. */
+            if (id == RB_PREFS_DEV_LIST && code == LBN_DBLCLK) {
+                dp_accept(dp);
+                return 0;
+            }
+            /* IDOK is what IsDialogMessageW turns Enter into, and the Choose
+             * button carries BS_DEFPUSHBUTTON, so it is the one Enter must
+             * reach whether or not it has the focus itself. */
+            if ((id == RB_PREFS_DEV_OK || id == IDOK) && code == BN_CLICKED) {
+                dp_accept(dp);
+                return 0;
+            }
+            if (id == RB_PREFS_DEV_CANCEL || id == IDCANCEL) {
+                DestroyWindow(hwnd);
+                return 0;
+            }
+        }
+        break;
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
+    case WM_DESTROY:
+        if (dp != NULL) dp_teardown(dp);
+        return 0;
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+/* Search-and-pick over the whole catalogue.  A combo was the wrong control
+ * for it once the catalogue passed a thousand machines: a list that long has
+ * no usable ordering, and the type-ahead that stood in for a search only
+ * jumps to a prefix. */
+static void pf_show_device_picker(RbPrefs *pf)
+{
+    RbDevicePicker *dp;
+    RECT want;
+    int pad = RB_PREFS_MARGIN;
+    int w = RB_PREFS_DEV_WIN_W, h = RB_PREFS_DEV_WIN_H;
+
+    if (g_devpick != NULL) {
+        SetForegroundWindow(g_devpick->dlg);
+        return;
+    }
+
+    dp = (RbDevicePicker *)calloc(1, sizeof *dp);
+    if (dp == NULL) return;
+    dp->pf = pf;
+    dp->fnt = CreateFontW(-15, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+                          OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+                          L"Segoe UI");
+
+    want.left = 0; want.top = 0;
+    want.right = w; want.bottom = h;
+    AdjustWindowRectEx(&want, WS_POPUP | WS_CAPTION | WS_SYSMENU, FALSE, 0);
+
+    g_devpick = dp;
+    dp->dlg = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+                              L"RoomBrowserDevicePicker", L"Device",
+                              WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                              CW_USEDEFAULT, CW_USEDEFAULT,
+                              want.right - want.left, want.bottom - want.top,
+                              pf->dlg, NULL, pf->app->hinst, NULL);
+    if (dp->dlg == NULL) {
+        g_devpick = NULL;
+        if (dp->fnt != NULL) DeleteObject(dp->fnt);
+        free(dp);
+        return;
+    }
+    SetWindowLongPtrW(dp->dlg, GWLP_USERDATA, (LONG_PTR)dp);
+
+    dp->search = CreateWindowExW(0, L"EDIT", L"",
+                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                                 ES_LEFT | ES_AUTOHSCROLL,
+                                 pad, pad, w - 2 * pad, PF_EDIT_H,
+                                 dp->dlg, (HMENU)(INT_PTR)RB_PREFS_DEV_SEARCH,
+                                 pf->app->hinst, NULL);
+    dp->list = CreateWindowExW(0, L"LISTBOX", L"",
+                               WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                               WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
+                               pad, pad + PF_EDIT_H + 6, w - 2 * pad,
+                               h - pad - PF_EDIT_H - 6 - pad
+                                 - RB_PREFS_DEV_BTNH - pad,
+                               dp->dlg, (HMENU)(INT_PTR)RB_PREFS_DEV_LIST,
+                               pf->app->hinst, NULL);
+    pf_mk_ctl(dp->search, dp->fnt, RB_PF_INK_NORMAL);
+    pf_mk_ctl(dp->list, dp->fnt, RB_PF_INK_NORMAL);
+
+    {
+        int by = h - pad - RB_PREFS_DEV_BTNH;
+        HWND ok = CreateWindowExW(0, L"BUTTON", L"Choose",
+                                  WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                                  BS_DEFPUSHBUTTON,
+                                  w - pad - 2 * RB_PREFS_DEV_BTNW - 6, by,
+                                  RB_PREFS_DEV_BTNW, RB_PREFS_DEV_BTNH,
+                                  dp->dlg, (HMENU)(INT_PTR)RB_PREFS_DEV_OK,
+                                  pf->app->hinst, NULL);
+        HWND cancel = CreateWindowExW(0, L"BUTTON", L"Cancel",
+                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                                      BS_PUSHBUTTON,
+                                      w - pad - RB_PREFS_DEV_BTNW, by,
+                                      RB_PREFS_DEV_BTNW, RB_PREFS_DEV_BTNH,
+                                      dp->dlg,
+                                      (HMENU)(INT_PTR)RB_PREFS_DEV_CANCEL,
+                                      pf->app->hinst, NULL);
+        pf_mk_ctl(ok, dp->fnt, RB_PF_INK_NORMAL);
+        pf_mk_ctl(cancel, dp->fnt, RB_PF_INK_NORMAL);
+    }
+
+    dp_refill(dp);
+
+    /* Modal, the way the editor is modal to the browser: the owner is
+     * disabled for the duration, and the loop below runs until this window
+     * is destroyed.  The editor cannot be reached while the picker is up, so
+     * there is no path by which the profile changes underneath it. */
+    EnableWindow(pf->dlg, FALSE);
+    ShowWindow(dp->dlg, SW_SHOW);
+    /* Opened to be typed in: a picker that opens with the focus on the
+     * buttons makes the user reach for the mouse. */
+    SetFocus(dp->search);
+    {
+        /* The handle is taken by value: dp_teardown() frees dp itself when
+         * the window is destroyed, so the loop condition must not read it
+         * through the pointer it just released. */
+        HWND dlg = dp->dlg;
+        MSG msg;
+        while (IsWindow(dlg) && GetMessageW(&msg, NULL, 0, 0) > 0) {
+            if (!IsDialogMessageW(dlg, &msg)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    }
+    EnableWindow(pf->dlg, TRUE);
+    SetForegroundWindow(pf->dlg);
+}
+
+/* The device row: a profile presents a real machine, or it presents nothing
+ * and the User-Agent settings below decide.  Choosing a device IS choosing
+ * the User-Agent, so the two are one control rather than two that can
+ * disagree - but the control is a button showing the choice, which opens the
+ * search picker above, because the catalogue is far too long to list. */
+static int pf_device_row(RbPrefs *pf, int page, int y)
+{
+    int i = pf_add(pf, RB_PREF_DEVICE_ID, 0, RB_PK_DEVICE, NULL);
+
+    if (i < 0) return 0;
+    pf_mk(pf, pf->pages[page], L"STATIC", L"Device", SS_LEFT,
+          0, y, 190, PF_ROW_H, 0, RB_PF_INK_NORMAL);
+    pf->ctl[i].ctl = pf_mk(pf, pf->pages[page], L"BUTTON", L"",
+                           WS_TABSTOP | BS_PUSHBUTTON,
+                           200, y, pf->page_w - 200, PF_ROW_H, pf->ctl[i].id,
+                           RB_PF_INK_NORMAL);
+    pf_device_caption_set(pf);
+    return PF_ROW_H + PF_GAP;
+}
+
 static void pf_build_ua(RbPrefs *pf)
 {
     static const char *mode_ids[4] = { "default", "preset", "custom", NULL };
@@ -648,51 +1104,11 @@ static void pf_build_ua(RbPrefs *pf)
     static const char *ids[66];
     static const char *labels[66];
     static char buf[64][128];
-    /* The device list is generated and runs past a thousand machines, so it
-     * gets its own storage: the caption is built from the catalogue rather
-     * than written out here.  Unlike the preset arrays above it is ALLOCATED
-     * rather than a fixed buffer - a fixed buffer here is a silent cap on
-     * which devices a profile may be given, and the catalogue has already
-     * outgrown the one this used to carry.  Freed in pf_teardown. */
     int n = rb_ua_count(), i, y = 0;
-    int dn = rb_device_count(), j, k = 0;
-    const char **dev_ids = calloc((size_t)dn + 2, sizeof *dev_ids);
-    const char **dev_labels = calloc((size_t)dn + 2, sizeof *dev_labels);
-    char (*dev_buf)[128] = calloc((size_t)dn + 2, sizeof *dev_buf);
-
-    if (dev_ids == NULL || dev_labels == NULL || dev_buf == NULL) {
-        free(dev_ids);
-        free(dev_labels);
-        free(dev_buf);
-        return;
-    }
-    pf->dev_ids = dev_ids;
-    pf->dev_labels = dev_labels;
-    pf->dev_buf = dev_buf;
-
-    dev_ids[0] = "";
-    dev_labels[0] = "No device - use the User-Agent setting";
-    /* k counts the entries actually built, so a catalogue entry that is NULL
-     * leaves no hole for the NULL-terminated walk in pf_combo to stop at. */
-    for (j = 0; j < dn; j++) {
-        const rb_device *d = rb_device_at(j);
-        if (d == NULL || d->id == NULL) continue;
-        dev_ids[k + 1] = d->id;
-        snprintf(dev_buf[k + 1], sizeof dev_buf[k + 1], "%s %s - %s (%d)",
-                 (d->brand != NULL) ? d->brand : "",
-                 (d->model != NULL) ? d->model : "",
-                 rb_device_os_name(d->os), d->year);
-        dev_labels[k + 1] = dev_buf[k + 1];
-        k++;
-    }
-    k++;
-    dev_ids[k] = NULL;
-    dev_labels[k] = NULL;
 
     /* A device decides the User-Agent, so it comes first: with one chosen,
      * the three rows below are not consulted at all. */
-    y += pf_combo(pf, 3, y, RB_PREF_DEVICE_ID, dev_ids, dev_labels,
-                  rb_pref(pf->app, RB_PREF_DEVICE_ID, ""), L"Device");
+    y += pf_device_row(pf, 3, y);
 
     y += pf_combo(pf, 3, y, RB_PREF_UA_MODE, mode_ids, mode_labels,
                   rb_pref(pf->app, RB_PREF_UA_MODE, "default"),
@@ -939,6 +1355,9 @@ static void pf_on_command(RbPrefs *pf, int id, int code)
                         pf_checked(c->ctl) ? 1 : 0);
         pf_apply(pf->app, pf, c->key);
         pf_refresh_notes(pf);
+    } else if (c->kind == RB_PK_DEVICE) {
+        if (code != BN_CLICKED) return;
+        pf_show_device_picker(pf);
     } else if (c->kind == RB_PK_COMBO) {
         LRESULT sel;
         if (code != CBN_SELCHANGE) return;
@@ -1042,11 +1461,6 @@ static void pf_teardown(RbPrefs *pf)
     }
     if (pf->fnt != NULL) DeleteObject(pf->fnt);
     if (pf->fnt_bold != NULL) DeleteObject(pf->fnt_bold);
-    /* The device picker's caption table is ours, and the controls that point
-     * into it are already gone with the dialog. */
-    free(pf->dev_ids);
-    free(pf->dev_labels);
-    free(pf->dev_buf);
     /* The pages and their controls are destroyed with the dialog; only this
      * struct goes, and the two window classes, which are registered once for
      * the life of the process. */
@@ -1140,6 +1554,17 @@ static int pf_register_classes(HINSTANCE hinst)
     wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
     wc.hbrBackground = NULL;
     wc.lpszClassName = L"RoomBrowserPrefsPage";
+    if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        ok = 0;
+    }
+
+    memset(&wc, 0, sizeof wc);
+    wc.cbSize = sizeof wc;
+    wc.lpfnWndProc = dp_wndproc;
+    wc.hInstance = hinst;
+    wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+    wc.hbrBackground = NULL;
+    wc.lpszClassName = L"RoomBrowserDevicePicker";
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         ok = 0;
     }

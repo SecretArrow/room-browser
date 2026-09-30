@@ -80,9 +80,12 @@ browser is original C: a portable core plus one thin platform layer per OS.
   `uaFullVersion`), `deviceMemory`, `hardwareConcurrency` and the WebGL
   vendor/renderer strings — so the two can never disagree. A new profile is
   given one at random, and never a machine another profile already presents;
-  the Device row in Preferences changes it, and choosing "No device" hands
-  the identity back to the User-Agent settings (which are greyed out while a
-  machine is chosen, rather than silently ignored). The catalogue is
+  the Device row in Preferences changes it — through a search over the whole
+  catalogue in both editions, since a thousand machines is more than a
+  drop-down can usefully show, with every device another profile already
+  presents marked as such rather than hidden — and choosing "No device"
+  hands the identity back to the User-Agent settings (which are greyed out
+  while a machine is chosen, rather than silently ignored). The catalogue is
   all-distinct: no two entries are the same fingerprint. Screen geometry is
   deliberately left alone, because the page really is laid out on this
   screen; see `SECURITY.md` for exactly what changes and what does not.
