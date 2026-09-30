@@ -37,6 +37,8 @@ typedef struct GtkTab {
     WebKitWebView *wv;      /* owned by the notebook page */
     GtkWidget *label;       /* GtkLabel inside the tab header */
     GtkWidget *close_btn;   /* the small per-tab close button */
+    GtkWidget *icon;        /* 16x16 GtkImage: the page favicon, hidden when
+                             * the page has none (see rb_tab_favicon_set) */
 } GtkTab;
 
 typedef struct App {
@@ -47,6 +49,8 @@ typedef struct App {
     GtkWidget *omnibox;
     GtkWidget *back, *fwd, *reload, *home, *star, *menu_btn;
     GtkWidget *prog_area;   /* the 2px page-load strip under the toolbar */
+    GtkWidget *status;      /* floating link-target label (bottom-left) */
+    GtkWidget *overlay;     /* the GtkOverlay that floats `status` */
 
     GtkTab *tabs;           /* parallel to the notebook pages */
     int tabs_n, tabs_cap;
@@ -168,6 +172,15 @@ void rb_do_toggle_bookmark(App *app);
 void rb_do_switch_profile(App *app, const char *to_id);
 GtkTab *rb_tab_by_widget(App *app, GtkWidget *w);  /* resolve a tab by any of its widgets */
 GtkTab *rb_active_tab(App *app);
+
+/* Repaints a tab's favicon from its view.  Called on WebKit's
+ * "notify::favicon"; a page with no favicon clears the image and hides it,
+ * so the label takes the whole tab rather than sitting beside a gap. */
+void rb_tab_favicon_set(GtkTab *tab, WebKitWebView *wv);
+
+/* The floating link-target label at the bottom-left (Brave's status
+ * bubble).  NULL or an empty string hides it. */
+void rb_status_show(App *app, const char *text);
 
 #ifdef __cplusplus
 }

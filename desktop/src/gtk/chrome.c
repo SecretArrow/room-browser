@@ -123,6 +123,20 @@ static char *rb_css_build(const rb_theme_colors *c, int radius)
         addr, txt, border, radius, prim, prim, sel_soft, txt,
         dim, radius, txt, accent_soft, dim,
         surf, txt, border, accent_faint, txt);
+
+    /* The link-target bubble.  A SECOND snprintf rather than more arguments
+     * on the one above: that call's format and argument lists are long and
+     * positional, and one miscounted %s there is a silent read of garbage. */
+    {
+        size_t used = strlen(css);
+        if (used + 256 < cap) {
+            snprintf(css + used, cap - used,
+                     ".rb-status { background-color: %s; color: %s;"
+                     " border: 1px solid %s; border-radius: %dpx;"
+                     " padding: 2px 8px; }\n",
+                     surf, txt, border, radius);
+        }
+    }
     return css;
 }
 
@@ -521,7 +535,8 @@ GtkTab *rb_tab_by_widget(App *app, GtkWidget *w)
     for (i = 0; i < app->tabs_n; i++) {
         if ((GtkWidget *)app->tabs[i].wv == w ||
             app->tabs[i].label == w ||
-            app->tabs[i].close_btn == w) {
+            app->tabs[i].close_btn == w ||
+            app->tabs[i].icon == w) {
             return &app->tabs[i];
         }
     }
@@ -538,6 +553,65 @@ GtkTab *rb_active_tab(App *app)
     return NULL;
 }
 
+/* Edge of the square a tab favicon is scaled into.  16px matches what Brave
+ * and Chrome use, and leaves the tab's title the rest of the width. */
+#define RB_TAB_ICON 16
+
+void rb_tab_favicon_set(GtkTab *tab, WebKitWebView *wv)
+{
+    cairo_surface_t *surface;
+    GdkPixbuf *pix = NULL;
+    int w = 0, h = 0;
+
+    if (!tab || !tab->icon || !wv) return;
+
+    surface = webkit_web_view_get_favicon(wv);
+    if (surface) {
+        w = cairo_image_surface_get_width(surface);
+        h = cairo_image_surface_get_height(surface);
+        if (w > 0 && h > 0) {
+            pix = gdk_pixbuf_get_from_surface(surface, 0, 0, w, h);
+        }
+    }
+
+    if (pix) {
+        /* Fit the icon into RB_TAB_ICON square, preserving the aspect ratio:
+         * a non-square favicon scaled to 16x16 outright would be stretched. */
+        int side = (w > h) ? w : h;
+        int iw = w * RB_TAB_ICON / side;
+        int ih = h * RB_TAB_ICON / side;
+        GdkPixbuf *scaled;
+        if (iw < 1) iw = 1;
+        if (ih < 1) ih = 1;
+        scaled = gdk_pixbuf_scale_simple(pix, iw, ih, GDK_INTERP_BILINEAR);
+        g_object_unref(pix);
+        if (scaled) {
+            /* set_from_pixbuf takes its own reference, so ours goes here. */
+            gtk_image_set_from_pixbuf(GTK_IMAGE(tab->icon), scaled);
+            g_object_unref(scaled);
+            gtk_widget_set_visible(tab->icon, TRUE);
+            return;
+        }
+    }
+
+    /* No favicon (or one we could not decode): hide the image rather than
+     * leave a blank square, so the title keeps the full width. */
+    gtk_image_clear(GTK_IMAGE(tab->icon));
+    gtk_widget_set_visible(tab->icon, FALSE);
+}
+
+void rb_status_show(App *app, const char *text)
+{
+    if (!app || !app->status) return;
+    if (text && text[0]) {
+        gtk_label_set_text(GTK_LABEL(app->status), text);
+        gtk_widget_show(app->status);
+    } else {
+        gtk_label_set_text(GTK_LABEL(app->status), "");
+        gtk_widget_hide(app->status);
+    }
+}
+
 static rb_tab *rb_store_tab(App *app)
 {
     return app->active_id ? rb_tabs_get(app->store, app->active_id) : NULL;
@@ -546,10 +620,36 @@ static rb_tab *rb_store_tab(App *app)
 /* ------------------------------------------------------------------ */
 /* UI refresh helpers */
 
+/* The connection indicator Brave puts at the leading edge of the omnibox.
+ * HTTPS gets the padlock and plain HTTP the warning; anything else — an
+ * internal page, or the blank new tab — gets NO icon rather than a
+ * misleading one.  The names come from the icon theme, so a theme without
+ * them shows nothing instead of failing. */
+static void rb_update_omni_security(App *app, const char *url)
+{
+    const char *icon = NULL;
+    const char *tip = NULL;
+
+    if (url && g_str_has_prefix(url, "https://")) {
+        icon = "channel-secure-symbolic";
+        tip = "Connection is encrypted";
+    } else if (url && g_str_has_prefix(url, "http://")) {
+        icon = "channel-insecure-symbolic";
+        tip = "Not secure \xE2\x80\x94 this connection is not encrypted";
+    }
+
+    gtk_entry_set_icon_from_icon_name(GTK_ENTRY(app->omnibox),
+                                      GTK_ENTRY_ICON_PRIMARY, icon);
+    gtk_entry_set_icon_tooltip_text(GTK_ENTRY(app->omnibox),
+                                    GTK_ENTRY_ICON_PRIMARY,
+                                    icon ? tip : NULL);
+}
+
 void rb_update_omni(App *app, const char *url)
 {
     if (!app || !app->omnibox) return;
     gtk_entry_set_text(GTK_ENTRY(app->omnibox), url ? url : "");
+    rb_update_omni_security(app, url);
 }
 
 void rb_update_titlebar(App *app)
@@ -722,7 +822,7 @@ void rb_do_new_tab(App *app)
 void rb_do_add_tab(App *app, const char *url)
 {
     WebKitWebView *wv;
-    GtkWidget *hbox, *lbl, *close;
+    GtkWidget *hbox, *lbl, *close, *icon;
     const char *home = app->home_url ? app->home_url : "https://duckduckgo.com";
     const char *target = (url && url[0]) ? url : home;
     long id;
@@ -735,9 +835,16 @@ void rb_do_add_tab(App *app, const char *url)
     lbl = gtk_label_new("New Tab");
     gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
     gtk_label_set_width_chars(GTK_LABEL(lbl), 10);
+    /* The favicon slot.  It starts empty and hidden and is filled in by the
+     * view's "notify::favicon" handler, so a page that never publishes one
+     * costs the tab no width at all. */
+    icon = gtk_image_new();
+    gtk_widget_set_size_request(icon, RB_TAB_ICON, RB_TAB_ICON);
+    gtk_widget_set_valign(icon, GTK_ALIGN_CENTER);
     close = gtk_button_new_with_label("\xC3\x97");
     rb_add_class(close, "rb-tab-close");
     g_signal_connect(close, "clicked", G_CALLBACK(on_tab_close_clicked), app);
+    gtk_box_pack_start(GTK_BOX(hbox), icon, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), lbl, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), close, FALSE, FALSE, 0);
 
@@ -758,6 +865,7 @@ void rb_do_add_tab(App *app, const char *url)
     app->tabs[app->tabs_n].wv = wv;
     app->tabs[app->tabs_n].label = lbl;
     app->tabs[app->tabs_n].close_btn = close;
+    app->tabs[app->tabs_n].icon = icon;
     app->tabs_n++;
 
     app->silent = 1;
@@ -2293,7 +2401,7 @@ static void rb_add_actions(App *app)
 void rb_on_activate(GtkApplication *gtk_app, gpointer user_data)
 {
     App *app = (App *)user_data;
-    GtkWidget *root, *toolbar, *plus;
+    GtkWidget *root, *toolbar, *plus, *overlay;
 
     if (app->win) {
         gtk_window_present(GTK_WINDOW(app->win));
@@ -2307,8 +2415,13 @@ void rb_on_activate(GtkApplication *gtk_app, gpointer user_data)
     gtk_window_set_default_size(GTK_WINDOW(app->win), RB_WINDOW_W, RB_WINDOW_H);
     gtk_window_set_title(GTK_WINDOW(app->win), "Room Browser");
 
+    /* The chrome is a column inside an overlay, so the link-target bubble can
+     * float over the page instead of stealing a row from it. */
+    overlay = gtk_overlay_new();
+    app->overlay = overlay;
     root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_container_add(GTK_CONTAINER(app->win), root);
+    gtk_container_add(GTK_CONTAINER(overlay), root);
+    gtk_container_add(GTK_CONTAINER(app->win), overlay);
 
     /* Tab strip: the notebook pages ARE the per-tab WebKitWebViews. */
     app->notebook = gtk_notebook_new();
@@ -2379,6 +2492,20 @@ void rb_on_activate(GtkApplication *gtk_app, gpointer user_data)
     rb_add_actions(app);
 
     gtk_widget_show_all(GTK_WIDGET(app->win));
+
+    /* Built AFTER show_all so it starts hidden: a child added to an
+     * already-shown container stays hidden until it is shown explicitly,
+     * which is what hovering a link does.  (gtk_widget_set_no_show_all would
+     * do the same job but is deprecated.) */
+    app->status = gtk_label_new(NULL);
+    rb_add_class(app->status, "rb-status");
+    gtk_label_set_ellipsize(GTK_LABEL(app->status), PANGO_ELLIPSIZE_MIDDLE);
+    gtk_label_set_max_width_chars(GTK_LABEL(app->status), 100);
+    gtk_widget_set_halign(app->status, GTK_ALIGN_START);
+    gtk_widget_set_valign(app->status, GTK_ALIGN_END);
+    gtk_widget_set_margin_start(app->status, 8);
+    gtk_widget_set_margin_bottom(app->status, 8);
+    gtk_overlay_add_overlay(GTK_OVERLAY(overlay), app->status);
 
     /* First tab: navigates to the "home" setting. */
     rb_do_new_tab(app);

@@ -68,6 +68,31 @@ static void on_notify_uri(GObject *obj, GParamSpec *pspec, gpointer user_data)
     }
 }
 
+/* Brave shows the target of a hovered link in a bubble at the bottom-left.
+ * Same information, and the only way to see where a link goes before
+ * committing to it. */
+static void on_mouse_target_changed(WebKitWebView *wv, WebKitHitTestResult *hit,
+                                    guint modifiers, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    (void)wv;
+    (void)modifiers;
+    if (hit && webkit_hit_test_result_context_is_link(hit)) {
+        rb_status_show(app, webkit_hit_test_result_get_link_uri(hit));
+    } else {
+        rb_status_show(app, NULL);
+    }
+}
+
+static void on_notify_favicon(GObject *obj, GParamSpec *pspec, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    WebKitWebView *wv = WEBKIT_WEB_VIEW(obj);
+    GtkTab *gt = rb_tab_by_view(app, wv);
+    (void)pspec;
+    if (gt) rb_tab_favicon_set(gt, wv);
+}
+
 static void on_load_changed(WebKitWebView *wv, WebKitLoadEvent event, gpointer user_data)
 {
     App *app = (App *)user_data;
@@ -888,6 +913,9 @@ WebKitWebView *rb_gw_new_view(App *app)
 
     g_signal_connect(wv, "notify::title", G_CALLBACK(on_notify_title), app);
     g_signal_connect(wv, "notify::uri", G_CALLBACK(on_notify_uri), app);
+    g_signal_connect(wv, "notify::favicon", G_CALLBACK(on_notify_favicon), app);
+    g_signal_connect(wv, "mouse-target-changed",
+                     G_CALLBACK(on_mouse_target_changed), app);
     g_signal_connect(wv, "load-changed", G_CALLBACK(on_load_changed), app);
     g_signal_connect(wv, "load-failed", G_CALLBACK(on_load_failed), app);
     g_signal_connect(wv, "decide-policy", G_CALLBACK(on_decide_policy), app);

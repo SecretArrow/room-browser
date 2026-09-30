@@ -79,7 +79,7 @@ class PromptToolGatewayTest {
         val scripted = ScriptedGateway {
             ChatMessage(
                 role = "assistant",
-                toolCalls = listOf(ToolCall("c1", FunctionCall("click", """{"ref":1}""")))
+                toolCalls = listOf(ToolCall(id = "c1", function = FunctionCall("click", """{"ref":1}""")))
             )
         }
         val (message, _) = PromptToolGateway(scripted, ToolMode.NATIVE).turn(request(tools))
@@ -161,7 +161,7 @@ class PromptToolGatewayTest {
                     ChatMessage(role = "user", content = "like the posts"),
                     ChatMessage(
                         role = "assistant",
-                        toolCalls = listOf(ToolCall("c1", FunctionCall("click", """{"ref":3}""")))
+                        toolCalls = listOf(ToolCall(id = "c1", function = FunctionCall("click", """{"ref":3}""")))
                     ),
                     ChatMessage(role = "tool", content = "liked 7 posts", toolCallId = "c1")
                 )
