@@ -52,6 +52,9 @@ class AgentSettingsE2eTest {
 
     @Before
     fun setUp() {
+        // Determinism: the runner's shared IP makes every fresh-profile boot
+        // arm the organic network warning — suppress it (see E2eDeterminism).
+        E2eDeterminism.suppressOrganicNetworkWarnings()
         server = MockWebServer()
         // Path-routed dispatcher (NOT a strict response queue): the
         // verification-driven flow may click Fetch several times and the
@@ -443,7 +446,7 @@ class AgentSettingsE2eTest {
         } else {
             assertTrue(
                 "First-run welcome should appear",
-                hasText("Create Profile", 20_000)
+                hasText("Create Profile", 90_000)
             )
             var dialogOpen = false
             for (attempt in 1..2) {

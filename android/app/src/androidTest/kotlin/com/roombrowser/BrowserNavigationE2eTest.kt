@@ -53,6 +53,9 @@ class BrowserNavigationE2eTest {
 
     @Before
     fun setUp() {
+        // Determinism: the runner's shared IP makes every fresh-profile boot
+        // arm the organic network warning — suppress it (see E2eDeterminism).
+        E2eDeterminism.suppressOrganicNetworkWarnings()
         server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
@@ -243,7 +246,7 @@ class BrowserNavigationE2eTest {
         device.waitForIdle(2_000)
         assertTrue(
             "First-run welcome (or profile list) should appear",
-            hasText("Create Profile", 20_000) || hasText("OPEN", 10_000)
+            hasText("Create Profile", 90_000) || hasText("OPEN", 10_000)
         )
         val alreadyHasProfile = device.findObjects(By.text("OPEN")).isNotEmpty()
         if (!alreadyHasProfile) {

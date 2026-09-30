@@ -231,9 +231,12 @@ jobs:
             # The runner executes EACH LINE via its own `sh -c` — multi-line
             # if/fi blocks are a syntax error (CI-proven twice). Keep the
             # failure fallback on ONE POSIX-valid line: on gradle failure,
-            # dump the device logcat (crash buffer + tail) into the workspace
-            # so the e2e-reports artifact answers WHY, then exit non-zero.
-            cd android && ./gradlew connectedDebugAndroidTest --console=plain || (adb exec-out logcat -d -b crash > /home/runner/work/room-browser/e2e-logcat-crash.txt; adb exec-out logcat -d -t 2000 > /home/runner/work/room-browser/e2e-logcat-tail.txt; exit 1)
+            # dump the FULL device logcat (crash buffer + complete main
+            # buffer + a UI hierarchy snapshot) into the workspace so the
+            # e2e-reports artifact answers WHY from any point of the run —
+            # a 2000-line tail missed the actual failure window once — then
+            # exit non-zero.
+            cd android && ./gradlew connectedDebugAndroidTest --console=plain || (adb exec-out logcat -d -b crash > /home/runner/work/room-browser/e2e-logcat-crash.txt; adb exec-out logcat -d > /home/runner/work/room-browser/e2e-logcat-full.txt; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml /home/runner/work/room-browser/ >/dev/null 2>&1; exit 1)
 
       - name: Upload instrumented test reports
         if: always()
@@ -243,7 +246,8 @@ jobs:
           path: |
             android/app/build/outputs/androidTest-results/
             /home/runner/work/room-browser/e2e-logcat-crash.txt
-            /home/runner/work/room-browser/e2e-logcat-tail.txt
+            /home/runner/work/room-browser/e2e-logcat-full.txt
+            /home/runner/work/room-browser/e2e-ui.xml
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------

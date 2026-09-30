@@ -143,7 +143,7 @@ class ThemeStudioE2eTest {
         device.waitForIdle(2_000)
         assertTrue(
             "First-run welcome (or profile list) should appear",
-            hasText("Create Profile", 20_000) || hasText("OPEN", 10_000)
+            hasText("Create Profile", 90_000) || hasText("OPEN", 10_000)
         )
         if (device.findObjects(By.text("OPEN")).isNotEmpty()) {
             assertTrue("OPEN must be clickable", clickText("OPEN", 8_000))
@@ -197,6 +197,9 @@ class ThemeStudioE2eTest {
 
     @Test
     fun theme_studio_opens_previews_and_applies_per_profile() {
+        // Determinism: the runner's shared IP arms the organic network
+        // warning on fresh-profile boots — suppress it (E2eDeterminism).
+        E2eDeterminism.suppressOrganicNetworkWarnings()
         assertTrue("Engine must be reachable", openEngineFromLauncher())
 
         // ---- 1. Open the studio from the page menu ------------------------

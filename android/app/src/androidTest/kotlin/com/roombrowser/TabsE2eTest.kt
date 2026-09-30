@@ -62,6 +62,9 @@ class TabsE2eTest {
 
     @Before
     fun setUp() {
+        // Determinism: the runner's shared IP makes every fresh-profile boot
+        // arm the organic network warning — suppress it (see E2eDeterminism).
+        E2eDeterminism.suppressOrganicNetworkWarnings()
         server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
@@ -249,7 +252,7 @@ class TabsE2eTest {
         // "add another" button (below the cards — scroll-aware).
         assertTrue(
             "Profile list or first-run state must appear",
-            hasText("Your profiles", 20_000) || hasText("Create Profile", 20_000)
+            hasText("Your profiles", 90_000) || hasText("Create Profile", 90_000)
         )
         assertTrue(
             "Create Profile affordance must be reachable",

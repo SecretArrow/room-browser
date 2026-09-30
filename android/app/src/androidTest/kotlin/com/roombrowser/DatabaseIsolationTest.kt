@@ -123,7 +123,7 @@ class DatabaseIsolationTest {
      * other profile's vault stays intact.
      */
     @Test
-    fun credentials_are_scoped_and_encrypted_per_profile() = runBlocking {
+    fun credentials_are_scoped_and_encrypted_per_profile() = runBlocking<Unit> {
         val a = ProfileId(profileA)
         val b = ProfileId(profileB)
         val repo = CredentialRepository(db.credentialDao(), VaultCrypto)
@@ -233,7 +233,7 @@ class DatabaseIsolationTest {
      * "shoot island …" phrase for profile B.
      */
     @Test
-    fun wallet_tables_are_scoped_and_encrypted_per_profile() = runBlocking {
+    fun wallet_tables_are_scoped_and_encrypted_per_profile() = runBlocking<Unit> {
         val a = ProfileId(profileA)
         val b = ProfileId(profileB)
         val repo = WalletRepository(

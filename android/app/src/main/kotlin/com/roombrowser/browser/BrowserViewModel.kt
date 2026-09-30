@@ -421,15 +421,34 @@ class BrowserViewModel(
             graph.profileRepo.touch(profileId, System.currentTimeMillis())
             loadSiteSettingsSnapshot()
 
-            // Wallet engine follows the SAME profile binding as everything
-            // else in this process. Bind BEFORE tabs restore so an early
-            // dApp call (restored page auto-connecting) meets a bound
-            // engine. NOT unbound in onCleared: the ':browser' process is
+            // Wallet engine binding — DEFERRED off the startup path. The
+            // first wallet access class-loads the whole crypto stack
+            // (web3j/bouncycastle/jackson ≈ 10 MB of dex); doing that inside
+            // initialize() stalled the ':browser' process's first frames on
+            // low-end devices (the CI emulator never composed the browser
+            // chrome within 40 s). Binding 2.5 s after restore, on a
+            // background dispatcher, keeps engine boot at pre-wallet speed;
+            // the classes load while the user reads the start page. A dApp
+            // request in that window settles DISCONNECTED once and the page
+            // retries — pages always do.
+            // NOT unbound in onCleared: the ':browser' process is
             // one-profile-per-process and dies with this ViewModel's
             // activity — an unbind here could yank the session out from
             // under WalletActivity, which shares the same engine instance.
-            graph.walletEngine.bind(profileId)
-            observeWalletEvents()
+            viewModelScope.launch(Dispatchers.Default) {
+                delay(2_500)
+                // Heavy class load (web3j/BC/jackson) happens HERE, on a
+                // worker thread; bind()'s own state mutations and the event
+                // collectors stay on Main (the engine is main-thread
+                // confined by contract). observeWalletEvents is started
+                // HERE — reading the engine's flows at startup would trigger
+                // the same lazy class load the delay exists to avoid.
+                val engine = graph.walletEngine
+                withContext(Dispatchers.Main) {
+                    engine.bind(profileId)
+                    observeWalletEvents()
+                }
+            }
 
             // Restore persisted tabs: the first tab's engine is built RIGHT HERE
             // via selectTab (lazily, with a reload) — previously the restored
@@ -1428,13 +1447,24 @@ class BrowserViewModel(
         private set
 
     /**
-     * The process-wide wallet engine (bound to this profile in
-     * [initialize]). Exposed so BrowserScreen can render the dApp
-     * confirmation sheets for [com.roombrowser.browser.wallet.WalletEngineApi.pendingRequests]
-     * — the engine IS the state holder; there is no parallel copy here.
+     * The process-wide wallet engine (bound to this profile in [initialize],
+     * DEFERRED — see there). Exposed for BrowserScreen to render the dApp
+     * confirmation sheets. IMPORTANT: composition reads [walletRequests],
+     * NOT the engine's own flow — touching `graph.walletEngine` at first
+     * composition would lazy-load the whole crypto stack (web3j/BC/jackson)
+     * on the UI thread and stall the first frames; this accessor is only
+     * safe to call once a pending request exists (post-bind).
      */
     val walletEngine: com.roombrowser.browser.wallet.WalletEngineApi
         get() = graph.walletEngine
+
+    /**
+     * Mirror of the engine's pending dApp request queue, populated only
+     * after the deferred bind. Starts empty and stays empty for profiles
+     * with no wallet activity — reading it in composition never triggers
+     * the crypto-stack class load.
+     */
+    val walletRequests = kotlinx.coroutines.flow.MutableStateFlow<List<com.roombrowser.browser.wallet.DappRequest>>(emptyList())
 
     /**
      * Push wallet state changes to every live page: chainChanged (EVM hex
@@ -1450,6 +1480,12 @@ class BrowserViewModel(
         lastWalletChainIds = emptyMap()
         lastWalletEvmAddresses = emptyList()
         walletEventsJob = viewModelScope.launch {
+            // Mirror the pending-request queue for composition (see
+            // [walletRequests] — the UI must not touch the engine directly
+            // before the bind).
+            launch {
+                walletEngine.pendingRequests.collect { walletRequests.value = it }
+            }
             launch {
                 walletEngine.activeNetworks.collect { active ->
                     if (active != lastWalletChainIds) {

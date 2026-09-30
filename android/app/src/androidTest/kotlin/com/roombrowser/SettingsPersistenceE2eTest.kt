@@ -178,7 +178,7 @@ class SettingsPersistenceE2eTest {
         device.waitForIdle(2_000)
         assertTrue(
             "Profile list or first-run state must appear",
-            hasText("Your profiles", 20_000) || hasText("Create Profile", 20_000)
+            hasText("Your profiles", 90_000) || hasText("Create Profile", 90_000)
         )
         assertTrue("Create Profile affordance must be reachable", clickCreateScrollAware())
         assertTrue("Create-profile dialog should open", hasText("Cancel", 8_000))
@@ -308,6 +308,9 @@ class SettingsPersistenceE2eTest {
 
     @Test
     fun dns_language_and_screen_size_persist_across_engine_restart() {
+        // Determinism: the runner's shared IP arms the organic network
+        // warning on fresh-profile boots — suppress it (E2eDeterminism).
+        E2eDeterminism.suppressOrganicNetworkWarnings()
         assertTrue("Engine must come up on a fresh profile", bootstrapFreshEngine())
 
         // ---- 1. Profile settings screen -----------------------------------

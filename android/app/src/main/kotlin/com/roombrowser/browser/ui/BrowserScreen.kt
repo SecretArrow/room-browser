@@ -401,8 +401,12 @@ fun BrowserScreen(
     // a confirmation sheet. The sheet itself settles the request through
     // engine.decideDappRequest (Approve or Reject — outside-tap/back =
     // reject), after which it leaves composition on its own; onDismiss is
-    // deliberately empty for that reason.
-    val pendingWalletRequests by viewModel.walletEngine.pendingRequests.collectAsState()
+    // deliberately empty for that reason. The queue is read through the
+    // ViewModel's MIRROR flow (walletRequests) — reading the engine's own
+    // flow here would lazy-load the crypto stack during first composition
+    // and stall the first frames; the engine reference is only resolved
+    // inside the non-empty branch, i.e. strictly after the deferred bind.
+    val pendingWalletRequests by viewModel.walletRequests.collectAsState()
     pendingWalletRequests.firstOrNull()?.let { request ->
         WalletDappRequestSheet(
             request = request,

@@ -169,7 +169,7 @@ class NetworkWarningActivityE2eTest {
         device.waitForIdle(2_000)
         assertTrue(
             "Profile list or first-run state must appear",
-            hasText("Your profiles", 20_000) || hasText("Create Profile", 20_000)
+            hasText("Your profiles", 90_000) || hasText("Create Profile", 90_000)
         )
         assertTrue("Create Profile affordance must be reachable", clickScrollAwareCreate())
         assertTrue("Create-profile dialog should open", hasText("Cancel", 8_000))
@@ -260,6 +260,9 @@ class NetworkWarningActivityE2eTest {
 
     @Test
     fun network_warning_decisions_continue_back_and_switch() {
+        // Determinism: the runner's shared IP arms the organic network
+        // warning on fresh-profile boots — suppress it (E2eDeterminism).
+        E2eDeterminism.suppressOrganicNetworkWarnings()
         assertTrue("Engine must come up on a fresh profile", bootstrapFreshEngine())
         val profileId = activeProfileId()
 

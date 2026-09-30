@@ -147,6 +147,9 @@ class LocalAiE2eTest {
 
     @Before
     fun setUp() {
+        // Determinism: the runner's shared IP makes every fresh-profile boot
+        // arm the organic network warning — suppress it (see E2eDeterminism).
+        E2eDeterminism.suppressOrganicNetworkWarnings()
         server = MockWebServer()
         fake = OllamaFake(libraryHtml)
         // Kotlin property syntax — OkHttp 4.x MockWebServer.dispatcher is a

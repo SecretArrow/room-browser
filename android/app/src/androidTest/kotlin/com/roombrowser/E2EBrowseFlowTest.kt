@@ -100,7 +100,7 @@ class E2EBrowseFlowTest {
         device.waitForIdle(2_000)
         assertTrue(
             "First-run welcome (or profile list) should appear",
-            hasText("Create Profile", 20_000) || hasText("OPEN", 10_000)
+            hasText("Create Profile", 90_000) || hasText("OPEN", 10_000)
         )
 
         val alreadyHasProfile = device.findObjects(By.text("OPEN")).isNotEmpty()
@@ -177,6 +177,9 @@ class E2EBrowseFlowTest {
 
     @Test
     fun first_run_create_profile_and_open_browser_engine() {
+        // Determinism: the runner's shared IP arms the organic network
+        // warning on fresh-profile boots — suppress it (E2eDeterminism).
+        E2eDeterminism.suppressOrganicNetworkWarnings()
         assertTrue(
             "Browser UI (omnibox / homepage) must appear in the :browser process",
             openEngineFromLauncher()
@@ -194,6 +197,9 @@ class E2EBrowseFlowTest {
      */
     @Test
     fun system_back_backgrounds_app_without_killing_engine() {
+        // Determinism: the runner's shared IP arms the organic network
+        // warning on fresh-profile boots — suppress it (E2eDeterminism).
+        E2eDeterminism.suppressOrganicNetworkWarnings()
         assertTrue("Engine must be reachable from the launcher", openEngineFromLauncher())
 
         // ---- 1. First Back press: homepage has no history -> background ---

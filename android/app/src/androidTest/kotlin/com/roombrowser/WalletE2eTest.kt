@@ -129,6 +129,9 @@ class WalletE2eTest {
 
     @Before
     fun setUp() {
+        // Determinism: the runner's shared IP makes every fresh-profile boot
+        // arm the organic network warning — suppress it (see E2eDeterminism).
+        E2eDeterminism.suppressOrganicNetworkWarnings()
         server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
@@ -202,15 +205,29 @@ class WalletE2eTest {
                     });
                   }
                   setTimeout(function () {
-                    roomConnect('$pageId').then(
-                      function (accounts) {
-                        var text = (accounts && accounts.join) ? accounts.join(',') : String(accounts);
-                        document.getElementById('out').innerText = '$marker' + text;
-                      },
-                      function (err) {
-                        document.getElementById('out').innerText = 'ERR:' + ((err && err.code) ? err.code : 'none');
-                      }
-                    );
+                    // Real dApps retry transient provider failures; the
+                    // wallet engine binds ~2.5s after the engine boots
+                    // (deferred off the startup path), so a too-early call
+                    // settles DISCONNECTED (4900) once. Retry those.
+                    var attempt = 0;
+                    function tryConnect() {
+                      attempt++;
+                      roomConnect('$pageId').then(
+                        function (accounts) {
+                          var text = (accounts && accounts.join) ? accounts.join(',') : String(accounts);
+                          document.getElementById('out').innerText = '$marker' + text;
+                        },
+                        function (err) {
+                          var code = (err && err.code) ? err.code : 0;
+                          if (code === 4900 && attempt < 12) {
+                            setTimeout(tryConnect, 1000);
+                          } else {
+                            document.getElementById('out').innerText = 'ERR:' + ((err && err.code) ? err.code : 'none');
+                          }
+                        }
+                      );
+                    }
+                    tryConnect();
                   }, $delayMs);
                 </script>
                 </body></html>
@@ -389,7 +406,7 @@ class WalletE2eTest {
         device.waitForIdle(2_000)
         assertTrue(
             "Profile list or first-run state must appear",
-            hasText("Your profiles", 20_000) || hasText("Create Profile", 20_000)
+            hasText("Your profiles", 90_000) || hasText("Create Profile", 90_000)
         )
         assertTrue(
             "Create Profile affordance must be reachable",
