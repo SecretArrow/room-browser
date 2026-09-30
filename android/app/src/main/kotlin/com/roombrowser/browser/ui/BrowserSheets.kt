@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DesktopWindows
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FindInPage
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
@@ -238,6 +239,8 @@ fun PageActionsSheet(
     onOpenAgentSettings: () -> Unit,
     onOpenAgentSessions: () -> Unit,
     onOpenBookmarks: () -> Unit,
+    onOpenDownloads: () -> Unit,
+    onOpenHistory: () -> Unit,
     onShowQuickSwitcher: () -> Unit,
     onShowShields: () -> Unit = {}
 ) {
@@ -297,6 +300,8 @@ fun PageActionsSheet(
                 onDismiss()
             }
             SheetAction(Icons.Filled.StarBorder, "Bookmarks") { onOpenBookmarks(); onDismiss() }
+            SheetAction(Icons.Filled.Download, "Downloads") { onOpenDownloads(); onDismiss() }
+            SheetAction(Icons.Filled.History, "History") { onOpenHistory(); onDismiss() }
 
             SheetSectionLabel("Appearance")
             SheetAction(Icons.Filled.Palette, "Theme studio") {

@@ -31,8 +31,14 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
 - **Privacy dashboard** — statistics recorded exclusively from real blocking events.
 - **Tabs** — grid/list, private tabs, groups, pin, move, duplicate, reopen closed,
   per-profile persistence and lazy restore.
-- **Bookmarks / History / Downloads** — fully profile-scoped; downloads with
-  pause/resume/retry and correct scoped-storage usage.
+- **Bookmarks / History / Downloads** — fully profile-scoped; the download
+  manager pauses, resumes, retries and cancels from either the list or the
+  progress notification, copies the source link, and shows per-item details
+  (size on disk vs. total, percentage, live speed and ETA, MIME type, the
+  saved path, timestamps). Resume is HTTP-Range and verified against the
+  server's `Content-Range` — see "Resume correctness" below. Storage is
+  scoped-correct throughout: MediaStore on API 29+, the legacy public
+  Downloads directory on API 28.
 - **DNS privacy** — per-profile and global DoH/DoT configuration for app
   connections (see honest limitations below).
 - **Device identity manager** — every profile presents a real Android handset
@@ -154,6 +160,28 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
   backgrounds the app instantly. JavaScript is NEVER disabled by default
   (platform-default-off is explicitly overridden from profile settings,
   whose own default is on — guarded by a unit test).
+
+## Download resume correctness
+
+A resumed download is only ever spliced onto bytes the server actually sent.
+`DownloadPlanner` reads the response before a single byte is written, and the
+part file is opened with the append decision already made — the previous
+behaviour opened the file for truncation first and decided afterwards, so a
+"resume" silently emptied the file it was continuing. Specifically:
+
+- a `200` to a Range request means the server ignored the range and is
+  sending the whole file, so the transfer restarts from zero rather than
+  appending a second copy;
+- a `206` whose `Content-Range` start is not the offset requested is
+  refetched, never appended — the bytes on disk and the bytes in the
+  response would not join;
+- a `206` with a missing or unparsable `Content-Range` is refetched rather
+  than trusted, because the append offset cannot be known without it.
+
+The rules live in `core/domain` (`DownloadPlanner`) with a dedicated test per
+rule, so the corruption cannot return unnoticed, and the total is taken from
+`Content-Range` when the server states it — `Content-Length` of a partial
+response is the remainder, not the file.
 
 ## Honest limitations (no false claims)
 

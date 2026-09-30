@@ -1,5 +1,6 @@
 package com.roombrowser.browser.ui
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,6 +26,7 @@ import androidx.compose.foundation.lazy.items as listItems
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -38,6 +40,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -45,6 +48,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -59,11 +64,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.StatCategories
+import com.roombrowser.data.db.DownloadEntity
 import com.roombrowser.data.repo.DownloadStatus
+import com.roombrowser.domain.download.DownloadFormat
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomCard
@@ -571,12 +581,23 @@ private fun LibraryListRow(
     }
 }
 
-/** Downloads screen with pause/resume/cancel/retry/open/share/delete. */
+/**
+ * Downloads screen.
+ *
+ * Per-item actions are the contextual ones inline (Pause/Cancel, Resume, Retry,
+ * Open/Share) with the rest behind an overflow menu, and tapping a row opens the
+ * full record — the twelve columns the list row has no space for.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DownloadsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
     val downloads = viewModel.downloads
+    val speeds = viewModel.downloadSpeeds
     val extras = LocalRoomExtras.current
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    var detailsFor by remember { mutableStateOf<Long?>(null) }
+
     Column(Modifier.fillMaxSize().background(extras.background)) {
         LibraryTopBar(title = "Downloads", onClose = onClose)
         if (downloads.isEmpty()) {
@@ -588,31 +609,73 @@ fun DownloadsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             ) {
                 listItems(downloads, key = { it.id }) { download ->
                     DownloadRow(
-                        viewModel = viewModel,
-                        id = download.id,
-                        fileName = download.fileName,
-                        status = download.status,
-                        downloadedBytes = download.downloadedBytes,
-                        totalBytes = download.totalBytes,
-                        error = download.error
+                        download = download,
+                        speed = speeds[download.id],
+                        onPause = { viewModel.pauseDownload(download.id) },
+                        onResume = { viewModel.resumeDownload(download.id) },
+                        onCancel = { viewModel.cancelDownload(download.id) },
+                        onRetry = { viewModel.retryDownload(download.id) },
+                        onOpen = { viewModel.openDownload(download.id) },
+                        onShare = { viewModel.shareDownload(download.id) },
+                        onCopyLink = { copyDownloadLink(clipboard, context, download.url) },
+                        onDelete = { viewModel.deleteDownload(download.id) },
+                        onDetails = { detailsFor = download.id }
                     )
                 }
             }
         }
     }
+
+    // Keyed by id rather than holding the entity, so the sheet tracks the live
+    // row — a download that finishes while its details are open says so instead
+    // of freezing on the state it had when it was tapped.
+    val shown = downloads.firstOrNull { it.id == detailsFor }
+    if (shown != null) {
+        DownloadDetailsSheet(
+            download = shown,
+            speed = speeds[shown.id],
+            onDismiss = { detailsFor = null },
+            onCopyLink = { copyDownloadLink(clipboard, context, shown.url) },
+            onPause = { viewModel.pauseDownload(shown.id) },
+            onResume = { viewModel.resumeDownload(shown.id) },
+            onCancel = { viewModel.cancelDownload(shown.id) },
+            onRetry = { viewModel.retryDownload(shown.id) },
+            onOpen = { viewModel.openDownload(shown.id) },
+            onShare = { viewModel.shareDownload(shown.id) },
+            onDelete = { viewModel.deleteDownload(shown.id); detailsFor = null }
+        )
+    }
+}
+
+private fun copyDownloadLink(
+    clipboard: androidx.compose.ui.platform.ClipboardManager,
+    context: android.content.Context,
+    url: String
+) {
+    clipboard.setText(AnnotatedString(url))
+    Toast.makeText(context, "Link copied", Toast.LENGTH_SHORT).show()
 }
 
 @Composable
 private fun DownloadRow(
-    viewModel: BrowserViewModel,
-    id: Long,
-    fileName: String,
-    status: String,
-    downloadedBytes: Long,
-    totalBytes: Long,
-    error: String?
+    download: DownloadEntity,
+    speed: Long?,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onCancel: () -> Unit,
+    onRetry: () -> Unit,
+    onOpen: () -> Unit,
+    onShare: () -> Unit,
+    onCopyLink: () -> Unit,
+    onDelete: () -> Unit,
+    onDetails: () -> Unit
 ) {
     val extras = LocalRoomExtras.current
+    val status = download.status
+    val downloaded = download.downloadedBytes
+    val total = download.totalBytes
+    var menuOpen by remember { mutableStateOf(false) }
+
     RoomCard(Modifier.fillMaxWidth(), withGradient = false) {
         Column(
             Modifier
@@ -631,44 +694,58 @@ private fun DownloadRow(
                 }
                 Spacer(Modifier.width(12.dp))
                 Text(
-                    fileName,
+                    download.fileName,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.bodyLarge,
                     color = extras.textPrimary,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onDetails() }
                 )
+                Box {
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "Download options", tint = extras.textSecondary)
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Details") },
+                            onClick = { menuOpen = false; onDetails() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Copy link") },
+                            onClick = { menuOpen = false; onCopyLink() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Delete") },
+                            onClick = { menuOpen = false; onDelete() }
+                        )
+                    }
+                }
             }
-            when {
-                status == DownloadStatus.RUNNING.name && totalBytes > 0 ->
+            if (status == DownloadStatus.RUNNING.name) {
+                val percent = DownloadFormat.percent(downloaded, total)
+                if (percent != null) {
                     LinearProgressIndicator(
-                        progress = { (downloadedBytes.toFloat() / totalBytes).coerceIn(0f, 1f) },
+                        progress = { percent / 100f },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(top = 12.dp, bottom = 4.dp)
                     )
-                status == DownloadStatus.RUNNING.name -> LinearProgressIndicator(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 12.dp, bottom = 4.dp)
-                )
-            }
-            val statusText = when (status) {
-                DownloadStatus.QUEUED.name -> "Queued"
-                DownloadStatus.RUNNING.name -> "${downloadedBytes / 1024} KB" +
-                    (if (totalBytes > 0) " / ${totalBytes / 1024} KB" else "")
-                DownloadStatus.PAUSED.name -> "Paused at ${downloadedBytes / 1024} KB"
-                DownloadStatus.COMPLETED.name -> "Completed"
-                DownloadStatus.FAILED.name -> "Failed${error?.let { ": $it" } ?: ""}"
-                DownloadStatus.CANCELLED.name -> "Cancelled"
-                else -> status
+                } else {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp, bottom = 4.dp)
+                    )
+                }
             }
             Text(
-                statusText,
-                maxLines = 1,
+                statusLine(download, speed),
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodySmall,
-                color = extras.textSecondary,
+                color = if (status == DownloadStatus.FAILED.name) MaterialTheme.colorScheme.error else extras.textSecondary,
                 modifier = Modifier.padding(top = 6.dp)
             )
             Row(
@@ -680,37 +757,237 @@ private fun DownloadRow(
             ) {
                 when (status) {
                     DownloadStatus.RUNNING.name, DownloadStatus.QUEUED.name -> {
-                        TextButton(
-                            onClick = { viewModel.pauseDownload(id) }
-                        ) { Text("Pause") }
-                        TextButton(
-                            onClick = { viewModel.cancelDownload(id) }
-                        ) { Text("Cancel") }
+                        TextButton(onClick = onPause) { Text("Pause") }
+                        TextButton(onClick = onCancel) { Text("Cancel") }
                     }
                     DownloadStatus.PAUSED.name -> {
-                        TextButton(
-                            onClick = { viewModel.resumeDownload(id) }
-                        ) { Text("Resume") }
+                        TextButton(onClick = onResume) { Text("Resume") }
+                        TextButton(onClick = onCancel) { Text("Cancel") }
                     }
                     DownloadStatus.FAILED.name, DownloadStatus.CANCELLED.name -> {
-                        TextButton(
-                            onClick = { viewModel.retryDownload(id) }
-                        ) { Text("Retry") }
+                        TextButton(onClick = onRetry) { Text("Retry") }
                     }
                     DownloadStatus.COMPLETED.name -> {
-                        TextButton(
-                            onClick = { viewModel.openDownload(id) }
-                        ) { Text("Open") }
-                        TextButton(
-                            onClick = { viewModel.shareDownload(id) }
-                        ) { Text("Share") }
+                        TextButton(onClick = onOpen) { Text("Open") }
+                        TextButton(onClick = onShare) { Text("Share") }
                     }
                 }
-                TextButton(
-                    onClick = { viewModel.deleteDownload(id) }
-                ) { Text("Delete") }
             }
         }
+    }
+}
+
+/**
+ * One line of state for a row: what happened, how far along, how fast, and how
+ * much longer — omitting whatever is not knowable rather than printing a zero.
+ */
+private fun statusLine(download: DownloadEntity, speed: Long?): String {
+    val downloaded = download.downloadedBytes
+    val total = download.totalBytes
+    return when (download.status) {
+        DownloadStatus.QUEUED.name -> "Queued"
+        DownloadStatus.RUNNING.name -> {
+            val parts = mutableListOf(sizeLine(downloaded, total))
+            DownloadFormat.percent(downloaded, total)?.let { parts.add("$it%") }
+            DownloadFormat.speed(speed ?: 0)?.let { parts.add(it) }
+            DownloadFormat.etaSeconds(downloaded, total, speed ?: 0)
+                ?.let { DownloadFormat.eta(it) }
+                ?.let { parts.add("$it left") }
+            parts.joinToString(" · ")
+        }
+        DownloadStatus.PAUSED.name -> "Paused · " + sizeLine(downloaded, total)
+        DownloadStatus.COMPLETED.name -> "Completed · " + DownloadFormat.bytes(
+            if (total > 0) total else downloaded
+        )
+        DownloadStatus.FAILED.name -> "Failed" + (download.error?.let { ": $it" } ?: "")
+        DownloadStatus.CANCELLED.name -> if (downloaded > 0) {
+            "Cancelled · " + sizeLine(downloaded, total)
+        } else {
+            "Cancelled"
+        }
+        else -> download.status
+    }
+}
+
+private fun sizeLine(downloaded: Long, total: Long): String =
+    if (total > 0) "${DownloadFormat.bytes(downloaded)} / ${DownloadFormat.bytes(total)}"
+    else "${DownloadFormat.bytes(downloaded)} downloaded"
+
+/** The full record for one download — every column the list row cannot show. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DownloadDetailsSheet(
+    download: DownloadEntity,
+    speed: Long?,
+    onDismiss: () -> Unit,
+    onCopyLink: () -> Unit,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onCancel: () -> Unit,
+    onRetry: () -> Unit,
+    onOpen: () -> Unit,
+    onShare: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val extras = LocalRoomExtras.current
+    val downloaded = download.downloadedBytes
+    val total = download.totalBytes
+    val percent = DownloadFormat.percent(downloaded, total)
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 20.dp, end = 20.dp, bottom = 28.dp)
+        ) {
+            Text(
+                download.fileName,
+                style = MaterialTheme.typography.titleMedium,
+                color = extras.textPrimary
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                DownloadStatusLabels.of(download.status),
+                style = MaterialTheme.typography.labelLarge,
+                color = if (download.status == DownloadStatus.FAILED.name)
+                    MaterialTheme.colorScheme.error else extras.primary
+            )
+
+            if (download.status == DownloadStatus.RUNNING.name) {
+                val eta = DownloadFormat.etaSeconds(downloaded, total, speed ?: 0)
+                Spacer(Modifier.height(12.dp))
+                if (percent != null) {
+                    LinearProgressIndicator(progress = { percent / 100f }, modifier = Modifier.fillMaxWidth())
+                } else {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+                if (eta != null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "${DownloadFormat.eta(eta)} remaining at ${DownloadFormat.speed(speed ?: 0) ?: "—"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = extras.textSecondary
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+            DetailRow("Size", if (total > 0) DownloadFormat.bytes(total) else "Unknown")
+            DetailRow("Downloaded", DownloadFormat.bytes(downloaded))
+            DetailRow("Progress", percent?.let { "$it%" } ?: "Unknown")
+            if (download.status == DownloadStatus.RUNNING.name) {
+                DetailRow("Speed", DownloadFormat.speed(speed ?: 0) ?: "—")
+            }
+            DetailRow("Type", download.mimeType)
+            DetailRow("Link", download.url, selectable = true)
+            if (download.destination.isNotBlank()) {
+                DetailRow("Saved to", download.destination, selectable = true)
+            }
+            DetailRow("Started", formatTimestamp(download.createdAt) ?: "Unknown")
+            formatTimestamp(download.completedAt)?.let { DetailRow("Completed", it) }
+            // takeIf rather than a null check: `error` is a public property of a
+            // class in another module, so the compiler will not smart-cast it.
+            download.error?.takeIf { it.isNotBlank() }?.let { DetailRow("Error", it) }
+
+            Spacer(Modifier.height(16.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                when (download.status) {
+                    DownloadStatus.RUNNING.name, DownloadStatus.QUEUED.name -> {
+                        Button(onClick = onPause) { Text("Pause") }
+                        OutlinedButton(onClick = onCancel) { Text("Cancel") }
+                    }
+                    DownloadStatus.PAUSED.name -> {
+                        Button(onClick = onResume) { Text("Resume") }
+                        OutlinedButton(onClick = onCancel) { Text("Cancel") }
+                    }
+                    DownloadStatus.FAILED.name, DownloadStatus.CANCELLED.name -> {
+                        Button(onClick = onRetry) { Text("Retry") }
+                    }
+                    DownloadStatus.COMPLETED.name -> {
+                        Button(onClick = onOpen) { Text("Open") }
+                        OutlinedButton(onClick = onShare) { Text("Share") }
+                    }
+                }
+            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedButton(onClick = onCopyLink) { Text("Copy link") }
+                TextButton(onClick = onDelete) { Text("Delete") }
+            }
+        }
+    }
+}
+
+/**
+ * One label/value line of the details sheet.
+ *
+ * [selectable] wraps the value in a `SelectionContainer` so a long link or a
+ * long file path can be dragged out by hand — the sheet's own "Copy link"
+ * button copies the whole URL, which is not what you want when the interesting
+ * part is in the middle of it.
+ */
+@Composable
+private fun DetailRow(label: String, value: String, selectable: Boolean = false) {
+    val extras = LocalRoomExtras.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            color = extras.textSecondary,
+            modifier = Modifier.width(96.dp)
+        )
+        Spacer(Modifier.width(12.dp))
+        if (selectable) {
+            SelectionContainer(Modifier.weight(1f)) {
+                Text(
+                    value,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = extras.textPrimary
+                )
+            }
+        } else {
+            Text(
+                value,
+                style = MaterialTheme.typography.bodySmall,
+                color = extras.textPrimary,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+/** A timestamp the user can read, or null when there is no time to show. */
+private fun formatTimestamp(millis: Long?): String? {
+    if (millis == null || millis <= 0L) return null
+    return java.text.SimpleDateFormat("d MMM yyyy, HH:mm", java.util.Locale.getDefault())
+        .format(java.util.Date(millis))
+}
+
+/** Status names as prose. */
+private object DownloadStatusLabels {
+    fun of(status: String): String = when (status) {
+        DownloadStatus.QUEUED.name -> "Queued"
+        DownloadStatus.RUNNING.name -> "Downloading"
+        DownloadStatus.PAUSED.name -> "Paused"
+        DownloadStatus.COMPLETED.name -> "Completed"
+        DownloadStatus.FAILED.name -> "Failed"
+        DownloadStatus.CANCELLED.name -> "Cancelled"
+        else -> status
     }
 }
 

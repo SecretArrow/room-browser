@@ -301,6 +301,8 @@ fun BrowserScreen(
             onOpenAgentSettings = { launchAgentSettings(); showPageActions = false },
             onOpenAgentSessions = { launchAgentSessions(); showPageActions = false },
             onOpenBookmarks = { route = BrowserRoute.Bookmarks; showPageActions = false },
+            onOpenDownloads = { route = BrowserRoute.Downloads; showPageActions = false },
+            onOpenHistory = { route = BrowserRoute.History; showPageActions = false },
             onShowQuickSwitcher = { showQuickSwitcher = true; showPageActions = false },
             onShowShields = { showShields = true; showPageActions = false }
         )

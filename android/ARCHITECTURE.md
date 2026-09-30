@@ -85,6 +85,43 @@ resume / cancel / retry, duplicate-name handling, MediaStore Downloads
 publication (API 29+) or legacy public Downloads dir (API 28), and progress
 notifications with actions.
 
+One engine instance exists per `BrowserActivity` — that is, per profile, since
+a profile switch restarts the `:browser` process. It is a plain class owned by
+the ViewModel, not a Service: there is nothing to keep alive between
+transfers, and the queue is rebuilt on startup by `recover()`, which re-queues
+any row still marked `RUNNING` (the orphan of a process that died mid-download)
+instead of leaving it to lie about its state and hold a queue slot forever.
+`pump()` is profile-scoped (`activeFor(profileId)`) so one profile's engine can
+never start another profile's queued transfer.
+
+Correctness rules that are easy to get wrong and are therefore pinned by tests
+in `core/domain`:
+
+- **Resume offsets are planned, not assumed.** `DownloadPlanner.plan(...)`
+  decides the append offset from the response code and `Content-Range` before
+  the part file is opened. The file is opened with `append = plan.appendAt > 0`
+  — the old code opened it for truncation first and chose the mode afterwards,
+  which is why resuming used to restart the file from nothing.
+- **A server that ignores the range restarts the transfer** (`200` to a Range
+  request), and a `206` whose `Content-Range` is missing or starts somewhere
+  other than the requested offset is refetched rather than spliced.
+- **Progress and status are separate writes.** `updateProgress` carries only
+  byte counters and `updateStatus` only the status, so a progress tick racing a
+  pause cannot resurrect a stale status (a whole-row `copy()` would).
+- **A cancelled job still records its outcome.** The terminal write runs under
+  `withContext(NonCancellable)`, and `recordFailure` only writes when the row
+  still says `RUNNING`, so pause/cancel always win the race.
+- **Pause and cancel are cooperative.** OkHttp's blocking `read()` is not
+  interruptible, so the loop checks the `paused` / `cancelled` sets on every
+  progress tick and throws to unwind; the sets are `ConcurrentHashMap.newKeySet`
+  because the UI thread and the IO coroutines both touch them.
+
+Notification actions (Pause / Resume / Cancel / Retry / Open) are delivered by
+`DownloadActionReceiver`. A notification action can only arrive as a broadcast,
+so without that receiver the buttons were inert. The receiver is not exported —
+the PendingIntents name the package — and it no-ops when no engine is alive,
+which is the honest outcome for a notification left over from a dead process.
+
 ## Network identity (IP conflict warning)
 
 `NetworkIdentity` fetches the observed public IP from plain HTTPS endpoints

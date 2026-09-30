@@ -23,6 +23,15 @@
 - Backup format: round-trip, forward-compat, secret-free guarantee
 - DNS validation & effective-mode resolution
 - Download filename extraction/sanitization
+- Download resume planning (`DownloadPlannerTest`): a `200` to a Range request
+  falls back to a fresh transfer instead of splicing, a `206` starting at any
+  offset other than the one requested is refetched, a `206` with a missing or
+  malformed `Content-Range` is refetched rather than trusted, and the total is
+  read from `Content-Range` rather than from a partial `Content-Length`
+- Download formatting (`DownloadFormatTest`): byte sizes stay in the right
+  unit past 1024 boundaries (`a two gigabyte file does not read as two million
+  kilobytes`), percentage is absent rather than wrong when the total is
+  unknown, and speed/ETA degrade to absent instead of to a fabricated number
 
 ## The critical profile-isolation test (spec section 60)
 

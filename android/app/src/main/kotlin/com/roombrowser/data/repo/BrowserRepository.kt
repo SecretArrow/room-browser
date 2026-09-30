@@ -121,9 +121,22 @@ class BrowserRepository(private val db: AppDatabase) {
     suspend fun downloadsFor(profileId: ProfileId): List<DownloadEntity> =
         observeDownloads(profileId).first()
     suspend fun download(id: Long): DownloadEntity? = downloads.get(id)
-    suspend fun activeDownloads(): List<DownloadEntity> = downloads.active()
+    suspend fun activeDownloads(profileId: ProfileId): List<DownloadEntity> =
+        downloads.activeFor(profileId.value)
     suspend fun insertDownload(entry: DownloadEntity): Long = downloads.insert(entry)
     suspend fun updateDownload(entry: DownloadEntity) = downloads.update(entry)
+    suspend fun updateDownloadProgress(id: Long, downloaded: Long, total: Long) =
+        downloads.updateProgress(id, downloaded, total)
+    suspend fun updateDownloadStatus(id: Long, status: String, error: String?) =
+        downloads.updateStatus(id, status, error)
+    suspend fun completeDownload(
+        id: Long,
+        status: String,
+        destination: String,
+        downloaded: Long,
+        total: Long,
+        completedAt: Long
+    ) = downloads.updateCompleted(id, status, destination, downloaded, total, completedAt)
     suspend fun deleteDownload(id: Long) = downloads.delete(id)
 
     // ---------- Site permissions & settings ----------

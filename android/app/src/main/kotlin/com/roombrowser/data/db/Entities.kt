@@ -81,7 +81,17 @@ data class DownloadEntity(
     @ColumnInfo(name = "status") val status: String, // DownloadStatus.name
     @ColumnInfo(name = "error") val error: String? = null,
     @ColumnInfo(name = "created_at") val createdAt: Long,
-    @ColumnInfo(name = "completed_at") val completedAt: Long? = null
+    @ColumnInfo(name = "completed_at") val completedAt: Long? = null,
+    /**
+     * The User-Agent the transfer must present.
+     *
+     * Stored rather than held in memory because an interrupted download is
+     * re-queued when the engine is rebuilt (a profile switch, or the app coming
+     * back), and the profile it belongs to presents a device — a resume that
+     * went out under a different UA than the original request would be two
+     * identities fetching one file.
+     */
+    @ColumnInfo(name = "user_agent") val userAgent: String = ""
 )
 
 /** Per-profile, per-site permission decisions. */

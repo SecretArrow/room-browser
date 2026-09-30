@@ -140,6 +140,21 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!--
+          Download notification actions (Pause / Resume / Cancel / Retry / Open).
+          A notification action can only be delivered as a broadcast, and these
+          were being sent to nothing before this receiver existed. Not exported:
+          the PendingIntents set the package explicitly, so only this app can
+          reach it.
+        -->
+        <receiver
+            android:name=".browser.engine.DownloadActionReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.roombrowser.DOWNLOAD_ACTION" />
+            </intent-filter>
+        </receiver>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

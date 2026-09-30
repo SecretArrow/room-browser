@@ -131,6 +131,14 @@ class BrowserViewModel(
         private set
     var downloads by mutableStateOf<List<DownloadEntity>>(emptyList())
         private set
+
+    /**
+     * Live transfer rates, id -> bytes per second. Not persisted and not part
+     * of the download record: a speed is a measurement of a moment, and a stored
+     * one would be replayed to the user as if it were current.
+     */
+    var downloadSpeeds by mutableStateOf<Map<Long, Long>>(emptyMap())
+        private set
     var globalSettings by mutableStateOf(BrowserGlobalSettings())
         private set
     var dnsState by mutableStateOf<DnsMonitor.DnsState>(DnsMonitor.DnsState.System)
@@ -341,8 +349,15 @@ class BrowserViewModel(
             httpClient = dnsMonitor.apply(globalSettings, profile)
             agent.updateClient(httpClient)
             agent.start()
-            downloadEngine = DownloadEngine(getApplication(), browserRepo, httpClient)
+            downloadEngine = DownloadEngine(getApplication(), browserRepo, httpClient, profileId)
             downloadEngine.ensureChannels()
+            // Re-queue anything the previous engine left mid-flight and restart
+            // the queue — without this a download interrupted by a profile
+            // switch stayed at RUNNING forever and blocked every later one.
+            downloadEngine.recover()
+            viewModelScope.launch {
+                downloadEngine.speeds.collect { downloadSpeeds = it }
+            }
             appState.setActiveProfile(profileId.value)
             graph.profileRepo.touch(profileId, System.currentTimeMillis())
             loadSiteSettingsSnapshot()
@@ -644,7 +659,9 @@ class BrowserViewModel(
         webView.webChromeClient = webChromeClient
         webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
             val name = com.roombrowser.browser.engine.DownloadEngine.guessFileName(url, contentDisposition, mimeType)
-            download(url, name, mimeType)
+            // The WebView's own UA, not a fresh one: the download must present
+            // the same device identity as the page that linked to it.
+            download(url, name, mimeType, userAgent)
         }
         return webView
     }
@@ -775,9 +792,9 @@ class BrowserViewModel(
 
     // ---------- Downloads ----------
 
-    fun download(url: String, suggestedName: String, mime: String) {
+    fun download(url: String, suggestedName: String, mime: String, userAgent: String? = null) {
         if (::downloadEngine.isInitialized) {
-            downloadEngine.enqueue(profileId, url, suggestedName, mime, null)
+            downloadEngine.enqueue(url, suggestedName, mime, userAgent)
         }
     }
 

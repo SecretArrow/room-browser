@@ -150,14 +150,51 @@ interface DownloadDao {
     @Query("SELECT * FROM downloads WHERE id = :id")
     suspend fun get(id: Long): DownloadEntity?
 
-    @Query("SELECT * FROM downloads WHERE status IN ('QUEUED','RUNNING') ORDER BY created_at ASC")
-    suspend fun active(): List<DownloadEntity>
+    /**
+     * Queued and in-flight rows for ONE profile.
+     *
+     * The profile filter is the point: this feeds the engine's queue pump, and
+     * an unfiltered version let the active profile's engine start — and fetch —
+     * a download belonging to a different profile.
+     */
+    @Query(
+        "SELECT * FROM downloads WHERE profile_id = :profileId AND status IN ('QUEUED','RUNNING') " +
+            "ORDER BY created_at ASC"
+    )
+    suspend fun activeFor(profileId: String): List<DownloadEntity>
 
     @Insert
     suspend fun insert(entry: DownloadEntity): Long
 
     @Update
     suspend fun update(entry: DownloadEntity)
+
+    /**
+     * Progress is written on a tight loop (every 64 KiB or every second), so it
+     * deliberately touches only the two byte columns. Writing the whole row from
+     * a stale entity is how a live download used to resurrect its own RUNNING
+     * status a moment after the user paused it.
+     */
+    @Query("UPDATE downloads SET downloaded_bytes = :downloaded, total_bytes = :total WHERE id = :id")
+    suspend fun updateProgress(id: Long, downloaded: Long, total: Long)
+
+    /** Terminal/resumable transitions: status only, never the byte counters. */
+    @Query("UPDATE downloads SET status = :status, error = :error WHERE id = :id")
+    suspend fun updateStatus(id: Long, status: String, error: String?)
+
+    @Query(
+        "UPDATE downloads SET status = :status, destination = :destination, " +
+            "downloaded_bytes = :downloaded, total_bytes = :total, " +
+            "completed_at = :completedAt, error = NULL WHERE id = :id"
+    )
+    suspend fun updateCompleted(
+        id: Long,
+        status: String,
+        destination: String,
+        downloaded: Long,
+        total: Long,
+        completedAt: Long
+    )
 
     @Query("DELETE FROM downloads WHERE id = :id")
     suspend fun delete(id: Long)
