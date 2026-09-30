@@ -8,35 +8,50 @@
  * move them, so a paint that walked it would be reading through a pointer a
  * background download could have invalidated between two rows.  The list is
  * bounded by what the profile has actually downloaded, so the copy costs
- * nothing that matters.
+ * nothing that matters.  Each snapshot row carries the download's id, which is
+ * how a selected row is resolved back to a record without holding a pointer
+ * into a store that moves.
  */
 #include "downloads.h"
 
+#include <shellapi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <wchar.h>
 
 /* ------------------------------------------------------------------ */
 /* Window metrics (mirror rb_show_downloads_dialog in the GTK chrome) */
 
-#define RB_DL_WIN_W   560
-#define RB_DL_WIN_H   400
+#define RB_DL_WIN_W   620
+#define RB_DL_WIN_H   430
 #define RB_DL_MARGIN  12
 #define RB_DL_BTNH    26
 #define RB_DL_BTNW    96
+#define RB_DL_GAP     6
 #define RB_DL_PADX    8
 #define RB_DL_PADY    5
 
 #define RB_DL_LIST    4001
 #define RB_DL_CLEAR   4002
 #define RB_DL_TIMER   4003
+#define RB_DL_OPEN    4004
+#define RB_DL_FOLDER  4005
+#define RB_DL_COPY    4006
+#define RB_DL_DETAILS 4007
+#define RB_DL_REMOVE  4008
 #define RB_DL_CLOSE   IDCANCEL
 
-/* One painted row: the file name, then the status line under it. */
+/* One painted row: the file name, then the status line under it, and the
+ * download it came from.  The id rather than a pointer, for the reason the
+ * file's header gives: the snapshot is taken so nothing reads the store
+ * through a pointer the store could have moved. 0 means "no download" — the
+ * placeholder row an empty window shows. */
 typedef struct {
     wchar_t *name;
     wchar_t *meta;   /* NULL when there is nothing to say under the name */
+    long long id;
 } RbDlRow;
 
 typedef struct {
@@ -48,6 +63,15 @@ typedef struct {
 
     RbDlRow *rows;
     int n;
+
+    /* The per-row actions, kept so their sensitivity can follow the selection:
+     * "Open" on a download that has not finished has nothing to open.  Same
+     * five buttons, and the same rules, as the GTK window. */
+    HWND b_open;
+    HWND b_folder;
+    HWND b_copy;
+    HWND b_details;
+    HWND b_remove;
 } RbDownloads;
 
 static RbDownloads *g_dl = NULL;
@@ -130,17 +154,51 @@ static void rb_dl_rows_build(RbDownloads *d)
         if (dl == NULL) continue;
         d->rows[d->n].name = rb_dl_wide(dl->file_name);
         d->rows[d->n].meta = rb_dl_meta(dl);
+        d->rows[d->n].id = dl->id;
         d->n++;
     }
     /* GTK's "(no downloads yet)" row, so an empty window says so rather than
-     * showing a blank rectangle. */
+     * showing a blank rectangle.  Its id stays 0, which no download has, so
+     * every action on it is insensitive. */
     if (d->n == 0) {
         d->rows = (RbDlRow *)calloc(1, sizeof *d->rows);
         if (d->rows == NULL) return;
         d->rows[0].name = rb_dl_wide("(no downloads yet)");
         d->rows[0].meta = NULL;
+        d->rows[0].id = 0;
         d->n = 1;
     }
+}
+
+/* The selected download, or NULL. */
+static const rb_download *rb_dl_selected(RbDownloads *d)
+{
+    int sel;
+
+    if (d->list == NULL) return NULL;
+    sel = (int)SendMessageW(d->list, LB_GETCURSEL, 0, 0);
+    if (sel < 0 || sel >= d->n) return NULL;
+    if (d->rows[sel].id == 0) return NULL;
+    return rb_downloads_by_id(d->app->downloads, d->rows[sel].id);
+}
+
+/* What the selected download can actually be asked to do.  A button that would
+ * do nothing is disabled rather than hidden, so the row of actions stays put
+ * and the user can see which ones apply to this row. */
+static void rb_dl_sync_actions(RbDownloads *d)
+{
+    const rb_download *dl = rb_dl_selected(d);
+    int saved = (dl != NULL && dl->destination != NULL &&
+                 dl->destination[0] != '\0');
+
+    if (d->b_open != NULL) EnableWindow(d->b_open, saved);
+    if (d->b_folder != NULL) EnableWindow(d->b_folder, saved);
+    if (d->b_copy != NULL) {
+        EnableWindow(d->b_copy,
+                     dl != NULL && dl->url != NULL && dl->url[0] != '\0');
+    }
+    if (d->b_details != NULL) EnableWindow(d->b_details, dl != NULL);
+    if (d->b_remove != NULL) EnableWindow(d->b_remove, dl != NULL);
 }
 
 /* Re-reads the store and repaints.
@@ -149,19 +207,35 @@ static void rb_dl_rows_build(RbDownloads *d)
  * window follows it on a timer instead of freezing at the figures it was opened
  * with.  LB_RESETCONTENT is what keeps the item count and the snapshot in step:
  * the listbox owns one item per row and rb_dl_draw_row indexes the snapshot by
- * itemID, so the two must never disagree. */
+ * itemID, so the two must never disagree.
+ *
+ * The selection is carried across the rebuild BY ID.  Without that the once-a-
+ * second repaint would drop the cursor and grey the action buttons out from
+ * under a user who had just picked a row — the window would look like it was
+ * fighting them.  GTK updates its rows in place and so never had the problem;
+ * here the item list has to be rebuilt, so the selection is restored instead. */
 static void rb_dl_rows_apply(RbDownloads *d)
 {
+    const rb_download *prev;
+    long long keep;
     int i;
+    int sel = -1;
 
     if (d->list == NULL) return;
+    prev = rb_dl_selected(d);
+    keep = (prev != NULL) ? prev->id : 0;
+
     rb_dl_rows_build(d);
     SendMessageW(d->list, LB_RESETCONTENT, 0, 0);
     for (i = 0; i < d->n; i++) {
         SendMessageW(d->list, LB_ADDSTRING, 0, (LPARAM)L"");
+        if (keep != 0 && d->rows[i].id == keep) sel = i;
     }
-    SendMessageW(d->list, LB_SETCURSEL, (WPARAM)-1, 0);
+    /* LB_SETCURSEL does not notify, so the buttons are told here rather than
+     * left to an LBN_SELCHANGE that will never arrive. */
+    SendMessageW(d->list, LB_SETCURSEL, (WPARAM)sel, 0);
     InvalidateRect(d->list, NULL, TRUE);
+    rb_dl_sync_actions(d);
 }
 
 /* ------------------------------------------------------------------ */
@@ -208,10 +282,10 @@ static void rb_dl_draw_row(RbDownloads *d, const DRAWITEMSTRUCT *dis)
     row = &d->rows[dis->itemID];
 
     r = dis->rcItem;
-    /* A visible cursor rather than GTK's invisible one: both windows treat
-     * the list as informational (nothing opens on click in either edition),
-     * but GTK sets GTK_SELECTION_NONE and Win32 cannot, so the honest thing
-     * is to show where the keyboard is rather than to hide it. */
+    /* A visible cursor rather than GTK's invisible one: both windows now act on
+     * the selected row, but GTK shows the selection with a highlighted row while
+     * a Win32 owner-drawn listbox has to be told to, so this is the equivalent
+     * of GTK_SELECTION_SINGLE's highlight rather than a leftover cue. */
     FillRect(dis->hDC, &r,
              (dis->itemState & ODS_SELECTED) ? d->app->br_omni : d->app->br_chrome);
 
@@ -248,6 +322,197 @@ static void rb_dl_clear(RbDownloads *d)
         rb_downloads_save(app->downloads, app->path_downloads);
     }
     rb_dl_close(d);
+}
+
+/* ------------------------------------------------------------------ */
+/* The per-row actions.  Same five as the GTK window, with the same limits:
+ * nothing here can touch a file the user owns except by handing it to the
+ * shell, and "Remove from list" forgets the record only. */
+
+/* A created_at / completed_at (ms since the epoch) as a local date and time.
+ * Local, not UTC: a download happened when the user's own clock said so. */
+static void rb_dl_stamp(long long ms, char *out, size_t cap)
+{
+    time_t t;
+    struct tm *parts;
+
+    if (ms <= 0) {
+        snprintf(out, cap, "not yet");
+        return;
+    }
+    t = (time_t)(ms / 1000);
+    parts = localtime(&t);
+    if (parts == NULL || strftime(out, cap, "%Y-%m-%d %H:%M:%S", parts) == 0) {
+        snprintf(out, cap, "unknown");
+    }
+}
+
+/* Every recorded field, in one message box.  Built in ASCII and widened in one
+ * step so the two editions cannot describe the same download differently. */
+static void rb_dl_details(RbDownloads *d, const rb_download *dl)
+{
+    char body[1400];
+    char size_line[96];
+    char have[32];
+    char total[32];
+    char started[32];
+    char ended[32];
+    wchar_t *wide;
+    wchar_t *title;
+
+    rb_download_format_bytes(dl->downloaded_bytes, have, sizeof have);
+    rb_download_format_bytes(dl->total_bytes, total, sizeof total);
+    rb_dl_stamp(dl->created_at, started, sizeof started);
+    rb_dl_stamp(dl->completed_at, ended, sizeof ended);
+
+    /* An unknown length is not 0%: it is a figure nobody has, so the line says
+     * so instead of printing a percentage that would be a claim. */
+    if (dl->total_bytes > 0) {
+        snprintf(size_line, sizeof size_line, "%s of %s (%d%%)", have, total,
+                 rb_download_progress_percent(dl->downloaded_bytes,
+                                              dl->total_bytes));
+    } else {
+        snprintf(size_line, sizeof size_line, "%s (total unknown)", have);
+    }
+
+    snprintf(body, sizeof body,
+             "Status: %s\n"
+             "Source: %s\n"
+             "Type: %s\n"
+             "Saved to: %s\n"
+             "Size: %s\n"
+             "Started: %s\n"
+             "Completed: %s%s%s",
+             rb_download_status_name(dl->status),
+             (dl->url != NULL && dl->url[0] != '\0') ? dl->url : "(unknown)",
+             (dl->mime_type != NULL && dl->mime_type[0] != '\0') ? dl->mime_type
+                                                                 : "(unknown)",
+             (dl->destination != NULL && dl->destination[0] != '\0')
+                 ? dl->destination : "(not saved yet)",
+             size_line, started, ended,
+             (dl->error != NULL && dl->error[0] != '\0') ? "\nError: " : "",
+             (dl->error != NULL && dl->error[0] != '\0') ? dl->error : "");
+
+    wide = rb_dl_wide(body);
+    title = rb_dl_wide((dl->file_name != NULL && dl->file_name[0] != '\0')
+                           ? dl->file_name : "Download");
+    MessageBoxW(d->dlg, wide, title, MB_OK | MB_ICONINFORMATION);
+    free(title);
+    free(wide);
+}
+
+/* Hands the file, or its folder, to the shell.  Deliberately not offered for a
+ * download that has not completed: there is no file yet, and opening the
+ * partial one would hand the user a truncated file that looks whole. */
+static void rb_dl_shell_open(RbDownloads *d, const wchar_t *path,
+                             const wchar_t *what)
+{
+    HINSTANCE rc = ShellExecuteW(d->dlg, L"open", path, NULL, NULL,
+                                 SW_SHOWNORMAL);
+
+    /* ShellExecuteW reports failure with a value <= 32 rather than by setting
+     * the last error, so that is what is tested. */
+    if ((INT_PTR)rc <= 32) {
+        wchar_t msg[512];
+
+        swprintf(msg, 512,
+                 L"Windows could not open the %ls:\n%ls", what, path);
+        MessageBoxW(d->dlg, msg, L"Cannot open", MB_OK | MB_ICONWARNING);
+    }
+}
+
+static void rb_dl_open_file(RbDownloads *d)
+{
+    const rb_download *dl = rb_dl_selected(d);
+    wchar_t *path;
+
+    if (dl == NULL || dl->destination == NULL || dl->destination[0] == '\0')
+        return;
+    path = rb_dl_wide(dl->destination);
+    rb_dl_shell_open(d, path, L"file");
+    free(path);
+}
+
+/* The folder, since the shell has no portable "select this file" verb.  The
+ * path is cut at its last separator by hand rather than with PathRemoveFileSpec
+ * (shlwapi) so this file needs no library the build does not already link. */
+static void rb_dl_show_folder(RbDownloads *d)
+{
+    const rb_download *dl = rb_dl_selected(d);
+    wchar_t *path;
+    wchar_t *cut;
+
+    if (dl == NULL || dl->destination == NULL || dl->destination[0] == '\0')
+        return;
+    path = rb_dl_wide(dl->destination);
+    cut = wcsrchr(path, L'\\');
+    if (cut == NULL) cut = wcsrchr(path, L'/');
+    if (cut != NULL && cut != path) {
+        *cut = L'\0';
+    } else if (cut == NULL) {
+        /* No separator at all — a drive-relative name such as "C:file.txt".
+         * The drive is the closest thing to a folder it has. */
+        cut = wcsrchr(path, L':');
+        if (cut != NULL) {
+            cut[1] = L'\\';
+            cut[2] = L'\0';
+        }
+    }
+    /* A separator at index 0 is a root-relative path ("\file.txt"): there is
+     * no parent folder to name, so it is handed to the shell as it is. */
+    rb_dl_shell_open(d, path, L"folder");
+    free(path);
+}
+
+static void rb_dl_copy_link(RbDownloads *d)
+{
+    const rb_download *dl = rb_dl_selected(d);
+    wchar_t *url;
+    size_t bytes;
+    void *dst;
+
+    if (dl == NULL || dl->url == NULL || dl->url[0] == '\0') return;
+    url = rb_dl_wide(dl->url);
+    bytes = (wcslen(url) + 1) * sizeof(wchar_t);
+
+    if (OpenClipboard(d->dlg)) {
+        HGLOBAL block = GlobalAlloc(GMEM_MOVEABLE, bytes);
+
+        if (block != NULL) {
+            dst = GlobalLock(block);
+            if (dst != NULL) {
+                memcpy(dst, url, bytes);
+                GlobalUnlock(block);
+                EmptyClipboard();
+                /* On success the clipboard owns the block; on failure it
+                 * still belongs to us and has to be freed. */
+                if (SetClipboardData(CF_UNICODETEXT, block) == NULL) {
+                    GlobalFree(block);
+                }
+            } else {
+                GlobalFree(block);
+            }
+        }
+        CloseClipboard();
+    }
+    free(url);
+}
+
+/* Forgets the RECORD.  The file on disk belongs to the user and is never
+ * touched — the same rule "Clear list" follows, and the reason the button says
+ * "from list" rather than "Delete". */
+static void rb_dl_remove(RbDownloads *d)
+{
+    const rb_download *dl = rb_dl_selected(d);
+    long long id;
+
+    if (dl == NULL) return;
+    id = dl->id;
+    if (rb_downloads_remove(d->app->downloads, id) != 1) return;
+    if (d->app->path_downloads != NULL) {
+        rb_downloads_save(d->app->downloads, d->app->path_downloads);
+    }
+    rb_dl_rows_apply(d);
 }
 
 /* ------------------------------------------------------------------ */
@@ -303,6 +568,22 @@ static LRESULT CALLBACK rb_dl_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             int id = LOWORD(wp);
             if (id == RB_DL_CLEAR) { rb_dl_clear(d); return 0; }
             if (id == RB_DL_CLOSE || id == IDOK) { rb_dl_close(d); return 0; }
+            if (id == RB_DL_OPEN) { rb_dl_open_file(d); return 0; }
+            if (id == RB_DL_FOLDER) { rb_dl_show_folder(d); return 0; }
+            if (id == RB_DL_COPY) { rb_dl_copy_link(d); return 0; }
+            if (id == RB_DL_DETAILS) {
+                const rb_download *dl = rb_dl_selected(d);
+                if (dl != NULL) rb_dl_details(d, dl);
+                return 0;
+            }
+            if (id == RB_DL_REMOVE) { rb_dl_remove(d); return 0; }
+            /* The list itself: LBS_NOTIFY is set, so a click arrives here as
+             * this notification.  It is what makes the action buttons follow
+             * the row the user picked. */
+            if (id == RB_DL_LIST && HIWORD(wp) == LBN_SELCHANGE) {
+                rb_dl_sync_actions(d);
+                return 0;
+            }
         }
         break;
     case WM_CLOSE:
@@ -331,7 +612,7 @@ void rb_show_downloads(App *app)
     RECT want, rc;
     HDC dc;
     TEXTMETRICW tm;
-    int y, list_h;
+    int x, y, y_actions, y_list, list_h;
 
     if (app == NULL || app->hwnd == NULL) return;
     if (g_dl != NULL) {
@@ -394,15 +675,43 @@ void rb_show_downloads(App *app)
     rb_apply_dark_titlebar(d->dlg);
 
     GetClientRect(d->dlg, &rc);
-    list_h = rc.bottom - RB_DL_MARGIN - RB_DL_BTNH - RB_DL_MARGIN - RB_DL_MARGIN;
+    /* The actions row sits above the list, which takes what is left between it
+     * and the Clear/Close row at the bottom. */
+    y_actions = RB_DL_MARGIN;
+    y_list = y_actions + RB_DL_BTNH + RB_DL_GAP;
+    list_h = rc.bottom - RB_DL_MARGIN - RB_DL_BTNH - RB_DL_MARGIN - y_list;
 
     d->list = rb_dl_ctl(d, L"LISTBOX", L"",
                         WS_TABSTOP | WS_VSCROLL | WS_BORDER |
                         LBS_OWNERDRAWFIXED | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
-                        RB_DL_MARGIN, RB_DL_MARGIN,
+                        RB_DL_MARGIN, y_list,
                         rc.right - 2 * RB_DL_MARGIN, list_h, RB_DL_LIST,
                         d->fnt);
     if (d->list == NULL) { rb_dl_close(d); return; }
+
+    /* The five per-row actions, created BEFORE the first fill: filling sets
+     * their sensitivity from whatever ends up selected, and there is nothing
+     * selected yet, so they start disabled.  Widths are per label — a single
+     * width would either clip "Remove from list" or leave "Open" adrift. */
+    x = RB_DL_MARGIN;
+    d->b_open = rb_dl_ctl(d, L"BUTTON", L"Open", WS_TABSTOP | BS_PUSHBUTTON,
+                          x, y_actions, 70, RB_DL_BTNH, RB_DL_OPEN, d->fnt);
+    x += 70 + RB_DL_GAP;
+    d->b_folder = rb_dl_ctl(d, L"BUTTON", L"Show in folder",
+                            WS_TABSTOP | BS_PUSHBUTTON, x, y_actions, 132,
+                            RB_DL_BTNH, RB_DL_FOLDER, d->fnt);
+    x += 132 + RB_DL_GAP;
+    d->b_copy = rb_dl_ctl(d, L"BUTTON", L"Copy link",
+                          WS_TABSTOP | BS_PUSHBUTTON, x, y_actions, 100,
+                          RB_DL_BTNH, RB_DL_COPY, d->fnt);
+    x += 100 + RB_DL_GAP;
+    d->b_details = rb_dl_ctl(d, L"BUTTON", L"Details",
+                             WS_TABSTOP | BS_PUSHBUTTON, x, y_actions, 92,
+                             RB_DL_BTNH, RB_DL_DETAILS, d->fnt);
+    x += 92 + RB_DL_GAP;
+    d->b_remove = rb_dl_ctl(d, L"BUTTON", L"Remove from list",
+                            WS_TABSTOP | BS_PUSHBUTTON, x, y_actions, 140,
+                            RB_DL_BTNH, RB_DL_REMOVE, d->fnt);
 
     rb_dl_rows_apply(d);
 

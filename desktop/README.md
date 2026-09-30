@@ -42,15 +42,19 @@ browser is original C: a portable core plus one thin platform layer per OS.
 - **Downloads** — the active profile's records, newest first, each row a file
   name over a status line: the state, the percentage and both sizes ("1.4 MB /
   3.1 MB"), or the error when one failed, or "3.2 MB so far" when the server
-  never sent a length. Plus "Clear list". The window is live — both editions
-  re-read the store once a second, so a transfer that is still arriving keeps
-  counting up while it is on screen. Sizes go through one core formatter, so
-  the same download cannot read "1.4 MB" on one edition and "1468006 bytes" on
-  the other, and both editions show the *same profile's* rows, which is what
-  the "Clear list" button has always cleared: the list and the button now agree
-  about what "the list" is. Clearing removes the *records* of that profile only;
-  the files on disk are the user's and are never touched. Neither edition opens
-  the file from the list.
+  never sent a length. Selecting a row enables the actions on it — **Open**,
+  **Show in folder**, **Copy link**, **Details** and **Remove from list** —
+  with Open and Show in folder offered only once the download has actually
+  finished, so a partial file is never handed to the shell as if it were whole.
+  Details shows every recorded field (source, MIME type, destination, both
+  sizes, timestamps, error). Remove from list forgets the *record*; the file
+  stays where it is, which is also what "Clear list" does for the whole
+  profile. The window is live — both editions re-read the store once a second,
+  so a transfer that is still arriving keeps counting up while it is on screen.
+  Sizes go through one core formatter, so the same download cannot read "1.4 MB"
+  on one edition and "1468006 bytes" on the other, and both editions show the
+  *same profile's* rows, which is what the "Clear list" button has always
+  cleared: the list and the button now agree about what "the list" is.
 - **Find in page** (*Menu → Find in page*, <kbd>Ctrl</kbd>+<kbd>F</kbd>) — the
   same bar Android's FindInPageBar is: a field, previous, next and close, with
   the search re-running on every keystroke, <kbd>Enter</kbd> stepping forward

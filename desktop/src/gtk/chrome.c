@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <gdk/gdkkeysyms.h>
 
@@ -3538,13 +3539,19 @@ static void rb_dl_set_meta(GtkWidget *label, const rb_download *dl)
  *
  * The meta label is stashed on the row so the dialog's timer can rewrite it in
  * place — that is what keeps the window live without the list being torn down
- * and rebuilt under the user's scroll position on every tick. */
+ * and rebuilt under the user's scroll position on every tick.  The download id
+ * rides along the same way: a row index does not survive a rebuild, and a
+ * pointer into the store does not survive an enqueue. */
 static void rb_downloads_add_row(GtkWidget *list, const rb_download *dl)
 {
     GtkWidget *row = gtk_list_box_row_new();
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     GtkWidget *l1 = gtk_label_new(dl->file_name ? dl->file_name : "");
     GtkWidget *l2 = gtk_label_new("");
+    long long *id = g_new(long long, 1);
+
+    *id = dl->id;
+    g_object_set_data_full(G_OBJECT(row), "rb-id", id, g_free);
 
     gtk_label_set_ellipsize(GTK_LABEL(l1), PANGO_ELLIPSIZE_END);
     gtk_label_set_xalign(GTK_LABEL(l1), 0.0f);
@@ -3585,10 +3592,81 @@ static void on_dl_clear_clicked(GtkButton *button, gpointer user_data)
  * the user watches it.  The timer lives exactly as long as the dialog does. */
 typedef struct {
     App *app;
+    GtkWidget *dlg;
     GtkWidget *list;
     guint timer;
     int rows;   /* rows currently in the list, 0 when the placeholder is shown */
+
+    /* The per-row actions, kept so their sensitivity can follow the selection:
+     * "Open" on a download that has not finished has nothing to open. */
+    GtkWidget *btn_open;
+    GtkWidget *btn_folder;
+    GtkWidget *btn_copy;
+    GtkWidget *btn_details;
+    GtkWidget *btn_remove;
 } RbDlDialog;
+
+/* The selected download, or NULL.  Read through the id on the row rather than
+ * a pointer into the store, which an enqueue could have moved. */
+static const rb_download *rb_dl_selected(RbDlDialog *st)
+{
+    GtkListBoxRow *row = gtk_list_box_get_selected_row(GTK_LIST_BOX(st->list));
+    long long *id;
+
+    if (row == NULL) return NULL;
+    id = (long long *)g_object_get_data(G_OBJECT(row), "rb-id");
+    return (id != NULL) ? rb_downloads_by_id(st->app->downloads, *id) : NULL;
+}
+
+/* A created_at / completed_at (ms since the epoch) as a local date and time.
+ * Local, not UTC: a download happened when the user's own clock said so. */
+static void rb_dl_stamp(long long ms, char *out, size_t cap)
+{
+    time_t t;
+    struct tm *parts;
+
+    if (ms <= 0) {
+        snprintf(out, cap, "not yet");
+        return;
+    }
+    t = (time_t)(ms / 1000);
+    parts = localtime(&t);
+    if (parts == NULL || strftime(out, cap, "%Y-%m-%d %H:%M:%S", parts) == 0) {
+        snprintf(out, cap, "unknown");
+    }
+}
+
+/* Parented on the downloads window, not the main one: the downloads window is
+ * modal, so a message behind it would be unreachable. */
+static void rb_dl_msg(RbDlDialog *st, GtkMessageType type, const char *title,
+                      const char *body)
+{
+    GtkWidget *dlg = gtk_message_dialog_new(GTK_WINDOW(st->dlg),
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        type, GTK_BUTTONS_CLOSE, "%s", title);
+    gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dlg), "%s",
+                                             body);
+    g_signal_connect_swapped(dlg, "response", G_CALLBACK(gtk_widget_destroy),
+                             dlg);
+    gtk_widget_show(dlg);
+}
+
+/* What the selected download can actually be asked to do.  A button that would
+ * do nothing is insensitive rather than hidden, so the row of actions stays put
+ * and the user can see which ones apply to this row. */
+static void rb_dl_sync_actions(RbDlDialog *st)
+{
+    const rb_download *dl = rb_dl_selected(st);
+    int saved = (dl != NULL && dl->destination != NULL &&
+                 dl->destination[0] != '\0');
+
+    gtk_widget_set_sensitive(st->btn_open, saved);
+    gtk_widget_set_sensitive(st->btn_folder, saved);
+    gtk_widget_set_sensitive(st->btn_copy,
+                             dl != NULL && dl->url != NULL && dl->url[0] != '\0');
+    gtk_widget_set_sensitive(st->btn_details, dl != NULL);
+    gtk_widget_set_sensitive(st->btn_remove, dl != NULL);
+}
 
 static void rb_dl_fill_rows(RbDlDialog *st)
 {
@@ -3623,6 +3701,155 @@ static void rb_dl_fill_rows(RbDlDialog *st)
         gtk_list_box_insert(GTK_LIST_BOX(st->list), row, -1);
     }
     gtk_widget_show_all(st->list);
+    rb_dl_sync_actions(st);
+}
+
+static void on_dl_selection_changed(GtkListBox *box, gpointer user_data)
+{
+    (void)box;
+    rb_dl_sync_actions((RbDlDialog *)user_data);
+}
+
+/* Opens the file the platform engine saved.  Deliberately not offered for a
+ * download that has not completed: there is no file yet, and opening the
+ * partial one would hand the user a truncated file that looks whole. */
+static void on_dl_open(GtkButton *button, gpointer user_data)
+{
+    RbDlDialog *st = (RbDlDialog *)user_data;
+    const rb_download *dl = rb_dl_selected(st);
+    GFile *file;
+    char *uri;
+    GError *err = NULL;
+    (void)button;
+
+    if (dl == NULL || dl->destination == NULL || dl->destination[0] == '\0')
+        return;
+    file = g_file_new_for_path(dl->destination);
+    uri = g_file_get_uri(file);
+    if (!gtk_show_uri_on_window(GTK_WINDOW(st->dlg), uri, GDK_CURRENT_TIME,
+                                &err)) {
+        rb_dl_msg(st, GTK_MESSAGE_WARNING, "Cannot open the file",
+                  (err != NULL && err->message != NULL) ? err->message
+                     : "No application is registered for this file type.");
+    }
+    if (err != NULL) g_error_free(err);
+    g_free(uri);
+    g_object_unref(file);
+}
+
+/* Reveals the file in the file manager — the folder, since GTK has no portable
+ * "select this file" call. */
+static void on_dl_show_folder(GtkButton *button, gpointer user_data)
+{
+    RbDlDialog *st = (RbDlDialog *)user_data;
+    const rb_download *dl = rb_dl_selected(st);
+    GFile *file;
+    char *dir;
+    char *uri;
+    GError *err = NULL;
+    (void)button;
+
+    if (dl == NULL || dl->destination == NULL || dl->destination[0] == '\0')
+        return;
+    dir = g_path_get_dirname(dl->destination);
+    file = g_file_new_for_path(dir);
+    uri = g_file_get_uri(file);
+    if (!gtk_show_uri_on_window(GTK_WINDOW(st->dlg), uri, GDK_CURRENT_TIME,
+                                &err)) {
+        rb_dl_msg(st, GTK_MESSAGE_WARNING, "Cannot open the folder",
+                  (err != NULL && err->message != NULL) ? err->message
+                     : "The file manager could not be started.");
+    }
+    if (err != NULL) g_error_free(err);
+    g_free(uri);
+    g_object_unref(file);
+    g_free(dir);
+}
+
+static void on_dl_copy_link(GtkButton *button, gpointer user_data)
+{
+    RbDlDialog *st = (RbDlDialog *)user_data;
+    const rb_download *dl = rb_dl_selected(st);
+    GtkClipboard *cb;
+    (void)button;
+
+    if (dl == NULL || dl->url == NULL || dl->url[0] == '\0') return;
+    cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    gtk_clipboard_set_text(cb, dl->url, -1);
+    /* Asks the clipboard manager to keep it past this process, which is what
+     * makes "copy link" still paste after the browser is closed. */
+    gtk_clipboard_store(cb);
+}
+
+static void on_dl_details(GtkButton *button, gpointer user_data)
+{
+    RbDlDialog *st = (RbDlDialog *)user_data;
+    const rb_download *dl = rb_dl_selected(st);
+    char body[1400];
+    char size_line[96];
+    char have[32];
+    char total[32];
+    char started[32];
+    char ended[32];
+    (void)button;
+
+    if (dl == NULL) return;
+    rb_download_format_bytes(dl->downloaded_bytes, have, sizeof have);
+    rb_download_format_bytes(dl->total_bytes, total, sizeof total);
+    rb_dl_stamp(dl->created_at, started, sizeof started);
+    rb_dl_stamp(dl->completed_at, ended, sizeof ended);
+
+    /* An unknown length is not 0%: it is a figure nobody has, so the line says
+     * so instead of printing a percentage that would be a claim. */
+    if (dl->total_bytes > 0) {
+        snprintf(size_line, sizeof size_line, "%s of %s (%d%%)", have, total,
+                 rb_download_progress_percent(dl->downloaded_bytes,
+                                              dl->total_bytes));
+    } else {
+        snprintf(size_line, sizeof size_line, "%s (total unknown)", have);
+    }
+
+    snprintf(body, sizeof body,
+             "Status: %s\n"
+             "Source: %s\n"
+             "Type: %s\n"
+             "Saved to: %s\n"
+             "Size: %s\n"
+             "Started: %s\n"
+             "Completed: %s%s%s",
+             rb_download_status_name(dl->status),
+             (dl->url != NULL && dl->url[0] != '\0') ? dl->url : "(unknown)",
+             (dl->mime_type != NULL && dl->mime_type[0] != '\0') ? dl->mime_type
+                                                                 : "(unknown)",
+             (dl->destination != NULL && dl->destination[0] != '\0')
+                 ? dl->destination : "(not saved yet)",
+             size_line, started, ended,
+             (dl->error != NULL && dl->error[0] != '\0') ? "\nError: " : "",
+             (dl->error != NULL && dl->error[0] != '\0') ? dl->error : "");
+
+    rb_dl_msg(st, GTK_MESSAGE_INFO,
+              (dl->file_name != NULL && dl->file_name[0] != '\0')
+                  ? dl->file_name : "Download",
+              body);
+}
+
+/* Forgets the RECORD.  The file on disk belongs to the user and is never
+ * touched — the same rule "Clear list" follows, and the reason the button says
+ * "from list" rather than "Delete". */
+static void on_dl_remove(GtkButton *button, gpointer user_data)
+{
+    RbDlDialog *st = (RbDlDialog *)user_data;
+    const rb_download *dl = rb_dl_selected(st);
+    long long id;
+    (void)button;
+
+    if (dl == NULL) return;
+    id = dl->id;
+    if (rb_downloads_remove(st->app->downloads, id) != 1) return;
+    if (st->app->path_downloads != NULL) {
+        rb_downloads_save(st->app->downloads, st->app->path_downloads);
+    }
+    rb_dl_fill_rows(st);
 }
 
 static gboolean on_dl_tick(gpointer user_data)
@@ -3654,6 +3881,9 @@ static gboolean on_dl_tick(gpointer user_data)
             rb_dl_set_meta(meta, dl);
         }
     }
+    /* A row can also have changed what it can offer between two ticks — a
+     * running download that just finished now has a file to open. */
+    rb_dl_sync_actions(st);
     return G_SOURCE_CONTINUE;
 }
 
@@ -3673,33 +3903,79 @@ static void on_dl_dialog_destroy(GtkWidget *widget, gpointer user_data)
 
 static void rb_show_downloads_dialog(App *app)
 {
-    GtkWidget *dlg, *scroll, *list, *clear;
+    GtkWidget *dlg, *scroll, *list, *clear, *actions, *box;
+    GtkWidget *open, *folder, *copy, *details, *remove;
     RbDlDialog *st;
 
     dlg = gtk_dialog_new_with_buttons("Downloads", GTK_WINDOW(app->win),
             GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
             "_Close", GTK_RESPONSE_CLOSE, NULL);
-    gtk_window_set_default_size(GTK_WINDOW(dlg), 560, 400);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 620, 430);
 
     scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     list = gtk_list_box_new();
-    gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
+    /* SINGLE rather than NONE: the actions below act on the selected row, so
+     * the list is no longer purely informational. */
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_SINGLE);
 
     st = g_new0(RbDlDialog, 1);
     st->app = app;
+    st->dlg = dlg;
     st->list = list;
+
+    actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_margin_start(actions, 8);
+    gtk_widget_set_margin_end(actions, 8);
+    gtk_widget_set_margin_top(actions, 8);
+
+    open = gtk_button_new_with_label("Open");
+    folder = gtk_button_new_with_label("Show in folder");
+    copy = gtk_button_new_with_label("Copy link");
+    details = gtk_button_new_with_label("Details");
+    remove = gtk_button_new_with_label("Remove from list");
+    gtk_widget_set_tooltip_text(open, "Open the downloaded file");
+    gtk_widget_set_tooltip_text(folder, "Show the file in the file manager");
+    gtk_widget_set_tooltip_text(copy, "Copy the download's source link");
+    gtk_widget_set_tooltip_text(details, "Show every recorded detail");
+    gtk_widget_set_tooltip_text(remove,
+                                "Forget this record. The file on disk stays.");
+    st->btn_open = open;
+    st->btn_folder = folder;
+    st->btn_copy = copy;
+    st->btn_details = details;
+    st->btn_remove = remove;
+
+    g_signal_connect(open, "clicked", G_CALLBACK(on_dl_open), st);
+    g_signal_connect(folder, "clicked", G_CALLBACK(on_dl_show_folder), st);
+    g_signal_connect(copy, "clicked", G_CALLBACK(on_dl_copy_link), st);
+    g_signal_connect(details, "clicked", G_CALLBACK(on_dl_details), st);
+    g_signal_connect(remove, "clicked", G_CALLBACK(on_dl_remove), st);
+
+    gtk_box_pack_start(GTK_BOX(actions), open, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(actions), folder, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(actions), copy, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(actions), details, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(actions), remove, FALSE, FALSE, 0);
+
+    /* The buttons exist before the first fill, because filling sets their
+     * sensitivity from whatever ends up selected. */
     rb_dl_fill_rows(st);
 
     clear = gtk_button_new_with_label("Clear list");
     g_signal_connect(clear, "clicked", G_CALLBACK(on_dl_clear_clicked), app);
+    g_signal_connect(list, "selected-rows-changed",
+                     G_CALLBACK(on_dl_selection_changed), st);
     g_signal_connect(dlg, "response", G_CALLBACK(on_dialog_response), NULL);
     g_signal_connect(dlg, "destroy", G_CALLBACK(on_dl_dialog_destroy), st);
 
+    box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_pack_start(GTK_BOX(box), actions, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), scroll, TRUE, TRUE, 0);
     gtk_container_add(GTK_CONTAINER(scroll), list);
     gtk_container_add(GTK_CONTAINER(gtk_dialog_get_content_area(GTK_DIALOG(dlg))),
-                      scroll);
+                      box);
     /* get_action_area is deprecated since GTK 3.12 (GtkHeaderBar is the
      * replacement) but the classic action area is still what a GtkDialog
      * builds, and the deprecation is silenced the same way the menu popup
