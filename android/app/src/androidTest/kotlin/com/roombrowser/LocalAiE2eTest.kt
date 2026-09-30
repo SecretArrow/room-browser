@@ -476,15 +476,17 @@ class LocalAiE2eTest {
         return false
     }
 
-    /** Scroll-aware desc-contains click (catalog Install buttons). */
-    private fun clickDescContainsWithScroll(part: String, attempts: Int = 12): Boolean {
-        for (i in 1..attempts) {
-            val node = device.wait(Until.findObject(By.descContains(part)), 1_500)
-            if (node != null && clickSmart(node)) return true
-            dragUpQuarter()
-        }
-        return false
-    }
+    /** Scroll-aware desc-contains click (catalog Install buttons).
+     *
+     *  Shell-tapped, not clicked: `UiObject2.click()` injects a gesture, and
+     *  that channel is phantom-dropped on this screen — CI logged
+     *  "Clicked on (109, 584)" for the discovered card's Install button, the
+     *  app's handler never ran, and the fake registry saw zero manifest
+     *  requests. [tapDescWithScroll] also lifts the card out of the bottom
+     *  quarter first, which is where the CI emulator's 320x640 screen puts
+     *  it. */
+    private fun clickDescContainsWithScroll(part: String, attempts: Int = 12): Boolean =
+        tapDescWithScroll(part, attempts, ::dragUpQuarter)
 
     /** SLOW drag (100 steps ≈ no fling momentum) that scrolls ~1/4 of the
      *  screen — deterministic. */
@@ -514,25 +516,62 @@ class LocalAiE2eTest {
         repeat(18) { dragDownQuarter() }
     }
 
-    /** Scroll-aware SHELL tap: find the node (desc preferred, exact text
-     *  fallback), then tap its visible center via `input tap` — the same
-     *  input channel as the proven `input text` typing. UiAutomator's gesture
-     *  injection was PHANTOM-dropped on this busy screen four rounds in a row
-     *  (the node was found, the "click" returned success, the onClick never
-     *  fired — the catalog caption stayed Idle through 12 s of in-place polls). */
+    /** Scroll-aware SHELL tap: find the node by desc, lift it clear of the
+     *  bottom of the screen, then tap its visible center via `input tap` —
+     *  the same input channel as the proven `input text` typing.
+     *
+     *  Two CI facts shaped this helper. UiAutomator's gesture injection is
+     *  PHANTOM-dropped on this busy screen (the node was found, the "click"
+     *  returned success, the onClick never fired), so the tap goes through
+     *  the shell. And a tap near the bottom edge is lost too: both catalog
+     *  failures tapped at 84-91% of the height — the CI emulator is only
+     *  320x640, so "the last row" sits in the system-bar/gesture zone — with
+     *  the node found and the app's handler never running. One quarter-drag
+     *  puts the target in the middle, where neither can happen.
+     *
+     *  The exact-text fallback is tried only after the desc was NEVER on
+     *  screen, never per attempt. Per attempt it matches whichever card
+     *  happens to show that button — a DIFFERENT card. CI proof: the
+     *  qwen2.5:0.5b round posted smollm2:360m twice, because after the reset
+     *  scroll the topmost visible "Pull to Ollama server instead" belonged to
+     *  the first preset. Tapping the wrong card and reporting success is
+     *  worse than a round that honestly finds nothing and retries. */
     private fun scrollAndShellTap(descPart: String, textNeedle: String, attempts: Int = 10): Boolean {
-        for (i in 1..attempts) {
-            val node = device.wait(Until.findObject(By.descContains(descPart)), 1_500)
-                ?: device.wait(Until.findObject(By.text(textNeedle)), 500)
-            if (node != null) {
-                val bounds = runCatching { node.visibleBounds }.getOrNull()
-                if (bounds != null && bounds.width() > 0 && bounds.height() > 0) {
-                    device.executeShellCommand("input tap ${bounds.centerX()} ${bounds.centerY()}")
-                    device.waitForIdle(800)
-                    return true
-                }
+        if (tapDescWithScroll(descPart, attempts, ::slowDragUp)) return true
+        for (i in 1..attempts / 2) {
+            val node = device.wait(Until.findObject(By.text(textNeedle)), 1_000)
+            val bounds = node?.let { runCatching { it.visibleBounds }.getOrNull() }
+            if (bounds != null && bounds.width() > 0 && bounds.height() > 0) {
+                device.executeShellCommand("input tap ${bounds.centerX()} ${bounds.centerY()}")
+                device.waitForIdle(800)
+                return true
             }
             slowDragUp()
+        }
+        return false
+    }
+
+    /** The shared half of every scroll-aware tap: find [part]'s node, drag it
+     *  out of the bottom quarter of the screen, then shell-tap it. A target
+     *  that cannot be lifted (the end of the list) is tapped where it is
+     *  rather than looping until the attempts run out. */
+    private fun tapDescWithScroll(part: String, attempts: Int, drag: () -> Unit): Boolean {
+        var repositions = 0
+        for (i in 1..attempts) {
+            val node = device.wait(Until.findObject(By.descContains(part)), 1_500)
+            val bounds = node?.let { runCatching { it.visibleBounds }.getOrNull() }
+            if (bounds == null || bounds.width() <= 0 || bounds.height() <= 0) {
+                drag()
+                continue
+            }
+            if (bounds.centerY() > device.displayHeight * 3 / 4 && repositions < 3) {
+                repositions++
+                drag()
+                continue
+            }
+            device.executeShellCommand("input tap ${bounds.centerX()} ${bounds.centerY()}")
+            device.waitForIdle(800)
+            return true
         }
         return false
     }
@@ -1043,6 +1082,9 @@ class LocalAiE2eTest {
         val tag = "qwen3.5:0.8b"
         val installDesc = "localai_install_$tag"
         var installed = false
+        // Whether the Install button was ever FOUND — the counter that
+        // separates "the card is not there" from "the tap was lost".
+        var installSeen = false
         for (round in 1..3) {
             // A failed round sweeps 12 drags down the screen, which leaves the
             // card far ABOVE the viewport — and none of the scroll-aware
@@ -1050,7 +1092,7 @@ class LocalAiE2eTest {
             // and 3 would silently tap nothing (CI: manifests stayed at 1
             // through all three rounds).
             if (round > 1) scrollToTop()
-            clickDescContainsWithScroll(installDesc, attempts = 12)
+            if (clickDescContainsWithScroll(installDesc, attempts = 12)) installSeen = true
             // In place FIRST: the chip replaces the Install button inside the
             // card that is already on screen, and the download can finish
             // before the first sweep's drag — so sweep only as a fallback.
@@ -1069,8 +1111,8 @@ class LocalAiE2eTest {
         // blob URL did not come back.
         assertTrue(
             "Install must resolve $tag on the fake registry " +
-                "(manifests=${fake.manifestHits.get()}) and download its blob " +
-                "(blobs=${fake.blobHits.get()}) onto the on-device engine, flipping the " +
+                "(button seen=$installSeen, manifests=${fake.manifestHits.get()}) and download " +
+                "its blob (blobs=${fake.blobHits.get()}) onto the on-device engine, flipping the " +
                 "card to the Installed chip; UI:\n" + uiTree(),
             installed
         )
