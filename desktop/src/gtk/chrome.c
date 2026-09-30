@@ -74,7 +74,7 @@ static char *rb_css_build(const rb_theme_colors *c, int radius)
     char bg[8], surf[8], alt[8], prim[8];
     char txt[8], dim[8], addr[8], tabbar[8], border[8], sel[8];
     char accent_faint[48], accent_soft[48], sel_soft[48];
-    size_t cap = 4096;
+    size_t cap = 6144;
     char *css = (char *)malloc(cap);
 
     if (!css) return NULL;
@@ -124,13 +124,25 @@ static char *rb_css_build(const rb_theme_colors *c, int radius)
         dim, radius, txt, accent_soft, dim,
         surf, txt, border, accent_faint, txt);
 
-    /* The link-target bubble.  A SECOND snprintf rather than more arguments
-     * on the one above: that call's format and argument lists are long and
-     * positional, and one miscounted %s there is a silent read of garbage. */
+    /* Shape and the link-target bubble, in a SECOND snprintf rather than more
+     * arguments on the one above: that call's format and argument lists are
+     * long and positional, and one miscounted %s there reads garbage
+     * silently.
+     *
+     * The shape rules are overrides, so they must come after the base rules
+     * — same specificity, later wins.  What they buy is Brave's silhouette:
+     * a tab with rounded shoulders whose active state is flush with the
+     * toolbar below it (its background already equals the toolbar's, so
+     * removing the accent underline is what makes the two read as ONE
+     * surface), and a pill-shaped omnibox. */
     {
         size_t used = strlen(css);
-        if (used + 256 < cap) {
+        if (used + 600 < cap) {
             snprintf(css + used, cap - used,
+                     "notebook header tabs tab { min-height: 28px;"
+                     " margin: 2px 2px 0 0; border-radius: 9px 9px 0 0; }\n"
+                     "notebook header tabs tab:checked { border-bottom: none; }\n"
+                     ".rb-omni { border-radius: 999px; }\n"
                      ".rb-status { background-color: %s; color: %s;"
                      " border: 1px solid %s; border-radius: %dpx;"
                      " padding: 2px 8px; }\n",
