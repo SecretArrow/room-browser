@@ -84,8 +84,9 @@ fingerprinter.
 
 Both desktop editions present a machine from the same idea, with the rules a
 desktop needs rather than the ones a phone does. A profile may be assigned
-one of 235 real laptops and desktops (2022–2025, Windows, macOS and Linux),
-and what it presents is the same list as above, with these differences:
+one of 523 real laptops, desktops and workstations (2022–2025, Windows,
+macOS and Linux), and what it presents is the same list as above, with these
+differences:
 
 - `mobile` is always `false` and `formFactor` is `"Desktop"`.
 - `model` is the **empty string**. Chrome reports no model on a desktop, so

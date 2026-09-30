@@ -34,7 +34,16 @@ edition's phone/tablet rules):
   4. architecture/bitness follow the CPU: Apple Silicon reports arm/64.
   5. deviceMemory never exceeds 8 - Chromium caps the value there, so a
      64 GB workstation honestly reports 8, exactly like a real one.
-  6. hardwareConcurrency is the machine's real logical processor count.
+  6. hardwareConcurrency is the machine's core count. It is NOT the logical
+     processor count Chrome actually reports, which is higher wherever the
+     CPU has simultaneous multithreading: an i7-12700H is 14 cores but 20
+     threads, and a real Chrome there answers 20. The column is the core
+     count because that is the fact the table records, and deriving the
+     thread count needs the CPU model, which the table does not carry. The
+     values stay plausible - 12 is what an i5-1235U's 2P+8E reports - but
+     they are not the number the named machine would give. Closing this
+     means adding a per-machine thread count, which is research on all of
+     the table below, not a change to this function.
   7. No two entries present the same fingerprint. Desktops repeat
      themselves far more than phones do, so the Chrome major varies
      between machines of the same year - which is also what a real
@@ -108,32 +117,105 @@ UBUNTU_2404 = "24.0.9-0ubuntu0.2"
 # not one string reused three times. None means the pair is not real: no
 # Apple GPU runs Windows, no NVIDIA GPU ships in a Mac in this window.
 GPUS = {
+    "intel-uhd-600": {
+        "windows": angle_windows("Intel", "Intel(R) UHD Graphics 600"),
+        "linux": angle_gl("Intel", "Mesa Intel(R) UHD Graphics 600 (GLK 2)",
+                          UBUNTU_2204),
+    },
+    "intel-uhd-605": {
+        "windows": angle_windows("Intel", "Intel(R) UHD Graphics 605"),
+    },
+    "intel-hd-620": {
+        "windows": angle_windows("Intel", "Intel(R) HD Graphics 620"),
+        "linux": angle_gl("Intel", "Mesa Intel(R) HD Graphics 620 (KBL GT2)",
+                          UBUNTU_2204),
+    },
+    "intel-uhd-graphics": {
+        # What the U-series i3 and i5 report from 11th gen on: the Xe silicon
+        # under a name that does not say Xe.
+        "windows": angle_windows("Intel", "Intel(R) UHD Graphics"),
+        "linux": angle_gl("Intel", "Mesa Intel(R) UHD Graphics (TGL GT2)",
+                          UBUNTU_2404),
+    },
     "intel-uhd-620": {
         "windows": angle_windows("Intel", "Intel(R) UHD Graphics 620"),
         "linux": angle_gl("Intel", "Mesa Intel(R) UHD Graphics 620 (KBL GT2)",
                           UBUNTU_2204),
+    },
+    "intel-uhd-630": {
+        "windows": angle_windows("Intel", "Intel(R) UHD Graphics 630"),
+        "linux": angle_gl("Intel", "Mesa Intel(R) UHD Graphics 630 (CFL GT2)",
+                          UBUNTU_2204),
+    },
+    "intel-uhd-730": {
+        "windows": angle_windows("Intel", "Intel(R) UHD Graphics 730"),
+        "linux": angle_gl("Intel", "Mesa Intel(R) UHD Graphics 730 (ADL-S GT1)",
+                          UBUNTU_2404),
+    },
+    "intel-uhd-770": {
+        "windows": angle_windows("Intel", "Intel(R) UHD Graphics 770"),
+        "linux": angle_gl("Intel", "Mesa Intel(R) UHD Graphics 770 (ADL-S GT1)",
+                          UBUNTU_2404),
     },
     "intel-iris-xe": {
         "windows": angle_windows("Intel", "Intel(R) Iris(R) Xe Graphics"),
         "linux": angle_gl("Intel", "Mesa Intel(R) Iris(R) Xe Graphics (TGL GT2)",
                           UBUNTU_2404),
     },
+    "intel-arc-a350m": {
+        "windows": angle_windows("Intel", "Intel(R) Arc(TM) A350M Graphics"),
+    },
     "intel-arc-a370m": {
         "windows": angle_windows("Intel", "Intel(R) Arc(TM) A370M Graphics"),
         "linux": angle_gl("Intel", "Mesa Intel(R) Arc(tm) A370M Graphics (DG2)",
                           UBUNTU_2404),
     },
+    "intel-arc-a550m": {
+        "windows": angle_windows("Intel", "Intel(R) Arc(TM) A550M Graphics"),
+    },
+    "intel-arc-a730m": {
+        "windows": angle_windows("Intel", "Intel(R) Arc(TM) A730M Graphics"),
+    },
+    "intel-arc-a770m": {
+        "windows": angle_windows("Intel", "Intel(R) Arc(TM) A770M Graphics"),
+    },
+    "intel-arc-140v": {
+        "windows": angle_windows("Intel", "Intel(R) Arc(TM) 140V Graphics"),
+    },
+    "intel-arc-130v": {
+        "windows": angle_windows("Intel", "Intel(R) Arc(TM) 130V Graphics"),
+    },
     "intel-iris-plus-655": {
         "macos": angle_metal("Intel", "Intel(R) Iris(TM) Plus Graphics 655"),
+    },
+    "amd-vega-3": {
+        "windows": angle_windows("AMD", "AMD Radeon(TM) Vega 3 Graphics"),
+        "linux": angle_gl("AMD", "Mesa AMD Radeon Vega 3 Graphics (raven, LLVM 17.0.6)",
+                          UBUNTU_2204),
+    },
+    "amd-vega-6": {
+        "windows": angle_windows("AMD", "AMD Radeon(TM) Vega 6 Graphics"),
+        "linux": angle_gl("AMD", "Mesa AMD Radeon Vega 6 Graphics (raven, LLVM 17.0.6)",
+                          UBUNTU_2204),
     },
     "amd-vega-8": {
         "windows": angle_windows("AMD", "AMD Radeon(TM) Vega 8 Graphics"),
         "linux": angle_gl("AMD", "Mesa AMD Radeon Vega 8 Graphics (raven, LLVM 17.0.6)",
                           UBUNTU_2204),
     },
+    "amd-radeon-660m": {
+        "windows": angle_windows("AMD", "AMD Radeon(TM) 660M"),
+        "linux": angle_gl("AMD", "Mesa AMD Radeon 660M (rembrandt, LLVM 17.0.6)",
+                          UBUNTU_2404),
+    },
     "amd-radeon-680m": {
         "windows": angle_windows("AMD", "AMD Radeon(TM) 680M"),
         "linux": angle_gl("AMD", "Mesa AMD Radeon 680M (rembrandt, LLVM 17.0.6)",
+                          UBUNTU_2404),
+    },
+    "amd-radeon-760m": {
+        "windows": angle_windows("AMD", "AMD Radeon(TM) 760M"),
+        "linux": angle_gl("AMD", "Mesa AMD Radeon 760M (gfx1103_r1, LLVM 17.0.6)",
                           UBUNTU_2404),
     },
     "amd-radeon-780m": {
@@ -141,25 +223,79 @@ GPUS = {
         "linux": angle_gl("AMD", "Mesa AMD Radeon 780M (gfx1103_r1, LLVM 17.0.6)",
                           UBUNTU_2404),
     },
+    "amd-radeon-890m": {
+        "windows": angle_windows("AMD", "AMD Radeon(TM) 890M"),
+    },
+    "amd-rx-6500m": {
+        "windows": angle_windows("AMD", "AMD Radeon RX 6500M"),
+    },
     "amd-rx-6600m": {
         "windows": angle_windows("AMD", "AMD Radeon RX 6600M"),
         "linux": angle_gl("AMD", "Mesa AMD Radeon RX 6600M (navi23, LLVM 17.0.6)",
                           UBUNTU_2404),
+    },
+    "amd-rx-6700m": {
+        "windows": angle_windows("AMD", "AMD Radeon RX 6700M"),
+    },
+    "amd-rx-6850m-xt": {
+        "windows": angle_windows("AMD", "AMD Radeon RX 6850M XT"),
+    },
+    "amd-rx-7600m-xt": {
+        "windows": angle_windows("AMD", "AMD Radeon RX 7600M XT"),
     },
     "amd-rx-7600s": {
         "windows": angle_windows("AMD", "AMD Radeon RX 7600S"),
         "linux": angle_gl("AMD", "Mesa AMD Radeon RX 7600S (navi33, LLVM 17.0.6)",
                           UBUNTU_2404),
     },
+    "amd-rx-7700s": {
+        "windows": angle_windows("AMD", "AMD Radeon RX 7700S"),
+    },
+    "amd-rx-7900m": {
+        "windows": angle_windows("AMD", "AMD Radeon RX 7900M"),
+    },
+    "nvidia-mx150": {
+        "windows": angle_windows("NVIDIA", "NVIDIA GeForce MX150"),
+    },
+    "nvidia-mx250": {
+        "windows": angle_windows("NVIDIA", "NVIDIA GeForce MX250"),
+    },
+    "nvidia-mx350": {
+        "windows": angle_windows("NVIDIA", "NVIDIA GeForce MX350"),
+    },
+    "nvidia-mx450": {
+        "windows": angle_windows("NVIDIA", "NVIDIA GeForce MX450"),
+    },
+    "nvidia-mx550": {
+        "windows": angle_windows("NVIDIA", "NVIDIA GeForce MX550"),
+    },
+    "nvidia-gtx-1050": {
+        "windows": angle_windows("NVIDIA", "NVIDIA GeForce GTX 1050"),
+    },
+    "nvidia-gtx-1050-ti": {
+        "windows": angle_windows("NVIDIA", "NVIDIA GeForce GTX 1050 Ti"),
+    },
     "nvidia-gtx-1650": {
         "windows": angle_windows("NVIDIA", "NVIDIA GeForce GTX 1650"),
         "linux": angle_gl("NVIDIA", "Mesa NVIDIA GeForce GTX 1650 (nvidia)",
                           UBUNTU_2204),
     },
+    "nvidia-gtx-1650-ti": {
+        "windows": angle_windows("NVIDIA", "NVIDIA GeForce GTX 1650 Ti"),
+    },
+    "nvidia-gtx-1660-ti": {
+        "windows": angle_windows("NVIDIA", "NVIDIA GeForce GTX 1660 Ti"),
+    },
+    "nvidia-rtx-2050": {
+        "windows": angle_windows("NVIDIA", "NVIDIA GeForce RTX 2050"),
+    },
     "nvidia-rtx-3050": {
         "windows": angle_windows("NVIDIA", "NVIDIA GeForce RTX 3050 Laptop GPU"),
         "linux": angle_gl("NVIDIA", "Mesa NVIDIA GeForce RTX 3050 Laptop GPU (nvidia)",
                           UBUNTU_2404),
+    },
+    "nvidia-rtx-3050-ti": {
+        "windows": angle_windows("NVIDIA", "NVIDIA GeForce RTX 3050 Ti Laptop GPU"),
     },
     "nvidia-rtx-3060": {
         "windows": angle_windows("NVIDIA", "NVIDIA GeForce RTX 3060 Laptop GPU"),
@@ -174,13 +310,42 @@ GPUS = {
         "linux": angle_gl("NVIDIA", "Mesa NVIDIA GeForce RTX 3070 Ti Laptop GPU (nvidia)",
                           UBUNTU_2204),
     },
+    "nvidia-rtx-3080": {
+        "windows": angle_windows("NVIDIA", "NVIDIA GeForce RTX 3080 Laptop GPU"),
+    },
     "nvidia-rtx-3080-ti": {
         "windows": angle_windows("NVIDIA", "NVIDIA GeForce RTX 3080 Ti Laptop GPU"),
+        "linux": angle_gl("NVIDIA", "Mesa NVIDIA GeForce RTX 3080 Ti Laptop GPU (nvidia)",
+                          UBUNTU_2204),
+    },
+    "nvidia-rtx-a1000": {
+        "windows": angle_windows("NVIDIA", "NVIDIA RTX A1000 Laptop GPU"),
     },
     "nvidia-rtx-a2000": {
         "windows": angle_windows("NVIDIA", "NVIDIA RTX A2000 Laptop GPU"),
         "linux": angle_gl("NVIDIA", "Mesa NVIDIA RTX A2000 Laptop GPU (nvidia)",
                           UBUNTU_2204),
+    },
+    "nvidia-rtx-a3000": {
+        "windows": angle_windows("NVIDIA", "NVIDIA RTX A3000 Laptop GPU"),
+    },
+    "nvidia-rtx-a4000": {
+        "windows": angle_windows("NVIDIA", "NVIDIA RTX A4000 Laptop GPU"),
+    },
+    "nvidia-rtx-a5000": {
+        "windows": angle_windows("NVIDIA", "NVIDIA RTX A5000 Laptop GPU"),
+    },
+    "nvidia-rtx-2000-ada": {
+        "windows": angle_windows("NVIDIA", "NVIDIA RTX 2000 Ada Generation Laptop GPU"),
+    },
+    "nvidia-rtx-3000-ada": {
+        "windows": angle_windows("NVIDIA", "NVIDIA RTX 3000 Ada Generation Laptop GPU"),
+    },
+    "nvidia-rtx-4000-ada": {
+        "windows": angle_windows("NVIDIA", "NVIDIA RTX 4000 Ada Generation Laptop GPU"),
+    },
+    "nvidia-rtx-5000-ada": {
+        "windows": angle_windows("NVIDIA", "NVIDIA RTX 5000 Ada Generation Laptop GPU"),
     },
     "nvidia-rtx-4050": {
         "windows": angle_windows("NVIDIA", "NVIDIA GeForce RTX 4050 Laptop GPU"),
@@ -208,6 +373,9 @@ GPUS = {
                           UBUNTU_2404),
     },
     "apple-m1": {"macos": angle_metal("Apple", "Apple M1")},
+    "apple-m1-pro": {"macos": angle_metal("Apple", "Apple M1 Pro")},
+    "apple-m1-max": {"macos": angle_metal("Apple", "Apple M1 Max")},
+    "apple-m1-ultra": {"macos": angle_metal("Apple", "Apple M1 Ultra")},
     "apple-m2": {"macos": angle_metal("Apple", "Apple M2")},
     "apple-m2-pro": {"macos": angle_metal("Apple", "Apple M2 Pro")},
     "apple-m2-max": {"macos": angle_metal("Apple", "Apple M2 Max")},
@@ -512,6 +680,387 @@ MACHINES = [
     ("Slimbook", "Executive 14", 2022, "linux", "laptop", "x86", "intel-iris-xe", 12, 16),
     ("Juno", "Nyx 14", 2022, "linux", "laptop", "x86", "intel-iris-xe", 12, 16),
     ("Juno", "Gemini 14", 2023, "linux", "laptop", "x86", "intel-iris-xe", 12, 16),
+
+    # ---------------- Configuration variants ----------------
+    #
+    # A model line is not one machine.  The rows above name each model once;
+    # the rows below name the configurations that shipped alongside it, which
+    # is what a real population actually contains - the same chassis with a
+    # different GPU, a different core count or a different amount of memory is
+    # a different machine to anything that reads the fingerprint.
+    #
+    # Only configurations whose GPU follows from the model name are listed, so
+    # that nothing here rests on a guess about which SKU a buyer picked: a
+    # "Legion 5 Pro (RTX 3070 Ti)" is a machine you can buy, not an inference.
+
+    # ---------------- Lenovo ----------------
+    ("Lenovo", "Legion 5 Pro (RTX 3070 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3070-ti", 14, 32),
+    ("Lenovo", "Legion 5i Pro (RTX 3070 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3070-ti", 14, 16),
+    ("Lenovo", "Legion 7i (RTX 3080 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3080-ti", 16, 32),
+    ("Lenovo", "Legion Slim 7i (RTX 3060)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3060", 14, 16),
+    ("Lenovo", "Legion 5 Pro (RTX 4060)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4060", 14, 16),
+    ("Lenovo", "Legion Pro 5i (RTX 4070)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4070", 14, 32),
+    ("Lenovo", "Legion Pro 7i (RTX 4080)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4080", 24, 32),
+    ("Lenovo", "Legion Pro 7i (RTX 4090)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4090", 24, 64),
+    ("Lenovo", "Legion Pro 5i (RTX 4060)", 2024, "windows", "laptop", "x86", "nvidia-rtx-4060", 16, 16),
+    ("Lenovo", "Legion Pro 7i (RTX 4080)", 2024, "windows", "laptop", "x86", "nvidia-rtx-4080", 24, 32),
+    ("Lenovo", "LOQ 15 (RTX 3050)", 2023, "windows", "laptop", "x86", "nvidia-rtx-3050", 8, 8),
+    ("Lenovo", "LOQ 15 (RTX 4050)", 2024, "windows", "laptop", "x86", "nvidia-rtx-4050", 10, 16),
+    ("Lenovo", "IdeaPad Gaming 3 (RTX 3050)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3050", 8, 8),
+    ("Lenovo", "ThinkPad X1 Extreme Gen 5 (RTX 3060)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3060", 14, 32),
+    ("Lenovo", "ThinkPad P1 Gen 5 (RTX A2000)", 2022, "windows", "laptop", "x86", "nvidia-rtx-a2000", 14, 32),
+    ("Lenovo", "ThinkPad P16 Gen 1 (RTX A4000)", 2022, "windows", "laptop", "x86", "nvidia-rtx-a4000", 16, 64),
+    ("Lenovo", "ThinkPad P16v Gen 1 (RTX A1000)", 2023, "windows", "laptop", "x86", "nvidia-rtx-a1000", 12, 32),
+    ("Lenovo", "ThinkPad P1 Gen 6 (RTX 4000 Ada)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4000-ada", 16, 64),
+    ("Lenovo", "ThinkPad T14 Gen 3 (AMD)", 2022, "windows", "laptop", "x86", "amd-radeon-660m", 6, 16),
+    ("Lenovo", "ThinkPad T14s Gen 3 (AMD)", 2022, "windows", "laptop", "x86", "amd-radeon-680m", 8, 32),
+    ("Lenovo", "ThinkPad Z13 Gen 1", 2022, "windows", "laptop", "x86", "amd-radeon-660m", 8, 16),
+    ("Lenovo", "ThinkPad Z16 Gen 1 (RX 6500M)", 2022, "windows", "laptop", "x86", "amd-rx-6500m", 8, 32),
+    ("Lenovo", "Yoga Slim 7 Pro X", 2022, "windows", "laptop", "x86", "amd-radeon-680m", 8, 16),
+    ("Lenovo", "Yoga 7i (Arc A370M)", 2022, "windows", "laptop", "x86", "intel-arc-a370m", 12, 16),
+    ("Lenovo", "ThinkBook 16p Gen 3 (RTX 3060)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3060", 14, 16),
+    ("Lenovo", "ThinkBook 16p Gen 4 (RTX 4060)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4060", 14, 32),
+    ("Lenovo", "Legion Pro 5 (RX 7600M XT)", 2024, "windows", "laptop", "x86", "amd-rx-7600m-xt", 8, 16),
+
+    # ---------------- Dell ----------------
+    ("Dell", "Alienware m15 R7 (RTX 3070 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3070-ti", 14, 32),
+    ("Dell", "Alienware m17 R5 (RX 6850M XT)", 2022, "windows", "laptop", "x86", "amd-rx-6850m-xt", 8, 32),
+    ("Dell", "Alienware x14 (RTX 3060)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3060", 14, 16),
+    ("Dell", "Alienware x17 R2 (RTX 3080 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3080-ti", 14, 32),
+    ("Dell", "Alienware m16 (RTX 4070)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4070", 24, 32),
+    ("Dell", "Alienware m18 (RTX 4090)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4090", 24, 64),
+    ("Dell", "Alienware x16 (RTX 4080)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4080", 24, 32),
+    ("Dell", "Alienware m16 R2 (RTX 4060)", 2024, "windows", "laptop", "x86", "nvidia-rtx-4060", 16, 16),
+    ("Dell", "G15 5520 (RTX 3060)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3060", 12, 16),
+    ("Dell", "G16 7630 (RTX 4060)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4060", 14, 16),
+    ("Dell", "G16 7630 (RTX 4070)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4070", 14, 32),
+    ("Dell", "Precision 5570 (RTX A2000)", 2022, "windows", "laptop", "x86", "nvidia-rtx-a2000", 14, 32),
+    ("Dell", "Precision 5470 (RTX A1000)", 2022, "windows", "laptop", "x86", "nvidia-rtx-a1000", 12, 32),
+    ("Dell", "Precision 5680 (RTX 4000 Ada)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4000-ada", 16, 64),
+    ("Dell", "Precision 5690 (RTX 5000 Ada)", 2024, "windows", "laptop", "x86", "nvidia-rtx-5000-ada", 16, 64),
+    ("Dell", "Latitude 5530 (UHD 770)", 2022, "windows", "laptop", "x86", "intel-uhd-770", 12, 16),
+    ("Dell", "Latitude 7430 (UHD 770)", 2022, "windows", "laptop", "x86", "intel-uhd-770", 12, 16),
+    ("Dell", "Latitude 9440 (Arc A350M)", 2023, "windows", "laptop", "x86", "intel-arc-a350m", 12, 16),
+    ("Dell", "Vostro 5620 (UHD 730)", 2022, "windows", "laptop", "x86", "intel-uhd-730", 10, 8),
+    ("Dell", "Vostro 3520 (UHD 730)", 2023, "windows", "laptop", "x86", "intel-uhd-730", 6, 8),
+    ("Dell", "Inspiron 16 Plus 7630 (RTX 4050)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4050", 12, 16),
+    ("Dell", "XPS 15 9530 (RTX 4070)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4070", 14, 32),
+    ("Dell", "XPS 17 9730 (RTX 4070)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4070", 16, 32),
+    ("Dell", "XPS 14 9440 (RTX 4050, 32GB)", 2024, "windows", "laptop", "x86", "nvidia-rtx-4050", 12, 32),
+
+    # ---------------- HP ----------------
+    ("HP", "Omen 16 (RTX 3070 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3070-ti", 14, 32),
+    ("HP", "Omen 16 (RX 6600M)", 2022, "windows", "laptop", "x86", "amd-rx-6600m", 8, 16),
+    ("HP", "Omen 17 (RTX 3080 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3080-ti", 16, 32),
+    ("HP", "Omen 16 (RTX 4070)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4070", 14, 32),
+    ("HP", "Omen Transcend 16 (RTX 4080)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4080", 24, 32),
+    ("HP", "Omen 16 (RTX 4060)", 2024, "windows", "laptop", "x86", "nvidia-rtx-4060", 16, 16),
+    ("HP", "Victus 16 (RTX 3050 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3050-ti", 8, 16),
+    ("HP", "Victus 16 (RTX 4060)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4060", 10, 16),
+    ("HP", "Victus 15 (GTX 1650)", 2022, "windows", "laptop", "x86", "nvidia-gtx-1650", 8, 8),
+    ("HP", "ZBook Studio G9 (RTX A2000)", 2022, "windows", "laptop", "x86", "nvidia-rtx-a2000", 14, 32),
+    ("HP", "ZBook Fury 16 G9 (RTX A4000)", 2022, "windows", "laptop", "x86", "nvidia-rtx-a4000", 16, 64),
+    ("HP", "ZBook Power G10 (RTX A1000)", 2023, "windows", "laptop", "x86", "nvidia-rtx-a1000", 12, 32),
+    ("HP", "ZBook Studio G10 (RTX 4000 Ada)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4000-ada", 16, 64),
+    ("HP", "EliteBook 840 G9 (UHD 770)", 2022, "windows", "laptop", "x86", "intel-uhd-770", 12, 16),
+    ("HP", "EliteBook 840 G10 (UHD 770)", 2023, "windows", "laptop", "x86", "intel-uhd-770", 12, 32),
+    ("HP", "ProBook 450 G10 (UHD 730)", 2023, "windows", "laptop", "x86", "intel-uhd-730", 10, 16),
+    ("HP", "Envy 16 (RTX 3060)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3060", 14, 16),
+    ("HP", "Envy x360 15 (Arc A370M)", 2023, "windows", "laptop", "x86", "intel-arc-a370m", 12, 16),
+    ("HP", "Pavilion Plus 14 (RTX 2050)", 2022, "windows", "laptop", "x86", "nvidia-rtx-2050", 12, 16),
+    ("HP", "Spectre x360 16 (Arc A370M)", 2022, "windows", "laptop", "x86", "intel-arc-a370m", 14, 16),
+    ("HP", "Dragonfly G4", 2023, "windows", "laptop", "x86", "intel-iris-xe", 10, 32),
+
+    # ---------------- ASUS ----------------
+    ("ASUS", "ROG Strix SCAR 17 (RTX 3080 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3080-ti", 16, 32),
+    ("ASUS", "ROG Strix G15 (RX 6800M)", 2022, "windows", "laptop", "x86", "amd-rx-6600m", 8, 16),
+    ("ASUS", "ROG Zephyrus G14 (RX 6700S)", 2022, "windows", "laptop", "x86", "amd-rx-6600m", 8, 16),
+    ("ASUS", "ROG Zephyrus G15 (RTX 3070 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3070-ti", 8, 16),
+    ("ASUS", "ROG Zephyrus M16 (RTX 3070 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3070-ti", 14, 32),
+    ("ASUS", "ROG Zephyrus Duo 16 (RTX 3080 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3080-ti", 16, 32),
+    ("ASUS", "ROG Strix SCAR 18 (RTX 4090)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4090", 24, 64),
+    ("ASUS", "ROG Zephyrus G14 (RTX 4060)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4060", 8, 16),
+    ("ASUS", "ROG Zephyrus G16 (RTX 4070)", 2024, "windows", "laptop", "x86", "nvidia-rtx-4070", 16, 32),
+    ("ASUS", "ROG Zephyrus G14 (RTX 4070)", 2024, "windows", "laptop", "x86", "nvidia-rtx-4070", 8, 32),
+    ("ASUS", "TUF Gaming A15 (RTX 3060)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3060", 8, 16),
+    ("ASUS", "TUF Gaming F15 (RTX 3050 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3050-ti", 8, 8),
+    ("ASUS", "TUF Gaming A16 (RX 7600S)", 2023, "windows", "laptop", "x86", "amd-rx-7600s", 8, 16),
+    ("ASUS", "TUF Gaming F16 (RTX 4050)", 2024, "windows", "laptop", "x86", "nvidia-rtx-4050", 10, 16),
+    ("ASUS", "ProArt Studiobook 16 OLED (RTX 4070)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4070", 14, 32),
+    ("ASUS", "ProArt Studiobook 16 (RTX A3000)", 2022, "windows", "laptop", "x86", "nvidia-rtx-a3000", 14, 32),
+    ("ASUS", "Vivobook Pro 16X (RTX 4070)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4070", 14, 16),
+    ("ASUS", "Vivobook Pro 15 (RTX 3050)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3050", 8, 16),
+    ("ASUS", "Zenbook 14X OLED (Arc A350M)", 2022, "windows", "laptop", "x86", "intel-arc-a350m", 12, 16),
+    ("ASUS", "Zenbook Pro 16X OLED (RTX 4070)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4070", 16, 32),
+    ("ASUS", "Zenbook 14 OLED (UHD 770)", 2022, "windows", "laptop", "x86", "intel-uhd-770", 12, 16),
+    ("ASUS", "ExpertBook B9 (UHD 770)", 2022, "windows", "laptop", "x86", "intel-uhd-770", 10, 32),
+
+    # ---------------- Acer ----------------
+    ("Acer", "Predator Helios 300 (RTX 3060)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3060", 14, 16),
+    ("Acer", "Predator Helios 16 (RTX 4070)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4070", 14, 32),
+    ("Acer", "Predator Helios 18 (RTX 4090)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4090", 24, 32),
+    ("Acer", "Predator Triton 500 SE (RTX 3070 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3070-ti", 14, 32),
+    ("Acer", "Nitro 5 (RTX 3050)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3050", 8, 16),
+    ("Acer", "Nitro 5 (RTX 4050)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4050", 10, 16),
+    ("Acer", "Nitro 16 (RTX 4060)", 2024, "windows", "laptop", "x86", "nvidia-rtx-4060", 16, 16),
+    ("Acer", "Swift X 14 (RTX 4050)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4050", 12, 16),
+    ("Acer", "Swift Go 14 (Arc A350M)", 2023, "windows", "laptop", "x86", "intel-arc-a350m", 12, 16),
+    ("Acer", "Aspire Vero (UHD 770)", 2022, "windows", "laptop", "x86", "intel-uhd-770", 10, 16),
+    ("Acer", "Aspire 5 (UHD 730)", 2022, "windows", "laptop", "x86", "intel-uhd-730", 6, 8),
+    ("Acer", "TravelMate P2 (UHD 730)", 2023, "windows", "laptop", "x86", "intel-uhd-730", 10, 16),
+    ("Acer", "ConceptD 5 (RTX 3070 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3070-ti", 14, 32),
+
+    # ---------------- MSI ----------------
+    ("MSI", "Raider GE76 (RTX 3080 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3080-ti", 14, 32),
+    ("MSI", "Raider GE77 HX (RTX 3080 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3080-ti", 16, 64),
+    ("MSI", "Titan GT77 (RTX 3080 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3080-ti", 16, 64),
+    ("MSI", "Stealth GS66 (RTX 3070 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3070-ti", 14, 32),
+    ("MSI", "Katana GF66 (RTX 3050 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3050-ti", 8, 16),
+    ("MSI", "Pulse GL66 (RTX 3060)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3060", 14, 16),
+    ("MSI", "Raider GE78 HX (RTX 4090)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4090", 24, 64),
+    ("MSI", "Titan 18 HX (RTX 4090)", 2024, "windows", "laptop", "x86", "nvidia-rtx-4090", 24, 64),
+    ("MSI", "Stealth 16 Studio (RTX 4070)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4070", 16, 32),
+    ("MSI", "Katana 15 (RTX 4050)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4050", 10, 16),
+    ("MSI", "Cyborg 15 (RTX 4060)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4060", 10, 16),
+    ("MSI", "Prestige 16 AI Evo", 2024, "windows", "laptop", "x86", "intel-arc-140v", 12, 32),
+    ("MSI", "Summit E16 Flip (RTX A1000)", 2022, "windows", "laptop", "x86", "nvidia-rtx-a1000", 14, 32),
+    ("MSI", "CreatorPro X17 (RTX A5000)", 2022, "windows", "laptop", "x86", "nvidia-rtx-a5000", 16, 64),
+    ("MSI", "Modern 15 (UHD 730)", 2023, "windows", "laptop", "x86", "intel-uhd-730", 10, 16),
+    ("MSI", "Sword 16 HX (RTX 4070)", 2024, "windows", "laptop", "x86", "nvidia-rtx-4070", 24, 16),
+
+    # ---------------- Razer ----------------
+    ("Razer", "Blade 15 (RTX 3070 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3070-ti", 14, 16),
+    ("Razer", "Blade 17 (RTX 3080 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3080-ti", 14, 32),
+    ("Razer", "Blade 14 (RTX 3070 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3070-ti", 8, 16),
+    ("Razer", "Blade 16 (RTX 4090)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4090", 24, 32),
+    ("Razer", "Blade 18 (RTX 4090)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4090", 24, 64),
+    ("Razer", "Blade 14 (RTX 4070)", 2024, "windows", "laptop", "x86", "nvidia-rtx-4070", 8, 32),
+    ("Razer", "Blade 16 (RTX 4080)", 2024, "windows", "laptop", "x86", "nvidia-rtx-4080", 24, 32),
+
+    # ---------------- Samsung / LG / Microsoft / Gigabyte / Huawei ----
+    ("Samsung", "Galaxy Book3 Ultra (RTX 4070)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4070", 16, 32),
+    ("Samsung", "Galaxy Book4 Ultra (RTX 4070)", 2024, "windows", "laptop", "x86", "nvidia-rtx-4070", 16, 32),
+    ("Samsung", "Galaxy Book2 Pro 360 (Iris Xe)", 2022, "windows", "laptop", "x86", "intel-iris-xe", 12, 16),
+    ("Samsung", "Galaxy Book4 Pro (Arc 140V)", 2024, "windows", "laptop", "x86", "intel-arc-140v", 12, 16),
+    ("LG", "gram 17 (Iris Xe)", 2022, "windows", "laptop", "x86", "intel-iris-xe", 12, 16),
+    ("LG", "gram SuperSlim (Iris Xe)", 2023, "windows", "laptop", "x86", "intel-iris-xe", 10, 16),
+    ("LG", "gram Pro 16 (Arc 140V)", 2024, "windows", "laptop", "x86", "intel-arc-140v", 12, 32),
+    ("Microsoft", "Surface Laptop 5 (Iris Xe)", 2022, "windows", "laptop", "x86", "intel-iris-xe", 12, 16),
+    ("Microsoft", "Surface Laptop Studio 2 (RTX 4050)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4050", 14, 32),
+    ("Microsoft", "Surface Laptop Studio 2 (RTX 4060)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4060", 14, 64),
+    ("Microsoft", "Surface Pro 10 (Arc 140V)", 2024, "windows", "laptop", "x86", "intel-arc-140v", 12, 16),
+    ("Microsoft", "Surface Laptop 7 (Iris Xe)", 2024, "windows", "laptop", "x86", "intel-iris-xe", 10, 16),
+    ("Gigabyte", "Aorus 15 (RTX 3070 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3070-ti", 14, 16),
+    ("Gigabyte", "Aorus 17 (RTX 3080 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3080-ti", 14, 32),
+    ("Gigabyte", "Aero 16 (RTX 3070 Ti)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3070-ti", 14, 32),
+    ("Gigabyte", "Aorus 16X (RTX 4070)", 2024, "windows", "laptop", "x86", "nvidia-rtx-4070", 16, 32),
+    ("Gigabyte", "Aero 14 OLED (RTX 4050)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4050", 12, 16),
+    ("Huawei", "MateBook X Pro (Iris Xe)", 2022, "windows", "laptop", "x86", "intel-iris-xe", 12, 16),
+    ("Huawei", "MateBook 16s (Iris Xe)", 2022, "windows", "laptop", "x86", "intel-iris-xe", 14, 16),
+    ("Huawei", "MateBook D16 (UHD 770)", 2023, "windows", "laptop", "x86", "intel-uhd-770", 12, 16),
+    ("Huawei", "MateBook 14s (UHD 770)", 2022, "windows", "laptop", "x86", "intel-uhd-770", 12, 16),
+
+    # ---------------- Framework ----------------
+    ("Framework", "Laptop 16 (RX 7700S)", 2023, "windows", "laptop", "x86", "amd-rx-7700s", 8, 16),
+    ("Framework", "Laptop 13 (Ryzen 7040)", 2023, "windows", "laptop", "x86", "amd-radeon-780m", 8, 16),
+    ("Framework", "Laptop 13 (Core Ultra)", 2024, "windows", "laptop", "x86", "intel-arc-140v", 12, 16),
+
+    # ---------------- Linux vendors ----------------
+    ("System76", "Oryx Pro (RTX 3070 Ti)", 2022, "linux", "laptop", "x86", "nvidia-rtx-3070-ti", 16, 32),
+    ("System76", "Bonobo WS (RTX 3080 Ti)", 2022, "linux", "laptop", "x86", "nvidia-rtx-3080-ti", 16, 64),
+    ("System76", "Pangolin (Radeon 680M)", 2022, "linux", "laptop", "x86", "amd-radeon-680m", 8, 16),
+    ("System76", "Lemur Pro (Iris Xe)", 2022, "linux", "laptop", "x86", "intel-iris-xe", 12, 16),
+    ("System76", "Pangolin (Radeon 780M)", 2023, "linux", "laptop", "x86", "amd-radeon-780m", 8, 32),
+    ("Tuxedo", "Stellaris 16 (RTX 4070)", 2023, "linux", "laptop", "x86", "nvidia-rtx-4070", 16, 32),
+    ("Tuxedo", "InfinityBook Pro 16 (RX 7600S)", 2023, "linux", "laptop", "x86", "amd-rx-7600s", 8, 16),
+    ("Tuxedo", "Pulse 14 (Radeon 780M)", 2023, "linux", "laptop", "x86", "amd-radeon-780m", 8, 16),
+    ("Slimbook", "Executive 14 (UHD 770)", 2022, "linux", "laptop", "x86", "intel-uhd-770", 12, 16),
+    ("Slimbook", "Pro X 16 (RTX 4070)", 2023, "linux", "laptop", "x86", "nvidia-rtx-4070", 16, 32),
+    ("Star Labs", "StarFighter 16 (RTX 4060)", 2024, "linux", "laptop", "x86", "nvidia-rtx-4060", 16, 32),
+    ("Purism", "Librem 14 (Vega 8)", 2022, "linux", "laptop", "x86", "amd-vega-8", 8, 16),
+    ("Juno", "Nyx 14 (Radeon 780M)", 2024, "linux", "laptop", "x86", "amd-radeon-780m", 8, 16),
+
+    # ---------------- Desktops ----------------
+    #
+    # A desktop is a different shape of machine from a laptop and Chrome sees
+    # it as one: same platform, different GPU, more cores.  These are prebuilt
+    # and boutique systems that shipped with the GPU named in the model.
+    ("Apple", "MacBook Air 15 (M3, 2024, 24GB)", 2024, "macos", "laptop", "arm", "apple-m3", 8, 24),
+    ("Apple", "MacBook Pro 16 (M3 Pro, 2023)", 2023, "macos", "laptop", "arm", "apple-m3-pro", 12, 18),
+    ("Apple", "MacBook Pro 16 (M4 Pro, 2024)", 2024, "macos", "laptop", "arm", "apple-m4-pro", 14, 24),
+    ("Apple", "MacBook Pro 16 (M4 Max, 2024, 48GB)", 2024, "macos", "laptop", "arm", "apple-m4-max", 16, 48),
+    ("Apple", "Mac mini (M4, 2024, 24GB)", 2024, "macos", "desktop", "arm", "apple-m4", 10, 24),
+    ("Apple", "Mac mini (M4 Pro, 2024, 48GB)", 2024, "macos", "desktop", "arm", "apple-m4-pro", 14, 48),
+    ("Apple", "iMac 24 (M4, 2024, 24GB)", 2024, "macos", "desktop", "arm", "apple-m4", 10, 24),
+    ("Apple", "iMac 24 (M1, 2022)", 2022, "macos", "desktop", "arm", "apple-m1", 8, 8),
+    ("Apple", "MacBook Air 13 (M1, 2022)", 2022, "macos", "laptop", "arm", "apple-m1", 8, 8),
+    ("Apple", "MacBook Pro 14 (M1 Pro, 2022)", 2022, "macos", "laptop", "arm", "apple-m1-pro", 10, 16),
+    ("Apple", "MacBook Pro 16 (M1 Max, 2022)", 2022, "macos", "laptop", "arm", "apple-m1-max", 10, 32),
+    ("Apple", "Mac Studio (M1 Ultra, 2022)", 2022, "macos", "desktop", "arm", "apple-m1-ultra", 20, 64),
+    ("Apple", "MacBook Pro 15 (Iris Plus 655, 2022)", 2022, "macos", "laptop", "x86", "intel-iris-plus-655", 8, 16),
+
+    ("Corsair", "Vengeance i7400 (RTX 4070)", 2023, "windows", "desktop", "x86", "nvidia-rtx-4070", 16, 32),
+    ("Corsair", "Vengeance i8200 (RTX 4090)", 2023, "windows", "desktop", "x86", "nvidia-rtx-4090", 24, 64),
+    ("Origin PC", "Millennium (RTX 4090)", 2023, "windows", "desktop", "x86", "nvidia-rtx-4090", 24, 64),
+    ("Origin PC", "Chronos (RTX 4070)", 2023, "windows", "desktop", "x86", "nvidia-rtx-4070", 16, 32),
+    ("Maingear", "Vybe (RTX 4070)", 2023, "windows", "desktop", "x86", "nvidia-rtx-4070", 16, 32),
+    ("Digital Storm", "Lumos (RTX 4060)", 2023, "windows", "desktop", "x86", "nvidia-rtx-4060", 12, 16),
+    ("Puget Systems", "Deluge (RTX 4080)", 2022, "windows", "desktop", "x86", "nvidia-rtx-4080", 24, 32),
+    ("CyberPowerPC", "Gamer Xtreme (RTX 3060)", 2022, "windows", "desktop", "x86", "nvidia-rtx-3060", 12, 16),
+    ("iBuyPower", "TraceMR (RTX 3050)", 2022, "windows", "desktop", "x86", "nvidia-rtx-3050", 8, 16),
+    ("NZXT", "Player Three (RTX 4070)", 2023, "windows", "desktop", "x86", "nvidia-rtx-4070", 16, 32),
+    ("NZXT", "Player One (RTX 3050)", 2022, "windows", "desktop", "x86", "nvidia-rtx-3050", 6, 16),
+    ("Skytech", "Chronos (RTX 4060)", 2023, "windows", "desktop", "x86", "nvidia-rtx-4060", 12, 16),
+    ("HP", "Omen 45L (RTX 4090)", 2022, "windows", "desktop", "x86", "nvidia-rtx-4090", 24, 64),
+    ("HP", "Omen 40L (RTX 3070 Ti)", 2022, "windows", "desktop", "x86", "nvidia-rtx-3070-ti", 12, 32),
+    ("HP", "Envy Desktop TE02 (RTX 3060)", 2022, "windows", "desktop", "x86", "nvidia-rtx-3060", 12, 16),
+    ("HP", "Z2 Tower G9 (RTX A4000)", 2022, "windows", "desktop", "x86", "nvidia-rtx-a4000", 16, 64),
+    ("Dell", "Alienware Aurora R15 (RTX 4090)", 2023, "windows", "desktop", "x86", "nvidia-rtx-4090", 24, 64),
+    ("Dell", "Alienware Aurora R15 (RX 7900M)", 2023, "windows", "desktop", "x86", "amd-rx-7900m", 16, 32),
+    ("Dell", "Alienware Aurora R16 (RTX 4070)", 2024, "windows", "desktop", "x86", "nvidia-rtx-4070", 20, 32),
+    ("Dell", "XPS Desktop 8960 (RTX 4070)", 2023, "windows", "desktop", "x86", "nvidia-rtx-4070", 16, 32),
+    ("Dell", "Precision 3660 Tower (RTX A2000)", 2022, "windows", "desktop", "x86", "nvidia-rtx-a2000", 12, 32),
+    ("Dell", "OptiPlex 7010 (UHD 770)", 2022, "windows", "desktop", "x86", "intel-uhd-770", 12, 16),
+    ("Dell", "OptiPlex 3000 (UHD 730)", 2022, "windows", "desktop", "x86", "intel-uhd-730", 8, 8),
+    ("Lenovo", "Legion Tower 7i (RTX 4080)", 2023, "windows", "desktop", "x86", "nvidia-rtx-4080", 24, 32),
+    ("Lenovo", "Legion Tower 5 (RTX 3070)", 2022, "windows", "desktop", "x86", "nvidia-rtx-3070", 12, 16),
+    ("Lenovo", "ThinkCentre M90t (UHD 770)", 2022, "windows", "desktop", "x86", "intel-uhd-770", 12, 16),
+    ("Lenovo", "ThinkStation P360 (RTX A2000)", 2022, "windows", "desktop", "x86", "nvidia-rtx-a2000", 12, 32),
+    ("ASUS", "ROG Strix GT35 (RTX 4070)", 2023, "windows", "desktop", "x86", "nvidia-rtx-4070", 16, 32),
+    ("Acer", "Predator Orion 7000 (RTX 4090)", 2023, "windows", "desktop", "x86", "nvidia-rtx-4090", 24, 32),
+    ("Acer", "Aspire TC (UHD 730)", 2022, "windows", "desktop", "x86", "intel-uhd-730", 6, 8),
+    ("MSI", "Aegis RS (RTX 4070)", 2023, "windows", "desktop", "x86", "nvidia-rtx-4070", 16, 32),
+    ("MSI", "Infinite RS (RTX 3060)", 2022, "windows", "desktop", "x86", "nvidia-rtx-3060", 12, 16),
+    ("System76", "Thelio Mira (RX 7600S)", 2023, "linux", "desktop", "x86", "amd-rx-7600s", 8, 32),
+    ("System76", "Thelio Major (RTX 4070)", 2023, "linux", "desktop", "x86", "nvidia-rtx-4070", 24, 64),
+    ("System76", "Meerkat (Iris Xe)", 2022, "linux", "desktop", "x86", "intel-iris-xe", 8, 16),
+    ("System76", "Thelio Spark (UHD 770)", 2023, "linux", "desktop", "x86", "intel-uhd-770", 12, 16),
+    ("Tuxedo", "Pulse 15 (RTX 4050)", 2023, "linux", "laptop", "x86", "nvidia-rtx-4050", 12, 16),
+    ("Slimbook", "Hero (Radeon 780M)", 2023, "linux", "laptop", "x86", "amd-radeon-780m", 8, 32),
+    ("Star Labs", "Byte Mk II (Vega 8)", 2022, "linux", "desktop", "x86", "amd-vega-8", 4, 8),
+    ("Purism", "Librem 15 (Vega 6)", 2022, "linux", "laptop", "x86", "amd-vega-6", 4, 8),
+    ("Juno", "Gemini 17 (RTX 4060)", 2023, "linux", "laptop", "x86", "nvidia-rtx-4060", 16, 32),
+    ("Kubuntu Focus", "Ir14 (Iris Xe)", 2022, "linux", "laptop", "x86", "intel-iris-xe", 12, 16),
+    ("Kubuntu Focus", "Ir16 (Iris Xe)", 2023, "linux", "laptop", "x86", "intel-iris-xe", 12, 32),
+    ("Kubuntu Focus", "M2 (UHD 770)", 2022, "linux", "desktop", "x86", "intel-uhd-770", 12, 16),
+    ("Entroware", "Apollo (Radeon 780M)", 2023, "linux", "laptop", "x86", "amd-radeon-780m", 8, 16),
+    ("Entroware", "Proteus (RTX 4070)", 2023, "linux", "laptop", "x86", "nvidia-rtx-4070", 16, 32),
+    ("Entroware", "Aura (UHD 770)", 2022, "linux", "desktop", "x86", "intel-uhd-770", 12, 16),
+    ("Laptop with Linux", "Clevo NV41 (Iris Xe)", 2022, "linux", "laptop", "x86", "intel-iris-xe", 12, 16),
+    ("Laptop with Linux", "Clevo NS50 (Radeon 660M)", 2023, "linux", "laptop", "x86", "amd-radeon-660m", 6, 16),
+
+    # ---------------- Budget and mid-range ----------------
+    #
+    # The machines most people actually own, and the ones that widen the
+    # catalogue most: a 4 GB machine reports 4 where a 16 GB one reports 8,
+    # and the low end is where the GPU and core counts vary most.  Every row
+    # names a configuration the model was sold in.
+    ("Acer", "Aspire 3 (A315-59)", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 6, 8),
+    ("Acer", "Aspire 3 (A315-24P)", 2023, "windows", "laptop", "x86", "amd-vega-3", 4, 8),
+    ("Acer", "Aspire 5 (A515-57)", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 10, 16),
+    ("Acer", "Aspire 5 (A515-45)", 2022, "windows", "laptop", "x86", "amd-vega-8", 6, 8),
+    ("Acer", "Aspire 5 (A517-53)", 2023, "windows", "laptop", "x86", "intel-uhd-graphics", 10, 16),
+    ("Acer", "Aspire 7 (A715-76G)", 2023, "windows", "laptop", "x86", "nvidia-rtx-2050", 8, 16),
+    ("Acer", "Aspire 7 (A715-43G)", 2022, "windows", "laptop", "x86", "nvidia-gtx-1650", 8, 16),
+    ("Acer", "Extensa 15 (EX215-54)", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 6, 8),
+    ("Acer", "Swift 1 (SF114-34)", 2022, "windows", "laptop", "x86", "intel-uhd-605", 4, 4),
+    ("Acer", "Swift 3 (SF314-512)", 2022, "windows", "laptop", "x86", "intel-iris-xe", 10, 16),
+    ("Acer", "Swift Go 16 (SFG16-71)", 2023, "windows", "laptop", "x86", "intel-iris-xe", 10, 16),
+    ("Acer", "TravelMate P2 (TMP214-54)", 2022, "windows", "laptop", "x86", "intel-iris-xe", 10, 16),
+    ("Acer", "TravelMate P4 (TMP414-53)", 2023, "windows", "laptop", "x86", "intel-uhd-graphics", 10, 16),
+    ("Acer", "Chromebook 315 (CB315-4H)", 2022, "windows", "laptop", "x86", "intel-uhd-600", 4, 8),
+
+    ("Lenovo", "IdeaPad 1 (15ADA7)", 2022, "windows", "laptop", "x86", "amd-vega-3", 4, 8),
+    ("Lenovo", "IdeaPad 1 (15AMN7)", 2023, "windows", "laptop", "x86", "amd-vega-3", 4, 8),
+    ("Lenovo", "IdeaPad 3 (15IAU7)", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 6, 8),
+    ("Lenovo", "IdeaPad 3 (15ITL6)", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 6, 4),
+    ("Lenovo", "IdeaPad Slim 3 (15IRU8)", 2023, "windows", "laptop", "x86", "intel-uhd-graphics", 6, 8),
+    ("Lenovo", "IdeaPad Slim 5 (16IRL8)", 2023, "windows", "laptop", "x86", "intel-iris-xe", 10, 16),
+    ("Lenovo", "IdeaPad Flex 5 (14ABR8)", 2023, "windows", "laptop", "x86", "amd-radeon-660m", 6, 16),
+    ("Lenovo", "IdeaPad Gaming 3 (15ARH7)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3050", 8, 8),
+    ("Lenovo", "V15 G2 ITL", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 6, 8),
+    ("Lenovo", "V15 G3 ABA", 2023, "windows", "laptop", "x86", "amd-vega-3", 4, 8),
+    ("Lenovo", "ThinkBook 14 G4 IAP", 2022, "windows", "laptop", "x86", "intel-iris-xe", 10, 16),
+    ("Lenovo", "ThinkBook 15 G4 ABA", 2022, "windows", "laptop", "x86", "amd-radeon-660m", 6, 16),
+    ("Lenovo", "ThinkPad E14 Gen 5", 2023, "windows", "laptop", "x86", "intel-uhd-graphics", 10, 16),
+    ("Lenovo", "ThinkPad E15 Gen 4 (UHD Graphics)", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 6, 8),
+    ("Lenovo", "ThinkPad L14 Gen 3 (UHD Graphics)", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 6, 8),
+    ("Lenovo", "Yoga 6 (13ABR8)", 2023, "windows", "laptop", "x86", "amd-radeon-660m", 6, 16),
+    ("Lenovo", "Yoga 7i (14IRL8)", 2023, "windows", "laptop", "x86", "intel-iris-xe", 10, 16),
+    ("Lenovo", "Yoga 9i (14IRP8)", 2023, "windows", "laptop", "x86", "intel-iris-xe", 12, 16),
+    ("Lenovo", "ThinkPad X13 Yoga Gen 3", 2022, "windows", "laptop", "x86", "intel-iris-xe", 10, 16),
+
+    ("HP", "Laptop 15 (15s-fq5)", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 6, 8),
+    ("HP", "Laptop 15 (15s-eq3)", 2022, "windows", "laptop", "x86", "amd-vega-6", 4, 8),
+    ("HP", "Laptop 17 (17-cn2)", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 6, 8),
+    ("HP", "250 G9", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 6, 8),
+    ("HP", "255 G9", 2022, "windows", "laptop", "x86", "amd-vega-6", 4, 8),
+    ("HP", "250 G10", 2023, "windows", "laptop", "x86", "intel-uhd-graphics", 6, 8),
+    ("HP", "Pavilion 15 (15-eg2)", 2022, "windows", "laptop", "x86", "intel-iris-xe", 10, 16),
+    ("HP", "Pavilion x360 14 (14-ek1)", 2022, "windows", "laptop", "x86", "intel-iris-xe", 10, 16),
+    ("HP", "ProBook 440 G9", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 10, 16),
+    ("HP", "ProBook 450 G9 (UHD Graphics)", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 10, 16),
+    ("HP", "ProBook 445 G9", 2022, "windows", "laptop", "x86", "amd-radeon-660m", 6, 16),
+    ("HP", "ProBook 450 G10 (UHD Graphics)", 2023, "windows", "laptop", "x86", "intel-uhd-graphics", 10, 16),
+    ("HP", "EliteBook 630 G9", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 10, 16),
+    ("HP", "EliteBook 650 G9", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 10, 16),
+    ("HP", "EliteBook 840 G11", 2024, "windows", "laptop", "x86", "intel-arc-140v", 12, 16),
+
+    ("Dell", "Inspiron 15 3520", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 10, 8),
+    ("Dell", "Inspiron 15 3530 (UHD Graphics)", 2023, "windows", "laptop", "x86", "intel-uhd-graphics", 10, 16),
+    ("Dell", "Inspiron 15 3525", 2022, "windows", "laptop", "x86", "amd-vega-6", 4, 8),
+    ("Dell", "Inspiron 14 3420", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 6, 8),
+    ("Dell", "Inspiron 16 5620", 2022, "windows", "laptop", "x86", "nvidia-mx550", 10, 16),
+    ("Dell", "Vostro 3420", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 6, 8),
+    ("Dell", "Vostro 3525", 2022, "windows", "laptop", "x86", "amd-vega-6", 4, 8),
+    ("Dell", "Vostro 3530", 2023, "windows", "laptop", "x86", "intel-uhd-graphics", 6, 8),
+    ("Dell", "Latitude 3330", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 6, 8),
+    ("Dell", "Latitude 3440", 2023, "windows", "laptop", "x86", "intel-uhd-graphics", 6, 8),
+    ("Dell", "Latitude 3540", 2023, "windows", "laptop", "x86", "intel-uhd-graphics", 10, 16),
+    ("Dell", "G15 5511", 2022, "windows", "laptop", "x86", "nvidia-rtx-3050", 8, 8),
+    ("Dell", "G15 5530", 2023, "windows", "laptop", "x86", "nvidia-rtx-4050", 12, 16),
+
+    ("ASUS", "VivoBook 15 (X515)", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 6, 8),
+    ("ASUS", "VivoBook 15 (X1502)", 2022, "windows", "laptop", "x86", "intel-uhd-graphics", 10, 8),
+    ("ASUS", "VivoBook 16 (X1605)", 2023, "windows", "laptop", "x86", "intel-uhd-graphics", 10, 16),
+    ("ASUS", "VivoBook Go 15 (E1504)", 2023, "windows", "laptop", "x86", "amd-vega-3", 4, 8),
+    ("ASUS", "VivoBook 14 (M1405)", 2023, "windows", "laptop", "x86", "amd-radeon-660m", 6, 8),
+    ("ASUS", "Zenbook 14 (UX3402)", 2022, "windows", "laptop", "x86", "intel-iris-xe", 10, 16),
+    ("ASUS", "ExpertBook P1 (P1512)", 2022, "windows", "laptop", "x86", "intel-iris-xe", 10, 16),
+    ("ASUS", "ExpertBook B1 (B1500)", 2023, "windows", "laptop", "x86", "intel-uhd-graphics", 10, 16),
+    ("ASUS", "TUF Gaming A15 (FA506)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3050", 8, 8),
+    ("ASUS", "TUF Gaming F17 (FX706)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3050-ti", 8, 16),
+    ("ASUS", "ROG Strix G15 (G513)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3050", 8, 16),
+
+    ("MSI", "Modern 14 (B12M)", 2022, "windows", "laptop", "x86", "intel-iris-xe", 10, 16),
+    ("MSI", "Modern 15 (B13M)", 2023, "windows", "laptop", "x86", "intel-uhd-graphics", 10, 16),
+    ("MSI", "Prestige 14 Evo (A12M)", 2022, "windows", "laptop", "x86", "intel-iris-xe", 12, 16),
+    ("MSI", "GF63 Thin (12UC)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3050", 8, 8),
+    ("MSI", "Thin GF63 (12VE)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4050", 10, 16),
+    ("MSI", "Katana 17 (B13V)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4060", 10, 16),
+    ("MSI", "GP66 Leopard (12UG)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3070", 14, 16),
+
+    ("Samsung", "Galaxy Book2 (15.6)", 2022, "windows", "laptop", "x86", "intel-iris-xe", 10, 8),
+    ("Samsung", "Galaxy Book2 360", 2022, "windows", "laptop", "x86", "intel-iris-xe", 10, 16),
+    ("Samsung", "Galaxy Book3 (15.6)", 2023, "windows", "laptop", "x86", "intel-iris-xe", 10, 8),
+    ("Samsung", "Galaxy Book3 360", 2023, "windows", "laptop", "x86", "intel-iris-xe", 12, 16),
+    ("Samsung", "Galaxy Book4 (15.6)", 2024, "windows", "laptop", "x86", "intel-uhd-graphics", 10, 8),
+    ("Samsung", "Galaxy Book4 360", 2024, "windows", "laptop", "x86", "intel-arc-140v", 12, 16),
+
+    ("LG", "gram 14 (14Z90Q)", 2022, "windows", "laptop", "x86", "intel-iris-xe", 10, 16),
+    ("LG", "gram 15 (15Z90Q)", 2022, "windows", "laptop", "x86", "intel-iris-xe", 12, 16),
+    ("LG", "gram 16 (16Z90R)", 2023, "windows", "laptop", "x86", "intel-iris-xe", 12, 16),
+    ("LG", "gram Style 14", 2023, "windows", "laptop", "x86", "intel-iris-xe", 12, 16),
+
+    ("Huawei", "MateBook D14 (2022)", 2022, "windows", "laptop", "x86", "intel-iris-xe", 8, 8),
+    ("Huawei", "MateBook D15 (2022)", 2022, "windows", "laptop", "x86", "intel-iris-xe", 10, 8),
+    ("Huawei", "MateBook D16 (2023)", 2023, "windows", "laptop", "x86", "intel-uhd-graphics", 10, 16),
+    ("Huawei", "MateBook 14 (2024)", 2024, "windows", "laptop", "x86", "intel-arc-140v", 12, 16),
+
+    ("Gigabyte", "G5 (KE)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3050", 8, 16),
+    ("Gigabyte", "G6 (KF)", 2022, "windows", "laptop", "x86", "nvidia-rtx-3060", 14, 16),
+    ("Gigabyte", "G5 (MF)", 2023, "windows", "laptop", "x86", "nvidia-rtx-4060", 10, 16),
+    ("Gigabyte", "G6X (9KG)", 2024, "windows", "laptop", "x86", "nvidia-rtx-4060", 10, 16),
 ]
 
 # The platform token each OS reports, and what the client hints say.
