@@ -72,7 +72,7 @@ browser is original C: a portable core plus one thin platform layer per OS.
   homepage and the clear-data actions — the same keys the Android edition
   stores.
 - **Device identity manager** — every profile presents a real machine from a
-  bundled catalogue of 523 laptops, desktops and workstations (2022–2025,
+  bundled catalogue of 1041 laptops, desktops and workstations (2022–2025,
   Windows, macOS and Linux), not just a User-Agent string. A device sets the
   UA *and*
   everything a page can ask about the machine — `navigator.platform`, the

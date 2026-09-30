@@ -84,7 +84,7 @@ fingerprinter.
 
 Both desktop editions present a machine from the same idea, with the rules a
 desktop needs rather than the ones a phone does. A profile may be assigned
-one of 523 real laptops, desktops and workstations (2022–2025, Windows,
+one of 1041 real laptops, desktops and workstations (2022–2025, Windows,
 macOS and Linux), and what it presents is the same list as above, with these
 differences:
 

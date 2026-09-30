@@ -4320,9 +4320,11 @@ static void test_rb_devices(void)
     int i, j;
     const rb_device *d;
 
-    /* Large enough that profiles keep distinct identities, and not empty even
-     * if the generator is ever run with a trimmed list. */
-    CHECK(n >= 100);
+    /* Large enough that profiles keep distinct identities: the same floor the
+     * Android catalogue is held to, so neither edition can quietly shrink.
+     * The list is generated, so this fails only if the generator is run with
+     * a trimmed table. */
+    CHECK(n >= 1000);
     /* NULL and "" are both "no device", so a profile that has never been
      * assigned one needs no special case anywhere. */
     CHECK(rb_device_by_id(NULL) == NULL);

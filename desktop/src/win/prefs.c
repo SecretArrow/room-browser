@@ -36,6 +36,12 @@
 #define RB_PREFS_TABH    30     /* the page selector strip */
 #define RB_PREFS_FOOTH   34     /* the Close button row */
 
+/* The device picker, a modal window of its own. */
+#define RB_PREFS_DEV_WIN_W  620
+#define RB_PREFS_DEV_WIN_H  470
+#define RB_PREFS_DEV_BTNW   100
+#define RB_PREFS_DEV_BTNH   26
+
 #define PF_ROW_H   22           /* a switch or a combo */
 #define PF_SUB_H   15           /* the dim line under a switch */
 #define PF_GAP     9
@@ -88,6 +94,14 @@ typedef struct {
     int   page_h;
     RbPrefCtl ctl[RB_PREFS_MAX_CTL];
     int   n_ctl;
+
+    /* The device picker's caption table, built from the generated catalogue
+     * and so allocated rather than sized by a constant.  It has to outlive
+     * pf_build_ua because RbPrefCtl::ids points into it, so it is owned here
+     * and released in pf_teardown. */
+    const char **dev_ids;
+    const char **dev_labels;
+    char (*dev_buf)[128];
 } RbPrefs;
 
 /* One editor at a time: the window is modal, so a second request only has to
@@ -634,32 +648,46 @@ static void pf_build_ua(RbPrefs *pf)
     static const char *ids[66];
     static const char *labels[66];
     static char buf[64][128];
-    /* The device list is generated and runs to a few hundred machines, so it
+    /* The device list is generated and runs past a thousand machines, so it
      * gets its own storage: the caption is built from the catalogue rather
-     * than written out here.  Static, like the preset arrays above, because
-     * one settings window exists at a time. */
-    static const char *dev_ids[RB_DEVICE_CHOICES_MAX + 2];
-    static const char *dev_labels[RB_DEVICE_CHOICES_MAX + 2];
-    static char dev_buf[RB_DEVICE_CHOICES_MAX + 2][128];
+     * than written out here.  Unlike the preset arrays above it is ALLOCATED
+     * rather than a fixed buffer - a fixed buffer here is a silent cap on
+     * which devices a profile may be given, and the catalogue has already
+     * outgrown the one this used to carry.  Freed in pf_teardown. */
     int n = rb_ua_count(), i, y = 0;
-    int dn = rb_device_count(), j;
+    int dn = rb_device_count(), j, k = 0;
+    const char **dev_ids = calloc((size_t)dn + 2, sizeof *dev_ids);
+    const char **dev_labels = calloc((size_t)dn + 2, sizeof *dev_labels);
+    char (*dev_buf)[128] = calloc((size_t)dn + 2, sizeof *dev_buf);
 
-    if (dn > RB_DEVICE_CHOICES_MAX) dn = RB_DEVICE_CHOICES_MAX;
+    if (dev_ids == NULL || dev_labels == NULL || dev_buf == NULL) {
+        free(dev_ids);
+        free(dev_labels);
+        free(dev_buf);
+        return;
+    }
+    pf->dev_ids = dev_ids;
+    pf->dev_labels = dev_labels;
+    pf->dev_buf = dev_buf;
+
     dev_ids[0] = "";
     dev_labels[0] = "No device - use the User-Agent setting";
+    /* k counts the entries actually built, so a catalogue entry that is NULL
+     * leaves no hole for the NULL-terminated walk in pf_combo to stop at. */
     for (j = 0; j < dn; j++) {
         const rb_device *d = rb_device_at(j);
         if (d == NULL || d->id == NULL) continue;
-        dev_ids[j + 1] = d->id;
-        snprintf(dev_buf[j + 1], sizeof dev_buf[j + 1], "%s %s - %s (%d)",
+        dev_ids[k + 1] = d->id;
+        snprintf(dev_buf[k + 1], sizeof dev_buf[k + 1], "%s %s - %s (%d)",
                  (d->brand != NULL) ? d->brand : "",
                  (d->model != NULL) ? d->model : "",
                  rb_device_os_name(d->os), d->year);
-        dev_labels[j + 1] = dev_buf[j + 1];
+        dev_labels[k + 1] = dev_buf[k + 1];
+        k++;
     }
-    dn++;
-    dev_ids[dn] = NULL;
-    dev_labels[dn] = NULL;
+    k++;
+    dev_ids[k] = NULL;
+    dev_labels[k] = NULL;
 
     /* A device decides the User-Agent, so it comes first: with one chosen,
      * the three rows below are not consulted at all. */
@@ -1014,6 +1042,11 @@ static void pf_teardown(RbPrefs *pf)
     }
     if (pf->fnt != NULL) DeleteObject(pf->fnt);
     if (pf->fnt_bold != NULL) DeleteObject(pf->fnt_bold);
+    /* The device picker's caption table is ours, and the controls that point
+     * into it are already gone with the dialog. */
+    free(pf->dev_ids);
+    free(pf->dev_labels);
+    free(pf->dev_buf);
     /* The pages and their controls are destroyed with the dialog; only this
      * struct goes, and the two window classes, which are registered once for
      * the life of the process. */

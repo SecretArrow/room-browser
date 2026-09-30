@@ -58,10 +58,11 @@ typedef struct {
 
 /* --- the catalogue (rb_devices.c, generated) --- */
 
-/* A picker that lays the catalogue out in a fixed buffer sizes it with this.
- * Larger than the catalogue by a comfortable margin, so adding machines to
- * the generator cannot silently truncate a list. */
-#define RB_DEVICE_CHOICES_MAX 512
+/* There is deliberately no maximum here.  A picker sizes itself from
+ * rb_device_count() and allocates, because the catalogue is generated and
+ * grows: a constant a picker sized a buffer with would be a silent cap on
+ * which machines a profile may be given, and the catalogue has outgrown the
+ * one this header used to carry. */
 
 int                 rb_device_count(void);
 const rb_device    *rb_device_at(int index);
