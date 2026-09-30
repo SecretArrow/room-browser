@@ -149,6 +149,7 @@ void rb_on_activate(GtkApplication *gtk_app, gpointer user_data);
 void rb_on_shutdown(GtkApplication *gtk_app, gpointer user_data);
 void rb_css_load(App *app);       /* (re)loads the stylesheet from the theme */
 const rb_theme *rb_theme_current(App *app);  /* the active profile's theme */
+void rb_apply_font_scale(App *app);  /* applies the profile's UI font scale */
 void rb_update_omni(App *app, const char *url);
 void rb_update_titlebar(App *app);
 void rb_update_nav(App *app);

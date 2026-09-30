@@ -576,7 +576,7 @@ static void rb_progress_rect(App *app, RECT *out)
     GetClientRect(app->hwnd, &rc);
     out->left   = 0;
     out->right  = rc.right;
-    out->bottom = RB_TABSTRIP_H + RB_TOOLBAR_H;
+    out->bottom = rb_scaled(app, RB_TABSTRIP_H) + rb_scaled(app, RB_TOOLBAR_H);
     out->top    = out->bottom - RB_PROGRESS_H;
 }
 
@@ -1007,35 +1007,125 @@ void rb_do_reload_or_stop(App *app)
 /* ------------------------------------------------------------------ */
 /* Layout */
 
+int rb_scaled(App *app, int design_px)
+{
+    const rb_profile *p = rb_active_profile(app);
+    int pct = rb_font_scale_percent(p ? p->settings : NULL);
+    int v;
+
+    if (pct == RB_FONT_SCALE_DEFAULT) return design_px;
+    v = (design_px * pct + 50) / 100;   /* to nearest, so 1px stays 1px */
+    return (v > 0) ? v : 1;
+}
+
+/* The two fonts the chrome uses, built at the profile's scale. */
+static HFONT rb_mk_ui_font(App *app, int design_px)
+{
+    return CreateFontW(-rb_scaled(app, design_px), 0, 0, 0, FW_NORMAL, 0, 0, 0,
+                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                       CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                       DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+}
+
+void rb_apply_font_scale(App *app)
+{
+    int i;
+    HWND nav[7];
+
+    if (app == NULL) return;
+
+    if (app->fnt_ui)   DeleteObject(app->fnt_ui);
+    if (app->fnt_omni) DeleteObject(app->fnt_omni);
+    app->fnt_ui   = rb_mk_ui_font(app, 15);
+    app->fnt_omni = rb_mk_ui_font(app, 16);
+
+    /* Every control has to be told again.  WM_SETFONT is a copy, not a
+     * binding: replacing the HFONT leaves the old object selected in whatever
+     * already had it, and the deleted handle would still be in use. */
+    for (i = 0; i < app->tab_slots; i++) {
+        if (app->tab_btns[i]) {
+            SendMessageW(app->tab_btns[i], WM_SETFONT, (WPARAM)app->fnt_ui, TRUE);
+        }
+        if (app->tab_closes[i]) {
+            SendMessageW(app->tab_closes[i], WM_SETFONT, (WPARAM)app->fnt_ui, TRUE);
+        }
+    }
+    if (app->omni) {
+        SendMessageW(app->omni, WM_SETFONT, (WPARAM)app->fnt_omni, TRUE);
+    }
+
+    nav[0] = app->back;     nav[1] = app->fwd;      nav[2] = app->reload;
+    nav[3] = app->home;     nav[4] = app->star;     nav[5] = app->menu_btn;
+    nav[6] = app->newtab;
+    for (i = 0; i < 7; i++) {
+        if (nav[i]) SendMessageW(nav[i], WM_SETFONT, (WPARAM)app->fnt_ui, TRUE);
+    }
+
+    rb_layout(app);
+    if (app->hwnd) InvalidateRect(app->hwnd, NULL, TRUE);
+}
+
 void rb_layout(App *app)
 {
     RECT rc;
     int w, n, i, x, tw, ow;
+    /* The design sizes, each scaled to the profile's font scale.  Taken once
+     * here rather than at every use so the grid stays readable as what it is:
+     * a 34px strip holding 30px tabs inset by 2, over a 40px toolbar holding
+     * 36px buttons inset by 2.  Scaling each number by the same factor keeps
+     * those relationships, which is what stops a scaled font from spilling
+     * out of a box that did not move with it. */
+    const int tab_y   = rb_scaled(app, 2);
+    const int tab_h   = rb_scaled(app, 30);
+    const int tab_max = rb_scaled(app, 180);
+    const int tab_min = rb_scaled(app, 40);
+    const int close_w = rb_scaled(app, 18);
+    const int close_h = rb_scaled(app, 20);
+    const int close_dx = rb_scaled(app, 24);
+    const int close_y = rb_scaled(app, 7);
+    const int new_w   = rb_scaled(app, 30);
+    const int btn_y   = rb_scaled(app, 36);
+    const int btn_w   = rb_scaled(app, 36);
+    const int omni_y  = rb_scaled(app, 38);
+    const int omni_h  = rb_scaled(app, 32);
+    const int omni_x  = rb_scaled(app, 166);
+
     if (!app->hwnd) return;
     GetClientRect(app->hwnd, &rc);
     w = rc.right > 0 ? rc.right : 0;
 
     n = rb_tabs_count(app->tabs);
-    tw = (n > 0) ? (w - 40) / n : 180;
-    if (tw > 180) tw = 180;
-    if (tw < 40) tw = 40;
+    tw = (n > 0) ? (w - rb_scaled(app, 40)) / n : tab_max;
+    if (tw > tab_max) tw = tab_max;
+    if (tw < tab_min) tw = tab_min;
     x = 0;
     for (i = 0; i < n && i < app->tab_slots; i++) {
-        if (app->tab_btns[i])   MoveWindow(app->tab_btns[i], x, 2, tw, 30, TRUE);
-        if (app->tab_closes[i]) MoveWindow(app->tab_closes[i], x + tw - 24, 7, 18, 20, TRUE);
+        if (app->tab_btns[i]) {
+            MoveWindow(app->tab_btns[i], x, tab_y, tw, tab_h, TRUE);
+        }
+        if (app->tab_closes[i]) {
+            MoveWindow(app->tab_closes[i], x + tw - close_dx, close_y,
+                       close_w, close_h, TRUE);
+        }
         x += tw;
     }
-    if (app->newtab) MoveWindow(app->newtab, x + 2, 2, 30, 30, TRUE);
+    if (app->newtab) {
+        MoveWindow(app->newtab, x + tab_y, tab_y, new_w, tab_h, TRUE);
+    }
 
-    if (app->back)   MoveWindow(app->back,   4,       36, 36, 36, TRUE);
-    if (app->fwd)    MoveWindow(app->fwd,    44,      36, 36, 36, TRUE);
-    if (app->reload) MoveWindow(app->reload, 84,      36, 36, 36, TRUE);
-    if (app->home)   MoveWindow(app->home,   124,     36, 36, 36, TRUE);
-    if (app->star)   MoveWindow(app->star,   w - 116, 36, 36, 36, TRUE);
-    if (app->menu_btn) MoveWindow(app->menu_btn, w - 72, 36, 36, 36, TRUE);
-    ow = w - 286;
-    if (ow < 60) ow = 60;
-    if (app->omni) MoveWindow(app->omni, 166, 38, ow, 32, TRUE);
+    if (app->back)   MoveWindow(app->back,   rb_scaled(app, 4),   btn_y, btn_w, btn_w, TRUE);
+    if (app->fwd)    MoveWindow(app->fwd,    rb_scaled(app, 44),  btn_y, btn_w, btn_w, TRUE);
+    if (app->reload) MoveWindow(app->reload, rb_scaled(app, 84),  btn_y, btn_w, btn_w, TRUE);
+    if (app->home)   MoveWindow(app->home,   rb_scaled(app, 124), btn_y, btn_w, btn_w, TRUE);
+    if (app->star) {
+        MoveWindow(app->star, w - rb_scaled(app, 116), btn_y, btn_w, btn_w, TRUE);
+    }
+    if (app->menu_btn) {
+        MoveWindow(app->menu_btn, w - rb_scaled(app, 72), btn_y, btn_w, btn_w, TRUE);
+    }
+    ow = w - rb_scaled(app, 286);
+    if (ow < rb_scaled(app, 60)) ow = rb_scaled(app, 60);
+    if (app->omni) MoveWindow(app->omni, omni_x, omni_y, ow, omni_h, TRUE);
 
     rb_wv_resize(app);
 }
@@ -1502,14 +1592,11 @@ int rb_chrome_create(App *app)
     app->br_tab_idle = NULL;
     app->br_omni    = NULL;
     app->br_accent  = NULL;
-    app->fnt_ui = CreateFontW(-15, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
-                              OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                              CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-                              L"Segoe UI");
-    app->fnt_omni = CreateFontW(-16, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
-                                OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-                                L"Segoe UI");
+    /* Built at the profile's font scale.  rb_mk_ui_font() is the same builder
+     * rb_apply_font_scale() uses, so a scale set before start-up and one
+     * chosen later in the settings window produce identical fonts. */
+    app->fnt_ui   = rb_mk_ui_font(app, 15);
+    app->fnt_omni = rb_mk_ui_font(app, 16);
 
     app->hwnd = CreateWindowExW(0, L"RoomBrowserWnd", L"Room Browser",
                                 WS_OVERLAPPEDWINDOW,

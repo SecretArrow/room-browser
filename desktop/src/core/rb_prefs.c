@@ -96,3 +96,25 @@ void rb_prefs_global_defaults(rb_settings *s)
     rb_settings_set_int(s, RB_GPREF_TELEMETRY, 0);
     rb_settings_set_int(s, RB_GPREF_DIAGNOSTICS, 0);
 }
+
+int rb_font_scale_percent(const rb_settings *s)
+{
+    int v;
+
+    if (s == NULL) {
+        return RB_FONT_SCALE_DEFAULT;
+    }
+    v = rb_settings_get_int(s, RB_PREF_FONT_SCALE, RB_FONT_SCALE_DEFAULT);
+    /* Zero or less is what an unset or corrupt key looks like, not a request
+     * for the smallest size, so it reads as the system size. */
+    if (v <= 0) {
+        return RB_FONT_SCALE_DEFAULT;
+    }
+    if (v < RB_FONT_SCALE_MIN) {
+        return RB_FONT_SCALE_MIN;
+    }
+    if (v > RB_FONT_SCALE_MAX) {
+        return RB_FONT_SCALE_MAX;
+    }
+    return v;
+}

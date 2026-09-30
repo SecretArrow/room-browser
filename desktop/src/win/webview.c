@@ -1346,7 +1346,10 @@ static TabView *rb_active_view(App *app)
 static void rb_wv_area(App *app, RECT *r)
 {
     GetClientRect(app->hwnd, r);
-    r->top += RB_TABSTRIP_H + RB_TOOLBAR_H;
+    /* The chrome above the page scales with the profile's font scale, so the
+     * page has to start below whatever height that is now — otherwise a
+     * scaled-up chrome draws over the top of the document. */
+    r->top += rb_scaled(app, RB_TABSTRIP_H) + rb_scaled(app, RB_TOOLBAR_H);
     if (r->bottom < r->top) r->bottom = r->top;
 }
 

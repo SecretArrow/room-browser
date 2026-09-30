@@ -56,6 +56,84 @@ static void rb_bookmarks_bar_refresh(App *app);
 
 static GtkCssProvider *g_css = NULL;
 
+/* The font the chrome would use unscaled: whatever GTK reports the first time
+ * a scale is applied, captured then and kept.  rb_apply_font_scale() always
+ * scales THIS rather than the name currently installed, so going 150% -> 100%
+ * returns to the system size instead of compounding to 150% of 150%.
+ *
+ * Captured lazily rather than at start-up because GTK has to be initialised
+ * first, and the first apply is the earliest point that is guaranteed. */
+static char *g_base_font = NULL;
+
+static void rb_capture_base_font(void)
+{
+    GtkSettings *s = gtk_settings_get_default();
+    char *name = NULL;
+
+    if (s == NULL || g_base_font != NULL) return;
+    g_object_get(s, "gtk-font-name", &name, NULL);
+    if (name != NULL && name[0] != '\0') {
+        g_base_font = name;   /* g_object_get hands over the reference */
+    } else {
+        g_free(name);
+    }
+}
+
+/* Applies the active profile's font scale to the UI font.
+ *
+ * A profile at RB_FONT_SCALE_DEFAULT gets the captured system font back
+ * verbatim, so the common case leaves no trace on a setting that is
+ * process-wide: the chrome renders exactly as it would with no scaling at
+ * all.  Any other value scales the size the system font already had, which is
+ * what makes this an accessibility control rather than a font override — a
+ * user who already runs a large system font keeps it, scaled.
+ *
+ * gtk-font-name rather than a font-size rule in the stylesheet: it is the one
+ * lever that reaches every widget the chrome builds, including the ones whose
+ * text is set by the theme's CSS and the dialogs opened later. */
+void rb_apply_font_scale(App *app)
+{
+    GtkSettings *s = gtk_settings_get_default();
+    const rb_profile *p = rb_active_profile(app);
+    const char *space;
+    double base;
+    int pct;
+    int tenths;
+    char *scaled;
+
+    if (s == NULL) return;
+    if (g_base_font == NULL) rb_capture_base_font();
+    if (g_base_font == NULL) return;   /* nothing to scale from */
+
+    pct = rb_font_scale_percent(p ? p->settings : NULL);
+    if (pct == RB_FONT_SCALE_DEFAULT) {
+        gtk_settings_set_string_property(s, "gtk-font-name", g_base_font, "rb");
+        return;
+    }
+
+    /* "<family> <size>", as Pango writes it: the size follows the last space.
+     * A name carrying no size at all is left alone rather than guessed at. */
+    space = strrchr(g_base_font, ' ');
+    if (space == NULL) return;
+    base = g_ascii_strtod(space + 1, NULL);
+    if (base <= 0.0) return;
+
+    /* Point sizes are fractional (10.5, 11.5), so one decimal is kept.
+     *
+     * Both halves of this are deliberately locale-blind.  atof() and %f
+     * follow LC_NUMERIC, and under a comma-decimal locale they would turn a
+     * perfectly good "Cantarell 11" into "Cantarell 11,0" — which Pango
+     * cannot parse, leaving the chrome with no font at all.  g_ascii_strtod()
+     * always reads '.', and the result is built from integers so nothing
+     * locale-dependent formats it. */
+    tenths = (int)(base * (double)pct / 10.0 + 0.5);
+    if (tenths < 1) tenths = 1;
+    scaled = g_strdup_printf("%.*s %d.%d", (int)(space - g_base_font),
+                             g_base_font, tenths / 10, tenths % 10);
+    gtk_settings_set_string_property(s, "gtk-font-name", scaled, "rb");
+    g_free(scaled);
+}
+
 static void rb_css_rgba(char out[48], unsigned int argb, double alpha_mult)
 {
     int r = 0, g = 0, b = 0;
@@ -1410,6 +1488,7 @@ void rb_do_switch_profile(App *app, const char *to_id)
             rb_set_str(&app->download_dir, NULL);
             rb_downloads_dir_init(app);
             rb_css_load(app);          /* the new profile's theme */
+            rb_apply_font_scale(app);  /* ...and its font scale */
             if (g_js_item != NULL) {
                 gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(g_js_item),
                                                app->js_enabled ? TRUE : FALSE);
@@ -1606,6 +1685,10 @@ static void rb_prefs_apply_key(App *app, const char *key)
     } else if (strcmp(key, RB_PREF_THEME) == 0 ||
                strcmp(key, RB_PREF_ACCENT_ARGB) == 0) {
         rb_css_load(app);
+    } else if (strcmp(key, RB_PREF_FONT_SCALE) == 0) {
+        /* Scales the UI font.  No stylesheet reload: the scale rides on
+         * gtk-font-name, which restyles every widget by itself. */
+        rb_apply_font_scale(app);
     } else if (strcmp(key, RB_PREF_DOWNLOAD_SUBFOLDER) == 0) {
         /* rb_downloads_dir_init assigns rather than appends, so the old path
          * has to go first. */
@@ -1953,6 +2036,21 @@ static void rb_show_prefs_dialog_impl(App *app)
         rb_pref_combo_row(grid, r++, app, RB_PREF_THEME, mode_ids, mode_labels,
                           rb_pref(app, RB_PREF_THEME, "system"),
                           "Appearance", 0);
+    }
+    {
+        /* The scale every UI font is multiplied by.  Stored as a percentage so
+         * the same value means the same thing here, on Windows, and to the
+         * Android app's text-size setting. */
+        static const char *const scale_ids[] = {
+            "80", "90", "100", "110", "125", "150", NULL
+        };
+        static const char *const scale_labels[] = {
+            "80%", "90%", "100% (default)", "110%", "125%", "150%", NULL
+        };
+        rb_pref_combo_row(grid, r++, app, RB_PREF_FONT_SCALE, scale_ids,
+                          scale_labels,
+                          rb_pref(app, RB_PREF_FONT_SCALE, "100"),
+                          "Text size", 0);
     }
     rb_pref_row(grid, r++, app, RB_PREF_REDUCED_MOTION, 0, "Reduce motion",
                 "Turns off the transitions the chrome animates");
@@ -2703,6 +2801,10 @@ void rb_on_activate(GtkApplication *gtk_app, gpointer user_data)
     }
 
     rb_css_load(app);
+    /* Captures the system font and applies the profile's scale to it.  Before
+     * the first window exists is the right moment: nothing has been laid out
+     * at the unscaled size, so there is nothing to reflow. */
+    rb_apply_font_scale(app);
 
     app->app = gtk_app;
     app->win = GTK_APPLICATION_WINDOW(gtk_application_window_new(gtk_app));

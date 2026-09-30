@@ -33,6 +33,13 @@ extern "C" {
 #define RB_PREF_THEME                "theme"        /* system|light|dark|amoled */
 #define RB_PREF_ACCENT_ARGB          "accent_argb"  /* 0xAARRGGBB as decimal   */
 #define RB_PREF_FONT_SCALE           "font_scale"   /* percent, 100 = 1.0f     */
+
+/* The range the desktop editions render a font scale within, and the value
+ * that means "leave the system font alone".  Shared so the two GUIs cannot
+ * disagree about what a stored scale means. */
+#define RB_FONT_SCALE_MIN            50
+#define RB_FONT_SCALE_MAX            250
+#define RB_FONT_SCALE_DEFAULT        100
 #define RB_PREF_REDUCED_MOTION       "reduced_motion"
 #define RB_PREF_HIGH_CONTRAST        "high_contrast"
 #define RB_PREF_TAB_LAYOUT           "tab_layout"   /* grid|list               */
@@ -121,6 +128,19 @@ void rb_prefs_profile_defaults(rb_settings *s);
 
 /* Fills `s` with the BrowserGlobalSettings defaults above. */
 void rb_prefs_global_defaults(rb_settings *s);
+
+/* The profile's font scale as a percentage, ready to render with.
+ *
+ * The key is shared with the Android edition, but on the desktop nothing ever
+ * read it, so a scale the user chose did nothing at all.  A stored value can
+ * be anything — a hand-edited settings file, or a number written by a build
+ * whose range differed — so the renderers ask through here rather than
+ * trusting it.  Values outside [RB_FONT_SCALE_MIN, RB_FONT_SCALE_MAX] are
+ * clamped; zero or less is not a scale but the shape an unset or corrupt key
+ * takes, so it reads as RB_FONT_SCALE_DEFAULT rather than being clamped up to
+ * the smallest one.  100 must mean "unchanged" so a profile that never
+ * touched this renders exactly as it did before. */
+int rb_font_scale_percent(const rb_settings *s);
 
 /* Files the default homepage shortcuts, '\n'-separated (the four the
  * Android home screen ships). */

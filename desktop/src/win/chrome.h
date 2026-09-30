@@ -211,6 +211,17 @@ int  rb_chrome_create(App *app);
 void rb_layout(App *app);
 void rb_tabs_rebuild(App *app);
 
+/* A design pixel (the sizes rb_layout() is written in, at 100%) scaled to the
+ * active profile's font scale.  Both the fonts AND these coordinates have to
+ * move together: unlike GTK, which sizes a widget from its content, this
+ * edition places every control at an absolute position, so a font scaled on
+ * its own would overflow the box holding it. */
+int  rb_scaled(App *app, int design_px);
+
+/* Rebuilds the UI fonts at the profile's scale, re-hands them to the controls
+ * that carry them, and re-lays out.  Called when the setting changes. */
+void rb_apply_font_scale(App *app);
+
 /* UI refresh helpers. */
 void rb_update_omni(App *app, const char *url);
 void rb_update_titlebar(App *app);

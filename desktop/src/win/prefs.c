@@ -188,6 +188,11 @@ static void pf_apply(App *app, RbPrefs *pf, const char *key)
             RedrawWindow(pf->dlg, NULL, NULL,
                          RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
         }
+    } else if (strcmp(key, RB_PREF_FONT_SCALE) == 0) {
+        /* Rebuilds the chrome's fonts and re-lays the controls out around
+         * them.  Nothing to repaint here: this window is drawn in fixed
+         * metrics and keeps them, on purpose (see rb_show_prefs). */
+        rb_apply_font_scale(app);
     } else if (strcmp(key, RB_PREF_DOWNLOAD_SUBFOLDER) == 0) {
         /* The builder assigns rather than appends, so the old path has to go
          * first. */
@@ -432,6 +437,12 @@ static void pf_build_appearance(RbPrefs *pf)
     static const char *const mode_labels[] = {
         "Match system", "Light", "Dark", "AMOLED", NULL
     };
+    static const char *const scale_ids[] = {
+        "80", "90", "100", "110", "125", "150", NULL
+    };
+    static const char *const scale_labels[] = {
+        "80%", "90%", "100% (default)", "110%", "125%", "150%", NULL
+    };
     const rb_theme *cur = rb_theme_current(pf->app);
     int n = rb_theme_count(), i, y = 0;
 
@@ -457,6 +468,11 @@ static void pf_build_appearance(RbPrefs *pf)
      * rb_theme.h's AUTO. */
     y += pf_combo(pf, 0, y, RB_PREF_THEME, mode_ids, mode_labels,
                   rb_pref(pf->app, RB_PREF_THEME, "system"), L"Appearance");
+    /* The scale every chrome font and every layout coordinate is multiplied
+     * by.  Stored as a percentage so the same value means the same thing to
+     * both desktop editions and to the Android app's text-size setting. */
+    y += pf_combo(pf, 0, y, RB_PREF_FONT_SCALE, scale_ids, scale_labels,
+                  rb_pref(pf->app, RB_PREF_FONT_SCALE, "100"), L"Text size");
     y += pf_switch(pf, 0, y, RB_PREF_REDUCED_MOTION, 0, L"Reduce motion",
                    L"Turns off the transitions the chrome animates");
     y += pf_switch(pf, 0, y, RB_PREF_HIGH_CONTRAST, 0, L"High contrast",
@@ -1019,6 +1035,13 @@ void rb_show_prefs(App *app)
     pf = (RbPrefs *)calloc(1, sizeof *pf);
     if (pf == NULL) return;
     pf->app = app;
+    /* Deliberately NOT at the profile's font scale.  Every number in this
+     * window — its size, its margins, the pitch of a row — is a fixed metric,
+     * and Win32 sizes a combo box from its font rather than from the height it
+     * was given.  Scaling the font alone would therefore make the rows overlap
+     * and push the last of them past the bottom of a page that cannot scroll.
+     * The chrome is what "Text size" scales; this window scales when its whole
+     * layout does. */
     pf->fnt = CreateFontW(-15, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
                           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,

@@ -2024,6 +2024,47 @@ static void test_rb_prefs(void)
     rb_settings_free(s);
     rb_prefs_profile_defaults(NULL); /* must not crash */
     rb_prefs_global_defaults(NULL);
+
+    /* the font scale the desktop editions render with */
+    {
+        rb_settings *f = rb_settings_new();
+
+        /* the default is the system size, which must mean "unchanged" — a
+         * profile that never touched the setting renders as it always did */
+        CHECK(rb_font_scale_percent(NULL) == RB_FONT_SCALE_DEFAULT);
+        rb_prefs_profile_defaults(f);
+        CHECK(rb_font_scale_percent(f) == 100);
+
+        /* an explicit in-range scale survives verbatim */
+        rb_settings_set_int(f, RB_PREF_FONT_SCALE, 125);
+        CHECK(rb_font_scale_percent(f) == 125);
+        rb_settings_set_int(f, RB_PREF_FONT_SCALE, RB_FONT_SCALE_MIN);
+        CHECK(rb_font_scale_percent(f) == RB_FONT_SCALE_MIN);
+        rb_settings_set_int(f, RB_PREF_FONT_SCALE, RB_FONT_SCALE_MAX);
+        CHECK(rb_font_scale_percent(f) == RB_FONT_SCALE_MAX);
+
+        /* beyond the range it is clamped, not honoured: a hand-edited file
+         * must not be able to ask for a 10x chrome */
+        rb_settings_set_int(f, RB_PREF_FONT_SCALE, 1000);
+        CHECK(rb_font_scale_percent(f) == RB_FONT_SCALE_MAX);
+        rb_settings_set_int(f, RB_PREF_FONT_SCALE, 51);
+        CHECK(rb_font_scale_percent(f) == 51);
+        rb_settings_set_int(f, RB_PREF_FONT_SCALE, 49);
+        CHECK(rb_font_scale_percent(f) == RB_FONT_SCALE_MIN);
+
+        /* zero or less is an unset/corrupt key, not a request for the
+         * smallest size, so it reads as the default */
+        rb_settings_set_int(f, RB_PREF_FONT_SCALE, 0);
+        CHECK(rb_font_scale_percent(f) == RB_FONT_SCALE_DEFAULT);
+        rb_settings_set_int(f, RB_PREF_FONT_SCALE, -80);
+        CHECK(rb_font_scale_percent(f) == RB_FONT_SCALE_DEFAULT);
+
+        /* a value that is not a number at all reads as the default too */
+        rb_settings_set(f, RB_PREF_FONT_SCALE, "huge");
+        CHECK(rb_font_scale_percent(f) == RB_FONT_SCALE_DEFAULT);
+
+        rb_settings_free(f);
+    }
 }
 
 /* -------------------------------- rb_profile ------------------------------ */
