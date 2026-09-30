@@ -98,11 +98,10 @@ claiming a landscape screen does not also answer `portrait-primary` — that
 pairing is the contradiction the shim exists to remove.
 
 It cannot move the viewport, for the reason above. A claimed size that differs
-from this phone's screen therefore leaves `screen.width` and `innerWidth`
+from this display's screen therefore leaves `screen.width` and `innerWidth`
 disagreeing, and that disagreement is exactly the sort of thing a fingerprinting
 script looks for. The settings row says so where the choice is made, and the
-fields open on this phone's real size so that the first thing the user sees is
-the truth.
+fields open on the real size so that the first thing the user sees is the truth.
 
 It exists because leaving it out is not neutrality. A profile presenting a
 Galaxy S24 Ultra already reports a screen that handset never had; the setting is
@@ -111,6 +110,26 @@ app never mentioned, and it is the only way to make the claim match the device.
 Set it to the size the presented handset actually has. If you do not know that
 size, leave it on the real screen: claiming nothing is safer than claiming a
 guess.
+
+The two desktop editions offer the same row with the same two modes, and the
+claim behaves the same way there, with three differences that come from the
+platform rather than from policy:
+
+- The **available** rectangle is derived from the real one rather than set equal
+  to the claimed screen. A desktop has a taskbar or a dock, and Chrome subtracts
+  it; the shim measures that inset from the real display at document start and
+  carries it over, so the claimed screen has an available area that differs from
+  it by as much as a real one does. A claim of no inset at all would be its own
+  tell.
+- `screen.orientation.angle` stays `0`. The angle is the device's rotation, not
+  the display's shape: a phone held sideways is 90, and a monitor is 0 whatever
+  its aspect ratio, because nothing rotated it. The shape still decides
+  `orientation.type`.
+- The two numbers are the profile's own, so they are what a desktop browser
+  window would have to be resized to for the page to agree with them. A desktop
+  window can be any size, so `screen.width` disagreeing with the viewport is
+  ordinary here in a way it is not on a phone — which makes the claim a weaker
+  signal, not a stronger one.
 
 #### The desktop editions
 
@@ -138,10 +157,10 @@ The catalogue is also **all-distinct**: no two machines in it present the
 same fingerprint, and a curated machine that could not be told apart from
 one already listed was left out rather than shipped as a second name for the
 same identity. Two profiles assigned such a pair would present the same
-machine, which is the thing the catalogue exists to prevent. Screen geometry
-and real capabilities are excluded here for the same reasons as on Android —
-and, unlike Android, neither desktop edition offers a way to claim a screen
-size, so a desktop profile always reports the real display.
+machine, which is the thing the catalogue exists to prevent. Real capabilities
+are excluded here for the same reasons as on Android, and so is screen geometry
+by default — but the Screen size row above is offered by both editions, so a
+desktop profile may claim one, under the rules stated there.
 
 - Safe Browsing status follows the system WebView component.
 

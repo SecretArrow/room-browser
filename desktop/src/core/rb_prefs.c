@@ -40,6 +40,14 @@ void rb_prefs_profile_defaults(rb_settings *s)
     rb_settings_set(s, RB_PREF_UA_PRESET_ID, "");
     rb_settings_set(s, RB_PREF_CUSTOM_USER_AGENT, "");
 
+    /* Screen size — real, which is the only mode in which nothing is claimed.
+     * The two numbers are what a manual claim is built from and are inert
+     * while the mode is "real", so switching the row off and on again cannot
+     * resurrect a size the user has already left behind. */
+    rb_settings_set(s, RB_PREF_SCREEN_SIZE, "real");
+    rb_settings_set_int(s, RB_PREF_SCREEN_WIDTH, 0);
+    rb_settings_set_int(s, RB_PREF_SCREEN_HEIGHT, 0);
+
     /* DNS */
     rb_settings_set(s, RB_PREF_DNS_MODE, "system");
     rb_settings_set(s, RB_PREF_DOH_URL, "");
@@ -118,6 +126,50 @@ int rb_font_scale_percent(const rb_settings *s)
         return RB_FONT_SCALE_MAX;
     }
     return v;
+}
+
+int rb_screen_claim_of(const rb_settings *s, int *w, int *h)
+{
+    const char *mode;
+    int cw;
+    int ch;
+
+    if (w != NULL) {
+        *w = 0;
+    }
+    if (h != NULL) {
+        *h = 0;
+    }
+    if (s == NULL) {
+        return 0;
+    }
+
+    mode = rb_settings_get(s, RB_PREF_SCREEN_SIZE, NULL);
+    if (mode == NULL || strcmp(mode, "manual") != 0) {
+        /* "real", an absent key, or a word this build does not know: all of
+         * them mean the profile claims nothing.  A mode that cannot be
+         * understood must not be read as a request to claim something. */
+        return 0;
+    }
+
+    cw = rb_settings_get_int(s, RB_PREF_SCREEN_WIDTH, 0);
+    ch = rb_settings_get_int(s, RB_PREF_SCREEN_HEIGHT, 0);
+    /* Either half out of range is a corrupt entry rather than half a screen,
+     * so the pair falls back to the real display together. */
+    if (cw < RB_SCREEN_PX_MIN || cw > RB_SCREEN_PX_MAX) {
+        return 0;
+    }
+    if (ch < RB_SCREEN_PX_MIN || ch > RB_SCREEN_PX_MAX) {
+        return 0;
+    }
+
+    if (w != NULL) {
+        *w = cw;
+    }
+    if (h != NULL) {
+        *h = ch;
+    }
+    return 1;
 }
 
 rb_webrtc_policy rb_webrtc_policy_of(const rb_settings *s)

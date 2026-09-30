@@ -885,7 +885,15 @@ static void rb_gw_ua_apply_to(App *app, WebKitSettings *settings)
  * The script is per view, and it is stored ON the view rather than in a
  * table keyed by it: a table would outlive the view and a later view could
  * be allocated at the same address, finding another view's script.  Storing
- * it as object data ties its lifetime to the view's. */
+ * it as object data ties its lifetime to the view's.
+ *
+ * The script is built by rb_shim_js(), which decides what belongs in it: the
+ * machine half whenever the profile presents one, and the screen half only
+ * when the profile claims a size.  Both halves are reachable from here but
+ * neither is required — a profile on a UA preset with a claimed screen, or a
+ * profile presenting a machine with no claim, are both ordinary, and
+ * rb_shim_js() returns NULL for the profile that does neither, which is the
+ * default and must not install an empty script on every page. */
 
 static const char *RB_DEVICE_SCRIPT_KEY = "rb-device-script";
 
@@ -916,9 +924,7 @@ static void rb_gw_device_apply_to(App *app, WebKitWebView *wv)
     }
 
     device = rb_device_by_id(rb_pref(app, RB_PREF_DEVICE_ID, NULL));
-    if (device == NULL) return;
-
-    js = rb_device_shim_js(device);
+    js = rb_shim_js(device, rb_pref_store(app));
     if (js == NULL) return;
     script = webkit_user_script_new(js,
                                     WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,

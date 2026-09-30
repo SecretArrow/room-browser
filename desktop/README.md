@@ -68,9 +68,9 @@ browser is original C: a portable core plus one thin platform layer per OS.
 - **Settings** — plain `key=value` lines: `home`, `search_engine`,
   `javascript` (default **1**).  The preferences window (menu → Preferences,
   or <kbd>Ctrl</kbd>+<kbd>,</kbd>) edits the profile's full setting set —
-  theme, text size, search, privacy and blocking, device, User-Agent, DNS,
-  homepage and the clear-data actions — the same keys the Android edition
-  stores.
+  theme, text size, search, privacy and blocking, device, screen size,
+  User-Agent, DNS, homepage and the clear-data actions — the same keys the
+  Android edition stores.
 - **Device identity manager** — every profile presents a real machine from a
   bundled catalogue of 1041 laptops, desktops and workstations (2022–2025,
   Windows, macOS and Linux), not just a User-Agent string. A device sets the
@@ -86,9 +86,23 @@ browser is original C: a portable core plus one thin platform layer per OS.
   presents marked as such rather than hidden — and choosing "No device"
   hands the identity back to the User-Agent settings (which are greyed out
   while a machine is chosen, rather than silently ignored). The catalogue is
-  all-distinct: no two entries are the same fingerprint. Screen geometry is
-  deliberately left alone, because the page really is laid out on this
-  screen; see `SECURITY.md` for exactly what changes and what does not.
+  all-distinct: no two entries are the same fingerprint.
+- **Screen size** — the row under the device, per profile, with the same two
+  modes the Android edition offers: **This display** (the default, and the
+  only mode in which nothing is claimed — a page is told the truth about the
+  screen the page is really being laid out on) or **Custom**, where the
+  profile states a size in CSS pixels. "This display" fills the two numbers in
+  from the monitor in front of you. A claim replaces `screen.width`,
+  `screen.height` and the two available-area values, and derives
+  `screen.orientation` from the shape claimed, so a landscape claim cannot
+  also answer `portrait-primary`. It does **not** touch `innerWidth`,
+  `innerHeight` or `devicePixelRatio`: those are the page's real size in this
+  window and the ratio the compositor renders at, and moving them would
+  re-lay the page out at a size the display does not have. The consequence is
+  real and is stated on the row and in `SECURITY.md`: a claimed size that
+  differs from this display's disagrees with the viewport, and a script can
+  find that out. What the row is for is the other direction — a profile
+  presenting a 4K workstation should not be reporting a laptop panel.
 - **Dark chrome everywhere** — tab strip `#202124`, toolbar `#292A2D`,
   omnibox `#3C3D41`, text `#E8EAED`, accent `#A78BFA` (GTK via a
   `GtkCssProvider` stylesheet, Windows via owner-draw + dark title bar).

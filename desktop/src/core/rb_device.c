@@ -9,6 +9,7 @@
  */
 
 #include "rb_devices.h"
+#include "rb_prefs.h"
 #include "rb_str.h"
 
 #include <stdlib.h>
@@ -351,6 +352,147 @@ char *rb_device_shim_js(const rb_device *device)
         "})();\n");
 
     free(major);
+    result = rb_device_dup(rb_str_c(&out));
+    rb_str_free(&out);
+    return result;
+}
+
+/* ------------------------------------------------------------------ */
+/* Screen size
+ *
+ * The counterpart of the screen half of Android's DeviceShim. Everything the
+ * page is told about the display is replaced; everything about the *layout*
+ * is left alone, because the layout is real. See rb_devices.h and
+ * SECURITY.md for what that trade costs.
+ *
+ * Two things here are desktop-specific and would be wrong to copy from the
+ * Android edition:
+ *
+ *  - The available rectangle.  A handset has no persistent chrome, so Android
+ *    reports the whole screen as available.  A desktop has a taskbar, a dock
+ *    or a menu bar, and Chrome subtracts it.  The real inset is therefore
+ *    measured before the claim replaces the numbers and carried over, so the
+ *    claimed display has an available rectangle that differs from it by as
+ *    much as a real one would.  Claiming "no inset" would be its own tell.
+ *
+ *  - The orientation angle.  It is the device's rotation, not the display's
+ *    shape: a phone held sideways is 90, and a desktop monitor is 0 whatever
+ *    its aspect, because nothing rotated it.  So the shape decides `type` and
+ *    the platform decides `angle`. */
+
+char *rb_screen_shim_js(int width_px, int height_px)
+{
+    rb_str out;
+    char *result;
+    int landscape;
+
+    /* The same bounds the store enforces.  A claim outside them is not a
+     * claim, so there is nothing to install. */
+    if (width_px < RB_SCREEN_PX_MIN || width_px > RB_SCREEN_PX_MAX) {
+        return NULL;
+    }
+    if (height_px < RB_SCREEN_PX_MIN || height_px > RB_SCREEN_PX_MAX) {
+        return NULL;
+    }
+    landscape = width_px > height_px;
+
+    rb_str_init(&out);
+    rb_str_append(&out, "(function () {\n  'use strict';\n  try {\n");
+    rb_str_appendf(&out, "    var SCREEN_W = %d;\n", width_px);
+    rb_str_appendf(&out, "    var SCREEN_H = %d;\n", height_px);
+    rb_str_append(&out, "    var TYPE = ");
+    rb_str_append(&out, landscape ? "'landscape-primary';\n" : "'portrait-primary';\n");
+    rb_str_append(&out,
+        "\n"
+        "    function define(target, prop, value) {\n"
+        "      try {\n"
+        "        Object.defineProperty(target, prop, {\n"
+        "          get: function () { return value; },\n"
+        "          configurable: true,\n"
+        "          enumerable: true\n"
+        "        });\n"
+        "      } catch (e) {}\n"
+        "    }\n"
+        "\n"
+        "    // Measured while the real values are still readable, then carried\n"
+        "    // over: the claim keeps this display's own chrome inset.\n"
+        "    var INSET_W = screen.width - screen.availWidth;\n"
+        "    var INSET_H = screen.height - screen.availHeight;\n"
+        "    if (!(INSET_W > 0)) INSET_W = 0;\n"
+        "    if (!(INSET_H > 0)) INSET_H = 0;\n"
+        "    if (SCREEN_W - INSET_W < 1) INSET_W = 0;\n"
+        "    if (SCREEN_H - INSET_H < 1) INSET_H = 0;\n"
+        "\n"
+        "    define(Screen.prototype, 'width', SCREEN_W);\n"
+        "    define(Screen.prototype, 'height', SCREEN_H);\n"
+        "    define(Screen.prototype, 'availWidth', SCREEN_W - INSET_W);\n"
+        "    define(Screen.prototype, 'availHeight', SCREEN_H - INSET_H);\n"
+        "\n"
+        "    // The layout viewport and the pixel ratio are NOT touched, on\n"
+        "    // purpose: the viewport is the page's real size in this window and\n"
+        "    // the ratio is what the compositor renders at. A claimed screen\n"
+        "    // that differs from the display's disagrees with the viewport, and\n"
+        "    // the unit test pins those names out of this script so the trade\n"
+        "    // cannot be undone by a later edit without the test saying so.\n"
+        "\n"
+        "    // `type` follows the shape that was claimed; `angle` does not,\n"
+        "    // because it is the device's rotation and a desktop is never\n"
+        "    // rotated. A landscape claim answering \"portrait-primary\" is the\n"
+        "    // contradiction this exists to remove; a landscape claim answering\n"
+        "    // 90 degrees would be a new one.\n"
+        "    try {\n"
+        "      if (typeof ScreenOrientation !== 'undefined' &&\n"
+        "          ScreenOrientation.prototype) {\n"
+        "        define(ScreenOrientation.prototype, 'type', TYPE);\n"
+        "        define(ScreenOrientation.prototype, 'angle', 0);\n"
+        "      }\n"
+        "    } catch (e) {}\n"
+        "  } catch (e) {\n"
+        "    // A page must still load even if the platform refuses one of these.\n"
+        "  }\n"
+        "})();\n");
+
+    result = rb_device_dup(rb_str_c(&out));
+    rb_str_free(&out);
+    return result;
+}
+
+char *rb_shim_js(const rb_device *device, const rb_settings *s)
+{
+    rb_str out;
+    char *part;
+    char *result;
+    int w = 0;
+    int h = 0;
+    int claimed;
+
+    rb_str_init(&out);
+
+    if (device != NULL) {
+        part = rb_device_shim_js(device);
+        if (part != NULL) {
+            rb_str_append(&out, part);
+            free(part);
+        }
+    }
+
+    claimed = rb_screen_claim_of(s, &w, &h);
+    if (claimed) {
+        part = rb_screen_shim_js(w, h);
+        if (part != NULL) {
+            rb_str_append(&out, part);
+            free(part);
+        }
+    }
+
+    /* Neither half applied.  Returning "" rather than NULL would install an
+     * empty document-start script on every page of every profile that claims
+     * nothing, which is the default state and most of them. */
+    if (out.len == 0) {
+        rb_str_free(&out);
+        return NULL;
+    }
+
     result = rb_device_dup(rb_str_c(&out));
     rb_str_free(&out);
     return result;

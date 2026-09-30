@@ -608,6 +608,12 @@ int rb_pref_int(App *app, const char *key, int fallback)
     return rb_settings_get_int(p->settings, key, fallback);
 }
 
+const rb_settings *rb_pref_store(App *app)
+{
+    const rb_profile *p = rb_active_profile(app);
+    return (p != NULL) ? p->settings : NULL;
+}
+
 void rb_pref_set(App *app, const char *key, const char *value)
 {
     const rb_profile *p = rb_active_profile(app);
@@ -2093,7 +2099,14 @@ static void rb_prefs_apply_key(App *app, const char *key)
     } else if (strcmp(key, RB_PREF_UA_MODE) == 0 ||
                strcmp(key, RB_PREF_UA_PRESET_ID) == 0 ||
                strcmp(key, RB_PREF_DEVICE_ID) == 0 ||
+               strcmp(key, RB_PREF_SCREEN_SIZE) == 0 ||
+               strcmp(key, RB_PREF_SCREEN_WIDTH) == 0 ||
+               strcmp(key, RB_PREF_SCREEN_HEIGHT) == 0 ||
                strcmp(key, RB_PREF_CUSTOM_USER_AGENT) == 0) {
+        /* One path for all of them: the shim carries the machine half and the
+         * screen half, and both are installed by the same walk over the tabs.
+         * The screen keys land here rather than getting their own branch so
+         * there is exactly one place that decides what a page is told. */
         rb_gw_apply_ua(app);
     } else if (strcmp(key, RB_PREF_THEME) == 0 ||
                strcmp(key, RB_PREF_ACCENT_ARGB) == 0 ||
@@ -2541,6 +2554,245 @@ static GtkWidget *rb_pref_device_row(GtkWidget *grid, int row, App *app)
     return button;
 }
 
+/* ------------------------------------------------------------------ */
+/* Screen size
+ *
+ * The Android edition's row, with the same two modes.  A profile that
+ * presents a workstation while reporting a laptop panel is a contradiction
+ * nobody asked for, and that is all this removes; what a claim can and cannot
+ * do is the core's decision, documented in rb_devices.h, and the note under
+ * the row says the important half of it where the choice is being made.
+ *
+ * "This display" is the default and the only mode in which nothing is
+ * claimed, which is why the numbers are inert while it is selected rather
+ * than cleared: switching the row off and on again must not resurrect a size
+ * the user has already left behind, and a stored number that outlived its
+ * mode is exactly how that would happen. */
+
+/* This display's size in CSS pixels.  GDK reports device pixels and the scale
+ * factor separately, and a page is told CSS pixels, so the two are divided
+ * here.  The scale is floored at 1, because a monitor reporting 0 would
+ * otherwise divide by zero.
+ *
+ * Both outputs are 0 when there is no monitor to ask — a session with no
+ * display at all.  That is left as 0 rather than guessed at, and the row shows
+ * empty fields for it: a number invented here would be a screen size the
+ * browser is not using, which is the one thing this row must not show. */
+static void rb_screen_real_size(int *w, int *h)
+{
+    GdkDisplay *dpy = gdk_display_get_default();
+    GdkMonitor *mon = (dpy != NULL) ? gdk_display_get_primary_monitor(dpy) : NULL;
+    GdkRectangle geo;
+    int scale;
+
+    *w = 0;
+    *h = 0;
+    if (mon == NULL && dpy != NULL) {
+        mon = gdk_display_get_monitor(dpy, 0);
+    }
+    if (mon == NULL) {
+        return;
+    }
+    gdk_monitor_get_geometry(mon, &geo);
+    scale = gdk_monitor_get_scale_factor(mon);
+    if (scale < 1) {
+        scale = 1;
+    }
+    *w = geo.width / scale;
+    *h = geo.height / scale;
+    if (*w < 1) *w = 1;
+    if (*h < 1) *h = 1;
+}
+
+typedef struct {
+    App *app;
+    GtkWidget *numbers;  /* the two fields, shown only in manual mode */
+    GtkWidget *width;
+    GtkWidget *height;
+} rb_screen_row;
+
+/* The size a field holds, or 0 when it does not hold one.  The leading number
+ * is what counts: a pasted "1920 px" is a size the user meant, and reading the
+ * number out of it is friendlier than refusing it.  Anything that is not a
+ * number at all, or is absurdly large, reads as 0 and is refused by the
+ * caller. */
+static int rb_screen_field_value(GtkWidget *entry)
+{
+    const char *text = gtk_entry_get_text(GTK_ENTRY(entry));
+    long v;
+
+    if (text == NULL) return 0;
+    v = strtol(text, NULL, 10);
+    if (v < 0 || v > 1000000L) return 0;
+    return (int)v;
+}
+
+/* Both fields at once.  A pair with nothing in it is left empty rather than
+ * filled with a zero the user would have to notice and correct — the one case
+ * that produces one is a session with no display to read. */
+static void rb_screen_entries_set(rb_screen_row *sr, int w, int h)
+{
+    char buf[16];
+
+    if (w < 1 || h < 1) {
+        gtk_entry_set_text(GTK_ENTRY(sr->width), "");
+        gtk_entry_set_text(GTK_ENTRY(sr->height), "");
+        return;
+    }
+    snprintf(buf, sizeof buf, "%d", w);
+    gtk_entry_set_text(GTK_ENTRY(sr->width), buf);
+    snprintf(buf, sizeof buf, "%d", h);
+    gtk_entry_set_text(GTK_ENTRY(sr->height), buf);
+}
+
+/* Both boxes are written from the setting, so the row is right whenever it is
+ * built — after a profile switch as much as after a mode change.  A stored
+ * pair with nothing usable in it opens on this display's own size instead: a
+ * manual claim is nearly always a small correction to the real one, and an
+ * empty field would make the user look the number up somewhere else. */
+static void rb_screen_numbers_sync(rb_screen_row *sr)
+{
+    int w = 0, h = 0;
+
+    if (sr == NULL || sr->numbers == NULL) return;
+    if (!rb_screen_claim_of(rb_pref_store(sr->app), &w, &h)) {
+        rb_screen_real_size(&w, &h);
+    }
+    rb_screen_entries_set(sr, w, h);
+}
+
+/* Manual mode is the only mode with numbers to type, so the fields appear and
+ * disappear with it.  The setting is read rather than the combo, so the row
+ * is right whenever it is rebuilt — including on a profile switch. */
+static void rb_screen_manual_sync(rb_screen_row *sr)
+{
+    const char *mode;
+
+    if (sr == NULL) return;
+    mode = rb_pref(sr->app, RB_PREF_SCREEN_SIZE, "real");
+    if (sr->numbers != NULL) {
+        gtk_widget_set_visible(sr->numbers,
+                               (mode != NULL && strcmp(mode, "manual") == 0));
+    }
+}
+
+static void on_screen_mode_changed(GtkComboBox *combo, gpointer user_data)
+{
+    rb_screen_row *sr = (rb_screen_row *)user_data;
+
+    (void)combo;
+    if (sr == NULL) return;
+    /* Connected after the row's own handler, so the setting already holds the
+     * new mode by the time the numbers are read back through it. */
+    rb_screen_numbers_sync(sr);
+    rb_screen_manual_sync(sr);
+}
+
+static void on_screen_use_real_clicked(GtkButton *btn, gpointer user_data)
+{
+    rb_screen_row *sr = (rb_screen_row *)user_data;
+    int w = 0, h = 0;
+
+    (void)btn;
+    if (sr == NULL) return;
+    rb_screen_real_size(&w, &h);
+    rb_screen_entries_set(sr, w, h);
+}
+
+static void on_screen_apply_clicked(GtkButton *btn, gpointer user_data)
+{
+    rb_screen_row *sr = (rb_screen_row *)user_data;
+    int w, h;
+
+    (void)btn;
+    if (sr == NULL) return;
+    w = rb_screen_field_value(sr->width);
+    h = rb_screen_field_value(sr->height);
+
+    /* Refused rather than clamped: a size the user did not type is a size
+     * they will not recognise on the row afterwards, and the range is wide
+     * enough that nothing real lands outside it. */
+    if (w < RB_SCREEN_PX_MIN || w > RB_SCREEN_PX_MAX ||
+        h < RB_SCREEN_PX_MIN || h > RB_SCREEN_PX_MAX) {
+        char detail[192];
+        snprintf(detail, sizeof detail,
+                 "Both numbers have to be between %d and %d pixels.  Left "
+                 "unchanged.", RB_SCREEN_PX_MIN, RB_SCREEN_PX_MAX);
+        rb_warn(sr->app, "Not a usable screen size", detail);
+        rb_screen_numbers_sync(sr);
+        return;
+    }
+
+    rb_pref_set_int(sr->app, RB_PREF_SCREEN_WIDTH, w);
+    rb_pref_set_int(sr->app, RB_PREF_SCREEN_HEIGHT, h);
+    /* The row is already in manual mode — the fields are only reachable from
+     * it — so there is no mode to write here.  Applying the width key is what
+     * reinstalls the shim on every open tab. */
+    rb_prefs_apply_key(sr->app, RB_PREF_SCREEN_WIDTH);
+}
+
+static GtkWidget *rb_pref_screen_row(GtkWidget *grid, int row, App *app)
+{
+    static const char *const ids[3] = { "real", "manual", NULL };
+    static const char *const labels[3] = { "This display", "Custom", NULL };
+    GtkWidget *combo;
+    GtkWidget *box;
+    GtkWidget *sep;
+    GtkWidget *use_real;
+    GtkWidget *apply;
+    rb_screen_row *sr = g_new0(rb_screen_row, 1);
+
+    sr->app = app;
+    combo = rb_pref_combo_row(grid, row, app, RB_PREF_SCREEN_SIZE, ids, labels,
+                              rb_pref(app, RB_PREF_SCREEN_SIZE, "real"),
+                              "Reported screen size", 0);
+
+    box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    sr->width = gtk_entry_new();
+    sr->height = gtk_entry_new();
+    sep = gtk_label_new("x");
+    use_real = gtk_button_new_with_label("This display");
+    apply = gtk_button_new_with_label("Apply");
+
+    gtk_entry_set_width_chars(GTK_ENTRY(sr->width), 6);
+    gtk_entry_set_width_chars(GTK_ENTRY(sr->height), 6);
+    gtk_widget_set_tooltip_text(sr->width, "Width in CSS pixels");
+    gtk_widget_set_tooltip_text(sr->height, "Height in CSS pixels");
+    gtk_widget_set_tooltip_text(use_real,
+                                "Fill the two numbers in from this display");
+    gtk_box_pack_start(GTK_BOX(box), sr->width, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), sep, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), sr->height, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), use_real, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), apply, FALSE, FALSE, 0);
+    gtk_widget_set_halign(box, GTK_ALIGN_START);
+    gtk_grid_attach(GTK_GRID(grid), box, 0, row + 1, 2, 1);
+    sr->numbers = box;
+
+    g_signal_connect(use_real, "clicked",
+                     G_CALLBACK(on_screen_use_real_clicked), sr);
+    g_signal_connect(apply, "clicked",
+                     G_CALLBACK(on_screen_apply_clicked), sr);
+    /* Connected after the row's own handler, which is what writes the mode:
+     * GLib runs them in connection order, so the setting already holds the new
+     * value by the time this one reads it back to seed the fields. */
+    g_signal_connect(combo, "changed",
+                     G_CALLBACK(on_screen_mode_changed), sr);
+    /* The state dies with the combo it belongs to, and so with the dialog. */
+    g_object_set_data_full(G_OBJECT(combo), "rb-screen-row", sr, g_free);
+
+    rb_screen_numbers_sync(sr);
+    rb_screen_manual_sync(sr);
+
+    rb_pref_note_row(grid, row + 2,
+        "What a page is told the display is. A claimed size replaces the "
+        "screen's own width, height and available area; the page is still "
+        "laid out in this window, so a claim that differs from this display "
+        "will disagree with it. \"This display\" reports the truth and claims "
+        "nothing.");
+    return combo;
+}
+
 /* The rows that only mean something when NO device is chosen.  A control that
  * silently does nothing is worse than one that is visibly off: with a machine
  * selected, these grey out and the note below says why, so the settings screen
@@ -2975,14 +3227,20 @@ static void rb_show_prefs_dialog_impl(App *app)
         rb_pref_note_row(grid, r++,
                          "A device sets the User-Agent and everything a page can "
                          "ask about the machine — platform, client hints, memory, "
-                         "cores, WebGL. Screen size is left alone: the page is "
-                         "really laid out on this screen.");
+                         "cores, WebGL. It says nothing about the screen, which "
+                         "is the row below.");
         ua_rows(grid, &r, app, f);
         /* Attached before the first update, and refreshed by the picker
          * through the same call, so the rows grey out when the machine
          * changes and are already right when the page is shown. */
         g_object_set_data_full(G_OBJECT(device), "rb-ua-followers", f, g_free);
         rb_ua_followers_update(device, app);
+
+        /* Screen size is independent of the device — a profile on a UA preset
+         * can claim one, and a profile presenting a machine need not — so it
+         * is its own row rather than a follower of the picker above. */
+        rb_pref_screen_row(grid, r, app);
+        r += 3;
     }
     gtk_notebook_append_page(GTK_NOTEBOOK(notebook), rb_pref_scrolled(grid),
                              gtk_label_new("User-Agent"));

@@ -20,14 +20,17 @@
  * What a device decides is documented in SECURITY.md, and it is the same
  * bargain the Android edition makes: the non-geometric surface a machine
  * determines (UA, client hints, platform, memory, cores, WebGL strings) is
- * presented; screen geometry and real capabilities are not, because the page
- * really is laid out on this screen and a claim that contradicted the
- * viewport would render it wrongly and be the cheapest spoofing signal
- * there is.
+ * presented. Screen geometry is not, unless the profile asks for it through
+ * the Screen size row: the page really is laid out on this display, so the
+ * default is to report it honestly, and a profile that claims a size states
+ * the claim where the cost of it is visible. Real capabilities - camera,
+ * microphones, codecs, battery - are never touched by either edition.
  */
 
 #ifndef RB_DEVICES_H
 #define RB_DEVICES_H
+
+#include "rb_settings.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -91,6 +94,29 @@ const char         *rb_device_os_name(const char *os);
 /* The document-start script for a device, malloc'd. Mirrors Android's
  * DeviceShim.scriptFor(). Returns NULL on allocation failure. */
 char               *rb_device_shim_js(const rb_device *device);
+
+/* The document-start script for a claimed screen size, malloc'd, or NULL when
+ * there is nothing to claim. Mirrors the screen half of Android's
+ * DeviceShim.scriptFor(): it replaces screen.width/height/availWidth/
+ * availHeight and derives screen.orientation from the shape claimed, so a
+ * claim of a landscape screen cannot also answer "portrait-primary".
+ *
+ * It deliberately does NOT touch innerWidth, innerHeight or devicePixelRatio.
+ * Those are the page's real size on this display and the ratio the compositor
+ * renders at; moving them re-lays the page out at a size the screen does not
+ * have. The consequence is real and is stated in preferences and SECURITY.md:
+ * a claimed screen that differs from the display's is a disagreement with the
+ * viewport, and a script can find it. */
+char               *rb_screen_shim_js(int width_px, int height_px);
+
+/* The whole document-start script for a profile: the device half when `device`
+ * is not NULL, the screen half when the store claims a size, and NULL when
+ * neither applies — which is the default state and the one every policy
+ * statement in SECURITY.md is about.
+ *
+ * The two halves are independent so a profile on a UA preset can still state a
+ * screen size, and a profile presenting a machine need not claim one. */
+char               *rb_shim_js(const rb_device *device, const rb_settings *s);
 
 #ifdef __cplusplus
 }

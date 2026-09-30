@@ -334,6 +334,12 @@ int rb_pref_int(App *app, const char *key, int fallback)
     return rb_settings_get_int(p->settings, key, fallback);
 }
 
+const rb_settings *rb_pref_store(App *app)
+{
+    const rb_profile *p = rb_active_profile(app);
+    return (p != NULL) ? p->settings : NULL;
+}
+
 void rb_pref_set(App *app, const char *key, const char *value)
 {
     const rb_profile *p = rb_active_profile(app);

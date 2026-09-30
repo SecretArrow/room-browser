@@ -77,6 +77,28 @@ extern "C" {
  * absent means the profile presents nothing and the keys above decide. */
 #define RB_PREF_DEVICE_ID            "device_id"
 
+/* Screen size.  What the profile tells a page the display is, in CSS pixels.
+ *
+ * The Android edition's Screen size row, stored with the same spellings so one
+ * profile means the same thing on both.  "real" is the default and the only
+ * mode in which nothing is claimed.
+ *
+ * A desktop window can be any size, so screen.width disagreeing with the
+ * viewport is ordinary here in a way it is not on a phone.  The screen is
+ * still a fingerprinting signal, though, and a profile presenting a 4K
+ * workstation while reporting a laptop panel is the same unclaimed
+ * contradiction the Android edition now offers a way out of.  See
+ * SECURITY.md. */
+#define RB_PREF_SCREEN_SIZE          "screen_size"   /* real|manual */
+#define RB_PREF_SCREEN_WIDTH         "screen_width"  /* CSS px, manual only */
+#define RB_PREF_SCREEN_HEIGHT        "screen_height"
+
+/* The range a stored screen size can mean: narrower than any display Chrome
+ * runs on, and wider than any it runs on.  Shared so the two GUIs cannot
+ * disagree about what a stored size is. */
+#define RB_SCREEN_PX_MIN             240
+#define RB_SCREEN_PX_MAX             4320
+
 /* DNS */
 #define RB_PREF_DNS_MODE             "dns_mode"     /* system|auto|doh|dot     */
 #define RB_PREF_DOH_URL              "doh_url"
@@ -147,6 +169,19 @@ void rb_prefs_global_defaults(rb_settings *s);
  * the smallest one.  100 must mean "unchanged" so a profile that never
  * touched this renders exactly as it did before. */
 int rb_font_scale_percent(const rb_settings *s);
+
+/* The screen size `s` claims, in CSS pixels.  Returns 1 and writes both
+ * outputs when the profile claims one; returns 0 and writes nothing when it
+ * claims none, which is the default.
+ *
+ * Both spellings of "no claim" land here: a profile not in manual mode, and a
+ * profile in manual mode whose stored numbers are outside
+ * [RB_SCREEN_PX_MIN, RB_SCREEN_PX_MAX].  A size no screen has is a corrupt
+ * entry, and the truthful reading of a corrupt entry is the real display
+ * rather than a page laid out for a display that cannot exist.  An
+ * unrecognised mode is likewise no claim — a value that cannot be understood
+ * must not switch a claim on. */
+int rb_screen_claim_of(const rb_settings *s, int *w, int *h);
 
 /* The WebRTC policy a profile's stored value means.  The values are the
  * Android edition's WebRtcPolicy enum (Profile.kt) lowercased, and the strings

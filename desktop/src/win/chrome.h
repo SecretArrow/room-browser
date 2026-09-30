@@ -209,6 +209,14 @@ const rb_profile *rb_active_profile(App *app);
 const char *rb_pref(App *app, const char *key, const char *fallback);
 int         rb_pref_int(App *app, const char *key, int fallback);
 
+/* The ACTIVE profile's store, or NULL when there is none.  For the core
+ * helpers that take a whole store rather than one key — the ones that have to
+ * read several keys together to answer (rb_screen_claim_of, the WebRTC
+ * policy).  Reading a single setting should go through rb_pref() above;
+ * this exists so a call site never reaches into rb_profile::settings
+ * itself, which is how the two editions would drift apart. */
+const rb_settings *rb_pref_store(App *app);
+
 /* Writes a per-profile setting back and persists the registry. */
 void rb_pref_set(App *app, const char *key, const char *value);
 void rb_pref_set_int(App *app, const char *key, int value);

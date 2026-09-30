@@ -1576,10 +1576,17 @@ static ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandlerVtbl
         ScriptHandler_Invoke
     };
 
-/* Installs (or clears) the device script on one view.  Called wherever the
- * User-Agent is applied, because the two describe the same machine and a UA
- * that disagreed with the shim behind it is the contradiction this exists to
- * avoid. */
+/* Installs (or clears) the profile's document-start script on one view.
+ * Called wherever the User-Agent is applied, because the two describe the same
+ * machine and a UA that disagreed with the shim behind it is the
+ * contradiction this exists to avoid.
+ *
+ * What goes in the script is rb_shim_js()'s decision, not this function's:
+ * the machine half when the profile presents one, the screen half when it
+ * claims a size, and NULL when it does neither.  The common case is NULL, and
+ * it must clear rather than install — a profile that claims nothing has to
+ * come off a view that previously claimed something, which is exactly what
+ * happens when the row is switched back to the real display. */
 static void rb_wv_apply_device_script(App *app, ICoreWebView2 *wv)
 {
     TabView *tv;
@@ -1603,9 +1610,7 @@ static void rb_wv_apply_device_script(App *app, ICoreWebView2 *wv)
     }
 
     device = rb_device_by_id(rb_pref(app, RB_PREF_DEVICE_ID, NULL));
-    if (device == NULL) return;
-
-    js = rb_device_shim_js(device);
+    js = rb_shim_js(device, rb_pref_store(app));
     if (js == NULL) return;
     wjs = rb_utf8_to_wide(js);
     free(js);

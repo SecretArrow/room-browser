@@ -2200,6 +2200,67 @@ static void test_rb_prefs(void)
             rb_settings_free(bare);
         }
 
+        /* the screen claim. Both spellings of "no claim" land in the same
+         * place: a profile not in manual mode, and a profile in manual mode
+         * whose stored pair cannot be a screen. */
+        {
+            int w = -1, h = -1;
+            CHECK(rb_screen_claim_of(NULL, &w, &h) == 0);
+            CHECK(w == 0 && h == 0);
+
+            rb_prefs_profile_defaults(f);
+            w = -1; h = -1;
+            CHECK(rb_screen_claim_of(f, &w, &h) == 0);
+            CHECK(w == 0 && h == 0);
+
+            rb_settings_set(f, RB_PREF_SCREEN_SIZE, "manual");
+            rb_settings_set_int(f, RB_PREF_SCREEN_WIDTH, 1920);
+            rb_settings_set_int(f, RB_PREF_SCREEN_HEIGHT, 1080);
+            CHECK(rb_screen_claim_of(f, &w, &h) == 1);
+            CHECK(w == 1920 && h == 1080);
+
+            /* Either half out of range is a corrupt entry rather than half a
+             * screen, so the pair falls back to the real display together. */
+            rb_settings_set_int(f, RB_PREF_SCREEN_WIDTH, RB_SCREEN_PX_MAX + 1);
+            CHECK(rb_screen_claim_of(f, &w, &h) == 0);
+            CHECK(w == 0 && h == 0);
+            rb_settings_set_int(f, RB_PREF_SCREEN_WIDTH, 1920);
+            rb_settings_set_int(f, RB_PREF_SCREEN_HEIGHT, RB_SCREEN_PX_MIN - 1);
+            CHECK(rb_screen_claim_of(f, &w, &h) == 0);
+            rb_settings_set_int(f, RB_PREF_SCREEN_HEIGHT, 1080);
+
+            /* The bounds themselves are claims. */
+            rb_settings_set_int(f, RB_PREF_SCREEN_WIDTH, RB_SCREEN_PX_MIN);
+            rb_settings_set_int(f, RB_PREF_SCREEN_HEIGHT, RB_SCREEN_PX_MAX);
+            CHECK(rb_screen_claim_of(f, &w, &h) == 1);
+            CHECK(w == RB_SCREEN_PX_MIN && h == RB_SCREEN_PX_MAX);
+
+            /* The numbers are inert without the mode: switching the row back
+             * to the real display must not leave the old size claimed. */
+            rb_settings_set(f, RB_PREF_SCREEN_SIZE, "real");
+            CHECK(rb_screen_claim_of(f, &w, &h) == 0);
+
+            /* Mode values that cannot be read are not a licence to claim
+             * something - the same rule the WebRTC policy follows. */
+            rb_settings_set(f, RB_PREF_SCREEN_SIZE, "Manual");
+            CHECK(rb_screen_claim_of(f, &w, &h) == 0);
+            rb_settings_set(f, RB_PREF_SCREEN_SIZE, "");
+            CHECK(rb_screen_claim_of(f, &w, &h) == 0);
+
+            /* A store that never had the keys at all - a settings file written
+             * before the row existed. */
+            {
+                rb_settings *bare = rb_settings_new();
+                CHECK(rb_screen_claim_of(bare, &w, &h) == 0);
+                rb_settings_free(bare);
+            }
+
+            /* The outputs may be asked for one at a time. */
+            rb_settings_set(f, RB_PREF_SCREEN_SIZE, "manual");
+            CHECK(rb_screen_claim_of(f, NULL, NULL) == 1);
+            CHECK(rb_screen_claim_of(f, &w, NULL) == 1 && w == RB_SCREEN_PX_MIN);
+        }
+
         /* the spellings round-trip, which is what lets a combo box be built
          * from the enum rather than repeating the strings */
         CHECK(strcmp(rb_webrtc_policy_name(RB_WEBRTC_DEFAULT), "default") == 0);
@@ -4544,9 +4605,137 @@ static void test_rb_device_shim_escaping(void)
     free(js);
 }
 
-int main(void)
+/* The screen half of the shim, and the composition that decides which halves
+ * a profile installs. Mirrors the Android edition's DeviceShimTest. */
+static void test_rb_screen_shim(void)
 {
-    test_rb_str();
+    char *js;
+    rb_settings *f;
+    const rb_device *d = rb_device_at(0);
+
+    /* Outside the range a stored size can mean there is no claim, so there is
+     * nothing to install - not a script with the numbers clamped into it. */
+    CHECK(rb_screen_shim_js(RB_SCREEN_PX_MIN - 1, 1000) == NULL);
+    CHECK(rb_screen_shim_js(1000, RB_SCREEN_PX_MAX + 1) == NULL);
+    CHECK(rb_screen_shim_js(0, 0) == NULL);
+    CHECK(rb_screen_shim_js(-1920, 1080) == NULL);
+    /* The bounds themselves are claims: they are the widest and narrowest a
+     * profile is allowed to state, not off-by-one guards. */
+    js = rb_screen_shim_js(RB_SCREEN_PX_MIN, RB_SCREEN_PX_MIN);
+    CHECK(js != NULL);
+    free(js);
+    js = rb_screen_shim_js(RB_SCREEN_PX_MAX, RB_SCREEN_PX_MAX);
+    CHECK(js != NULL);
+    free(js);
+
+    /* What a claim replaces, and the two things it must not. */
+    js = rb_screen_shim_js(1920, 1080);
+    CHECK(js != NULL);
+    CHECK(strstr(js, "var SCREEN_W = 1920;") != NULL);
+    CHECK(strstr(js, "var SCREEN_H = 1080;") != NULL);
+    CHECK(strstr(js, "'width'") != NULL);
+    CHECK(strstr(js, "'height'") != NULL);
+    CHECK(strstr(js, "'availWidth'") != NULL);
+    CHECK(strstr(js, "'availHeight'") != NULL);
+    /* The trade, asserted rather than described: the layout viewport and the
+     * pixel ratio are the display's own, because they are what the page is
+     * really laid out and rendered at. See SECURITY.md. */
+    CHECK(strstr(js, "innerWidth") == NULL);
+    CHECK(strstr(js, "innerHeight") == NULL);
+    CHECK(strstr(js, "devicePixelRatio") == NULL);
+    /* Every placeholder was substituted; one left behind would be a syntax
+     * error in the page, not a wrong answer in it. */
+    CHECK(strstr(js, "__") == NULL);
+    /* The available rectangle is measured from the real display rather than
+     * assumed equal to the whole screen: a desktop has a taskbar, and a claim
+     * of no inset at all would be its own tell. */
+    CHECK(strstr(js, "screen.width - screen.availWidth") != NULL);
+    CHECK(strstr(js, "screen.height - screen.availHeight") != NULL);
+    /* A landscape claim says so, and does not also answer 90 degrees: the
+     * angle is the device's rotation, and a desktop display is never rotated. */
+    CHECK(strstr(js, "'landscape-primary'") != NULL);
+    CHECK(strstr(js, "'angle', 0") != NULL);
+    free(js);
+
+    js = rb_screen_shim_js(1080, 1920);
+    CHECK(js != NULL);
+    CHECK(strstr(js, "'portrait-primary'") != NULL);
+    CHECK(strstr(js, "'landscape-primary'") == NULL);
+    free(js);
+
+    /* Square is portrait, which is the Android edition's rule too - the claim
+     * is landscape only when the width is STRICTLY greater, so the two
+     * editions cannot disagree about a shape. */
+    js = rb_screen_shim_js(600, 600);
+    CHECK(js != NULL);
+    CHECK(strstr(js, "'portrait-primary'") != NULL);
+    free(js);
+
+    /* The composition. A profile that claims nothing installs nothing: an
+     * empty script on every page of every profile is not the same as no
+     * script, and this is the default state. */
+    f = rb_settings_new();
+    rb_prefs_profile_defaults(f);
+    CHECK(rb_shim_js(NULL, f) == NULL);
+    CHECK(rb_shim_js(NULL, NULL) == NULL);
+
+    /* A device on its own still shims the machine. */
+    js = rb_shim_js(d, f);
+    CHECK(js != NULL);
+    CHECK(strstr(js, "userAgentData") != NULL);
+    CHECK(strstr(js, "Screen.prototype") == NULL); /* no screen half */
+    free(js);
+
+    /* A screen claimed with no key at all - the store never had one - is no
+     * claim either. */
+    {
+        rb_settings *bare = rb_settings_new();
+        CHECK(rb_shim_js(NULL, bare) == NULL);
+        rb_settings_free(bare);
+    }
+
+    /* A screen on its own, with no device: a profile on a UA preset can state
+     * a size, and the script must not carry an identity it never asked for. */
+    rb_settings_set(f, RB_PREF_SCREEN_SIZE, "manual");
+    rb_settings_set_int(f, RB_PREF_SCREEN_WIDTH, 1280);
+    rb_settings_set_int(f, RB_PREF_SCREEN_HEIGHT, 720);
+    js = rb_shim_js(NULL, f);
+    CHECK(js != NULL);
+    CHECK(strstr(js, "var SCREEN_W = 1280;") != NULL);
+    CHECK(strstr(js, "userAgentData") == NULL);
+    CHECK(strstr(js, "WebGLRenderingContext") == NULL);
+    free(js);
+
+    /* Both halves, device first: one document-start script, so the two cannot
+     * disagree about which order they ran in. */
+    js = rb_shim_js(d, f);
+    CHECK(js != NULL);
+    {
+        const char *machine = strstr(js, "userAgentData");
+        const char *screen = strstr(js, "var SCREEN_W = 1280;");
+        CHECK(machine != NULL);
+        CHECK(screen != NULL);
+        if (machine != NULL && screen != NULL) {
+            CHECK(machine < screen);
+        }
+    }
+    free(js);
+
+    /* The mode decides, and the numbers are inert without it: a profile that
+     * was switched back to the real display must not keep claiming the size
+     * it used to. */
+    rb_settings_set(f, RB_PREF_SCREEN_SIZE, "real");
+    CHECK(rb_shim_js(NULL, f) == NULL);
+    js = rb_shim_js(d, f);
+    CHECK(js != NULL);
+    CHECK(strstr(js, "Screen.prototype") == NULL);
+    free(js);
+
+    rb_settings_free(f);
+}
+
+int main(void)
+{    test_rb_str();
     test_rb_json();
     test_rb_url();
     test_rb_search();
@@ -4572,6 +4761,7 @@ int main(void)
     test_rb_devices();
     test_rb_device_behaviour();
     test_rb_device_shim_escaping();
+    test_rb_screen_shim();
     remove(TMP);
     (void)rb_paths_remove_tree(TMP_DIR);
     printf("core checks: %d\n", g_checks);

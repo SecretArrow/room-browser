@@ -61,6 +61,7 @@
 #define RB_PREFS_CLEAR_BASE 4600    /* the five "clear data" checkboxes */
 #define RB_PREFS_CLEAR_BTN  4610
 #define RB_PREFS_CLOSE      4611
+#define RB_PREFS_SCREEN_FILL 4612   /* "This display" on the screen-size row */
 #define RB_PREFS_MAX_CTL    48
 
 static const wchar_t *const g_page_names[RB_PREFS_PAGES] = {
@@ -80,6 +81,7 @@ typedef struct {
     RbPrefKind   kind;
     HWND         ctl;        /* the switch / combo / edit box */
     HWND         apply;      /* entry rows only: the Apply button */
+    HWND         caption;    /* entry rows only: the caption above the box */
     const char **ids;        /* combos: the id behind each item, by index */
 } RbPrefCtl;
 
@@ -458,8 +460,12 @@ static int pf_entry(RbPrefs *pf, int page, int y, const char *key,
     HWND edit, apply;
     if (i < 0) return 0;
 
-    pf_mk(pf, pf->pages[page], L"STATIC", title, SS_LEFT,
-          0, y, pf->page_w, PF_TITLE_H, 0, RB_PF_INK_NORMAL);
+    /* Kept on the control tuple rather than left anonymous: the screen-size
+     * row hides its two entries with the mode, and a caption that stayed
+     * behind would label a box that is not there. */
+    pf->ctl[i].caption =
+        pf_mk(pf, pf->pages[page], L"STATIC", title, SS_LEFT,
+              0, y, pf->page_w, PF_TITLE_H, 0, RB_PF_INK_NORMAL);
 
     edit = pf_mk(pf, pf->pages[page], L"EDIT", L"",
                  WS_TABSTOP | ES_LEFT | ES_AUTOHSCROLL,
@@ -1076,6 +1082,118 @@ static void pf_show_device_picker(RbPrefs *pf)
     SetForegroundWindow(pf->dlg);
 }
 
+/* ------------------------------------------------------------------ */
+/* Screen size
+ *
+ * The Android edition's row: report this display (the default, and the only
+ * mode in which nothing is claimed) or state a size.  What a claim can and
+ * cannot do is the core's decision and is documented in rb_devices.h; the note
+ * under the row says the half of it the user has to know while choosing.
+ *
+ * The two numbers are ordinary entry rows, so they are stored as the same
+ * decimal text the core reads back with rb_settings_get_int().  Nothing here
+ * has to know they are numbers except the validator for the two keys.
+ */
+
+/* This display's size in CSS pixels.  The editor is system-DPI aware (see
+ * app.manifest), so GetSystemMetrics reports the primary display in physical
+ * pixels and the ratio a page sees is the system DPI over 96.  The DPI is
+ * floored at 96 so the division cannot be by zero, and the result at 1 so a
+ * display that reported nothing cannot become a zero-pixel screen. */
+static void pf_screen_real_size(int *w, int *h)
+{
+    HDC dc = GetDC(NULL);
+    int dpi = 96;
+    int sw, sh;
+
+    if (dc != NULL) {
+        dpi = GetDeviceCaps(dc, LOGPIXELSX);
+        ReleaseDC(NULL, dc);
+    }
+    if (dpi < 96) dpi = 96;
+
+    sw = GetSystemMetrics(SM_CXSCREEN);
+    sh = GetSystemMetrics(SM_CYSCREEN);
+    *w = (sw * 96) / dpi;
+    *h = (sh * 96) / dpi;
+    if (*w < 1) *w = 1;
+    if (*h < 1) *h = 1;
+}
+
+/* Puts a size into one of the two boxes, as the text the core will read. */
+static void pf_edit_set_int(HWND edit, int v)
+{
+    wchar_t buf[16];
+    if (edit == NULL) return;
+    swprintf(buf, 16, L"%d", v);
+    SetWindowTextW(edit, buf);
+}
+
+/* The two numbers are shown only in Custom mode, exactly as on the GTK
+ * edition: a box that is visible while the mode above it says the setting is
+ * ignoring it is the kind of control this file's notes exist to avoid.
+ *
+ * Both boxes are written from the setting every time, so the row is right
+ * whenever it is shown — including on a fresh build and after a profile
+ * switch, neither of which passes through the mode combo. A stored pair with
+ * nothing usable in it opens on this display's own size instead: a manual
+ * claim is nearly always a small correction to the real one, and an empty box
+ * would make the user look the number up somewhere else. */
+static void pf_screen_sync(RbPrefs *pf)
+{
+    static const char *const num_keys[2] = { RB_PREF_SCREEN_WIDTH,
+                                             RB_PREF_SCREEN_HEIGHT };
+    const char *mode = rb_pref(pf->app, RB_PREF_SCREEN_SIZE, "real");
+    BOOL manual = (mode != NULL && strcmp(mode, "manual") == 0);
+    int k;
+
+    for (k = 0; k < 2; k++) {
+        int i;
+        for (i = 0; i < pf->n_ctl; i++) {
+            RbPrefCtl *c = &pf->ctl[i];
+            int show;
+            if (c->key == NULL || strcmp(c->key, num_keys[k]) != 0) continue;
+            show = manual ? SW_SHOW : SW_HIDE;
+            if (c->caption != NULL) ShowWindow(c->caption, show);
+            if (c->ctl != NULL) ShowWindow(c->ctl, show);
+            if (c->apply != NULL) ShowWindow(c->apply, show);
+        }
+    }
+
+    if (manual) {
+        int w = rb_pref_int(pf->app, RB_PREF_SCREEN_WIDTH, 0);
+        int h = rb_pref_int(pf->app, RB_PREF_SCREEN_HEIGHT, 0);
+        if (w < RB_SCREEN_PX_MIN || w > RB_SCREEN_PX_MAX ||
+            h < RB_SCREEN_PX_MIN || h > RB_SCREEN_PX_MAX) {
+            pf_screen_real_size(&w, &h);
+        }
+        pf_edit_set_int(pf_ctl_by_key(pf, RB_PREF_SCREEN_WIDTH), w);
+        pf_edit_set_int(pf_ctl_by_key(pf, RB_PREF_SCREEN_HEIGHT), h);
+    }
+}
+
+/* The filler button: both boxes at once, from the display in front of the
+ * user.  A claim that is not what the display already is has to be typed for a
+ * reason, and this is for the case where it is not. */
+static void pf_screen_fill_real(RbPrefs *pf)
+{
+    int w = 0, h = 0;
+    pf_screen_real_size(&w, &h);
+    pf_edit_set_int(pf_ctl_by_key(pf, RB_PREF_SCREEN_WIDTH), w);
+    pf_edit_set_int(pf_ctl_by_key(pf, RB_PREF_SCREEN_HEIGHT), h);
+    SetFocus(pf_ctl_by_key(pf, RB_PREF_SCREEN_WIDTH));
+}
+
+/* Puts a box back to what is actually stored.  Called when Apply refused the
+ * typed value: the row reads its box after the write, so a box left holding a
+ * number the profile does not have would be the settings screen claiming a
+ * screen size the browser is not using. */
+static void pf_screen_restore(RbPrefs *pf, const char *key)
+{
+    HWND h = pf_ctl_by_key(pf, key);
+    if (h != NULL) pf_edit_set_int(h, rb_pref_int(pf->app, key, 0));
+}
+
 /* The device row: a profile presents a real machine, or it presents nothing
  * and the User-Agent settings below decide.  Choosing a device IS choosing
  * the User-Agent, so the two are one control rather than two that can
@@ -1131,6 +1249,35 @@ static void pf_build_ua(RbPrefs *pf)
                   rb_pref(pf->app, RB_PREF_CUSTOM_USER_AGENT, ""),
                   L"Custom User-Agent");
     pf->ua_note = pf_note(pf, 3, y, PF_NOTE_H);
+    y += PF_NOTE_H + PF_GAP;
+
+    /* Screen size is independent of the device above — a profile on a UA
+     * preset can claim one, and a profile presenting a machine need not — so
+     * it is its own group rather than a follower of the device row. */
+    {
+        static const char *const mode_ids[3] = { "real", "manual", NULL };
+        static const char *const mode_labels[3] = { "This display", "Custom",
+                                                    NULL };
+        y += pf_combo(pf, 3, y, RB_PREF_SCREEN_SIZE, mode_ids, mode_labels,
+                      rb_pref(pf->app, RB_PREF_SCREEN_SIZE, "real"),
+                      L"Reported screen size");
+        y += pf_entry(pf, 3, y, RB_PREF_SCREEN_WIDTH,
+                      "", L"Screen width (CSS pixels)");
+        y += pf_entry(pf, 3, y, RB_PREF_SCREEN_HEIGHT,
+                      "", L"Screen height (CSS pixels)");
+        pf_mk(pf, pf->pages[3], L"BUTTON", L"This display",
+              WS_TABSTOP | BS_PUSHBUTTON,
+              0, y, 120, PF_EDIT_H, RB_PREFS_SCREEN_FILL, RB_PF_INK_NORMAL);
+        y += PF_EDIT_H + PF_GAP;
+        pf_mk(pf, pf->pages[3], L"STATIC",
+              L"What a page is told the display is. A claimed size replaces the "
+              L"screen's own width, height and available area; the page is "
+              L"still laid out in this window, so a claim that differs from "
+              L"this display will disagree with it. \"This display\" reports "
+              L"the truth and claims nothing.",
+              SS_LEFT, 0, y, pf->page_w, PF_NOTE_H, 0, RB_PF_INK_DIM);
+        pf_screen_sync(pf);
+    }
 }
 
 static void pf_build_network(RbPrefs *pf)
@@ -1310,6 +1457,25 @@ static int pf_validate(RbPrefs *pf, const char *key, const char *text)
                 "dns.example or dns.example:853.  Left unchanged.");
         return 0;
     }
+    /* The two screen dimensions.  Digits only, because the value is read back
+     * with rb_settings_get_int() and a string it cannot parse would silently
+     * read as the core default rather than as what the user typed — a box that
+     * looks like it holds 1920 while the browser claims nothing. */
+    if (strcmp(key, RB_PREF_SCREEN_WIDTH) == 0 ||
+        strcmp(key, RB_PREF_SCREEN_HEIGHT) == 0) {
+        long v;
+        char *end = NULL;
+        v = strtol(text, &end, 10);
+        if (end == text || *end != '\0' ||
+            v < RB_SCREEN_PX_MIN || v > RB_SCREEN_PX_MAX) {
+            char detail[192];
+            snprintf(detail, sizeof detail,
+                     "A whole number of pixels between %d and %d.  Left "
+                     "unchanged.", RB_SCREEN_PX_MIN, RB_SCREEN_PX_MAX);
+            rb_warn(pf->app, "Not a usable screen size", detail);
+            return 0;
+        }
+    }
     return 1;
 }
 
@@ -1329,6 +1495,12 @@ static void pf_on_command(RbPrefs *pf, int id, int code)
     }
     if (id == RB_PREFS_CLEAR_BTN) {
         if (code == BN_CLICKED) pf_do_clear(pf);
+        return;
+    }
+    if (id == RB_PREFS_SCREEN_FILL) {
+        /* Fills the two boxes; it deliberately does not Apply, so the row
+         * still writes only when the user says so. */
+        if (code == BN_CLICKED) pf_screen_fill_real(pf);
         return;
     }
     if (id >= RB_PREFS_TAB_BASE && id < RB_PREFS_TAB_BASE + RB_PREFS_PAGES) {
@@ -1379,6 +1551,11 @@ static void pf_on_command(RbPrefs *pf, int id, int code)
             rb_pref_set(pf->app, c->key, c->ids[sel]);
             pf_apply(pf->app, pf, c->key);
         }
+        /* Switching the screen row off Custom takes the two number rows with
+         * it, so the page never shows a size the mode above it is ignoring. */
+        if (c->key != NULL && strcmp(c->key, RB_PREF_SCREEN_SIZE) == 0) {
+            pf_screen_sync(pf);
+        }
         pf_refresh_notes(pf);
     } else if (c->kind == RB_PK_ENTRY) {
         /* The Apply button carries the tuple's id; the edit box that goes
@@ -1393,7 +1570,14 @@ static void pf_on_command(RbPrefs *pf, int id, int code)
         if (u8 == NULL) return;
         snprintf(text, sizeof text, "%s", u8);
         free(u8);
-        if (!pf_validate(pf, c->key, text)) return;
+        if (!pf_validate(pf, c->key, text)) {
+            /* Two of the rows read their box back after the write, so a
+             * refused value has to come out of the box as well as out of the
+             * setting — otherwise the row shows a size the profile does not
+             * have. */
+            pf_screen_restore(pf, c->key);
+            return;
+        }
         rb_pref_set(pf->app, c->key, text);
         pf_apply(pf->app, pf, c->key);
         pf_refresh_notes(pf);
