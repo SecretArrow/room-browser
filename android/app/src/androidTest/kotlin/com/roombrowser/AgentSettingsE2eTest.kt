@@ -597,10 +597,20 @@ class AgentSettingsE2eTest {
             "YOLO switch must flip ON",
             flipSwitch("YOLO: always allow", wantOn = true)
         )
-        assertTrue(
-            "YOLO must show its warning while it is on",
-            device.wait(Until.hasObject(By.textContains("YOLO is ON")), 5_000)
-        )
+        // The warning paragraph renders directly under the switch row, and
+        // flipSwitch may have found that row at the very bottom edge of the
+        // viewport — in which case the paragraph is still below the fold and
+        // therefore not in the a11y tree. One small drag brings it in and
+        // still leaves the row on screen, which is what the OFF flip below
+        // needs: flipSwitch only ever scrolls DOWNWARDS, so a row carried off
+        // the top could never be flipped back.
+        var warningUp = device.wait(Until.hasObject(By.textContains("YOLO is ON")), 1_500)
+        for (i in 1..2) {
+            if (warningUp) break
+            dragUpQuarter()
+            warningUp = device.wait(Until.hasObject(By.textContains("YOLO is ON")), 2_000)
+        }
+        assertTrue("YOLO must show its warning while it is on", warningUp)
         assertTrue(
             "YOLO switch must flip OFF",
             flipSwitch("YOLO: always allow", wantOn = false)
