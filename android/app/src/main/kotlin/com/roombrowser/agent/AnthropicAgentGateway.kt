@@ -1,5 +1,6 @@
 package com.roombrowser.agent
 
+import com.roombrowser.domain.agent.AgentClientIdentity
 import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.AgentJson
@@ -118,7 +119,9 @@ class AnthropicAgentGateway(
             .url(AnthropicMessages.endpoint(base))
             .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
             .header("Accept", "text/event-stream")
-            .header("User-Agent", "RoomBrowser-Agent/1.0")
+            // Not the app's own name for a provider that refuses it: see
+            // AgentClientIdentity — this base URL is read for the answer.
+            .header("User-Agent", AgentClientIdentity.userAgent(base))
             .header("anthropic-version", AnthropicMessages.VERSION)
         if (apiKey.isNotBlank()) {
             // Anthropic authenticates with x-api-key; OpenAI-shaped aggregators

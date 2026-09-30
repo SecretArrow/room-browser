@@ -1,5 +1,6 @@
 package com.roombrowser.agent
 
+import com.roombrowser.domain.agent.AgentClientIdentity
 import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.AgentJson
@@ -75,7 +76,11 @@ class OkHttpAgentGateway(
             .url("$base/chat/completions")
             .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
             .header("Accept", "text/event-stream")
-            .header("User-Agent", "RoomBrowser-Agent/1.0")
+            // A provider that refuses non-CLI clients must be told so here as
+            // well: the Anthropic gateway falls back to THIS transport against
+            // the same base URL, and a request that keeps the app's own name
+            // would be turned away on the same gate. See AgentClientIdentity.
+            .header("User-Agent", AgentClientIdentity.userAgent(base))
         if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
 
         val response = execute(builder.build())
@@ -183,6 +188,7 @@ class OkHttpAgentGateway(
             .url("$base/models")
             .get()
             .header("Accept", "application/json")
+            .header("User-Agent", AgentClientIdentity.userAgent(base))
         if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
         val response = execute(builder.build())
         try {
