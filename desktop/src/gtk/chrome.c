@@ -247,7 +247,7 @@ static char *rb_css_build(const rb_theme_colors *c, int radius)
      * surface), and a pill-shaped omnibox. */
     {
         size_t used = strlen(css);
-        if (used + 1200 < cap) {
+        if (used + 1400 < cap) {
             snprintf(css + used, cap - used,
                      "notebook header tabs tab { min-height: 28px;"
                      " margin: 2px 2px 0 0; border-radius: 9px 9px 0 0; }\n"
@@ -260,9 +260,12 @@ static char *rb_css_build(const rb_theme_colors *c, int radius)
                      " border-bottom: 1px solid %s; }\n"
                      ".rb-bmbtn { background-color: transparent; color: %s;"
                      " border: none; padding: 2px 8px; border-radius: %dpx; }\n"
-                     ".rb-bmbtn:hover { background-color: %s; color: %s; }\n",
+                     ".rb-bmbtn:hover { background-color: %s; color: %s; }\n"
+                     ".rb-findbar { background-color: %s; padding: 4px 6px;"
+                     " border-bottom: 1px solid %s; }\n",
                      surf, txt, border, radius,
-                     surf, border, txt, radius, accent_faint, txt);
+                     surf, border, txt, radius, accent_faint, txt,
+                     surf, border);
         }
     }
     return css;
@@ -1365,6 +1368,314 @@ void rb_do_toggle_bookmark(App *app)
 }
 
 /* ------------------------------------------------------------------ */
+/* Find in page
+ *
+ * Android's FindInPageBar: a field, previous, next and close, with the search
+ * re-running on every keystroke.  The engine half is WebKit's find controller,
+ * the GTK twin of the findAllAsync / window.find pair Android drives, and it
+ * both highlights the matches and reports how many there are.
+ *
+ * The options are Android's, read off its calls: window.find() is passed
+ * caseSensitive=false and wrapAround=true there, so the search here is
+ * case-insensitive and wraps.
+ *
+ * Two things differ from Android's bar, both visible and both on purpose:
+ *
+ *  - The count is displayed.  Android discards findAllAsync's result and its
+ *    bar says nothing; WebKit hands the number over for free, and the number
+ *    is most of why somebody opens the bar.  It is the TOTAL only — WebKit2GTK
+ *    does not report which match is current, so "3 of 12" is not available
+ *    here and is not faked.
+ *  - The bar belongs to the window while the search belongs to a tab.
+ *    Switching tabs with the bar open finishes the search on the tab being
+ *    left, so its highlights go with it, and re-runs the same text in the one
+ *    arriving — which is what switching tabs with the bar open asks for.
+ *
+ * A tab id is remembered rather than a pointer: tabs are closed under us, and
+ * a stale id simply finds no tab.
+ */
+
+static WebKitWebView *rb_find_view(App *app)
+{
+    GtkTab *t = rb_active_tab(app);
+    return (t != NULL) ? t->wv : NULL;
+}
+
+static WebKitWebView *rb_find_view_for(App *app, long id)
+{
+    int i;
+
+    if (id == 0) return NULL;
+    for (i = 0; i < app->tabs_n; i++) {
+        if (app->tabs[i].id == id) return app->tabs[i].wv;
+    }
+    return NULL;
+}
+
+static WebKitFindController *rb_find_ctl(WebKitWebView *wv)
+{
+    return (wv != NULL) ? webkit_web_view_get_find_controller(wv) : NULL;
+}
+
+static void rb_find_set_count(App *app, guint matches)
+{
+    char buf[48];
+
+    if (app->find_label == NULL) return;
+    /* WebKit normally reports an empty result through failed-to-find-text, but
+     * a zero count is spelled the same way rather than as "0 matches". */
+    if (matches == 0) {
+        gtk_label_set_text(GTK_LABEL(app->find_label), "No matches");
+        return;
+    }
+    /* One match is not "1 matches"; the count is the one place a user reads
+     * this bar closely enough to notice. */
+    snprintf(buf, sizeof buf, (matches == 1) ? "%u match" : "%u matches",
+             (unsigned)matches);
+    gtk_label_set_text(GTK_LABEL(app->find_label), buf);
+}
+
+static void rb_find_set_none(App *app)
+{
+    if (app->find_label != NULL) {
+        gtk_label_set_text(GTK_LABEL(app->find_label), "No matches");
+    }
+}
+
+static void rb_find_clear_label(App *app)
+{
+    /* Empty rather than "0 matches": a bar whose field was just cleared has
+     * not searched for anything, and saying it found none would be a lie. */
+    if (app->find_label != NULL) gtk_label_set_text(GTK_LABEL(app->find_label), "");
+}
+
+/* Finishes the search on every view that could still be carrying one.  Both
+ * calls are safe when there is nothing to finish, and doing both means the
+ * bar never leaves a highlight behind on the tab it was pointed at before the
+ * last switch. */
+static void rb_find_finish(App *app)
+{
+    WebKitFindController *fc;
+
+    fc = rb_find_ctl(rb_find_view_for(app, app->find_id));
+    if (fc != NULL) webkit_find_controller_search_finish(fc);
+    fc = rb_find_ctl(rb_find_view(app));
+    if (fc != NULL) webkit_find_controller_search_finish(fc);
+    app->find_id = 0;
+}
+
+/* The search the entry's text asks for, from the top. */
+static void rb_find_run(App *app)
+{
+    WebKitWebView *wv = rb_find_view(app);
+    GtkTab *t = rb_active_tab(app);
+    WebKitFindController *fc;
+    const char *text;
+
+    if (wv == NULL || t == NULL) return;
+    fc = rb_find_ctl(wv);
+    if (fc == NULL) return;
+
+    /* Leaving a tab behind takes its highlights with it: they belong to the
+     * bar, and the bar is now showing the tab that arrived. */
+    if (app->find_id != 0 && app->find_id != t->id) {
+        WebKitFindController *ofc = rb_find_ctl(rb_find_view_for(app, app->find_id));
+        if (ofc != NULL) webkit_find_controller_search_finish(ofc);
+        app->find_id = 0;
+    }
+
+    text = (app->find_entry != NULL)
+               ? gtk_entry_get_text(GTK_ENTRY(app->find_entry)) : NULL;
+    if (text == NULL || text[0] == '\0') {
+        webkit_find_controller_search_finish(fc);
+        app->find_id = 0;
+        rb_find_clear_label(app);
+        return;
+    }
+
+    app->find_id = t->id;
+    webkit_find_controller_search(fc, text,
+                                  WEBKIT_FIND_OPTIONS_CASE_INSENSITIVE |
+                                  WEBKIT_FIND_OPTIONS_WRAP_AROUND,
+                                  G_MAXUINT);
+}
+
+/* One more match in `forward`'s direction, or a fresh search when the text in
+ * the field is not the text the controller is already holding — which is what
+ * makes Enter after typing do the right thing rather than step a search for
+ * the previous word.  The controller remembers its own query, so nothing here
+ * has to. */
+static void rb_find_step(App *app, gboolean forward)
+{
+    WebKitWebView *wv = rb_find_view(app);
+    WebKitFindController *fc = rb_find_ctl(wv);
+    const char *text, *current;
+
+    if (fc == NULL || app->find_entry == NULL) return;
+    text = gtk_entry_get_text(GTK_ENTRY(app->find_entry));
+    if (text == NULL || text[0] == '\0') return;
+    current = webkit_find_controller_get_search_text(fc);
+    if (current == NULL || strcmp(current, text) != 0) {
+        rb_find_run(app);
+        return;
+    }
+    if (forward) webkit_find_controller_search_next(fc);
+    else         webkit_find_controller_search_previous(fc);
+}
+
+static void rb_find_hide(App *app)
+{
+    WebKitWebView *wv = rb_find_view(app);
+
+    rb_find_finish(app);
+    rb_find_clear_label(app);
+    if (app->findbar != NULL) gtk_widget_hide(app->findbar);
+    /* The keyboard goes back where it was before Ctrl+F took it. */
+    if (wv != NULL) gtk_widget_grab_focus(GTK_WIDGET(wv));
+}
+
+static void rb_find_show(App *app)
+{
+    if (app->findbar == NULL) return;
+    gtk_widget_show_all(app->findbar);
+    gtk_widget_grab_focus(app->find_entry);
+    gtk_editable_select_region(GTK_EDITABLE(app->find_entry), 0, -1);
+    /* Text left over from last time is re-run rather than shown as a stale
+     * count: the page may have changed while the bar was closed. */
+    rb_find_run(app);
+}
+
+static gboolean rb_find_is_open(App *app)
+{
+    if (app->findbar == NULL) return FALSE;
+    return gtk_widget_get_visible(app->findbar);
+}
+
+/* ------------------------------------------------------------------ */
+/* Find in page: the bar itself, and its callbacks */
+
+static void on_find_changed(GtkEditable *editable, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    (void)editable;
+    rb_find_run(app);
+}
+
+static void on_find_prev(GtkButton *button, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    (void)button;
+    rb_find_step(app, FALSE);
+}
+
+static void on_find_next(GtkButton *button, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    (void)button;
+    rb_find_step(app, TRUE);
+}
+
+static void on_find_close(GtkButton *button, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    (void)button;
+    rb_find_hide(app);
+}
+
+/* Enter steps forward, Shift+Enter back, Escape closes — what every other
+ * find bar answers to.  Returning FALSE for everything else leaves the entry
+ * its ordinary editing keys. */
+static gboolean on_find_key(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    (void)widget;
+
+    if (event->keyval == GDK_KEY_Escape) {
+        rb_find_hide(app);
+        return TRUE;
+    }
+    if (event->keyval == GDK_KEY_Return || event->keyval == GDK_KEY_KP_Enter) {
+        rb_find_step(app, (event->state & GDK_SHIFT_MASK) ? FALSE : TRUE);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* Built directly under the page — packed after the notebook, so it opens
+ * between the page and the toolbar rather than over either of them. */
+static void rb_find_build(App *app, GtkWidget *root)
+{
+    GtkWidget *prev, *next, *close;
+
+    app->findbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    rb_add_class(app->findbar, "rb-findbar");
+
+    app->find_entry = gtk_entry_new();
+    rb_add_class(app->find_entry, "rb-omni");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(app->find_entry), "Find in page");
+    gtk_widget_set_hexpand(app->find_entry, TRUE);
+    g_signal_connect(app->find_entry, "changed",
+                     G_CALLBACK(on_find_changed), app);
+    g_signal_connect(app->find_entry, "key-press-event",
+                     G_CALLBACK(on_find_key), app);
+
+    app->find_label = gtk_label_new("");
+    rb_add_class(app->find_label, "rb-dim");
+    /* The count is what the label is for, so it must not stretch the bar. */
+    gtk_label_set_ellipsize(GTK_LABEL(app->find_label), PANGO_ELLIPSIZE_END);
+    gtk_label_set_max_width_chars(GTK_LABEL(app->find_label), 14);
+
+    prev = gtk_button_new_with_label("\xE2\x86\x91");
+    next = gtk_button_new_with_label("\xE2\x86\x93");
+    close = gtk_button_new_with_label("\xC3\x97");
+    rb_add_class(prev, "rb-btn");
+    rb_add_class(next, "rb-btn");
+    rb_add_class(close, "rb-btn");
+    gtk_widget_set_tooltip_text(prev, "Previous match (Shift+Enter)");
+    gtk_widget_set_tooltip_text(next, "Next match (Enter)");
+    gtk_widget_set_tooltip_text(close, "Close find bar (Escape)");
+    g_signal_connect(prev, "clicked", G_CALLBACK(on_find_prev), app);
+    g_signal_connect(next, "clicked", G_CALLBACK(on_find_next), app);
+    g_signal_connect(close, "clicked", G_CALLBACK(on_find_close), app);
+
+    gtk_box_pack_start(GTK_BOX(app->findbar), app->find_entry, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(app->findbar), app->find_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(app->findbar), prev, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(app->findbar), next, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(app->findbar), close, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(GTK_BOX(root), app->findbar, FALSE, FALSE, 0);
+}
+
+/* Both callbacks below are per view and every view has its own controller, so
+ * a background tab finishing a search would otherwise relabel a bar that is
+ * showing a different page.  The controller knows which view it belongs to,
+ * which is what the check is against — no per-view state to keep. */
+static void on_find_counted(WebKitFindController *fc, guint matches,
+                            gpointer user_data)
+{
+    App *app = (App *)user_data;
+    if (webkit_find_controller_get_web_view(fc) != rb_find_view(app)) return;
+    rb_find_set_count(app, matches);
+}
+
+static void on_find_failed(WebKitFindController *fc, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    if (webkit_find_controller_get_web_view(fc) != rb_find_view(app)) return;
+    rb_find_set_none(app);
+}
+
+void rb_find_watch(App *app, WebKitWebView *wv)
+{
+    WebKitFindController *fc = rb_find_ctl(wv);
+
+    if (fc == NULL) return;
+    g_signal_connect(fc, "counted-matches", G_CALLBACK(on_find_counted), app);
+    g_signal_connect(fc, "failed-to-find-text", G_CALLBACK(on_find_failed), app);
+}
+
+/* ------------------------------------------------------------------ */
 /* Profile switching
  *
  * The seven-step protocol lives in rb_switch (a port of
@@ -1621,6 +1932,10 @@ static void on_switch_page(GtkNotebook *notebook, GtkWidget *page,
     if ((int)page_num < app->tabs_n) {
         app->active_id = app->tabs[page_num].id;
         rb_update_all(app);
+        /* A find bar left open follows the user to the tab that just came
+         * forward: the old tab's highlights are finished off and the same
+         * text is searched for here. */
+        if (rb_find_is_open(app)) rb_find_run(app);
     }
 }
 
@@ -2817,6 +3132,13 @@ static void on_menu_translate(GtkMenuItem *item, gpointer user_data)
     rb_do_translate(app);
 }
 
+static void on_menu_find(GtkMenuItem *item, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    (void)item;
+    rb_find_show(app);
+}
+
 /* ------------------------------------------------------------------ */
 /* Profiles menu
 
@@ -2960,6 +3282,10 @@ static void rb_build_menu(App *app)
     g_signal_connect(item, "activate", G_CALLBACK(on_menu_downloads), app);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
+    item = gtk_menu_item_new_with_label("Find in page");
+    g_signal_connect(item, "activate", G_CALLBACK(on_menu_find), app);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
     item = gtk_menu_item_new_with_label("Translate this page");
     g_signal_connect(item, "activate", G_CALLBACK(on_menu_translate), app);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
@@ -3069,6 +3395,43 @@ static void on_action_forward(GSimpleAction *action, GVariant *parameter,
     rb_gw_forward(app);
 }
 
+static void on_action_find(GSimpleAction *action, GVariant *parameter,
+                           gpointer user_data)
+{
+    App *app = (App *)user_data;
+    (void)action;
+    (void)parameter;
+    rb_find_show(app);
+}
+
+/* Ctrl+G with the bar closed opens it rather than stepping a search nobody
+ * can see — the field would otherwise be searching invisibly. */
+static void on_action_find_step(GSimpleAction *action, GVariant *parameter,
+                                gpointer user_data)
+{
+    App *app = (App *)user_data;
+    (void)action;
+    (void)parameter;
+    if (!rb_find_is_open(app)) {
+        rb_find_show(app);
+        return;
+    }
+    rb_find_step(app, TRUE);
+}
+
+static void on_action_find_back(GSimpleAction *action, GVariant *parameter,
+                                gpointer user_data)
+{
+    App *app = (App *)user_data;
+    (void)action;
+    (void)parameter;
+    if (!rb_find_is_open(app)) {
+        rb_find_show(app);
+        return;
+    }
+    rb_find_step(app, FALSE);
+}
+
 static void rb_add_action(App *app, const char *name, GCallback callback,
                           const gchar *const *accels)
 {
@@ -3093,6 +3456,9 @@ static void rb_add_actions(App *app)
     static const gchar *const accels_reload[] = { "F5", "<Primary>R", NULL };
     static const gchar *const accels_back[]   = { "<Alt>Left", NULL };
     static const gchar *const accels_fwd[]    = { "<Alt>Right", NULL };
+    static const gchar *const accels_find[]   = { "<Primary>F", NULL };
+    static const gchar *const accels_findn[]  = { "<Primary>G", "F3", NULL };
+    static const gchar *const accels_findp[]  = { "<Primary><Shift>G", "<Shift>F3", NULL };
 
     rb_add_action(app, "new-tab", G_CALLBACK(on_action_new_tab), accels_newtab);
     rb_add_action(app, "close-tab", G_CALLBACK(on_action_close_tab), accels_closetab);
@@ -3100,6 +3466,9 @@ static void rb_add_actions(App *app)
     rb_add_action(app, "reload", G_CALLBACK(on_action_reload), accels_reload);
     rb_add_action(app, "back", G_CALLBACK(on_action_back), accels_back);
     rb_add_action(app, "forward", G_CALLBACK(on_action_forward), accels_fwd);
+    rb_add_action(app, "find", G_CALLBACK(on_action_find), accels_find);
+    rb_add_action(app, "find-next", G_CALLBACK(on_action_find_step), accels_findn);
+    rb_add_action(app, "find-previous", G_CALLBACK(on_action_find_back), accels_findp);
 }
 
 /* ------------------------------------------------------------------ */
@@ -3146,6 +3515,10 @@ void rb_on_activate(GtkApplication *gtk_app, gpointer user_data)
     gtk_notebook_set_action_widget(GTK_NOTEBOOK(app->notebook), plus,
                                     GTK_PACK_END);
     gtk_box_pack_start(GTK_BOX(root), app->notebook, TRUE, TRUE, 0);
+
+    /* The find bar, directly under the page and above the toolbar.  Built
+     * hidden: see the hide after show_all below. */
+    rb_find_build(app, root);
 
     /* Toolbar */
     toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
@@ -3230,6 +3603,11 @@ void rb_on_activate(GtkApplication *gtk_app, gpointer user_data)
      * refresh is what shows them — and what hides the whole bar when the
      * profile has no bookmarks or has the bar switched off. */
     rb_bookmarks_bar_refresh(app);
+
+    /* The find bar is built before show_all, unlike the two above, because it
+     * belongs in the middle of the column rather than floating over it — so
+     * it is shown along with the window and has to be put away again. */
+    gtk_widget_hide(app->findbar);
 
     /* First tab: navigates to the "home" setting. */
     rb_do_new_tab(app);

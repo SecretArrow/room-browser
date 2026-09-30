@@ -983,6 +983,9 @@ WebKitWebView *rb_gw_new_view(App *app)
     g_signal_connect(wv, "decide-policy", G_CALLBACK(on_decide_policy), app);
     g_signal_connect(wv, "create", G_CALLBACK(on_create), app);
     g_signal_connect(wv, "close", G_CALLBACK(on_close_view), app);
+    /* The find bar is the window's, but the find controller is the view's, so
+     * each new view has to be introduced to it. */
+    rb_find_watch(app, wv);
     /* The switches that live on WebKitSettings are applied to THIS view's
      * settings — the view is not in app->tabs yet, so the sweep over the open
      * views would miss it. */

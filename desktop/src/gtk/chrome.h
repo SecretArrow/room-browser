@@ -56,6 +56,14 @@ typedef struct App {
     GtkWidget *status;      /* floating link-target label (bottom-left) */
     GtkWidget *overlay;     /* the GtkOverlay that floats `status` */
 
+    /* Find in page.  The bar is the window's and starts hidden; the search it
+     * drives belongs to a tab, so find_id is the tab it was last run on and
+     * is what tells a tab switch to finish it on the tab being left. */
+    GtkWidget *findbar;
+    GtkWidget *find_entry;
+    GtkWidget *find_label;
+    long find_id;
+
     GtkTab *tabs;           /* parallel to the notebook pages */
     int tabs_n, tabs_cap;
 
@@ -183,6 +191,11 @@ GtkTab *rb_active_tab(App *app);
  * "notify::favicon"; a page with no favicon clears the image and hides it,
  * so the label takes the whole tab rather than sitting beside a gap. */
 void rb_tab_favicon_set(GtkTab *tab, WebKitWebView *wv);
+
+/* Wires a new view's find controller to the window's find bar.  Called from
+ * rb_gw_new_view for every view, because the controller belongs to the view
+ * and not to the window. */
+void rb_find_watch(App *app, WebKitWebView *wv);
 
 /* The floating link-target label at the bottom-left (Brave's status
  * bubble).  NULL or an empty string hides it. */
