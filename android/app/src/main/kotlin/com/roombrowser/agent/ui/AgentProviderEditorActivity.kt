@@ -66,6 +66,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.agent.AgentSettingsController
 import com.roombrowser.data.db.AgentProviderEntity
+import com.roombrowser.domain.agent.ToolCapableModels
 import com.roombrowser.domain.agent.ToolMode
 import com.roombrowser.localai.store.OnDeviceModelStore
 import com.roombrowser.ui.common.RoomBrowserTheme
@@ -212,6 +213,10 @@ private fun ProviderEditorRoot(
     var toolMode by remember(editing) { mutableStateOf(ToolMode.fromStored(editing?.toolMode)) }
     var models by remember(editing) { mutableStateOf<List<String>>(emptyList()) }
     var modelQuery by remember(editing) { mutableStateOf("") }
+    /* Whether the fetched list is narrowed to models that can call tools. On
+     * by default, because a model that cannot act fails silently — it answers
+     * in prose and the run ends without doing anything. */
+    var toolsOnly by remember(editing) { mutableStateOf(true) }
     var fetching by remember { mutableStateOf(false) }
     var fetchError by remember { mutableStateOf<String?>(null) }
     var model by remember(editing) { mutableStateOf(editing?.defaultModel ?: "") }
@@ -718,10 +723,47 @@ private fun ProviderEditorRoot(
             }
             if (models.isNotEmpty()) {
                 Spacer(Modifier.height(10.dp))
+                /* Which of the returned ids are worth offering. On-device
+                 * models are exempt: that list is the user's own library, and
+                 * hiding a model they imported deliberately would be worse
+                 * than offering one that turns out to be too small to act. */
+                val toolCapable =
+                    if (protocol == AgentProviderEntity.PROTOCOL_LOCAL) emptyList()
+                    else ToolCapableModels.filter(models)
+                /* An unrecognised list must not become an empty picker: the
+                 * filter is a convenience, and a provider whose naming this
+                 * does not know still has to be usable. */
+                val filtering = toolsOnly && toolCapable.isNotEmpty()
+                val pool = if (filtering) toolCapable else models
                 Text(
                     "Models returned by the provider:",
                     style = MaterialTheme.typography.labelLarge
                 )
+                if (protocol != AgentProviderEntity.PROTOCOL_LOCAL) {
+                    Spacer(Modifier.height(4.dp))
+                    FilterChip(
+                        selected = toolsOnly,
+                        onClick = { toolsOnly = !toolsOnly },
+                        label = { Text("Only models that can call tools") },
+                        modifier = Modifier.semantics {
+                            contentDescription = "provider_tools_only_chip"
+                        }
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        when {
+                            filtering ->
+                                "Showing ${toolCapable.size} of ${models.size} — the rest can " +
+                                    "describe an action but not take one. Tap the chip to see all."
+                            toolsOnly ->
+                                "None of these ${models.size} ids is a known tool-calling " +
+                                    "family, so all of them are listed."
+                            else -> "Showing all ${models.size}."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 Spacer(Modifier.height(6.dp))
                 // Model search — providers expose long model lists; typing a
                 // few characters (e.g. "glm" or "mini") filters them live.
@@ -744,17 +786,17 @@ private fun ProviderEditorRoot(
                         .semantics { contentDescription = "provider_model_search_field" }
                 )
                 Spacer(Modifier.height(6.dp))
-                val visibleModels = if (modelQuery.isBlank()) models
-                else models.filter { it.contains(modelQuery.trim(), ignoreCase = true) }
+                val visibleModels = if (modelQuery.isBlank()) pool
+                else pool.filter { it.contains(modelQuery.trim(), ignoreCase = true) }
                 if (visibleModels.isEmpty()) {
                     Text(
-                        "No models match “${modelQuery.trim()}” — clear the search to see all ${models.size}.",
+                        "No models match “${modelQuery.trim()}” — clear the search to see all ${pool.size}.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 } else {
                     Text(
-                        "${visibleModels.size} of ${models.size} models",
+                        "${visibleModels.size} of ${pool.size} models",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
