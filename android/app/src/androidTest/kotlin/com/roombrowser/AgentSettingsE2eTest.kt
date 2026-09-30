@@ -564,6 +564,33 @@ class AgentSettingsE2eTest {
             hasText("MockLLM", 15_000)
         )
 
+        // ---- 6b. The local decision gate -----------------------------------
+        // The gate is switchable here but NOT usable: this test configures an
+        // OpenAI-compatible provider, and /v1/systemone only exists on a local
+        // Ollama 0.35+. That is exactly the state the row has to describe
+        // honestly, so both halves are checked — the switch persists, and the
+        // policy field the model is asked with is on the screen at all.
+        //
+        // Order matters. flipSwitch only advances the viewport downwards, and
+        // off-screen rows of a scrollable column are not in the a11y tree, so
+        // both flips happen at the switch first and the policy field is found
+        // on the way down. Checking it first and then flipping would need a
+        // scroll back up that flipSwitch cannot do.
+        assertTrue(
+            "Local decision gate switch must flip ON",
+            flipSwitch("Local decision gate", wantOn = true)
+        )
+        assertTrue(
+            "Local decision gate switch must flip OFF",
+            flipSwitch("Local decision gate", wantOn = false)
+        )
+        var policySeen = false
+        for (i in 1..18) {
+            if (hasDesc("decision_gate_policy", 700)) { policySeen = true; break }
+            dragUpQuarter()
+        }
+        assertTrue("The gate's policy field must be reachable", policySeen)
+
         // ---- 7. Back to the browser: the panel shows the model -------------
         // RACE GUARD: right after saving, the EDITER window can still be
         // finishing — the first node matching desc "Close" may belong to the

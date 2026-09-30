@@ -42,7 +42,28 @@ data class AgentSettings(
     val maxSteps: Int = 25,
     val confirmActions: Boolean = false,
     val includePageContext: Boolean = true,
-    val systemPromptOverride: String? = null
+    val systemPromptOverride: String? = null,
+    /**
+     * The local decision gate: ask an Ollama decision model (protocol
+     * `OLLAMA`, model `nimble` or another `/v1/systemone` model) what should
+     * happen with each action before the blanket [confirmActions] rule is
+     * applied. Off by default.
+     *
+     * Only meaningful together with a reachable local Ollama 0.35+ server:
+     * the endpoint refuses cloud models, so this can never be served by a
+     * hosted provider.
+     */
+    val decisionGate: Boolean = false,
+    /** Provider hosting the decision model — an `OLLAMA`-protocol provider. */
+    val decisionProviderId: Long? = null,
+    /** Decision model tag, e.g. `nimble`, `tev1`, `tev1:0.8b`. */
+    val decisionModel: String = "",
+    /**
+     * The user's own policy text, sent as the question's instructions. Blank
+     * means the built-in policy in
+     * [com.roombrowser.domain.agent.ActionGate.DEFAULT_POLICY].
+     */
+    val decisionPolicy: String = ""
 )
 
 @Serializable

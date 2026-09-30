@@ -355,6 +355,15 @@ private fun AgentSettingsRoot(
                 checked = controller.settings.confirmActions,
                 onCheckedChange = { checked -> controller.updateSettings { s -> s.copy(confirmActions = checked) } }
             )
+            SettingSwitchRow(
+                title = "Local decision gate",
+                subtitle = "Let a local Ollama decision model judge each action first, so routine " +
+                    "ones do not interrupt you — configure it below",
+                checked = controller.settings.decisionGate,
+                onCheckedChange = { checked ->
+                    controller.updateSettings { s -> s.copy(decisionGate = checked) }
+                }
+            )
             // Included page = GREEN (user request: "jika include page
             // di-ikutkan maka warna hijau") — local twin of SettingSwitchRow
             // with a green checked switch, matching the panel chip.
@@ -383,6 +392,10 @@ private fun AgentSettingsRoot(
             )
 
             SystemPromptSection(controller, onApplied = { notice = "System prompt applied" })
+
+            // ================= Local decision gate =================
+            SectionHeader("Local decision gate")
+            DecisionGateSection(controller, onNotice = { notice = it })
 
             // ================= Data & privacy =================
             SectionHeader("Data & privacy")
@@ -503,6 +516,172 @@ private fun SliderRow(
             steps = steps
         )
     }
+}
+
+/**
+ * The local decision gate — model picker plus the user's policy text.
+ *
+ * The honest paragraph at the top is not decoration: this screen is the only
+ * place that can tell the user what the gate is and is not, and the failure
+ * it can hand them (Confirm actions off + gate unreachable = ungated actions)
+ * is invisible from the switch alone.
+ */
+@Composable
+private fun DecisionGateSection(
+    controller: AgentSettingsController,
+    onNotice: (String) -> Unit
+) {
+    val provider = controller.decisionProvider
+    val model = controller.decisionModel
+    var pickerOpen by remember { mutableStateOf(false) }
+    var policy by remember(controller.settings.decisionPolicy) {
+        mutableStateOf(controller.settings.decisionPolicy)
+    }
+
+    Column(Modifier.padding(horizontal = 16.dp)) {
+        Text(
+            "A local Ollama decision model (Ollama 0.35 or later) can judge each action before " +
+                "the agent takes it, so Confirm actions only interrupts you when an action is not " +
+                "routine. It runs on your own machine, and the action plus the page it is on never " +
+                "leave it. It is not a security boundary — a 9B model reading your policy can be " +
+                "wrong, and with Confirm actions switched OFF an unreachable gate means actions run " +
+                "ungated, exactly as they did before this existed.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(6.dp))
+    }
+    SettingActionRow(
+        title = "Decision model",
+        subtitle = when {
+            provider == null -> "Add an Ollama provider first — only Ollama can serve a decision model"
+            model.isNullOrBlank() -> "${provider.name} · no model chosen yet"
+            else -> "${provider.name} · $model"
+        },
+        onClick = { if (provider != null) pickerOpen = true }
+    )
+
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+        Text("Policy (optional)", style = MaterialTheme.typography.bodyLarge)
+        Text(
+            "Your own rules for the gate, in plain language. Empty uses the built-in policy: " +
+                "routine reading and typing allowed, anything that spends, signs in, posts, " +
+                "uploads or deletes confirmed, and anything outside your request refused.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+        androidx.compose.material3.OutlinedTextField(
+            value = policy,
+            onValueChange = { policy = it },
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { contentDescription = "decision_gate_policy" },
+            placeholder = { Text("e.g. never sign in anywhere; posting is fine, but ask first") },
+            minLines = 3
+        )
+        Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = {
+                controller.updateSettings { it.copy(decisionPolicy = policy.trim()) }
+                onNotice("Local gate policy applied")
+            }) { Text("Apply") }
+            TextButton(onClick = {
+                policy = ""
+                controller.updateSettings { it.copy(decisionPolicy = "") }
+            }) { Text("Reset to built-in") }
+        }
+    }
+
+    if (pickerOpen && provider != null) {
+        DecisionModelDialog(
+            provider = provider,
+            controller = controller,
+            selected = model,
+            onDismiss = { pickerOpen = false },
+            onPick = { tag ->
+                controller.setDecisionModel(tag)
+                pickerOpen = false
+            }
+        )
+    }
+}
+
+/**
+ * Picks the decision model for [provider] from what is actually installed.
+ *
+ * The list comes from the server (`GET /api/tags`), so it shows `nimble`,
+ * `tev1` and `tev1:0.8b` once they are pulled, and nothing when they are
+ * not — which is the useful answer, since a decision model that is not
+ * installed cannot be asked anything. A typed tag is accepted as well: the
+ * fetch can fail for reasons that have nothing to do with the model, and
+ * being unable to type one would make the screen a dead end.
+ */
+@Composable
+private fun DecisionModelDialog(
+    provider: AgentProviderEntity,
+    controller: AgentSettingsController,
+    selected: String?,
+    onDismiss: () -> Unit,
+    onPick: (String) -> Unit
+) {
+    var models by remember(provider.id) { mutableStateOf<List<String>>(emptyList()) }
+    var loading by remember(provider.id) { mutableStateOf(true) }
+    var typed by remember(provider.id) { mutableStateOf("") }
+
+    LaunchedEffect(provider.id) {
+        loading = true
+        models = controller.installedModels(provider)
+        loading = false
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Decision model") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    if (loading) "Reading ${provider.name}…"
+                    else if (models.isEmpty()) {
+                        "No models listed by ${provider.name}. Pull one first (for example " +
+                            "`ollama pull nimble`), or type its tag below."
+                    } else "Installed on ${provider.name}:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                models.forEach { tag ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onPick(tag) }
+                            .padding(vertical = 10.dp)
+                            .semantics { contentDescription = "decision_model_$tag" },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = tag == selected, onClick = { onPick(tag) })
+                        Spacer(Modifier.width(8.dp))
+                        Text(tag, style = MaterialTheme.typography.bodyLarge)
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                androidx.compose.material3.OutlinedTextField(
+                    value = typed,
+                    onValueChange = { typed = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics { contentDescription = "decision_model_input" },
+                    singleLine = true,
+                    placeholder = { Text("nimble") }
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onPick(typed.trim()) },
+                enabled = typed.isNotBlank()
+            ) { Text("Use tag") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
 @Composable

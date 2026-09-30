@@ -4,6 +4,7 @@ import android.os.SystemClock
 import android.webkit.WebView
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.PageEvent
+import com.roombrowser.domain.agent.ActionVerdict
 import com.roombrowser.domain.agent.AgentJson
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.PageSnapshotDto
@@ -37,7 +38,7 @@ import kotlin.coroutines.resume
  */
 class AgentToolExecutor(
     private val vm: BrowserViewModel,
-    private val confirmGate: suspend (name: String, label: String) -> Boolean
+    private val confirmGate: suspend (name: String, label: String) -> ActionVerdict
 ) : ToolExecutor {
 
     override suspend fun execute(name: String, argsJson: String): ToolResult =
@@ -117,9 +118,7 @@ class AgentToolExecutor(
 
     private suspend fun click(ref: Int?): ToolResult {
         if (ref == null) return ToolResult(false, "missing 'ref' argument")
-        if (!allow(AgentTools.CLICK, AgentTools.describeTool(AgentTools.CLICK, "{\"ref\":$ref}"))) {
-            return ToolResult(false, "the user denied this click")
-        }
+        refuse(AgentTools.CLICK, AgentTools.describeTool(AgentTools.CLICK, "{\"ref\":$ref}"))?.let { return it }
         val webView = currentWebView() ?: return ToolResult(false, "no page is loaded")
         val triggerAt = SystemClock.elapsedRealtime()
         val jsResult = evaluateJs(webView, PageInjector.clickJs(ref))
@@ -134,9 +133,7 @@ class AgentToolExecutor(
         if (ref == null || text == null) {
             return ToolResult(false, "missing 'ref' or 'text' argument")
         }
-        if (!allow(AgentTools.FILL_INPUT, "type into [$ref]")) {
-            return ToolResult(false, "the user denied this input")
-        }
+        refuse(AgentTools.FILL_INPUT, "type into [$ref]")?.let { return it }
         val webView = currentWebView() ?: return ToolResult(false, "no page is loaded")
         val jsonText = AgentJson.encodeToString(String.serializer(), text)
         val jsResult = evaluateJs(webView, PageInjector.fillJs(ref, jsonText))
@@ -145,9 +142,7 @@ class AgentToolExecutor(
     }
 
     private suspend fun pressEnter(ref: Int?): ToolResult {
-        if (!allow(AgentTools.PRESS_ENTER, "press Enter / submit")) {
-            return ToolResult(false, "the user denied submitting")
-        }
+        refuse(AgentTools.PRESS_ENTER, "press Enter / submit")?.let { return it }
         val webView = currentWebView() ?: return ToolResult(false, "no page is loaded")
         val triggerAt = SystemClock.elapsedRealtime()
         val jsResult = evaluateJs(webView, PageInjector.enterJs(ref))
@@ -237,14 +232,14 @@ class AgentToolExecutor(
         }
     }
 
-    /** Runs one heuristic social action: confirm → JS → settle → result. */
+    /** Runs one heuristic social action: gate → JS → settle → result. */
     private suspend fun socialAction(
         name: String,
         label: String,
         settleMs: Long = 0L,
         js: suspend (WebView) -> String?
     ): ToolResult {
-        if (!allow(name, label)) return ToolResult(false, "the user denied this action")
+        refuse(name, label)?.let { return it }
         val webView = currentWebView()
             ?: return ToolResult(false, "no page is loaded — navigate to the site first")
         val triggerAt = SystemClock.elapsedRealtime()
@@ -263,7 +258,23 @@ class AgentToolExecutor(
 
     // ------------------------------------------------------------- helpers
 
-    private suspend fun allow(name: String, label: String): Boolean = confirmGate(name, label)
+    /**
+     * Asks the gate about one action, returning the refusal to hand back to
+     * the model — or null when the action may run.
+     *
+     * The reason travels: a refusal the model cannot read is a refusal it
+     * repeats. "the user denied this action" tells a model to stop;
+     * "judged outside what you asked for" tells it to try something else,
+     * which is what a policy denial is usually for.
+     */
+    private suspend fun refuse(name: String, label: String): ToolResult? =
+        when (val verdict = confirmGate(name, label)) {
+            is ActionVerdict.Allow -> null
+            is ActionVerdict.Deny -> ToolResult(false, verdict.reason)
+            // Ask is resolved by the caller (it owns the approval UI), so a
+            // verdict that reaches here is a bug — deny rather than run.
+            is ActionVerdict.Ask -> ToolResult(false, "the user denied this action")
+        }
 
     private fun currentWebView(): WebView? {
         val webView = vm.activeWebView

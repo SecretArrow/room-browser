@@ -49,7 +49,10 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
 - **AI Agents (autonomous browsing)** — Room Agent drives the real browser
   for you: navigate, read pages, click, fill forms and manage tabs while
   you watch. Chat panel with streaming answers, tool-step cards, session
-  history and Allow/Deny action approvals. The composer supports
+  history and Allow/Deny action approvals — and an optional **local
+  decision gate** that asks an Ollama decision model (`nimble`, `tev1`)
+  whether each action is routine, so Confirm actions only interrupts you
+  when it should. The composer supports
   **file attachments** (attach icon next to "Include page", which turns
   green with a check icon when the page is included) — text files
   are inlined into the prompt so the agent can work with them. **Social automation tools**

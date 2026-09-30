@@ -176,6 +176,59 @@ class AgentSettingsController(
         return gateway.listModels()
     }
 
+    // ------------------------------------------------- local decision gate
+
+    /**
+     * Providers that could host a decision model.
+     *
+     * Only `OLLAMA`: `/v1/systemone` needs a GGUF runner that can score
+     * answer tokens, and Ollama refuses cloud and MLX/Safetensors models for
+     * it. Offering an OpenAI-compatible or Anthropic provider here would be
+     * offering a choice that cannot work.
+     */
+    val decisionProviders: List<AgentProviderEntity>
+        get() = providers.filter { it.protocol == AgentProviderEntity.PROTOCOL_OLLAMA }
+
+    /**
+     * The provider the gate will use — the one the user picked, else the only
+     * Ollama provider there is. Mirrors `BrowserAgentController`'s own
+     * resolution so the screen shows the same provider the agent will talk
+     * to, including after a profile switch invalidates a stored id.
+     */
+    val decisionProvider: AgentProviderEntity?
+        get() = settings.decisionProviderId
+            ?.let { id -> decisionProviders.firstOrNull { it.id == id } }
+            ?: decisionProviders.firstOrNull()
+
+    /** The model tag the gate will ask, resolving the provider's default. */
+    val decisionModel: String?
+        get() = settings.decisionModel.takeIf { it.isNotBlank() }
+            ?: decisionProvider?.defaultModel?.takeIf { it.isNotBlank() }
+
+    /**
+     * Installed models on [provider], for the decision-model picker.
+     *
+     * Returns an empty list on any failure — an unreachable server is a
+     * normal state for this screen, and the picker still accepts a typed
+     * tag, so a failed fetch must not read as "no models exist".
+     */
+    suspend fun installedModels(provider: AgentProviderEntity): List<String> =
+        runCatching {
+            fetchModels(
+                baseUrl = provider.baseUrl,
+                apiKey = KeyStoreCrypto.decrypt(provider.apiKeyEnc).orEmpty(),
+                protocol = provider.protocol
+            )
+        }.getOrDefault(emptyList())
+
+    fun setDecisionProvider(id: Long?) {
+        updateSettings { it.copy(decisionProviderId = id) }
+    }
+
+    fun setDecisionModel(model: String) {
+        updateSettings { it.copy(decisionModel = model.trim()) }
+    }
+
     // ------------------------------------------------------------- sessions
 
     fun deleteSession(id: Long) {

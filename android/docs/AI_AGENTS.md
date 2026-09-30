@@ -160,6 +160,9 @@ change is picked up by the running browser instantly.
   default; also switchable from Browser Settings).
 * **Confirm actions** — require Allow/Deny approval before every click,
   type or submit (off by default = fully autonomous within the step budget).
+* **Local decision gate** — hand the *which* actions need a human to a local
+  Ollama decision model, so Confirm actions stops interrupting you for
+  routine work. See below.
 * **Include current page by default** — attaches a page snapshot to the
   first message of each turn (the switch shows green when on, matching the
   panel chip's included state).
@@ -169,6 +172,79 @@ change is picked up by the running browser instantly.
 * **System prompt override** — replace the built-in browsing-agent prompt.
 * **Data & privacy** — delete all agent chats (every profile; providers
   are kept).
+
+## Local decision gate (Ollama decision models)
+
+The approval control used to be one switch: confirm *everything*, or confirm
+*nothing*. Neither is a policy — confirming everything trains you to tap
+Allow without reading, and confirming nothing gives an autonomous agent the
+run of the machine. The **Local decision gate** answers the question the
+switch cannot: *which* actions need a human.
+
+It does that with an Ollama **decision model** (`nimble`, `tev1`,
+`tev1:0.8b`), through the `POST /v1/systemone` endpoint added in **Ollama
+0.35**. A decision model is not a chat model: it has no reasoning step, no
+streaming and no tools, and it never writes prose. You give it a piece of
+text and a typed question, and it answers with a choice and a probability.
+Ollama's own figures put a decision at ~91 ms once the model is loaded,
+which is fast enough to sit in front of every action the agent takes.
+
+What the app sends it, for each action:
+
+| Field | Value |
+|---|---|
+| `state.agent_action` | the action's human label, e.g. `Click [12] Sign in` |
+| `state.page_url` / `state.page_title` | where the agent is (both capped at 300 chars) |
+| `questions.action` | a `choice`: `allow`, `confirm` or `deny` |
+| the question's `instructions` | **your policy text**, or the built-in one |
+
+The three answers mean three different things:
+
+* **allow** → the action runs. This is the point of the feature: an action
+  the blanket rule would have stopped to ask about now simply happens.
+* **confirm** → the model declined to decide alone; you get the normal
+  Allow/Deny prompt.
+* **deny** → the action is refused, and the *reason* travels back to the
+  model as the tool result, so it changes course instead of repeating the
+  same call.
+
+Anything the gate cannot use — no answer, an option it does not recognise, a
+probability under 60%, an unreachable server, a server older than 0.35 —
+becomes the Allow/Deny prompt. It never becomes an allow.
+
+### What it is not
+
+**It is not a security boundary.** The judge is a 9B model reading prose you
+wrote. A page can try to talk it out of a decision, it has no idea what "the
+account" actually refers to, and `confidence` in its answer measures how
+*concentrated* the probabilities are, not how likely the answer is to be
+right — the gate uses the chosen option's own probability for that reason.
+The gate reduces how often you are interrupted. The guarantee comes from
+Confirm actions, which is why the two switches sit next to each other.
+
+**It needs a local Ollama.** `/v1/systemone` only exists on a server holding
+the weights: the endpoint scores answer tokens directly, so Ollama refuses
+cloud, MLX and Safetensors models for it. A hosted provider — Z.ai, OpenAI,
+OpenRouter, AgentRouter, Anthropic — therefore *cannot* serve the gate, and
+only `OLLAMA`-protocol providers are offered in the picker. Point it at the
+Ollama 0.35+ on the same phone (Termux) or on your LAN, and pull a decision
+model first:
+
+```bash
+ollama pull nimble      # 9B, Bespoke Labs — the strongest of the three
+ollama pull tev1        # 4B, Together AI (experimental)
+ollama pull tev1:0.8b   # 0.8B — for a small phone
+```
+
+**With Confirm actions off, an unreachable gate means actions run ungated**,
+exactly as they did before this feature existed. That is a deliberate
+choice — a browser that stops working because Ollama is down would be worse
+— but it is a real consequence, so it is stated here, on the settings screen
+and in `SECURITY.md`. If you want a hard guarantee, turn Confirm actions on:
+the two rules compose, and the gate only ever *adds* a decision.
+
+The action text and the page's URL and title are the only things sent, and
+they go to your own machine. Nothing about the gate leaves the device.
 
 ## Privacy model (honest)
 
@@ -192,12 +268,14 @@ core:domain (pure JVM, 100% unit-tested)
 ├── SseParser          line-oriented SSE parsing
 ├── AgentTools         tool catalogue + JSON schemas + snapshot formatter
 ├── AgentPrompts       built-in system prompt
-└── AgentLoop          plan → act → observe → repeat (bounded by maxSteps)
+├── AgentLoop          plan → act → observe → repeat (bounded by maxSteps)
+└── SystemOne          decision-model wire (POST /v1/systemone) + ActionGate
 
 app (:browser process — owns the WebView)
 ├── OkHttpAgentGateway     SSE streaming, tool-call delta assembly, /models
 ├── OpenCodeAgentGateway   `opencode serve` bridge (sessions + polling)
 ├── AgentGateways          picks the transport from the provider protocol
+├── SystemOneClient        the decision endpoint (no streaming, no tools)
 ├── PageInjector           JS: element tagging, snapshot, click, fill, enter
 ├── AgentToolExecutor      tools against the live BrowserViewModel engine
 ├── BrowserAgentController chat state, sessions, approvals, persistence
@@ -221,12 +299,20 @@ providers are app-global credentials.
 * **Domain (JVM)**: `AgentLoopTest` (loop semantics, tool failures, step
   limit, history trimming), `SseParserTest`, `AgentDtosTest`
   (wire format, model-list shapes, snapshot formatting),
+  `SystemOneTest` (the decision wire: the three question shapes, lenient
+  parsing of every answer type, and the verdict rules — including that an
+  unsure, missing, mistyped or unrecognised answer asks the user rather than
+  allowing the action),
   `OpenCodeParsersTest` (text tool-call extraction: fenced/bare/actions
   forms, non-tool JSON passthrough; `/provider` model flattening; wire
   bodies).
 * **App (JVM)**: `AgentGatewayTest` — real MockWebServer round-trips for
   SSE streaming, tool-call delta assembly, reasoning passthrough,
   non-stream fallback, auth headers, `/models` shapes and error mapping.
+  `SystemOneClientTest` — the same for the decision endpoint: the request the
+  gate sends, each answer type read into a verdict, and that a 404, a 413, a
+  200 with nothing readable and an unreachable server all *throw* instead of
+  arriving as "no objections".
   `OpenCodeAgentGatewayTest` — session creation, delta-only messaging,
   polled assistant replies with tool-call extraction, `/provider` model
   listing with endpoint fallback, timeout mapping.

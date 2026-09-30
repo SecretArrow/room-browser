@@ -11,6 +11,8 @@ import com.roombrowser.data.db.AgentMessageEntity
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.db.AgentSessionEntity
 import com.roombrowser.data.repo.AgentSettings
+import com.roombrowser.domain.agent.ActionGate
+import com.roombrowser.domain.agent.ActionVerdict
 import com.roombrowser.domain.agent.AgentEvent
 import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.AgentLoop
@@ -30,6 +32,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import java.time.ZoneId
 import kotlin.coroutines.resume
@@ -171,6 +174,12 @@ class BrowserAgentController(
     private val apiKeyCache = HashMap<Long, String>()
 
     private var turnJob: Job? = null
+
+    /**
+     * Whether this turn has already told the user that the local decision
+     * gate could not answer. Reset per turn; see [gateFailure].
+     */
+    private var gateFailureNoted = false
 
     val messages = MutableStateFlow<String?>(null)
 
@@ -434,6 +443,7 @@ class BrowserAgentController(
         model: String
     ) {
         running = true
+        gateFailureNoted = false
         // Background mode: foreground service + wake lock so the turn keeps
         // running when the user leaves the app or the screen turns off.
         AgentForeground.stopCurrentTurn = { stop() }
@@ -461,7 +471,7 @@ class BrowserAgentController(
             repo.addMessage(sessionId, "user", display)
 
             val apiKey = apiKeyFor(provider).orEmpty()
-            val executor = AgentToolExecutor(vm) { name, label -> requestApproval(name, label) }
+            val executor = AgentToolExecutor(vm) { name, label -> gate(name, label) }
             // Only the native Ollama protocol consumes the tuning; the other
             // gateways ignore it (default null keeps their wire format intact).
             val gateway = AgentGateways.forProvider(
@@ -638,6 +648,122 @@ class BrowserAgentController(
         }
     }
 
+    /**
+     * The gate every state-changing tool call passes through.
+     *
+     * Two rules apply, in this order:
+     *
+     *  1. The **local decision gate** (see [AgentSettings.decisionGate]), when
+     *     the user has pointed it at an Ollama decision model. It answers
+     *     allow / confirm / deny, and only the first and last are settled
+     *     here — "confirm" means the model declined to decide alone, which is
+     *     exactly what rule 2 is for.
+     *  2. **Confirm actions**, the blanket Allow/Deny prompt that has always
+     *     been there.
+     *
+     * So the gate can only ever *add* a decision. Turning it on never takes
+     * away a prompt the user asked for, with one deliberate exception: an
+     * action the blanket rule would have asked about can now run unasked,
+     * because the local model read the user's own policy and said it was
+     * routine. That is the entire point of the feature, and it is why the
+     * policy text is the user's to write.
+     *
+     * A gate that is switched on and cannot answer is NOT an error the user
+     * has to clear — the turn continues under rule 2, and the chat says so.
+     * The consequence is worth stating plainly, and `SECURITY.md` does: with
+     * **Confirm actions off and the gate unreachable, actions run ungated**,
+     * exactly as they did before this feature existed. Confirm actions is the
+     * switch that gives a hard guarantee; this one buys fewer interruptions.
+     */
+    private suspend fun gate(name: String, label: String): ActionVerdict =
+        localVerdict(name, label)
+            ?: if (requestApproval(name, label)) ActionVerdict.Allow
+            else ActionVerdict.Deny("the user denied this action")
+
+    /**
+     * The local model's verdict, or null when the decision belongs to the
+     * user — the gate is off, the model asked for confirmation, or it could
+     * not be reached at all.
+     */
+    private suspend fun localVerdict(name: String, label: String): ActionVerdict? {
+        if (!settings.decisionGate) return null
+        val provider = decisionProvider()
+        val model = (settings.decisionModel.takeIf { it.isNotBlank() }
+            ?: provider?.defaultModel?.takeIf { it.isNotBlank() })
+        if (provider == null || model.isNullOrBlank()) {
+            gateFailure("no Ollama provider and decision model are set")
+            return null
+        }
+        setStatus("Asking the local gate…")
+        val client = SystemOneClient(callFactory, provider.baseUrl, apiKeyFor(provider).orEmpty())
+        val response = try {
+            withTimeoutOrNull(DECISION_TIMEOUT_MS) {
+                client.decideAction(
+                    model = model,
+                    action = label,
+                    pageUrl = vm.pageState.url,
+                    pageTitle = vm.pageState.title,
+                    policy = settings.decisionPolicy
+                )
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            gateFailure(t.gateMessage())
+            return null
+        }
+        if (response == null) {
+            // Either a cold model load that outran the deadline, or a server
+            // that never answered. Both are survivable; see the KDoc above.
+            gateFailure("the local gate did not answer within ${DECISION_TIMEOUT_MS / 1000}s")
+            return null
+        }
+        return when (val verdict = ActionGate.verdict(response)) {
+            is ActionVerdict.Allow -> verdict
+            is ActionVerdict.Deny -> {
+                note("Local gate denied \"$label\" — ${verdict.reason}", error = true)
+                verdict
+            }
+            is ActionVerdict.Ask -> {
+                // The user is about to be asked; say why, so the prompt does
+                // not look like the gate silently failed.
+                note("Local gate passed \"$label\" to you — ${verdict.reason}", error = false)
+                null
+            }
+        }
+    }
+
+    /**
+     * The provider hosting the decision model: the one the user picked, or —
+     * because every profile shares these settings and a profile switch can
+     * leave the id pointing at a deleted row — the first Ollama provider
+     * there is. A decision model is only ever served by a local Ollama 0.35+
+     * (the endpoint refuses cloud and MLX weights), so restricting the search
+     * to the OLLAMA protocol is what keeps the gate from being "configured"
+     * against a provider that could never serve it.
+     */
+    private fun decisionProvider(): AgentProviderEntity? {
+        val ollama = providers.filter { it.protocol == AgentProviderEntity.PROTOCOL_OLLAMA }
+        val chosen = settings.decisionProviderId?.let { id -> ollama.firstOrNull { it.id == id } }
+        return chosen ?: ollama.firstOrNull()
+    }
+
+    /**
+     * Reports, once per turn, that the gate could not decide and the action
+     * is being handled by the Confirm actions rule instead. Once per turn
+     * because the same failure repeats on every action, and a notice per
+     * action would bury the conversation.
+     */
+    private fun gateFailure(reason: String) {
+        if (gateFailureNoted) return
+        gateFailureNoted = true
+        note("Local gate unavailable ($reason) — falling back to Confirm actions", error = true)
+    }
+
+    private fun note(text: String, error: Boolean) {
+        entries = entries + AgentEntry.Notice(text, error = error, at = System.currentTimeMillis())
+    }
+
     private fun Throwable.friendlyMessage(): String = when (this) {
         is AgentHttpException -> when (code) {
             401, 403 -> "authentication failed ($code) — check the API key"
@@ -650,7 +776,37 @@ class BrowserAgentController(
         else -> message ?: javaClass.simpleName
     }
 
+    /**
+     * Why the gate could not decide, in the gate's own terms.
+     *
+     * Deliberately not [friendlyMessage]: that one is written for the chat
+     * endpoint, where a 404 means the base URL is missing its `/v1`. The
+     * decision endpoint lives at the server root, so the same status means
+     * something else entirely — an Ollama older than 0.35, or a decision
+     * model that was never pulled — and telling the user to check a suffix
+     * that is not there would send them after the wrong thing.
+     */
+    private fun Throwable.gateMessage(): String = when (this) {
+        is AgentHttpException -> when (code) {
+            404 -> "no /v1/systemone on this server — needs Ollama 0.35+ and a pulled decision model"
+            413 -> "the decision request was too large"
+            401, 403 -> "authentication failed ($code) — check the API key"
+            -1 -> message ?: "network error"
+            else -> "HTTP $code ${body.take(120)}"
+        }
+        else -> message ?: javaClass.simpleName
+    }
+
     companion object {
         private const val APPROVAL_TIMEOUT_MS = 120_000L
+
+        /**
+         * How long one local gate decision may take. Generous enough for the
+         * first call of a turn, which may have to load a 9B model off disk
+         * (later calls hit `keep_alive` and answer in ~100 ms), and short
+         * enough that a server which never answers cannot stall a turn for
+         * long — the action then falls back to the Confirm actions rule.
+         */
+        private const val DECISION_TIMEOUT_MS = 30_000L
     }
 }

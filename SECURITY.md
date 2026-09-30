@@ -23,6 +23,7 @@ device. It is **not** an anonymity tool.
 | Cookies | Third-party cookies blockable per profile/site |
 | Downloads | Filename sanitization (path traversal / separators / double-dot collapse), explicit notifications |
 | Malicious sites | Bundled blocklist + heuristics (http, IP-literal URLs, punycode) surfaced as warnings/blocks |
+| Agent actions | Every state-changing tool call passes a gate: **Confirm actions** (a blanket Allow/Deny prompt) and, optionally, a local Ollama decision model that judges the action first. Neither is a security boundary — see below |
 | Credentials | **Never stored by Room Browser.** Autofill is delegated to the Android autofill framework; no plaintext (or any) credential storage exists in the app |
 | Secrets in repo | None. Signing comes exclusively from environment variables / CI secrets |
 | Backups | `allowBackup=false` + data-extraction rules exclude the DB, profile dirs and DataStore — isolated state cannot leak into cloud backups |
@@ -163,6 +164,48 @@ by default — but the Screen size row above is offered by both editions, so a
 desktop profile may claim one, under the rules stated there.
 
 - Safe Browsing status follows the system WebView component.
+
+#### The agent's action gate (Android)
+
+Room Agent drives the real browser, so the app has to answer a question no
+sandbox can: *should this click happen?* Two rules apply to every
+state-changing tool call — clicking, typing, submitting, and the four social
+`auto_*` actions — in this order:
+
+1. **Confirm actions** — the blanket Allow/Deny prompt, off by default.
+2. **The local decision gate** — an optional Ollama decision model asked to
+   choose `allow`, `confirm` or `deny` for the action, given the action's
+   label, the page's URL and title, and the user's own policy text. It runs
+   on the user's own machine (`POST /v1/systemone`, Ollama 0.35+), so the
+   action text never leaves it.
+
+The gate only ever **adds** a decision. An `allow` lets an action the blanket
+rule would have asked about proceed unasked; a `deny` refuses it and returns
+the reason to the model as the tool result, so it changes course instead of
+retrying; a `confirm` — and every failure — falls through to rule 1.
+
+**Neither rule is a security boundary, and this document will not pretend
+otherwise.** Confirm actions is a UI prompt: it protects the user from an
+agent they did not intend, not from an attacker, and a user who taps Allow
+without reading has given the agent the run of the machine. The decision gate
+is weaker still in kind if not in degree — a 9B model reading prose can be
+argued out of a decision by the page it is judging, and its `confidence`
+field measures how concentrated its probabilities are, not how likely it is
+to be right. What the gate buys is fewer interruptions, which is what makes
+Confirm actions usable enough to leave on.
+
+One consequence is worth stating plainly, because it is invisible from the
+switch: **with Confirm actions off, a decision gate that cannot be reached
+means actions run ungated**, exactly as they did before the feature existed.
+That is deliberate — a browser that stops working because Ollama is down
+would be a worse failure — and the app says so where the choice is made,
+posts a notice in the chat the first time it happens in a turn, and leaves
+Confirm actions as the switch that gives a hard guarantee.
+
+The gate is refused for every provider that cannot serve it: `/v1/systemone`
+scores answer tokens directly and Ollama serves it only for local GGUF
+weights, never for cloud, MLX or Safetensors models. Only `OLLAMA`-protocol
+providers appear in the picker.
 
 ## Reporting
 
