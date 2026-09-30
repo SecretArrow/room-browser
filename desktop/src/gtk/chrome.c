@@ -49,6 +49,9 @@ static GtkWidget *rb_pref_combo_row(GtkWidget *grid, int row, App *app,
                                     const char *const *labels,
                                     const char *current, const char *title,
                                     int is_theme);
+/* Defined after the device row, which is what calls it: a machine chosen in
+ * the picker is what greys these rows out. */
+static void rb_ua_followers_update(GtkWidget *device_widget, gpointer user_data);
 static GtkWidget *rb_pref_entry_row(GtkWidget *grid, int row, App *app,
                                     const char *key, const char *current,
                                     const char *title);
@@ -2256,76 +2259,286 @@ static void rb_pref_note_row(GtkWidget *grid, int row, const char *text)
     gtk_grid_attach(GTK_GRID(grid), l, 0, row, 2, 1);
 }
 
-/* The strings behind the device combo, owned by the combo itself.  A
- * GtkComboBoxText with a few hundred rows is not a usable list — but it does
- * have type-ahead, so typing "len" jumps straight to the Lenovo machines,
- * which is the same job the Android picker's search field does. */
-typedef struct {
-    char **ids;
-    char **labels;
-} rb_device_choices;
-
-static void rb_device_choices_free(gpointer p)
+/* The label a machine is shown under, in the row's button and in every row
+ * of the picker: one function, so the two can never disagree about what a
+ * device is called.  An empty id and an id the catalogue no longer carries
+ * both read as "no device", which is exactly what rb_device_ua_for() does
+ * with them. */
+static char *rb_device_label(const char *id)
 {
-    rb_device_choices *c = (rb_device_choices *)p;
-    int i;
+    const rb_device *d = rb_device_by_id(id);
 
-    if (c == NULL) return;
-    for (i = 0; c->ids != NULL && c->ids[i] != NULL; i++) g_free(c->ids[i]);
-    for (i = 0; c->labels != NULL && c->labels[i] != NULL; i++) g_free(c->labels[i]);
-    g_free(c->ids);
-    g_free(c->labels);
-    g_free(c);
+    if (d == NULL) {
+        return g_strdup("No device — use the User-Agent setting");
+    }
+    return g_strdup_printf("%s %s — %s (%d)", d->brand, d->model,
+                           rb_device_os_name(d->os), d->year);
+}
+
+/* The name of a DIFFERENT profile already presenting this machine, or NULL.
+ * The active profile is skipped — its own machine is what the row already
+ * shows, and calling a profile's device a repeat of itself would be nonsense
+ * — and so is "no device", which any number of profiles may share without
+ * one of them being a repeat. */
+static const char *rb_device_used_by(App *app, const char *id)
+{
+    int i, n;
+
+    if (app == NULL || app->profiles == NULL || id == NULL || id[0] == '\0') {
+        return NULL;
+    }
+    n = rb_profile_count(app->profiles);
+    for (i = 0; i < n; i++) {
+        const rb_profile *p = rb_profile_at(app->profiles, i);
+        const char *own;
+        if (p == NULL || p->settings == NULL) continue;
+        if (app->active_profile_id != NULL &&
+            strcmp(p->id, app->active_profile_id) == 0) continue;
+        own = rb_settings_get(p->settings, RB_PREF_DEVICE_ID, "");
+        if (own != NULL && strcmp(own, id) == 0) {
+            return (p->name != NULL) ? p->name : "another profile";
+        }
+    }
+    return NULL;
+}
+
+/* Case-insensitive "does haystack contain needle", with the needle already
+ * lowered: g_ascii_strdown rather than strcasestr, which is a GNU extension
+ * this build has no guarantee of declaring. */
+static gboolean rb_contains_ci(const char *hay, const char *needle)
+{
+    char *low;
+    gboolean hit;
+
+    if (hay == NULL) return FALSE;
+    low = g_ascii_strdown(hay, -1);
+    hit = (strstr(low, needle) != NULL);
+    g_free(low);
+    return hit;
+}
+
+/* What the search field filters on.  The year goes in as text so "2023"
+ * finds a year's machines without the user knowing a model name, and the OS
+ * is its display name rather than the raw field, so both "Windows" and
+ * "Windows 11" find the same rows. */
+static gboolean rb_device_matches(const rb_device *d, const char *needle)
+{
+    char year[16];
+
+    if (needle[0] == '\0') return TRUE;
+    snprintf(year, sizeof year, "%d", d->year);
+    return rb_contains_ci(d->brand, needle) ||
+           rb_contains_ci(d->model, needle) ||
+           rb_contains_ci(year, needle) ||
+           rb_contains_ci(rb_device_os_name(d->os), needle);
+}
+
+/* The row's caption is the setting, always: the initial build and every
+ * choice made in the picker come through here, so the button can never show
+ * a machine the profile is not presenting.  The User-Agent rows hang off the
+ * same call, because a device is what decides whether they apply. */
+static void rb_device_caption_set(GtkWidget *button, App *app)
+{
+    GtkWidget *caption = gtk_bin_get_child(GTK_BIN(button));
+    char *text = rb_device_label(rb_pref(app, RB_PREF_DEVICE_ID, ""));
+
+    if (caption != NULL) {
+        gtk_label_set_text(GTK_LABEL(caption), text);
+    }
+    g_free(text);
+    rb_ua_followers_update(button, app);
+}
+
+/* A picker between the row's button and the catalogue.  The search field and
+ * the list are rebuilt from this on every keystroke, and the button is what
+ * a choice has to be visible in once the dialog is gone. */
+typedef struct {
+    GtkWidget *dialog;
+    GtkWidget *search;
+    GtkWidget *list;
+    GtkWidget *button;
+    App *app;
+} rb_device_picker;
+
+/* One choice.  The id rides on the row so the activation handler needs
+ * nothing but the row it was handed. */
+static void rb_device_picker_add_row(rb_device_picker *pk, const char *id,
+                                     const char *text)
+{
+    GtkWidget *row = gtk_list_box_row_new();
+    GtkWidget *label = gtk_label_new(text);
+
+    gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    g_object_set_data_full(G_OBJECT(row), "rb-device-id", g_strdup(id), g_free);
+    gtk_container_add(GTK_CONTAINER(row), label);
+    gtk_list_box_insert(GTK_LIST_BOX(pk->list), row, -1);
+}
+
+/* Rebuild the list for the current query, and retitle the dialog with what
+ * the query left.  The title is the count the Android picker shows, in the
+ * same words: how many machines matched, out of the whole catalogue. */
+static void rb_device_picker_refill(rb_device_picker *pk)
+{
+    const char *text = gtk_entry_get_text(GTK_ENTRY(pk->search));
+    char *needle = g_ascii_strdown((text != NULL) ? text : "", -1);
+    int total = rb_device_count();
+    int shown = 0;
+    int i;
+    char title[64];
+    char *none;
+    GList *kids, *it;
+
+    /* Emptied in place rather than rebuilt: the list widget keeps its scroll
+     * position between queries, and the search field keeps the focus and the
+     * cursor while the user is still typing in it. */
+    kids = gtk_container_get_children(GTK_CONTAINER(pk->list));
+    for (it = kids; it != NULL; it = it->next) gtk_widget_destroy(GTK_WIDGET(it->data));
+    g_list_free(kids);
+
+    /* The first row is a real choice rather than a cancel: it clears the
+     * setting, and the User-Agent rows below decide again.  It is in every
+     * result, since "no device" is never filtered out — it is not one of the
+     * machines the query searches. */
+    none = rb_device_label("");
+    rb_device_picker_add_row(pk, "", none);
+    g_free(none);
+
+    for (i = 0; i < total; i++) {
+        const rb_device *d = rb_device_at(i);
+        const char *taken;
+        char *text_out;
+
+        if (d == NULL || !rb_device_matches(d, needle)) continue;
+        shown++;
+
+        /* A machine another profile also presents is marked, not hidden: the
+         * user may still choose it, they are just told it is a repeat. */
+        taken = rb_device_used_by(pk->app, d->id);
+        text_out = rb_device_label(d->id);
+        if (taken != NULL) {
+            char *marked = g_strdup_printf("%s — in use by %s", text_out, taken);
+            g_free(text_out);
+            text_out = marked;
+        }
+        rb_device_picker_add_row(pk, d->id, text_out);
+        g_free(text_out);
+    }
+
+    snprintf(title, sizeof title, "Device (%d of %d)", shown, total);
+    gtk_window_set_title(GTK_WINDOW(pk->dialog), title);
+    gtk_widget_show_all(pk->list);
+    g_free(needle);
+}
+
+static void on_device_search_changed(GtkEntry *entry, gpointer user_data)
+{
+    rb_device_picker *pk = (rb_device_picker *)user_data;
+    (void)entry;
+    rb_device_picker_refill(pk);
+}
+
+static void on_device_row_activated(GtkListBox *box, GtkListBoxRow *row,
+                                    gpointer user_data)
+{
+    rb_device_picker *pk = (rb_device_picker *)user_data;
+    const char *id = (const char *)g_object_get_data(G_OBJECT(row),
+                                                     "rb-device-id");
+    (void)box;
+    if (id == NULL) return;   /* only the rows this picker made carry an id */
+
+    /* The empty id is the "No device" row, and it is written as such: the
+     * setting is cleared rather than left as it was. */
+    rb_pref_set(pk->app, RB_PREF_DEVICE_ID, id);
+    rb_prefs_apply_key(pk->app, RB_PREF_DEVICE_ID);
+    rb_device_caption_set(pk->button, pk->app);
+    gtk_widget_destroy(pk->dialog);
+}
+
+/* Search-and-pick over the whole catalogue.  A combo was the wrong control
+ * for it once the catalogue passed a thousand machines: a list that long has
+ * no usable ordering, and the type-ahead that stood in for a search only
+ * jumps to a prefix.  This is the Android picker's shape — a search field
+ * over a list — and it is sized from rb_device_count() like everything else
+ * that walks the catalogue. */
+static void rb_show_device_picker(GtkWidget *button, App *app)
+{
+    rb_device_picker *pk = g_new0(rb_device_picker, 1);
+    GtkWidget *dlg, *area, *scroll;
+
+    dlg = gtk_dialog_new_with_buttons("Device", GTK_WINDOW(app->win),
+            GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+            "_Cancel", GTK_RESPONSE_CANCEL, NULL);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 560, 440);
+    /* Cancel, Escape and the window close button all land here and all do
+     * nothing but close: a half-typed query is not a choice. */
+    g_signal_connect(dlg, "response", G_CALLBACK(on_dialog_response), NULL);
+
+    pk->dialog = dlg;
+    pk->button = button;
+    pk->app = app;
+    pk->search = gtk_entry_new();
+    pk->list = gtk_list_box_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(pk->search),
+                                   "Search brand, model, year or OS");
+    gtk_widget_set_hexpand(pk->search, TRUE);
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(pk->list), GTK_SELECTION_NONE);
+    g_object_set_data_full(G_OBJECT(dlg), "rb-device-picker", pk, g_free);
+
+    g_signal_connect(pk->search, "changed",
+                     G_CALLBACK(on_device_search_changed), pk);
+    g_signal_connect(pk->list, "row-activated",
+                     G_CALLBACK(on_device_row_activated), pk);
+
+    scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_vexpand(scroll, TRUE);
+    gtk_container_add(GTK_CONTAINER(scroll), pk->list);
+
+    area = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    gtk_box_pack_start(GTK_BOX(area), pk->search, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(area), scroll, TRUE, TRUE, 0);
+
+    rb_device_picker_refill(pk);
+    gtk_widget_show_all(dlg);
+    /* The dialog is opened to be typed in; a picker that opens with the
+     * focus on the Cancel button makes the user reach for the mouse. */
+    gtk_widget_grab_focus(pk->search);
+}
+
+static void on_device_button_clicked(GtkButton *btn, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    rb_show_device_picker(GTK_WIDGET(btn), app);
 }
 
 /* The device row: a profile presents a real machine, or it presents nothing
  * and the User-Agent settings below decide.  Choosing a device IS choosing
  * the User-Agent, so the two are one control rather than two that can
- * disagree. */
+ * disagree — but the control is a button showing the choice, which opens the
+ * search picker above, because the catalogue is far too long to list. */
 static GtkWidget *rb_pref_device_row(GtkWidget *grid, int row, App *app)
 {
-    const char *current = rb_pref(app, RB_PREF_DEVICE_ID, "");
     GtkWidget *label = gtk_label_new("Device");
-    GtkWidget *combo = gtk_combo_box_text_new();
-    rb_pref_choices *ch = g_new0(rb_pref_choices, 1);
-    rb_device_choices *dc = g_new0(rb_device_choices, 1);
-    int n = rb_device_count();
-    int i, sel = 0;
+    GtkWidget *button = gtk_button_new();
+    GtkWidget *caption = gtk_label_new(NULL);
 
     gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
     gtk_widget_set_hexpand(label, TRUE);
     gtk_grid_attach(GTK_GRID(grid), label, 0, row, 1, 1);
 
-    dc->ids = g_new0(char *, (size_t)n + 2);
-    dc->labels = g_new0(char *, (size_t)n + 2);
-    dc->ids[0] = g_strdup("");
-    dc->labels[0] = g_strdup("No device — use the User-Agent setting");
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(combo), dc->labels[0]);
-    if (current == NULL || current[0] == '\0') sel = 0;
+    gtk_label_set_ellipsize(GTK_LABEL(caption), PANGO_ELLIPSIZE_END);
+    gtk_label_set_xalign(GTK_LABEL(caption), 0.0f);
+    gtk_container_add(GTK_CONTAINER(button), caption);
+    gtk_widget_set_hexpand(button, TRUE);
+    gtk_widget_set_tooltip_text(button, "Present this profile as a real machine");
+    g_signal_connect(button, "clicked", G_CALLBACK(on_device_button_clicked),
+                     app);
+    gtk_grid_attach(GTK_GRID(grid), button, 1, row, 1, 1);
 
-    for (i = 0; i < n; i++) {
-        const rb_device *d = rb_device_at(i);
-        if (d == NULL) continue;
-        dc->ids[i + 1] = g_strdup(d->id);
-        dc->labels[i + 1] = g_strdup_printf("%s %s — %s (%d)",
-                                            d->brand, d->model,
-                                            rb_device_os_name(d->os), d->year);
-        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(combo),
-                                       dc->labels[i + 1]);
-        if (current != NULL && strcmp(current, d->id) == 0) sel = i + 1;
-    }
-
-    ch->key = RB_PREF_DEVICE_ID;
-    ch->ids = (const char *const *)dc->ids;
-    ch->labels = (const char *const *)dc->labels;
-    ch->is_theme = 0;
-    gtk_combo_box_set_active(GTK_COMBO_BOX(combo), sel);
-    g_object_set_data_full(G_OBJECT(combo), "rb-pref-choices", ch, g_free);
-    g_object_set_data_full(G_OBJECT(combo), "rb-device-choices", dc,
-                           rb_device_choices_free);
-    g_signal_connect(combo, "changed", G_CALLBACK(on_pref_combo), app);
-    gtk_grid_attach(GTK_GRID(grid), combo, 1, row, 1, 1);
-    return combo;
+    rb_device_caption_set(button, app);
+    return button;
 }
 
 /* The rows that only mean something when NO device is chosen.  A control that
@@ -2360,24 +2573,21 @@ static void ua_current_note_set(GtkWidget *note, App *app)
     free(ua);
 }
 
-static void rb_ua_followers_update(GtkComboBox *device_combo, gpointer user_data)
+static void rb_ua_followers_update(GtkWidget *device_widget, gpointer user_data)
 {
     rb_ua_followers *f = (rb_ua_followers *)g_object_get_data(
-        G_OBJECT(device_combo), "rb-ua-followers");
-    rb_pref_choices *ch = (rb_pref_choices *)g_object_get_data(
-        G_OBJECT(device_combo), "rb-pref-choices");
+        G_OBJECT(device_widget), "rb-ua-followers");
     App *app = (App *)user_data;
-    int i = gtk_combo_box_get_active(device_combo);
     const char *id;
     gboolean has_device;
 
     if (f == NULL) return;
 
-    /* Read the chosen id rather than trusting the row index, so the greying
-     * stays right whatever the combo happens to hold. */
-    id = (ch != NULL && i >= 0 && ch->ids != NULL && ch->ids[i] != NULL)
-             ? ch->ids[i] : "";
-    has_device = (id[0] != '\0');
+    /* Read the chosen id from the setting rather than from the control, so
+     * the greying stays right whatever the control on the row happens to be
+     * — it is a button now, and a button has no row to read an index off. */
+    id = (app != NULL) ? rb_pref(app, RB_PREF_DEVICE_ID, "") : "";
+    has_device = (id != NULL && id[0] != '\0');
 
     if (f->mode != NULL) gtk_widget_set_sensitive(f->mode, !has_device);
     if (f->preset != NULL) gtk_widget_set_sensitive(f->preset, !has_device);
@@ -2760,7 +2970,7 @@ static void rb_show_prefs_dialog_impl(App *app)
     {
         /* The device comes first because it decides the User-Agent: with a
          * machine chosen, the three rows below are not consulted at all. */
-        GtkWidget *device_combo = rb_pref_device_row(grid, r++, app);
+        GtkWidget *device = rb_pref_device_row(grid, r++, app);
         rb_ua_followers *f = g_new0(rb_ua_followers, 1);
         rb_pref_note_row(grid, r++,
                          "A device sets the User-Agent and everything a page can "
@@ -2768,13 +2978,11 @@ static void rb_show_prefs_dialog_impl(App *app)
                          "cores, WebGL. Screen size is left alone: the page is "
                          "really laid out on this screen.");
         ua_rows(grid, &r, app, f);
-        /* Both the connection and the initial call, so the rows grey out when
-         * the machine changes and are already right when the page is shown. */
-        g_object_set_data_full(G_OBJECT(device_combo), "rb-ua-followers", f,
-                               g_free);
-        g_signal_connect(device_combo, "changed",
-                         G_CALLBACK(rb_ua_followers_update), app);
-        rb_ua_followers_update(GTK_COMBO_BOX(device_combo), app);
+        /* Attached before the first update, and refreshed by the picker
+         * through the same call, so the rows grey out when the machine
+         * changes and are already right when the page is shown. */
+        g_object_set_data_full(G_OBJECT(device), "rb-ua-followers", f, g_free);
+        rb_ua_followers_update(device, app);
     }
     gtk_notebook_append_page(GTK_NOTEBOOK(notebook), rb_pref_scrolled(grid),
                              gtk_label_new("User-Agent"));
