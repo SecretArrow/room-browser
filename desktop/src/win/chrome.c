@@ -966,6 +966,10 @@ void rb_do_switch_profile(App *app, const char *to_id)
             /* A fresh environment on the new profile's own user data folder.
              * This is the step that actually isolates the profile. */
             rb_wv_init(app);
+            /* The bar is per profile, so the new one may show a different set
+             * of rows or hide the bar entirely.  After rb_wv_init, because
+             * the refresh re-lays the page out. */
+            rb_bmbar_refresh(app);
             break;
         case RB_SWITCH_RESTORE_NEW_PROFILE_TABS:
             rb_tabs_restore_state(app);
@@ -1037,7 +1041,286 @@ void rb_do_toggle_bookmark(App *app)
                               rb_profile_now_ms());
     if (app->path_bookmarks) rb_bookmarks_save(app->bookmarks, app->path_bookmarks);
     rb_update_star(app);
+    rb_bmbar_refresh(app);
 }
+
+/* ------------------------------------------------------------------ */
+/* The bookmarks bar
+ *
+ * Brave's bookmarks bar, built from the two shapes the store's ordering
+ * gives: a run of contiguous rows sharing a folder name becomes one button
+ * that pops the folder's contents, and a folder-less row becomes a button
+ * that opens it.  The GTK edition builds the same two shapes from the same
+ * rule, so the two bars list the same things in the same order.
+ *
+ * The rows are SNAPSHOTTED into s_bm when the bar is built, for the reason
+ * rb_menu_show gives about the history and profile menus: the store can be
+ * mutated while a popup built from it is still open, and a pointer taken at
+ * build time would be stale by the time a click landed.
+ *
+ * A button whose id is in [RB_ID_BM_FIRST, RB_ID_BM_FIRST + s_bm_n) is a
+ * bookmarks-bar button.  The base sits BELOW RB_ID_TAB_FIRST on purpose:
+ * rb_draw_button derives a tab index by subtracting RB_ID_TAB_FIRST, so an
+ * id above it would be painted as a tab. */
+
+#define RB_BM_MAX 512   /* buttons; the bar clips whatever does not fit */
+
+typedef struct {
+    char  *label;    /* what the button shows */
+    int    folder;   /* 1 = pop the members up, 0 = open url[0] */
+    char **url;
+    char **title;
+    int    n;
+} RbBmSlot;
+
+static RbBmSlot *s_bm;
+static int       s_bm_n;
+
+static void rb_bm_slots_free(void)
+{
+    int i, k;
+
+    for (i = 0; i < s_bm_n; i++) {
+        for (k = 0; k < s_bm[i].n; k++) {
+            free(s_bm[i].url[k]);
+            free(s_bm[i].title[k]);
+        }
+        free(s_bm[i].url);
+        free(s_bm[i].title);
+        free(s_bm[i].label);
+    }
+    free(s_bm);
+    s_bm = NULL;
+    s_bm_n = 0;
+}
+
+/* One slot per folder group or folder-less bookmark, in the store's order. */
+static void rb_bm_slots_build(App *app)
+{
+    int i, n;
+
+    rb_bm_slots_free();
+    n = rb_bookmarks_count(app->bookmarks);
+    if (n <= 0) return;
+
+    s_bm = (RbBmSlot *)calloc((size_t)n, sizeof *s_bm);
+    if (s_bm == NULL) return;
+
+    for (i = 0; i < n && s_bm_n < RB_BM_MAX; ) {
+        const rb_bookmark *bm = rb_bookmarks_at(app->bookmarks, i);
+        RbBmSlot *s;
+
+        if (bm == NULL || bm->url == NULL || !bm->url[0]) { i++; continue; }
+        s = &s_bm[s_bm_n];
+
+        if (bm->folder != NULL && bm->folder[0]) {
+            /* Folder rows are contiguous, so this group runs until the folder
+             * name changes — or until a folder-less row, which sorts last. */
+            const char *folder = bm->folder;
+            int cap = 0, k = 0;
+
+            s->folder = 1;
+            s->label = rb_strdup(folder);
+            while (i < n) {
+                const rb_bookmark *f = rb_bookmarks_at(app->bookmarks, i);
+                if (f == NULL || f->url == NULL || !f->url[0]) { i++; continue; }
+                if (f->folder == NULL || strcmp(f->folder, folder) != 0) break;
+                if (k == cap) {
+                    /* Each buffer is adopted as soon as it is allocated: a
+                     * realloc that fails has already freed the old block, so
+                     * holding both results and assigning them together would
+                     * leave one of the two pointers dangling for
+                     * rb_bm_slots_free() to free a second time. */
+                    char **nu, **nt;
+                    int ncap = (cap > 0) ? cap * 2 : 4;
+                    nu = (char **)realloc(s->url, (size_t)ncap * sizeof(char *));
+                    if (nu == NULL) break;
+                    s->url = nu;
+                    nt = (char **)realloc(s->title, (size_t)ncap * sizeof(char *));
+                    if (nt == NULL) break;
+                    s->title = nt;
+                    cap = ncap;
+                }
+                s->url[k] = rb_strdup(f->url);
+                s->title[k] = rb_strdup((f->title != NULL && f->title[0])
+                                            ? f->title : f->url);
+                k++;
+                i++;
+            }
+            s->n = k;
+        } else {
+            s->folder = 0;
+            s->label = rb_strdup((bm->title != NULL && bm->title[0])
+                                     ? bm->title : bm->url);
+            s->url = (char **)calloc(1, sizeof(char *));
+            s->title = (char **)calloc(1, sizeof(char *));
+            if (s->url != NULL && s->title != NULL) {
+                s->url[0] = rb_strdup(bm->url);
+                s->title[0] = rb_strdup(s->label);
+                s->n = 1;
+            }
+            i++;
+        }
+        s_bm_n++;
+    }
+}
+
+static int rb_bm_context(App *app, HWND child);
+
+/* Middle-click opens a bookmark in a new tab, the way the GTK bar does, and
+ * a right click is answered here rather than left to DefWindowProc.  A
+ * standard control does forward WM_RBUTTONUP onward as WM_CONTEXTMENU, but
+ * that is a convention of the default procedure rather than a promise, and
+ * handling it here means one path and no chance of the menu opening twice. */
+static LRESULT CALLBACK rb_bm_subclass(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                       UINT_PTR uSubclass, DWORD_PTR dwData)
+{
+    (void)wp; (void)lp; (void)uSubclass;
+    if (msg == WM_MBUTTONUP) {
+        int i = (int)dwData;
+        if (i >= 0 && i < s_bm_n && s_bm[i].n > 0 && s_bm[i].url[0] != NULL) {
+            rb_do_add_tab(&g_app, s_bm[i].url[0]);
+        }
+        return 0;
+    }
+    if (msg == WM_RBUTTONUP) {
+        rb_bm_context(&g_app, hwnd);
+        return 0;
+    }
+    return DefSubclassProc(hwnd, msg, wp, lp);
+}
+
+/* The folder button's popup.  TPM_RETURNCMD rather than a posted WM_COMMAND:
+ * with the command posted, the id would arrive after this function had
+ * released the snapshot it names, which is the race s_bm exists to avoid. */
+static void rb_bm_folder_popup(App *app, int slot)
+{
+    HMENU m;
+    RECT r;
+    int k, cmd;
+
+    if (slot < 0 || slot >= s_bm_n || slot >= app->bm_slots) return;
+    m = CreatePopupMenu();
+    if (m == NULL) return;
+
+    for (k = 0; k < s_bm[slot].n; k++) {
+        wchar_t *w = rb_utf8_to_wide(s_bm[slot].title[k]);
+        if (w != NULL) {
+            AppendMenuW(m, MF_STRING, (UINT_PTR)(RB_ID_BM_ITEM_FIRST + k), w);
+            free(w);
+        }
+    }
+    if (s_bm[slot].n == 0) AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"(empty)");
+
+    GetWindowRect(app->bm_btns[slot], &r);
+    SetForegroundWindow(app->hwnd);
+    cmd = (int)TrackPopupMenu(m, TPM_RIGHTBUTTON | TPM_RETURNCMD,
+                             r.left, r.bottom, 0, app->hwnd, NULL);
+    DestroyMenu(m);
+
+    if (cmd >= RB_ID_BM_ITEM_FIRST && cmd < RB_ID_BM_ITEM_FIRST + s_bm[slot].n) {
+        rb_do_navigate(app, s_bm[slot].url[cmd - RB_ID_BM_ITEM_FIRST]);
+    }
+}
+
+static int rb_bm_index_of(App *app, HWND btn)
+{
+    int i;
+
+    for (i = 0; i < app->bm_slots; i++) {
+        if (app->bm_btns[i] == btn) return i;
+    }
+    return -1;
+}
+
+/* Returns 1 when the message was a right-click on a bar button. */
+static int rb_bm_context(App *app, HWND child)
+{
+    int i = rb_bm_index_of(app, child);
+    HMENU m;
+    RECT r;
+    int cmd;
+
+    if (i < 0 || i >= s_bm_n) return 0;
+
+    m = CreatePopupMenu();
+    if (m == NULL) return 1;
+    AppendMenuW(m, MF_STRING, RB_BM_CTX_OPEN, L"Open in new tab");
+    /* A folder button has no single URL to remove, so it offers only the
+     * popup a left click already gives it. */
+    if (!s_bm[i].folder) {
+        AppendMenuW(m, MF_STRING, RB_BM_CTX_REMOVE, L"Remove bookmark");
+    }
+
+    GetWindowRect(child, &r);
+    SetForegroundWindow(app->hwnd);
+    cmd = (int)TrackPopupMenu(m, TPM_RIGHTBUTTON | TPM_RETURNCMD,
+                             r.left, r.top, 0, app->hwnd, NULL);
+    DestroyMenu(m);
+
+    if (cmd == RB_BM_CTX_OPEN && s_bm[i].n > 0) {
+        rb_do_add_tab(app, s_bm[i].url[0]);
+    } else if (cmd == RB_BM_CTX_REMOVE && !s_bm[i].folder && s_bm[i].n > 0) {
+        rb_bookmarks_delete_url(app->bookmarks, s_bm[i].url[0]);
+        if (app->path_bookmarks) rb_bookmarks_save(app->bookmarks, app->path_bookmarks);
+        rb_update_star(app);
+        rb_bmbar_refresh(app);
+    }
+    return 1;
+}
+
+/* Rebuilds the bar for the ACTIVE profile: the preference is per profile, so
+ * this runs on a switch and on a text-size change as well as on a bookmark
+ * being added or removed. */
+void rb_bmbar_refresh(App *app)
+{
+    int i, n, shown;
+
+    if (app == NULL || app->hwnd == NULL) return;
+
+    for (i = 0; i < app->bm_slots; i++) {
+        if (app->bm_btns[i]) DestroyWindow(app->bm_btns[i]);
+        app->bm_btns[i] = NULL;
+    }
+
+    shown = rb_pref_int(app, RB_PREF_BOOKMARKS_BAR_LOCAL, 1);
+    app->bmbar_h = shown ? rb_scaled(app, RB_BMBAR_H) : 0;
+
+    rb_bm_slots_free();
+    n = 0;
+    if (shown) {
+        rb_bm_slots_build(app);
+        n = s_bm_n;
+    }
+
+    if (n > app->bm_slots) {
+        HWND *nb = (HWND *)calloc((size_t)n, sizeof(HWND));
+        if (nb == NULL) { n = app->bm_slots; }
+        else {
+            free(app->bm_btns);
+            app->bm_btns = nb;
+            app->bm_slots = n;
+        }
+    }
+
+    for (i = 0; i < n && i < app->bm_slots; i++) {
+        wchar_t *w = rb_utf8_to_wide(s_bm[i].label);
+        app->bm_btns[i] = CreateWindowExW(0, L"BUTTON",
+            (w != NULL) ? w : L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON | BS_OWNERDRAW,
+            0, 0, 100, app->bmbar_h, app->hwnd,
+            (HMENU)(INT_PTR)(RB_ID_BM_FIRST + i), app->hinst, NULL);
+        free(w);
+        if (app->bm_btns[i] != NULL) {
+            SendMessageW(app->bm_btns[i], WM_SETFONT, (WPARAM)app->fnt_ui, TRUE);
+            SetWindowSubclass(app->bm_btns[i], rb_bm_subclass, RB_BM_SUBID,
+                              (DWORD_PTR)i);
+        }
+    }
+
+    rb_layout(app);
+}
+
 
 void rb_do_reload_or_stop(App *app)
 {
@@ -1170,6 +1453,28 @@ void rb_layout(App *app)
     ow = w - rb_scaled(app, 286);
     if (ow < rb_scaled(app, 60)) ow = rb_scaled(app, 60);
     if (app->omni) MoveWindow(app->omni, omni_x, omni_y, ow, omni_h, TRUE);
+
+    /* The bookmarks bar, in the strip between the toolbar and the page.  The
+     * buttons share the width evenly, clamped at both ends: a bar with two
+     * bookmarks does not stretch them across the window, and a bar with
+     * thirty does not shrink them below the point where a title is readable —
+     * past that they run off the right edge and are clipped, which is what
+     * the GTK bar's box does with the same overflow. */
+    if (app->bmbar_h > 0 && s_bm_n > 0) {
+        const int by = rb_scaled(app, RB_TABSTRIP_H) + rb_scaled(app, RB_TOOLBAR_H)
+                       + rb_scaled(app, 2);
+        const int bh = app->bmbar_h - rb_scaled(app, 4);
+        int bw = (w - rb_scaled(app, 8)) / s_bm_n;
+        if (bw > rb_scaled(app, 180)) bw = rb_scaled(app, 180);
+        if (bw < rb_scaled(app, 64))  bw = rb_scaled(app, 64);
+        x = rb_scaled(app, 4);
+        for (i = 0; i < s_bm_n && i < app->bm_slots; i++) {
+            if (app->bm_btns[i]) {
+                MoveWindow(app->bm_btns[i], x, by, bw, bh, TRUE);
+            }
+            x += bw + rb_scaled(app, 2);
+        }
+    }
 
     rb_wv_resize(app);
 }
@@ -1381,6 +1686,9 @@ static void rb_menu_show(App *app)
     AppendMenuW(m, MF_POPUP, (UINT_PTR)prof, L"Profile");
 
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING | (rb_pref_int(app, RB_PREF_BOOKMARKS_BAR_LOCAL, 1)
+                                     ? MF_CHECKED : 0),
+                IDM_BMBAR, L"Show bookmarks bar");
     AppendMenuW(m, MF_STRING, IDM_DOWNLOADS, L"Downloads");
     AppendMenuW(m, MF_STRING, IDM_PREFS, L"Profile settings");
     AppendMenuW(m, MF_STRING, IDM_ABOUT, L"About");
@@ -1415,6 +1723,10 @@ static void rb_on_command(App *app, int id, int notify)
         rb_do_toggle_bookmark(app);
     } else if (id == IDM_ABOUT) {
         rb_show_about(app);
+    } else if (id == IDM_BMBAR) {
+        rb_pref_set_int(app, RB_PREF_BOOKMARKS_BAR_LOCAL,
+                        rb_pref_int(app, RB_PREF_BOOKMARKS_BAR_LOCAL, 1) ? 0 : 1);
+        rb_bmbar_refresh(app);
     } else if (id == IDM_DOWNLOADS) {
         rb_show_downloads(app);
     } else if (id == IDM_PREFS) {
@@ -1427,6 +1739,13 @@ static void rb_on_command(App *app, int id, int notify)
     } else if (id >= IDM_HIST_FIRST && id < IDM_HIST_FIRST + app->hist_menu_n) {
         const char *url = app->hist_menu[id - IDM_HIST_FIRST];
         if (url) rb_do_navigate(app, url);
+    } else if (id >= RB_ID_BM_FIRST && id < RB_ID_BM_FIRST + s_bm_n) {
+        int i = id - RB_ID_BM_FIRST;
+        if (s_bm[i].folder) {
+            rb_bm_folder_popup(app, i);
+        } else if (s_bm[i].n > 0) {
+            rb_do_navigate(app, s_bm[i].url[0]);
+        }
     } else if (id >= RB_ID_TAB_FIRST) {
         int k = id - RB_ID_TAB_FIRST;
         int i = k / 2;
@@ -1558,6 +1877,12 @@ static LRESULT CALLBACK rb_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_DRAWITEM:
         if (app) return rb_draw_button(app, (const DRAWITEMSTRUCT *)lp);
         break;
+    case WM_CONTEXTMENU:
+        /* A right click on a standard control reaches the parent as
+         * WM_CONTEXTMENU with the control in wParam.  Only the bookmarks bar
+         * answers it; everything else keeps the default handling. */
+        if (app && rb_bm_context(app, (HWND)wp)) return 0;
+        break;
     case WM_KEYDOWN:
         if (app) {
             BOOL ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
@@ -1675,6 +2000,7 @@ int rb_chrome_create(App *app)
     }
 
     rb_tabs_rebuild(app);
+    rb_bmbar_refresh(app);
     rb_update_all(app);
     return 0;
 }

@@ -1358,6 +1358,10 @@ static void rb_wv_area(App *app, RECT *r)
      * page has to start below whatever height that is now — otherwise a
      * scaled-up chrome draws over the top of the document. */
     r->top += rb_scaled(app, RB_TABSTRIP_H) + rb_scaled(app, RB_TOOLBAR_H);
+    /* The bookmarks bar is a fourth chrome row when the profile shows it.
+     * bmbar_h is already scaled (rb_bmbar_refresh sets it), so it is added
+     * rather than passed through rb_scaled() again. */
+    r->top += app->bmbar_h;
     if (r->bottom < r->top) r->bottom = r->top;
 }
 

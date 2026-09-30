@@ -26,6 +26,17 @@ browser is original C: a portable core plus one thin platform layer per OS.
   percent-encoded query. Escape restores the current URL.
 - **Bookmarks** — star button (☆/★) toggles the current page; deduplicated by
   URL; persisted as JSON lines.
+- **Bookmarks bar** — a row of the bookmarks, under the toolbar, on both
+  editions. Its two shapes come from the store's own ordering: a run of
+  contiguous rows sharing a folder name becomes one button that pops the
+  folder's contents, and a folder-less row becomes a button that opens it, so
+  both bars list the same things in the same order. On Linux a middle-click
+  opens a bookmark in a new tab and a right-click offers *Open in new tab* and
+  *Remove bookmark*; on Windows, middle-click and right-click do the same.
+  *Menu → Show bookmarks bar* toggles it, and the setting is per profile like
+  the switches in Preferences — a profile switch re-reads it. The row is
+  chrome, so *Text size* scales it, and the page starts below whatever height
+  it ends up.
 - **History** — most-recent-first, consecutive duplicates collapsed, bounded at
   10 000 entries, persisted as JSON lines; the menu offers the 10 latest.
 - **Downloads** — the active profile's records, newest first, each row a file

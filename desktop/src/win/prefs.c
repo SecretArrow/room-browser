@@ -188,6 +188,10 @@ static void pf_apply(App *app, RbPrefs *pf, const char *key)
 
     if (strcmp(key, RB_PREF_JAVASCRIPT) == 0) {
         app->js_enabled = rb_pref_int(app, RB_PREF_JAVASCRIPT, 1);
+    } else if (strcmp(key, RB_PREF_BOOKMARKS_BAR_LOCAL) == 0) {
+        /* Per profile, like the JavaScript switch above, so a profile switch
+         * lands here too. */
+        rb_bmbar_refresh(app);
     } else if (strcmp(key, RB_PREF_HOME_LOCAL) == 0) {
         rb_set_str(&app->home_url,
                    rb_strdup(rb_pref(app, RB_PREF_HOME_LOCAL,
@@ -208,8 +212,12 @@ static void pf_apply(App *app, RbPrefs *pf, const char *key)
     } else if (strcmp(key, RB_PREF_FONT_SCALE) == 0) {
         /* Rebuilds the chrome's fonts and re-lays the controls out around
          * them.  Nothing to repaint here: this window is drawn in fixed
-         * metrics and keeps them, on purpose (see rb_show_prefs). */
+         * metrics and keeps them, on purpose (see rb_show_prefs).  The
+         * bookmarks bar is a chrome row whose height is scaled, so it is
+         * rebuilt too — otherwise the bar would keep the old height and the
+         * page would start at the wrong line. */
         rb_apply_font_scale(app);
+        rb_bmbar_refresh(app);
     } else if (strcmp(key, RB_PREF_REDUCED_MOTION) == 0) {
         /* The only thing this edition animates is the page-load strip, and
          * whether it should be sweeping depends on whether a load is in

@@ -30,6 +30,7 @@ extern "C" {
 #define RB_WINDOW_H     800
 #define RB_TABSTRIP_H   34
 #define RB_TOOLBAR_H    40
+#define RB_BMBAR_H      30   /* the bookmarks bar, when it is shown */
 
 /* ------------------------------------------------------------------ */
 /* Palette.
@@ -62,11 +63,21 @@ extern "C" {
 /* Per-tab buttons: even = tab button, odd = its close button. */
 #define RB_ID_TAB_FIRST 10000
 
+/* The bookmarks bar: one button per bookmark or folder group, and one command
+ * per entry of a folder's popup.  The bases sit BELOW RB_ID_TAB_FIRST because
+ * rb_draw_button reads an id at or above it as a tab index. */
+#define RB_ID_BM_FIRST      4000
+#define RB_ID_BM_ITEM_FIRST 8000
+#define RB_BM_CTX_OPEN      3901
+#define RB_BM_CTX_REMOVE    3902
+#define RB_BM_SUBID         3
+
 #define IDM_NEW_TAB   3001
 #define IDM_BOOKMARK  3002
 #define IDM_ABOUT     3003
 #define IDM_PREFS     3004
 #define IDM_DOWNLOADS 3005
+#define IDM_BMBAR     3006
 #define IDM_HIST_FIRST 3100
 #define RB_HIST_MENU_MAX 16
 
@@ -93,6 +104,11 @@ typedef struct App {
     HWND *tab_btns;    /* parallel to rb_tabs indices */
     HWND *tab_closes;  /* parallel to rb_tabs indices */
     int  tab_slots;
+
+    HWND *bm_btns;     /* the bookmarks bar, left to right */
+    int   bm_slots;
+    int   bmbar_h;     /* the bar's client height: 0 when it is hidden, which
+                        * is what tells the page where it starts */
 
     HBRUSH br_chrome, br_toolbar, br_tab_idle, br_omni, br_accent;
     HFONT  fnt_ui, fnt_omni;
@@ -232,6 +248,11 @@ void rb_update_omni(App *app, const char *url);
 void rb_update_titlebar(App *app);
 void rb_update_nav(App *app);
 void rb_update_star(App *app);
+
+/* Rebuilds the bookmarks bar for the active profile.  Called when a bookmark
+ * changes, when "Show bookmarks bar" is toggled, on a profile switch and on a
+ * text-size change — anything that changes either the rows or their height. */
+void rb_bmbar_refresh(App *app);
 void rb_update_reloadbtn(App *app);
 /* The one place App::loading changes: updates the reload/stop glyph and
  * starts or stops the toolbar progress strip.  Every path that begins or ends
