@@ -134,6 +134,24 @@ void rb_apply_font_scale(App *app)
     g_free(scaled);
 }
 
+/* Applies the profile's "Reduce motion" to the toolkit itself.
+ *
+ * GTK animates its own widgets — a switch sliding, a tab cross-fading, a menu
+ * unfurling — and no stylesheet this chrome owns can reach any of that;
+ * gtk-enable-animations is the one lever.  The progress strip is deliberately
+ * NOT handled here: it is drawn rather than styled, and it lives in
+ * rb_progress_sync(), which is the only place that knows whether a load is in
+ * flight. */
+void rb_apply_reduced_motion(App *app)
+{
+    GtkSettings *s = gtk_settings_get_default();
+
+    if (s == NULL || app == NULL) return;
+    g_object_set(s, "gtk-enable-animations",
+                 rb_pref_int(app, RB_PREF_REDUCED_MOTION, 0) ? FALSE : TRUE,
+                 NULL);
+}
+
 static void rb_css_rgba(char out[48], unsigned int argb, double alpha_mult)
 {
     int r = 0, g = 0, b = 0;
@@ -869,20 +887,39 @@ static void rb_progress_area_gone(GtkWidget *w, gpointer user_data)
 }
 
 /* Starts the sweep while a load is in flight, and on the way out clears the
- * strip by queuing one last draw with g_prog_on already 0. */
+ * strip by queuing one last draw with g_prog_on already 0.
+ *
+ * "Reduce motion" is honoured here, in the two places this edition animates:
+ * the sweep, which simply is not started, and GTK's own widget animations,
+ * which gtk-enable-animations turns off wholesale — a switch sliding, a tab
+ * cross-fading.  The strip still appears during a load, with its segment
+ * parked mid-way rather than travelling, because a load has to stay visible
+ * and a full-width bar would read as "finished" — the one thing it must not
+ * say.  Parked and moving are the only two states, so the setting can be
+ * changed mid-load and the next call here settles it. */
 static void rb_progress_sync(App *app)
 {
-    int want = app->loading ? 1 : 0;
+    int still = rb_pref_int(app, RB_PREF_REDUCED_MOTION, 0) ? 1 : 0;
+    int want  = (app->loading && !still) ? 1 : 0;
 
-    if (want == g_prog_on) return;
-    g_prog_on = want;
-    g_prog_phase = 0;
-    if (want) {
-        g_prog_timer = g_timeout_add(RB_PROGRESS_MS, rb_progress_tick, app);
-    } else if (g_prog_timer != 0) {
-        g_source_remove(g_prog_timer);
-        g_prog_timer = 0;
+    if (still) {
+        g_prog_phase = RB_PROGRESS_STEPS / 2;
+    } else if (want && !g_prog_on) {
+        g_prog_phase = 0;
     }
+
+    if (want != g_prog_on) {
+        g_prog_on = want;
+        if (want) {
+            g_prog_timer = g_timeout_add(RB_PROGRESS_MS, rb_progress_tick, app);
+        } else if (g_prog_timer != 0) {
+            g_source_remove(g_prog_timer);
+            g_prog_timer = 0;
+        }
+    }
+    /* Always redrawn, where this once returned early when nothing changed: the
+     * phase may have been parked above, and the only caller is a load starting
+     * or ending. */
     if (app->prog_area != NULL) gtk_widget_queue_draw(app->prog_area);
 }
 
@@ -1489,6 +1526,8 @@ void rb_do_switch_profile(App *app, const char *to_id)
             rb_downloads_dir_init(app);
             rb_css_load(app);          /* the new profile's theme */
             rb_apply_font_scale(app);  /* ...and its font scale */
+            rb_apply_reduced_motion(app);
+            rb_progress_sync(app);     /* ...and whether a load may animate */
             if (g_js_item != NULL) {
                 gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(g_js_item),
                                                app->js_enabled ? TRUE : FALSE);
@@ -1689,6 +1728,11 @@ static void rb_prefs_apply_key(App *app, const char *key)
         /* Scales the UI font.  No stylesheet reload: the scale rides on
          * gtk-font-name, which restyles every widget by itself. */
         rb_apply_font_scale(app);
+    } else if (strcmp(key, RB_PREF_REDUCED_MOTION) == 0) {
+        /* Both halves of the switch: the toolkit's own animations, and the
+         * loading strip, which is drawn and so has to be told as well. */
+        rb_apply_reduced_motion(app);
+        rb_progress_sync(app);
     } else if (strcmp(key, RB_PREF_DOWNLOAD_SUBFOLDER) == 0) {
         /* rb_downloads_dir_init assigns rather than appends, so the old path
          * has to go first. */
@@ -2066,7 +2110,8 @@ static void rb_show_prefs_dialog_impl(App *app)
                           "Text size", 0);
     }
     rb_pref_row(grid, r++, app, RB_PREF_REDUCED_MOTION, 0, "Reduce motion",
-                "Turns off the transitions the chrome animates");
+                "Stops the page-load strip sweeping and the toolkit's own "
+                "transitions; a load is still shown");
     rb_pref_row(grid, r++, app, RB_PREF_HIGH_CONTRAST, 0, "High contrast",
                 "Strengthens the contrast between text and its background");
     gtk_notebook_append_page(GTK_NOTEBOOK(notebook), rb_pref_scrolled(grid),
@@ -2841,6 +2886,7 @@ void rb_on_activate(GtkApplication *gtk_app, gpointer user_data)
      * the first window exists is the right moment: nothing has been laid out
      * at the unscaled size, so there is nothing to reflow. */
     rb_apply_font_scale(app);
+    rb_apply_reduced_motion(app);
 
     app->app = gtk_app;
     app->win = GTK_APPLICATION_WINDOW(gtk_application_window_new(gtk_app));

@@ -568,6 +568,9 @@ void rb_update_reloadbtn(App *app)
 #define RB_PROGRESS_DIV    4       /* segment width = span / this */
 
 static int g_prog_on;              /* 1 while the animation timer is running */
+static int g_prog_show;            /* 1 while the strip should be drawn at all;
+                                    * a load with "Reduce motion" on shows the
+                                    * strip without animating it */
 static int g_prog_phase;           /* 0..RB_PROGRESS_STEPS */
 
 static void rb_progress_rect(App *app, RECT *out)
@@ -587,7 +590,7 @@ static void rb_progress_paint(App *app, HDC dc)
     RECT strip, seg;
     int span, seg_w;
 
-    if (!g_prog_on || app->br_accent == NULL) return;
+    if (!g_prog_show || app->br_accent == NULL) return;
     rb_progress_rect(app, &strip);
     span = strip.right - strip.left;
     if (span <= 0) return;
@@ -618,20 +621,39 @@ static void rb_progress_tick(App *app)
     InvalidateRect(app->hwnd, &strip, FALSE);
 }
 
-/* Starts the sweep while a load is in flight, and on the way out clears the
- * strip by invalidating it one last time with g_prog_on already 0. */
+/* Shows the strip while a load is in flight, and sweeps it only when the
+ * profile has not asked for reduced motion.  The strip is still the honest
+ * signal that a page is loading, so with the animation off it parks as a
+ * stationary segment in the middle rather than disappearing; on the way out
+ * it is invalidated one last time with g_prog_show already 0. */
 static void rb_progress_sync(App *app)
 {
     RECT strip;
-    int want = app->loading ? 1 : 0;
+    int still = rb_pref_int(app, RB_PREF_REDUCED_MOTION, 0) ? 1 : 0;
+    int want  = (app->loading && !still) ? 1 : 0;
 
-    if (want == g_prog_on) return;
-    g_prog_on = want;
-    g_prog_phase = 0;
-    if (want) SetTimer(app->hwnd, RB_TIMER_PROGRESS, RB_PROGRESS_MS, NULL);
-    else      KillTimer(app->hwnd, RB_TIMER_PROGRESS);
+    g_prog_show = app->loading ? 1 : 0;
+
+    /* The parked frame is the sweep's own midpoint, so switching the setting
+     * on mid-load leaves the segment where the animation already was. */
+    if (still)                   g_prog_phase = RB_PROGRESS_STEPS / 2;
+    else if (want && !g_prog_on) g_prog_phase = 0;
+
+    if (want != g_prog_on) {
+        g_prog_on = want;
+        if (want) SetTimer(app->hwnd, RB_TIMER_PROGRESS, RB_PROGRESS_MS, NULL);
+        else      KillTimer(app->hwnd, RB_TIMER_PROGRESS);
+    }
     rb_progress_rect(app, &strip);
     InvalidateRect(app->hwnd, &strip, FALSE);
+}
+
+/* The same repaint for callers outside this file (the preferences window, when
+ * "Reduce motion" is toggled): the sync above is the only thing that knows
+ * whether a load is in flight, so it must run rather than the callers guessing. */
+void rb_progress_refresh(App *app)
+{
+    rb_progress_sync(app);
 }
 
 /* The one place app->loading changes.  Everything that shows loading state —
@@ -918,6 +940,8 @@ void rb_do_switch_profile(App *app, const char *to_id)
             rb_set_str(&app->download_dir, NULL);
             rb_downloads_dir_refresh(app);
             rb_theme_apply(app);       /* the new profile's palette */
+            rb_apply_font_scale(app);  /* ...and its font scale */
+            rb_progress_refresh(app);  /* ...and whether a load may animate */
             rb_profiles_save(app);
             /* A fresh environment on the new profile's own user data folder.
              * This is the step that actually isolates the profile. */

@@ -172,6 +172,12 @@ Outputs:
   coordinate, so the layout is scaled with the font — otherwise a larger font
   would spill out of a box that did not move with it. The settings window
   itself keeps a fixed size on both editions; only the chrome scales.
+- **Reduce motion** stops both editions animating. Linux hands the switch to
+  GTK (`gtk-enable-animations`), which covers every transition the toolkit
+  draws; Windows has no such lever and only animates one thing, the page-load
+  strip. The strip keeps working either way: with the animation off it parks
+  as a stationary segment instead of sweeping, because a load still has to be
+  visible and a full-width bar would read as "finished".
 - **WebRTC policy** offers the Android edition's three values, and each
   desktop edition can express a different part of the range. Linux has one
   on/off switch and no notion of an IP-handling policy, so only *Disabled*
@@ -202,8 +208,11 @@ Outputs:
 - **Windows dark title bar** uses `DwmSetWindowAttribute` loaded at runtime;
   on Windows versions without it the title bar simply stays light (silent
   fallback).
-- No private/incognito mode, downloads UI, context-menu customization, or
-  content blocking — the "Brave-inspired" part is strictly the chrome design.
+- No private/incognito mode, context-menu customization, or per-site shields;
+  the "Brave-inspired" part is strictly the chrome design. Content blocking is
+  real on both editions (the bundled host list, filtered by each profile's
+  switches), and Linux additionally has a downloads window. Windows records
+  downloads but has no window to show them in yet.
 - History is capped at 10 000 entries; bookmarks are a flat list in insertion
   order.
 - The omnibox heuristic treats any input with interior whitespace or

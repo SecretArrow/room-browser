@@ -232,6 +232,10 @@ void rb_update_reloadbtn(App *app);
  * starts or stops the toolbar progress strip.  Every path that begins or ends
  * a load goes through this rather than assigning the field. */
 void rb_set_loading(App *app, int on);
+/* Repaints the page-load strip for a caller that changed something it
+ * depends on (the "Reduce motion" switch), without touching the load
+ * state itself. */
+void rb_progress_refresh(App *app);
 void rb_update_all(App *app);
 
 /* Actions shared by buttons, menu items and keyboard shortcuts. */

@@ -193,6 +193,11 @@ static void pf_apply(App *app, RbPrefs *pf, const char *key)
          * them.  Nothing to repaint here: this window is drawn in fixed
          * metrics and keeps them, on purpose (see rb_show_prefs). */
         rb_apply_font_scale(app);
+    } else if (strcmp(key, RB_PREF_REDUCED_MOTION) == 0) {
+        /* The only thing this edition animates is the page-load strip, and
+         * whether it should be sweeping depends on whether a load is in
+         * flight — which only the progress code knows. */
+        rb_progress_refresh(app);
     } else if (strcmp(key, RB_PREF_DOWNLOAD_SUBFOLDER) == 0) {
         /* The builder assigns rather than appends, so the old path has to go
          * first. */
@@ -474,7 +479,7 @@ static void pf_build_appearance(RbPrefs *pf)
     y += pf_combo(pf, 0, y, RB_PREF_FONT_SCALE, scale_ids, scale_labels,
                   rb_pref(pf->app, RB_PREF_FONT_SCALE, "100"), L"Text size");
     y += pf_switch(pf, 0, y, RB_PREF_REDUCED_MOTION, 0, L"Reduce motion",
-                   L"Turns off the transitions the chrome animates");
+                   L"Stops the page-load strip sweeping; it still shows a load");
     y += pf_switch(pf, 0, y, RB_PREF_HIGH_CONTRAST, 0, L"High contrast",
                    L"Strengthens the contrast between text and its background");
 }
