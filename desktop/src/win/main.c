@@ -29,6 +29,7 @@
 
 #include "chrome.h"
 #include "webview.h"
+#include "prefs.h"
 #include "rb_version.h"
 
 static const char RB_PLATFORM_TAG[] = "(windows x86_64)";
@@ -421,8 +422,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     rb_do_new_tab(app);
 
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+        /* The preferences window is a plain window, not a DLGTEMPLATE, but it
+         * is laid out like a dialog and its controls carry WS_TABSTOP.  This
+         * is what gives it the dialog keyboard behaviour anyway: Tab and the
+         * arrow keys move between its controls, Enter presses the default
+         * button, Escape cancels.  It returns FALSE for every other window,
+         * so the main chrome is untouched. */
+        if (!rb_prefs_is_msg(&msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
     }
 
     rb_data_free(app);

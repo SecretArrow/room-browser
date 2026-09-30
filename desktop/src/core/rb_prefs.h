@@ -45,6 +45,14 @@ extern "C" {
 #define RB_PREF_SHOW_RECENT_SITES    "show_recent_sites"
 #define RB_PREF_SHOW_CLOCK           "show_clock"
 
+/* The key the DESKTOP editions store their single homepage under.  It is a
+ * desktop extension: the Android edition has no single home URL, it has
+ * RB_PREF_HOMEPAGE_ENABLED plus a list of RB_PREF_HOMEPAGE_SHORTCUTS.  It
+ * lives here rather than in each chrome so the two desktop editions cannot
+ * drift onto different spellings of the same stored key — the file format is
+ * shared even though the two GUIs are not. */
+#define RB_PREF_HOME_LOCAL           "home"
+
 /* User agent */
 #define RB_PREF_UA_MODE              "ua_mode"      /* default|preset|custom   */
 #define RB_PREF_UA_PRESET_ID         "ua_preset_id"

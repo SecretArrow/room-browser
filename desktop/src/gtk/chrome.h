@@ -46,6 +46,7 @@ typedef struct App {
     GtkWidget *notebook;
     GtkWidget *omnibox;
     GtkWidget *back, *fwd, *reload, *home, *star, *menu_btn;
+    GtkWidget *prog_area;   /* the 2px page-load strip under the toolbar */
 
     GtkTab *tabs;           /* parallel to the notebook pages */
     int tabs_n, tabs_cap;
@@ -145,6 +146,10 @@ void rb_update_titlebar(App *app);
 void rb_update_nav(App *app);
 void rb_update_star(App *app);
 void rb_update_reloadbtn(App *app);
+/* The one place App::loading changes: updates the reload/stop glyph and
+ * starts or stops the toolbar progress strip.  Every path that begins or
+ * ends a load goes through this rather than assigning the field. */
+void rb_set_loading(App *app, int on);
 void rb_update_all(App *app);
 
 /* A modal message box parented to the window.  `body` is secondary text and

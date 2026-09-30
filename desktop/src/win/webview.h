@@ -49,6 +49,18 @@ void rb_wv_can_nav(App *app, int *can_back, int *can_fwd);
  * needs ICoreWebView2, which is webview.c's private business. */
 void rb_wv_apply_settings_all(App *app);
 
+/* What the "Clear data" page of the preferences asks for.  A bit set means
+ * "erase this"; the store-side half of that page (history, download records)
+ * is the core's and does not come through here. */
+#define RB_WV_CLEAR_COOKIES    0x1u
+#define RB_WV_CLEAR_CACHE      0x2u
+#define RB_WV_CLEAR_SITE_DATA  0x4u
+
+/* Erases the given kinds of browsing data for the ACTIVE PROFILE, through the
+ * runtime's own eraser.  Asynchronous: it returns once the request has been
+ * handed over, not once the data is gone. */
+void rb_wv_clear_browsing_data(App *app, unsigned kinds);
+
 #ifdef __cplusplus
 }
 #endif

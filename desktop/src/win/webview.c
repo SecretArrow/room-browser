@@ -107,6 +107,20 @@ static const IID rb_iid_dlstate_evt = {
 static const IID rb_iid_dlbytes_evt = {
     /* ICoreWebView2BytesReceivedChangedEventHandler */
     0x828e8ab6, 0xd94c, 0x4264, {0x9c, 0xef, 0x52, 0x17, 0x17, 0x0d, 0x62, 0x51} };
+/* Clearing browsing data is a property of the WebView2 *profile*, not of a
+ * webview, so it is reached in two hops: ICoreWebView2_13 (runtime 1.0.1774)
+ * carries get_Profile, and the profile is asked for ICoreWebView2Profile2
+ * (runtime 1.0.1108), the lowest interface with ClearBrowsingData.  Both are
+ * newer than the base interface, so both need a QueryInterface. */
+static const IID rb_iid_wv13 = {
+    /* ICoreWebView2_13 */
+    0xf75f09a8, 0x667e, 0x4983, {0x88, 0xd6, 0xc8, 0x77, 0x3f, 0x31, 0x5e, 0x84} };
+static const IID rb_iid_profile2 = {
+    /* ICoreWebView2Profile2 */
+    0xfa740d4b, 0x5eae, 0x4344, {0xa8, 0xad, 0x74, 0xbe, 0x31, 0x92, 0x53, 0x97} };
+static const IID rb_iid_clear_done = {
+    /* ICoreWebView2ClearBrowsingDataCompletedHandler */
+    0xe9710a06, 0x1d1d, 0x49b2, {0x82, 0x34, 0x22, 0x6f, 0x35, 0x84, 0x6a, 0xe5} };
 
 static int rb_iid_eq(REFIID a, const IID *b)
 {
@@ -504,8 +518,7 @@ static HRESULT STDMETHODCALLTYPE SourceEvt_Invoke(
             if (tv->tab_id == app->active_id) {
                 rb_update_omni(app, t->url);
                 if (changed) {
-                    app->loading = 1;
-                    rb_update_reloadbtn(app);
+                    rb_set_loading(app, 1);
                 }
             }
         }
@@ -677,8 +690,7 @@ static HRESULT STDMETHODCALLTYPE NavEvt_Invoke(
     }
 
     if (tv->tab_id == app->active_id) {
-        app->loading = 0;
-        rb_update_reloadbtn(app);
+        rb_set_loading(app, 0);
     }
     if (t->url && t->url[0]) {
         rb_history_append(app->history, t->url, t->title && t->title[0] ? t->title : t->url);
@@ -1151,6 +1163,34 @@ static ICoreWebView2BytesReceivedChangedEventHandlerVtbl g_dlbytes_vtbl = {
     DlBytesEvt_Invoke
 };
 
+/* --- ClearBrowsingData completion ------------------------------------
+ *
+ * The only COM callback in this file that carries no state: clearing is
+ * fire-and-forget, and there is nothing useful to do with the result beyond
+ * not crashing on it.  It exists because the API takes a handler and the
+ * runtime will not accept NULL. */
+typedef struct {
+    ICoreWebView2ClearBrowsingDataCompletedHandler base;
+    ULONG refs;
+} ClearDoneEvt;
+
+RB_HANDLER_QI(ICoreWebView2ClearBrowsingDataCompletedHandler, ClearDoneEvt,
+              rb_iid_clear_done)
+RB_HANDLER_REFCOUNT(ICoreWebView2ClearBrowsingDataCompletedHandler, ClearDoneEvt)
+
+static HRESULT STDMETHODCALLTYPE ClearDoneEvt_Invoke(
+    ICoreWebView2ClearBrowsingDataCompletedHandler *self, HRESULT errorCode)
+{
+    (void)self;
+    (void)errorCode;
+    return S_OK;
+}
+
+static ICoreWebView2ClearBrowsingDataCompletedHandlerVtbl g_cleardone_vtbl = {
+    ClearDoneEvt_QueryInterface, ClearDoneEvt_AddRef, ClearDoneEvt_Release,
+    ClearDoneEvt_Invoke
+};
+
 RB_HANDLER_QI(ICoreWebView2DownloadStartingEventHandler, DlStartEvt,
               rb_iid_dlstart_evt)
 RB_HANDLER_REFCOUNT(ICoreWebView2DownloadStartingEventHandler, DlStartEvt)
@@ -1442,6 +1482,80 @@ void rb_wv_apply_settings_all(App *app)
     for (i = 0; i < v->n; i++) {
         TabView *tv = &v->items[i];
         if (tv->wv != NULL) rb_wv_apply_web_settings(app, tv->wv);
+    }
+}
+
+/* Erases cookies, cache or site storage for the ACTIVE PROFILE.
+ *
+ * The data lives in the profile's own user-data folder, which the WebView2
+ * runtime owns while it is running: deleting files behind it would be both
+ * racy and ineffective, so the runtime's own eraser is used instead.  It is
+ * reached through the profile object, which means the request has to go via
+ * a live webview of that profile — and every profile has at least the visible
+ * tab, so the loop over the views covers it.
+ *
+ * The calls are asynchronous and their results are not reported: the same
+ * choice the GTK edition makes, where webkit_website_data_manager_clear is
+ * also started and left to finish. */
+void rb_wv_clear_browsing_data(App *app, unsigned kinds)
+{
+    struct RbViews *v = app ? app->views : NULL;
+    COREWEBVIEW2_BROWSING_DATA_KINDS wv_kinds = (COREWEBVIEW2_BROWSING_DATA_KINDS)0;
+    int i;
+
+    if (v == NULL || kinds == 0) return;
+
+    /* The three switches the preferences page offers, mapped onto the
+     * runtime's own vocabulary.  Site data is a bundle rather than one kind:
+     * Android's "site data" clears all of it, so this asks for every storage
+     * kind WebView2 names. */
+    if (kinds & RB_WV_CLEAR_COOKIES) {
+        wv_kinds |= COREWEBVIEW2_BROWSING_DATA_KINDS_COOKIES;
+    }
+    if (kinds & RB_WV_CLEAR_CACHE) {
+        wv_kinds |= COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE;
+    }
+    if (kinds & RB_WV_CLEAR_SITE_DATA) {
+        wv_kinds |= COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_DOM_STORAGE |
+                    COREWEBVIEW2_BROWSING_DATA_KINDS_INDEXED_DB |
+                    COREWEBVIEW2_BROWSING_DATA_KINDS_LOCAL_STORAGE |
+                    COREWEBVIEW2_BROWSING_DATA_KINDS_WEB_SQL |
+                    COREWEBVIEW2_BROWSING_DATA_KINDS_CACHE_STORAGE |
+                    COREWEBVIEW2_BROWSING_DATA_KINDS_SERVICE_WORKERS |
+                    COREWEBVIEW2_BROWSING_DATA_KINDS_FILE_SYSTEMS;
+    }
+
+    for (i = 0; i < v->n; i++) {
+        TabView *tv = &v->items[i];
+        ICoreWebView2_13 *wv13 = NULL;
+        ICoreWebView2Profile *prof = NULL;
+        ICoreWebView2Profile2 *prof2 = NULL;
+        ClearDoneEvt *done;
+
+        if (tv->wv == NULL) continue;
+        if (FAILED(tv->wv->lpVtbl->QueryInterface(tv->wv, &rb_iid_wv13,
+                                                  (void **)&wv13)) ||
+            wv13 == NULL) {
+            continue;   /* runtime too old for the profile object */
+        }
+        if (SUCCEEDED(wv13->lpVtbl->get_Profile(wv13, &prof)) && prof != NULL) {
+            if (SUCCEEDED(prof->lpVtbl->QueryInterface(prof, &rb_iid_profile2,
+                                                       (void **)&prof2)) &&
+                prof2 != NULL) {
+                done = (ClearDoneEvt *)malloc(sizeof *done);
+                if (done != NULL) {
+                    memset(done, 0, sizeof *done);
+                    done->base.lpVtbl = &g_cleardone_vtbl;
+                    done->refs = 1;
+                    prof2->lpVtbl->ClearBrowsingData(prof2, wv_kinds,
+                                                     &done->base);
+                    done->base.lpVtbl->Release(&done->base);
+                }
+                prof2->lpVtbl->Release(prof2);
+            }
+            prof->lpVtbl->Release(prof);
+        }
+        wv13->lpVtbl->Release(wv13);
     }
 }
 

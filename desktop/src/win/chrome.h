@@ -65,6 +65,7 @@ extern "C" {
 #define IDM_NEW_TAB   3001
 #define IDM_BOOKMARK  3002
 #define IDM_ABOUT     3003
+#define IDM_PREFS     3004
 #define IDM_HIST_FIRST 3100
 #define RB_HIST_MENU_MAX 16
 
@@ -177,6 +178,17 @@ void rb_pref_set_int(App *app, const char *key, int value);
 /* Persists the profile registry (settings live inside it). */
 void rb_profiles_save(App *app);
 
+/* Rebuilds App::download_dir from the active profile's download subfolder.
+ * Called at startup and again whenever the preferences change that setting;
+ * the directory is created if it does not exist. */
+void rb_downloads_dir_refresh(App *app);
+
+/* A theme token (0xAARRGGBB) as a GDI COLORREF.  GDI has no alpha, and the
+ * palette's tokens are already resolved to opaque colours by the time they
+ * reach App::pal, so the alpha byte is simply dropped.  Every layer that
+ * paints with the palette goes through this one conversion. */
+COLORREF rb_col(unsigned int argb);
+
 /* The ACTIVE profile's content-blocking switches, as the filter engine
  * wants them.  Never NULL-safe: returns the compatibility defaults when
  * there is no active profile. */
@@ -205,6 +217,10 @@ void rb_update_titlebar(App *app);
 void rb_update_nav(App *app);
 void rb_update_star(App *app);
 void rb_update_reloadbtn(App *app);
+/* The one place App::loading changes: updates the reload/stop glyph and
+ * starts or stops the toolbar progress strip.  Every path that begins or ends
+ * a load goes through this rather than assigning the field. */
+void rb_set_loading(App *app, int on);
 void rb_update_all(App *app);
 
 /* Actions shared by buttons, menu items and keyboard shortcuts. */

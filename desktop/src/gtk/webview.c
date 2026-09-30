@@ -80,14 +80,12 @@ static void on_load_changed(WebKitWebView *wv, WebKitLoadEvent event, gpointer u
     switch (event) {
     case WEBKIT_LOAD_STARTED:
         if (gt->id == app->active_id) {
-            app->loading = 1;
-            rb_update_reloadbtn(app);
+            rb_set_loading(app, 1);
         }
         break;
     case WEBKIT_LOAD_FINISHED:
         if (gt->id == app->active_id) {
-            app->loading = 0;
-            rb_update_reloadbtn(app);
+            rb_set_loading(app, 0);
             rb_update_nav(app);
             rb_update_star(app);
         }

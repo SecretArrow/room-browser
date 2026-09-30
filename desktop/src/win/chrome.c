@@ -26,6 +26,7 @@
 
 #include "chrome.h"
 #include "webview.h"
+#include "prefs.h"
 #include "resource.h"
 #include "rb_version.h"
 
@@ -115,11 +116,6 @@ void rb_mkdirs_utf8(const char *path)
 /* ------------------------------------------------------------------ */
 /* Persistence: load at startup, save on change (and a final save at quit). */
 
-/* The key the desktop stores its single homepage under, inside the profile.
- * It is a DESKTOP EXTENSION: the Android edition has no single home URL, it
- * has RB_PREF_HOMEPAGE_ENABLED plus a list of RB_PREF_HOMEPAGE_SHORTCUTS. */
-#define RB_PREF_HOME_LOCAL "home"
-
 /* The name given to the profile created for a data directory that has none.
  * Android calls its first profile "Personal" too (ProfileManager.create()). */
 #define RB_PROFILE_FIRST_NAME "Personal"
@@ -128,7 +124,7 @@ void rb_mkdirs_utf8(const char *path)
  * the profile names in RB_PREF_DOWNLOAD_SUBFOLDER ("RoomBrowser" by
  * default) — the same place, and the same setting, as the Android edition.
  * Falls back to <data dir>/downloads when the known folder is unavailable. */
-static void rb_downloads_dir_init(App *app)
+void rb_downloads_dir_refresh(App *app)
 {
     const char *sub = rb_pref(app, RB_PREF_DOWNLOAD_SUBFOLDER, "RoomBrowser");
     PWSTR wide = NULL;
@@ -244,7 +240,7 @@ int rb_data_init(App *app)
     app->js_enabled = rb_pref_int(app, RB_PREF_JAVASCRIPT, 1);
     app->home_url = rb_strdup(rb_pref(app, RB_PREF_HOME_LOCAL,
                                       "https://duckduckgo.com"));
-    rb_downloads_dir_init(app);
+    rb_downloads_dir_refresh(app);
     /* The palette is resolved (and its brushes built) by rb_theme_apply()
      * from rb_chrome_create: there is no window to repaint yet. */
 
@@ -441,7 +437,7 @@ static int rb_system_is_dark(void)
     return light == 0;
 }
 
-static COLORREF rb_col(unsigned int argb)
+COLORREF rb_col(unsigned int argb)
 {
     int r = 0, g = 0, b = 0;
     rb_theme_rgb(argb, &r, &g, &b);
@@ -545,6 +541,105 @@ void rb_update_reloadbtn(App *app)
     SetWindowTextW(app->reload, app->loading ? L"\x00D7" : L"\x21BB");
 }
 
+/* ------------------------------------------------------------------ */
+/* The page-load indicator.
+ *
+ * A 2px accent segment sliding along the bottom edge of the toolbar while a
+ * page is loading, and nothing at all when none is.  It is deliberately
+ * minimal: no track, no text, no percentage, and it is drawn in the two
+ * pixels between the toolbar buttons (which end at RB_TABSTRIP_H +
+ * RB_TOOLBAR_H - 2) and the webview (which starts at RB_TABSTRIP_H +
+ * RB_TOOLBAR_H), so it never covers anything being read.  The reload button
+ * flipping to a stop glyph stays the authoritative signal; this only makes a
+ * slow load visible at a glance.
+ *
+ * A tick repaints the 2-row strip alone, not the window, so an animation that
+ * runs for the length of a page load costs two rows of blitting per frame. */
+
+#define RB_TIMER_PROGRESS  1
+#define RB_PROGRESS_H      2
+#define RB_PROGRESS_MS     16      /* ~60 Hz */
+#define RB_PROGRESS_STEPS  140     /* ticks for one left-to-right sweep */
+#define RB_PROGRESS_DIV    4       /* segment width = span / this */
+
+static int g_prog_on;              /* 1 while the animation timer is running */
+static int g_prog_phase;           /* 0..RB_PROGRESS_STEPS */
+
+static void rb_progress_rect(App *app, RECT *out)
+{
+    RECT rc;
+    GetClientRect(app->hwnd, &rc);
+    out->left   = 0;
+    out->right  = rc.right;
+    out->bottom = RB_TABSTRIP_H + RB_TOOLBAR_H;
+    out->top    = out->bottom - RB_PROGRESS_H;
+}
+
+/* Draws the segment into an existing DC.  Called from WM_PAINT, whose
+ * FillRect over the same strip has just erased the previous frame. */
+static void rb_progress_paint(App *app, HDC dc)
+{
+    RECT strip, seg;
+    int span, seg_w;
+
+    if (!g_prog_on || app->br_accent == NULL) return;
+    rb_progress_rect(app, &strip);
+    span = strip.right - strip.left;
+    if (span <= 0) return;
+
+    seg_w = span / RB_PROGRESS_DIV;
+    if (seg_w < 32) seg_w = 32;
+
+    /* Enters from the left edge, leaves past the right edge, repeats — the
+     * standard indeterminate sweep, with no notion of "how far along". */
+    seg.left   = strip.left + (g_prog_phase * (span + seg_w)) / RB_PROGRESS_STEPS - seg_w;
+    seg.right  = seg.left + seg_w;
+    seg.top    = strip.top;
+    seg.bottom = strip.bottom;
+
+    if (seg.right <= strip.left || seg.left >= strip.right) return;
+    if (seg.left  < strip.left)  seg.left  = strip.left;
+    if (seg.right > strip.right) seg.right = strip.right;
+    FillRect(dc, &seg, app->br_accent);
+}
+
+static void rb_progress_tick(App *app)
+{
+    RECT strip;
+
+    g_prog_phase++;
+    if (g_prog_phase > RB_PROGRESS_STEPS) g_prog_phase = 0;
+    rb_progress_rect(app, &strip);
+    InvalidateRect(app->hwnd, &strip, FALSE);
+}
+
+/* Starts the sweep while a load is in flight, and on the way out clears the
+ * strip by invalidating it one last time with g_prog_on already 0. */
+static void rb_progress_sync(App *app)
+{
+    RECT strip;
+    int want = app->loading ? 1 : 0;
+
+    if (want == g_prog_on) return;
+    g_prog_on = want;
+    g_prog_phase = 0;
+    if (want) SetTimer(app->hwnd, RB_TIMER_PROGRESS, RB_PROGRESS_MS, NULL);
+    else      KillTimer(app->hwnd, RB_TIMER_PROGRESS);
+    rb_progress_rect(app, &strip);
+    InvalidateRect(app->hwnd, &strip, FALSE);
+}
+
+/* The one place app->loading changes.  Everything that shows loading state —
+ * the reload/stop glyph and the progress strip — is driven from here, so the
+ * three call sites (navigation starting, navigation done, tabs torn down)
+ * cannot disagree about whether a page is loading. */
+void rb_set_loading(App *app, int on)
+{
+    app->loading = on ? 1 : 0;
+    rb_update_reloadbtn(app);
+    rb_progress_sync(app);
+}
+
 void rb_update_all(App *app)
 {
     rb_tab *t = app->active_id ? rb_tabs_get(app->tabs, app->active_id) : NULL;
@@ -631,8 +726,7 @@ void rb_do_navigate(App *app, const char *url)
     }
 
     rb_set_str(&t->url, rb_strdup(target));
-    app->loading = 1;
-    rb_update_reloadbtn(app);
+    rb_set_loading(app, 1);
     rb_update_omni(app, target);
     rb_wv_navigate(app, target);
     free(upgraded);
@@ -739,7 +833,7 @@ static void rb_tabs_restore_state(App *app)
 static void rb_tabs_destroy_all(App *app)
 {
     app->active_id = 0;
-    app->loading = 0;
+    rb_set_loading(app, 0);
     while (rb_tabs_count(app->tabs) > 0) {
         const rb_tab *t = rb_tabs_at(app->tabs, 0);
         long id;
@@ -817,7 +911,7 @@ void rb_do_switch_profile(App *app, const char *to_id)
                        rb_strdup(rb_pref(app, RB_PREF_HOME_LOCAL,
                                          "https://duckduckgo.com")));
             rb_set_str(&app->download_dir, NULL);
-            rb_downloads_dir_init(app);
+            rb_downloads_dir_refresh(app);
             rb_theme_apply(app);       /* the new profile's palette */
             rb_profiles_save(app);
             /* A fresh environment on the new profile's own user data folder.
@@ -1142,6 +1236,7 @@ static void rb_menu_show(App *app)
     AppendMenuW(m, MF_POPUP, (UINT_PTR)prof, L"Profile");
 
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING, IDM_PREFS, L"Profile settings");
     AppendMenuW(m, MF_STRING, IDM_ABOUT, L"About");
 
     GetWindowRect(app->menu_btn, &r);
@@ -1174,6 +1269,8 @@ static void rb_on_command(App *app, int id, int notify)
         rb_do_toggle_bookmark(app);
     } else if (id == IDM_ABOUT) {
         rb_show_about(app);
+    } else if (id == IDM_PREFS) {
+        rb_show_prefs(app);
     } else if (id == IDM_PROF_ADD) {
         rb_profiles_add(app, "Profile");
     } else if (id >= IDM_PROF_FIRST && id < IDM_PROF_FIRST + app->prof_menu_n) {
@@ -1289,10 +1386,14 @@ static LRESULT CALLBACK rb_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 InflateRect(&r, 1, 1);
                 FrameRect(dc, &r, app->br_accent);
             }
+            rb_progress_paint(app, dc);
         }
         EndPaint(hwnd, &ps);
         return 0;
     }
+    case WM_TIMER:
+        if (app && wp == RB_TIMER_PROGRESS) rb_progress_tick(app);
+        return 0;
     case WM_CTLCOLOREDIT:
         if (app && (HWND)lp == app->omni) {
             SetTextColor((HDC)wp, rb_col(app->pal.text_primary));

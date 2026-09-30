@@ -252,11 +252,6 @@ static void rb_add_class(GtkWidget *w, const char *cls)
 /* ------------------------------------------------------------------ */
 /* Persistence: load at startup, save on change (and a final save at quit). */
 
-/* The key the desktop stores its single homepage under, inside the profile.
- * It is a DESKTOP EXTENSION: the Android edition has no single home URL, it
- * has RB_PREF_HOMEPAGE_ENABLED plus a list of RB_PREF_HOMEPAGE_SHORTCUTS. */
-#define RB_PREF_HOME_LOCAL "home"
-
 /* The name given to the profile created for a data directory that has none.
  * Android calls its first profile "Personal" too (ProfileManager.create()). */
 #define RB_PROFILE_FIRST_NAME "Personal"
@@ -589,6 +584,114 @@ void rb_update_reloadbtn(App *app)
     gtk_button_set_label(GTK_BUTTON(app->reload), app->loading ? "\xC3\x97" : "\xE2\x9F\xB3");
 }
 
+/* ------------------------------------------------------------------ */
+/* The page-load indicator.
+ *
+ * A 2px accent segment sliding along the very bottom of the toolbar while a
+ * page is loading, and nothing at all when none is.  It mirrors the Win32
+ * edition's strip: deliberately minimal — no track, no text, no percentage —
+ * and drawn in its own 2px-tall strip between the toolbar and the page, so it
+ * never covers anything being read and a running animation redraws two rows
+ * rather than the window.  The reload button flipping to a stop glyph stays
+ * the authoritative signal; this only makes a slow load visible at a glance.
+ *
+ * The colour is resolved per frame from the active profile's theme rather
+ * than cached, so a theme change during a load is picked up for free. */
+
+#define RB_PROGRESS_H      2
+#define RB_PROGRESS_MS     16      /* ~60 Hz */
+#define RB_PROGRESS_STEPS  140     /* ticks for one left-to-right sweep */
+#define RB_PROGRESS_DIV    4       /* segment width = strip width / this */
+
+static int   g_prog_on;            /* 1 while the animation timeout is armed */
+static int   g_prog_phase;         /* 0..RB_PROGRESS_STEPS */
+static guint g_prog_timer;         /* the timeout source, 0 when not armed */
+
+static gboolean rb_progress_draw(GtkWidget *w, cairo_t *cr, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    rb_theme_colors c;
+    double wd, seg_w, x;
+
+    if (app == NULL || !app->loading) return FALSE;
+    wd = (double)gtk_widget_get_allocated_width(w);
+    if (wd <= 0.0) return FALSE;
+
+    seg_w = wd / RB_PROGRESS_DIV;
+    if (seg_w < 32.0) seg_w = 32.0;
+    /* Enters from the left edge, leaves past the right edge, repeats — the
+     * standard indeterminate sweep, with no notion of "how far along". */
+    x = ((double)g_prog_phase * (wd + seg_w)) / (double)RB_PROGRESS_STEPS - seg_w;
+
+    c = rb_theme_palette(rb_theme_current(app), rb_theme_mode_current(app),
+                         rb_system_is_dark());
+    cairo_set_source_rgba(cr,
+        (double)((c.primary >> 16) & 0xffu) / 255.0,
+        (double)((c.primary >>  8) & 0xffu) / 255.0,
+        (double)( c.primary        & 0xffu) / 255.0,
+        1.0);
+    cairo_rectangle(cr, x, 0.0, seg_w, (double)RB_PROGRESS_H);
+    cairo_fill(cr);
+    return FALSE;
+}
+
+static gboolean rb_progress_tick(gpointer user_data)
+{
+    App *app = (App *)user_data;
+
+    g_prog_phase++;
+    if (g_prog_phase > RB_PROGRESS_STEPS) g_prog_phase = 0;
+    if (app != NULL && app->prog_area != NULL) {
+        gtk_widget_queue_draw(app->prog_area);
+    }
+    return G_SOURCE_CONTINUE;
+}
+
+/* The strip is destroyed with the window, but a load can still be in flight
+ * at that point (teardown calls rb_set_loading(app, 0) itself).  Dropping the
+ * pointer and the timeout here is what keeps a later queue_draw — or the next
+ * tick — from touching freed memory. */
+static void rb_progress_area_gone(GtkWidget *w, gpointer user_data)
+{
+    App *app = (App *)user_data;
+
+    if (app != NULL && app->prog_area == w) app->prog_area = NULL;
+    if (g_prog_timer != 0) {
+        g_source_remove(g_prog_timer);
+        g_prog_timer = 0;
+    }
+    g_prog_on = 0;
+}
+
+/* Starts the sweep while a load is in flight, and on the way out clears the
+ * strip by queuing one last draw with g_prog_on already 0. */
+static void rb_progress_sync(App *app)
+{
+    int want = app->loading ? 1 : 0;
+
+    if (want == g_prog_on) return;
+    g_prog_on = want;
+    g_prog_phase = 0;
+    if (want) {
+        g_prog_timer = g_timeout_add(RB_PROGRESS_MS, rb_progress_tick, app);
+    } else if (g_prog_timer != 0) {
+        g_source_remove(g_prog_timer);
+        g_prog_timer = 0;
+    }
+    if (app->prog_area != NULL) gtk_widget_queue_draw(app->prog_area);
+}
+
+/* The one place app->loading changes.  Everything that shows loading state —
+ * the reload/stop glyph and the progress strip — is driven from here, so the
+ * call sites (navigation starting, navigation done, tabs torn down) cannot
+ * disagree about whether a page is loading. */
+void rb_set_loading(App *app, int on)
+{
+    app->loading = on ? 1 : 0;
+    rb_update_reloadbtn(app);
+    rb_progress_sync(app);
+}
+
 void rb_update_all(App *app)
 {
     rb_tab *t = rb_store_tab(app);
@@ -727,8 +830,7 @@ void rb_do_navigate(App *app, const char *url)
     }
 
     rb_set_str(&t->url, rb_strdup(target));
-    app->loading = 1;
-    rb_update_reloadbtn(app);
+    rb_set_loading(app, 1);
     rb_update_omni(app, target);
     rb_gw_navigate(app, target);
     free(upgraded);
@@ -852,7 +954,7 @@ static void rb_tabs_destroy_all(App *app)
     }
     app->silent = 0;
     app->active_id = 0;
-    app->loading = 0;
+    rb_set_loading(app, 0);
     while (rb_tabs_count(app->store) > 0) {
         const rb_tab *t = rb_tabs_at(app->store, 0);
         long id;
@@ -2264,6 +2366,15 @@ void rb_on_activate(GtkApplication *gtk_app, gpointer user_data)
     gtk_box_pack_start(GTK_BOX(toolbar), app->star, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), app->menu_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(root), toolbar, FALSE, FALSE, 0);
+
+    /* The page-load indicator: its own 2px strip between the toolbar and the
+     * page.  A drawing area rather than CSS because the segment moves. */
+    app->prog_area = gtk_drawing_area_new();
+    gtk_widget_set_size_request(app->prog_area, -1, RB_PROGRESS_H);
+    g_signal_connect(app->prog_area, "draw", G_CALLBACK(rb_progress_draw), app);
+    g_signal_connect(app->prog_area, "destroy",
+                     G_CALLBACK(rb_progress_area_gone), app);
+    gtk_box_pack_start(GTK_BOX(root), app->prog_area, FALSE, FALSE, 0);
 
     rb_add_actions(app);
 
