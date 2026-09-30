@@ -4,15 +4,20 @@ import androidx.room.Room
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.google.common.truth.Truth.assertThat
+import com.roombrowser.browser.wallet.WalletActivityRecord
 import com.roombrowser.data.db.AppDatabase
 import com.roombrowser.data.db.ProfileEntity
 import com.roombrowser.data.db.TabEntity
 import com.roombrowser.data.db.BookmarkEntity
 import com.roombrowser.data.db.HistoryEntity
 import com.roombrowser.data.repo.CredentialRepository
+import com.roombrowser.data.repo.ProfileRepositoryImpl
+import com.roombrowser.data.repo.WalletRepository
 import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.security.VaultCrypto
 import com.roombrowser.security.VaultCryptoException
+import com.roombrowser.security.WalletKeyCrypto
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -26,8 +31,10 @@ import org.junit.runner.RunWith
  * Verifies that tabs/bookmarks/history/credentials are physically scoped by
  * profile_id, that deleting a profile cascades ONLY to that profile's rows,
  * that the per-profile vault crypto round-trips on-device (and fails loudly
- * on wrong keys / corrupt data), and that tab positions are allocated
- * uniquely across open AND closed rows.
+ * on wrong keys / corrupt data), that tab positions are allocated uniquely
+ * across open AND closed rows, and that the wallet tables (Room v8) are
+ * scoped + encrypted per profile with the profile-delete cascade wiping
+ * exactly one profile's wallet data.
  */
 @RunWith(AndroidJUnit4::class)
 class DatabaseIsolationTest {
@@ -212,5 +219,182 @@ class DatabaseIsolationTest {
         // A different profile has its own sequence.
         db.tabDao().insertNextPosition("u1", profileB, "P", "https://p.example.com", isPrivate = false, createdAt = 0, lastViewedAt = 0)
         assertThat(db.tabDao().get("u1")!!.position).isEqualTo(0)
+    }
+
+    /**
+     * The wallet tables are profile data like everything else: the
+     * repository (real WalletKeyCrypto over the real Room v8 schema) hands a
+     * profile only its own wallet/accounts/networks/permissions/activity,
+     * the stored mnemonic is ciphertext under the profile's OWN wallet key
+     * (and nobody else's), and derived accounts persist no key material.
+     *
+     * Fixed public vectors (WalletEngineTest / ChainAdaptersCrossValidation
+     * .Test): the standard "abandon … about" phrase for profile A, the
+     * "shoot island …" phrase for profile B.
+     */
+    @Test
+    fun wallet_tables_are_scoped_and_encrypted_per_profile() = runBlocking {
+        val a = ProfileId(profileA)
+        val b = ProfileId(profileB)
+        val repo = WalletRepository(
+            db.walletDao(),
+            db.walletAccountDao(),
+            db.walletNetworkDao(),
+            db.dappPermissionDao(),
+            db.walletActivityDao(),
+            WalletKeyCrypto
+        )
+        val mnemonicA =
+            "abandon abandon abandon abandon abandon abandon abandon abandon " +
+                "abandon abandon abandon about"
+        val mnemonicB =
+            "shoot island position soft burden budget tooth cruel issue economy destroy above"
+
+        val walletA = repo.createWallet(a, "A Wallet", mnemonicA)
+        repo.createWallet(b, "B Wallet", mnemonicB)
+
+        // One wallet per profile — different rows, never each other's.
+        assertThat(repo.wallet(a)?.id).isEqualTo(walletA.id)
+        assertThat(repo.wallet(b)?.id).isNotEqualTo(walletA.id)
+
+        // Accounts are scoped through the profile's wallet (JOIN), and
+        // DERIVED rows persist no key material. The addresses are the fixed
+        // cross-validated vectors (abandon-mnemonic index-0 for A; the
+        // c5338c-key import address for B — opaque strings to the repo).
+        val evm0 = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+        val evmImport = "0x417AA4b5a8bf239d05C03C7C0C0231ECF7620c26"
+        repo.addDerivedAccount(a, ChainType.EVM, evm0, "m/44'/60'/0'/0/0", "EVM 1")
+        repo.addDerivedAccount(b, ChainType.EVM, evmImport, "m/44'/60'/0'/0/0", "EVM 1")
+        assertThat(repo.accounts(a).map { it.address }).containsExactly(evm0)
+        assertThat(repo.accounts(b).map { it.address }).containsExactly(evmImport)
+        assertThat(db.walletAccountDao().forProfile(profileA).single().privateKeyEnc).isNull()
+
+        // The mnemonic is ciphertext: no plaintext in the column, and the
+        // blob decrypts under the profile's OWN wallet key — under nobody
+        // else's.
+        val rowA = db.walletDao().byProfile(profileA) ?: error("A must have a wallet row")
+        val encA = rowA.mnemonicEnc ?: error("A's wallet row must store the mnemonic blob")
+        assertThat(encA).doesNotContain("abandon")
+        assertThat(WalletKeyCrypto.decrypt(a, encA)).isEqualTo(mnemonicA)
+        assertThrows(VaultCryptoException::class.java) {
+            WalletKeyCrypto.decrypt(b, encA)
+        }
+
+        // Networks: identical default catalogues per profile, but the rows
+        // are INDEPENDENT — disabling A's Ethereum Mainnet never touches B's.
+        repo.ensureDefaultNetworks(a)
+        repo.ensureDefaultNetworks(b)
+        val netA = repo.networks(a)
+        val netB = repo.networks(b)
+        assertThat(netA.map { it.config.id }).isEqualTo(netB.map { it.config.id })
+        repo.setNetworkEnabled(a, "EVM:1", false)
+        assertThat(repo.networks(a).first { it.config.id == "EVM:1" }.enabled).isFalse()
+        assertThat(repo.networks(b).first { it.config.id == "EVM:1" }.enabled).isTrue()
+        // No enabled EVM network left for A; B keeps its mainnet default.
+        assertThat(repo.activeNetwork(a, ChainType.EVM)).isNull()
+        assertThat(repo.activeNetwork(b, ChainType.EVM)?.id).isEqualTo("EVM:1")
+
+        // dApp permissions and the activity log are scoped per profile too.
+        repo.grantDappPermission(a, "a.example.com", ChainType.EVM, evm0, listOf("eth_requestAccounts"))
+        repo.grantDappPermission(b, "b.example.com", ChainType.EVM, evmImport, listOf("eth_requestAccounts"))
+        assertThat(repo.dappPermissions(a, "b.example.com")).isEmpty()
+        assertThat(repo.allDappPermissions(a).map { it.host }).containsExactly("a.example.com")
+        assertThat(repo.allDappPermissions(b).map { it.host }).containsExactly("b.example.com")
+        repo.recordActivity(
+            WalletActivityRecord(
+                id = "act-a", profileId = a, chainType = ChainType.EVM, networkName = "Ethereum",
+                kind = WalletActivityRecord.Kind.SIGN_MESSAGE, accountAddress = evm0,
+                toAddress = null, displayAmount = "message", hash = null,
+                explorerUrl = null, createdAt = 1
+            )
+        )
+        repo.recordActivity(
+            WalletActivityRecord(
+                id = "act-b", profileId = b, chainType = ChainType.EVM, networkName = "Ethereum",
+                kind = WalletActivityRecord.Kind.SIGN_MESSAGE, accountAddress = evmImport,
+                toAddress = null, displayAmount = "message", hash = null,
+                explorerUrl = null, createdAt = 2
+            )
+        )
+        assertThat(db.walletActivityDao().observeForProfile(profileA).first().map { it.id })
+            .containsExactly("act-a")
+        assertThat(db.walletActivityDao().observeForProfile(profileB).first().map { it.id })
+            .containsExactly("act-b")
+    }
+
+    /**
+     * The profile-deletion cascade (ProfileRepositoryImpl.remove with
+     * cascadeData = true — the REAL path the profile UI runs) wipes EVERY
+     * wallet table row of THAT profile — accounts before the wallet row they
+     * reference — and destroys only its wallet key: the other profile's
+     * wallet rows survive AND still decrypt under its untouched key.
+     */
+    @Test
+    fun deleting_profile_cascades_wallet_rows_for_that_profile_only() = runBlocking {
+        val a = ProfileId(profileA)
+        val b = ProfileId(profileB)
+        val repo = WalletRepository(
+            db.walletDao(),
+            db.walletAccountDao(),
+            db.walletNetworkDao(),
+            db.dappPermissionDao(),
+            db.walletActivityDao(),
+            WalletKeyCrypto
+        )
+        val mnemonicA =
+            "abandon abandon abandon abandon abandon abandon abandon abandon " +
+                "abandon abandon abandon about"
+        val mnemonicB =
+            "shoot island position soft burden budget tooth cruel issue economy destroy above"
+        repo.createWallet(a, "A Wallet", mnemonicA)
+        repo.createWallet(b, "B Wallet", mnemonicB)
+        repo.addDerivedAccount(a, ChainType.EVM, "0x9858EfFD232B4033E47d90003D41EC34EcaEda94", "m/44'/60'/0'/0/0", "EVM 1")
+        repo.addDerivedAccount(b, ChainType.EVM, "0x417AA4b5a8bf239d05C03C7C0C0231ECF7620c26", "m/44'/60'/0'/0/0", "EVM 1")
+        repo.ensureDefaultNetworks(a)
+        repo.ensureDefaultNetworks(b)
+        repo.grantDappPermission(a, "a.example.com", ChainType.EVM, "0x9858EfFD232B4033E47d90003D41EC34EcaEda94", listOf("eth_requestAccounts"))
+        repo.grantDappPermission(b, "b.example.com", ChainType.EVM, "0x417AA4b5a8bf239d05C03C7C0C0231ECF7620c26", listOf("eth_requestAccounts"))
+        repo.recordActivity(
+            WalletActivityRecord(
+                id = "act-a", profileId = a, chainType = ChainType.EVM, networkName = "Ethereum",
+                kind = WalletActivityRecord.Kind.DAPP_SEND, accountAddress = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+                toAddress = "0x000000000000000000000000000000000000dEaD",
+                displayAmount = "0.001 ETH", hash = "0xhash", explorerUrl = null, createdAt = 1
+            )
+        )
+        repo.recordActivity(
+            WalletActivityRecord(
+                id = "act-b", profileId = b, chainType = ChainType.EVM, networkName = "Ethereum",
+                kind = WalletActivityRecord.Kind.DAPP_SEND, accountAddress = "0x417AA4b5a8bf239d05C03C7C0C0231ECF7620c26",
+                toAddress = "0x000000000000000000000000000000000000dEaD",
+                displayAmount = "0.001 ETH", hash = "0xhash", explorerUrl = null, createdAt = 2
+            )
+        )
+
+        // The REAL cascade — same call ProfileRepositoryImpl's profile-UI
+        // path makes (rows first, then the profile's wallet key).
+        ProfileRepositoryImpl(db).remove(a, cascadeData = true)
+
+        // Every wallet table is wiped for A — and ONLY for A.
+        assertThat(db.walletDao().byProfile(profileA)).isNull()
+        assertThat(db.walletAccountDao().forProfile(profileA)).isEmpty()
+        assertThat(db.walletNetworkDao().forProfile(profileA)).isEmpty()
+        assertThat(db.walletNetworkDao().activeNetwork(profileA, "EVM")).isNull()
+        assertThat(db.dappPermissionDao().allForProfile(profileA)).isEmpty()
+        assertThat(db.walletActivityDao().observeForProfile(profileA).first()).isEmpty()
+        assertThat(repo.wallet(a)).isNull()
+
+        // B's wallet data is fully intact.
+        assertThat(db.walletDao().byProfile(profileB)).isNotNull()
+        assertThat(db.walletAccountDao().forProfile(profileB)).hasSize(1)
+        assertThat(db.walletNetworkDao().forProfile(profileB)).isNotEmpty()
+        assertThat(db.dappPermissionDao().allForProfile(profileB)).hasSize(1)
+        assertThat(db.walletActivityDao().observeForProfile(profileB).first()).hasSize(1)
+        assertThat(repo.accounts(b)).hasSize(1)
+
+        // Only A's key was destroyed — B's blob still decrypts under B's.
+        val encB = db.walletDao().byProfile(profileB)?.mnemonicEnc
+            ?: error("B's wallet row must survive the cascade")
+        assertThat(WalletKeyCrypto.decrypt(b, encB)).isEqualTo(mnemonicB)
     }
 }

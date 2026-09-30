@@ -211,6 +211,21 @@ private fun WalletRoot(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
+    // ONBOARDING PIN: engine.createWallet/importWallet persist the wallet
+    // row the MOMENT they run, which flips lockState NO_WALLET → LOCKED via
+    // the repo observer — mid-flow. Without the pin, the when() below would
+    // swap the onboarding out of composition at that instant: the
+    // recovery-phrase reveal and the confirmation quiz would be UNREACHABLE
+    // and a UI-created wallet unrecoverable (its phrase returned by
+    // createWallet dies with the discarded composition state). The pin keeps
+    // onboarding in place until IT reports ready (quiz done / import done);
+    // NO_WALLET always shows onboarding anyway. Dropped state (process death
+    // mid-onboarding) resumes on the locked pane — the wallet is usable, but
+    // a phrase abandoned before reveal is gone for good (v1 documented risk).
+    var onboardingPinned by remember {
+        mutableStateOf(engine.lockState.value == WalletLockState.NO_WALLET)
+    }
+
     // Gate on entry (LOCKED only) — exactly once per composition; every
     // later prompt is a user-driven retry from the locked pane's Unlock
     // button. Onboarding (NO_WALLET) is exempt: nothing to unlock yet.
@@ -304,24 +319,27 @@ private fun WalletRoot(
                         .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
                 )
         ) {
-            when (lockState) {
-                WalletLockState.NO_WALLET -> WalletOnboarding(
+            when {
+                // Pinned onboarding OR no wallet yet → onboarding. Creating/
+                // importing does NOT unlock the engine session by design —
+                // when onboarding completes, fire the entry gate right away
+                // (the user just proved ownership of the phrase in this
+                // session) instead of dumping them on the locked pane; on
+                // failure/no device credential the pane takes over with its
+                // manual retry, exactly like the entry path.
+                onboardingPinned || lockState == WalletLockState.NO_WALLET -> WalletOnboarding(
                     engine = engine,
                     onMessage = { onMessage(it) },
-                    // Creating/importing does NOT unlock the engine session by
-                    // design — the moment the wallet exists, lockState flips
-                    // NO_WALLET → LOCKED. Fire the entry gate right away (the
-                    // user just proved ownership of the phrase in this
-                    // session) instead of dumping them on the locked pane;
-                    // on failure/no device credential the pane takes over
-                    // with its manual retry, exactly like the entry path.
-                    onWalletReady = onUnlockRequest
+                    onWalletReady = {
+                        onboardingPinned = false
+                        onUnlockRequest()
+                    }
                 )
-                WalletLockState.LOCKED -> LockedWalletPane(
+                lockState == WalletLockState.LOCKED -> LockedWalletPane(
                     biometricsAvailable = biometricsAvailable,
                     onUnlock = onUnlockRequest
                 )
-                WalletLockState.UNLOCKED -> WalletDashboard(
+                else -> WalletDashboard(
                     engine = engine,
                     walletLabel = wallet?.label ?: "Wallet",
                     profileName = profileName,

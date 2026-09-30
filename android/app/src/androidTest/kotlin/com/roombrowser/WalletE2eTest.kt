@@ -1,0 +1,1010 @@
+package com.roombrowser
+
+import android.content.Context
+import android.content.Intent
+import androidx.biometric.BiometricManager
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.By
+import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.UiObject2
+import androidx.test.uiautomator.Until
+import com.google.common.truth.Truth.assertThat
+import com.roombrowser.browser.wallet.DappDecision
+import com.roombrowser.browser.wallet.DappOutcome
+import com.roombrowser.browser.wallet.DappRequest
+import com.roombrowser.browser.wallet.WalletLockState
+import com.roombrowser.data.db.ProfileEntity
+import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.domain.wallet.model.BalanceResult
+import com.roombrowser.domain.wallet.model.ChainType
+import com.roombrowser.domain.wallet.model.NetworkConfig
+import com.roombrowser.domain.wallet.model.WalletException
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
+import org.junit.After
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import java.util.Base64
+import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+
+/**
+ * E2E regression for the integrated multi-chain wallet (Room v8 tables +
+ * WalletRepository + WalletEngine + WalletBridge/RoomWalletScript + the
+ * WalletActivity UI). One test, three legs, one fresh profile per leg:
+ *
+ *   Leg A (UI, no-credential device): the settings "Wallet" row opens
+ *     WalletActivity on the onboarding (NO_WALLET); a repository-level
+ *     wallet with the FIXED test vector then locks it — WalletActivity
+ *     re-opens on its LOCKED pane, a failed "Unlock" stays graceful, wallet
+ *     contents never render, no crash. DB ground truth (test-process
+ *     AppGraph): the wallet row's mnemonic is CIPHERTEXT (decrypts under
+ *     this profile's key to the exact phrase; no phrase word's bytes occur
+ *     in the decoded payload) and derived accounts store NO key material.
+ *
+ *   Leg B (the dApp pipeline through the REAL bridge): a second profile is
+ *     created through the REAL quick switcher (process-restart path); its
+ *     wallet + EVM account are created at the REPOSITORY level with the
+ *     fixed vector, and the ':browser' engine sees the rows via Room
+ *     multi-instance invalidation. A MockWebServer page then drives
+ *     window.ethereum (falling back to the raw RoomWallet wire protocol on
+ *     WebView builds without document-start script support — the CI
+ *     emulator's WebView 83 lacks DOCUMENT_START_SCRIPT, so the provider
+ *     script is never injected there; the page-side
+ *     window.__roomWalletResponse hook is the frozen bridge contract):
+ *       1. eth_requestAccounts on host 127.0.0.1 -> Connect sheet appears
+ *          over the page (BrowserScreen hosts it) -> Approve -> the page
+ *          renders the account address.
+ *       2. the SAME host again -> already permitted: the bridge answers
+ *          SILENTLY — the address renders with NO sheet ever appearing.
+ *       3. a DIFFERENT host (localhost: hostOf() strips ports, so the
+ *          hostname is the only host distinction) -> sheet -> Reject ->
+ *          the page renders EIP-1193 error 4001.
+ *     DB ground truth: exactly the 127.0.0.1 permission row exists.
+ *
+ *   Leg C (device-independent, always runs): the test-process engine is
+ *     bound to a third profile created directly in the DB. importWallet
+ *     with the fixed phrase (golden index-0 address), unlock,
+ *     addDerivedAccount (golden index-1), importAccount with the fixed
+ *     private key (cross-validated address), nextDerivationIndex, both
+ *     reveal round-trips, an instantly-refusing local RPC endpoint makes
+ *     the offline contract deterministic (refreshBalances -> every entry
+ *     a BalanceResult.Error, estimateSendFee -> null, sendNative -> a
+ *     typed WalletException — never a hang), the engine-level dApp
+ *     pipeline (submitDappRequest -> decideDappRequest approved -> the
+ *     settle callback receives the address array; isDappPermitted flips),
+ *     and cross-profile isolation across all three legs' profiles.
+ *
+ * FIXED VECTORS (public test vectors copied from the app's own test
+ * corpus — android/app/src/test/.../WalletEngineTest.kt, which pins them
+ * from android/core/wallet/src/test/.../ChainAdaptersCrossValidationTest.kt
+ * where they are cross-validated against the official SDKs): the standard
+ * "abandon … about" BIP39 phrase, its golden EVM index-0/1 addresses, and
+ * the raw key "c5338c…". Never any real key material.
+ */
+@RunWith(AndroidJUnit4::class)
+class WalletE2eTest {
+
+    private val instrumentation = InstrumentationRegistry.getInstrumentation()
+    private val device: UiDevice = UiDevice.getInstance(instrumentation)
+    private val targetContext: Context = instrumentation.targetContext
+
+    private lateinit var server: MockWebServer
+
+    /** Per-run marker suffix — unique names/URLs across runs. */
+    private val tag = (System.currentTimeMillis() % 100000).toString()
+    private val profileName1 = "E2EWa$tag"
+    private val profileName2 = "E2EWb$tag"
+
+    private lateinit var urlConnect: String
+    private lateinit var urlSilent: String
+    private lateinit var urlReject: String
+
+    // -- fixed vectors (see class KDoc for provenance) --------------------
+    private companion object {
+        const val ABANDON =
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        const val EVM0 = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+        const val EVM1 = "0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0"
+        const val SOL0 = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"
+        const val SEED = "c5338cd251c22daa8c9c9cc94f498cc8a5c7e1d2e75287a5dda91096fe64efa5"
+        const val EVM_IMPORT = "0x417AA4b5a8bf239d05C03C7C0C0231ECF7620c26"
+        const val EVM_PATH0 = "m/44'/60'/0'/0/0"
+        const val EVM_PATH1 = "m/44'/60'/0'/0/1"
+        const val SOL_PATH0 = "m/44'/501'/0'/0'"
+        const val BURN_ADDRESS = "0x000000000000000000000000000000000000dEaD"
+
+        /** id of the custom EVM network whose RPC refuses instantly. */
+        const val REFUSED_NETWORK_ID = "EVM:42141337"
+    }
+
+    @Before
+    fun setUp() {
+        server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = (request.path ?: "").substringBefore('?')
+                return when {
+                    path.startsWith("/connect-$tag") ->
+                        dappPage("WC1-$tag", "connect-$tag", "RESULT:", 750)
+                    path.startsWith("/silent-$tag") ->
+                        dappPage("WS2-$tag", "silent-$tag", "SILENT:", 600)
+                    path.startsWith("/reject-$tag") ->
+                        dappPage("WR3-$tag", "reject-$tag", "NEVER:", 600)
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+        server.start()
+        val base = server.url("/").toString().trimEnd('/')
+        // 127.0.0.1 and localhost are DIFFERENT hosts to the bridge
+        // (UrlIntelligence.hostOf() strips ports) but the same loopback
+        // interface — one server, two host identities.
+        urlConnect = "$base/connect-$tag"
+        urlSilent = "$base/silent-$tag"
+        urlReject = "http://localhost:${server.url("/").port}/reject-$tag"
+    }
+
+    @After
+    fun tearDown() {
+        runCatching { server.shutdown() }
+    }
+
+    /**
+     * A page that connects through the REAL wallet bridge and renders the
+     * outcome into the DOM. Prefers the injected EIP-1193 provider
+     * (window.ethereum); falls back to the raw RoomWallet wire protocol
+     * (the frozen bridge contract: window.RoomWallet.request in,
+     * window.__roomWalletResponse out) when the provider script was not
+     * injected — the CI emulator's WebView 83 has no document-start
+     * script support, so the raw interface is what its pages see.
+     */
+    private fun dappPage(title: String, pageId: String, marker: String, delayMs: Int): MockResponse =
+        MockResponse()
+            .setHeader("Content-Type", "text/html; charset=utf-8")
+            .setBody(
+                """
+                <!DOCTYPE html><html><head>
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <title>$title</title>
+                </head><body style="font-size:24px; margin:24px;">
+                <h1>$title</h1>
+                <div id="out">WAITING-$pageId</div>
+                <script>
+                  function roomConnect(id) {
+                    if (window.ethereum && typeof window.ethereum.request === 'function') {
+                      return window.ethereum.request({ method: 'eth_requestAccounts' });
+                    }
+                    return new Promise(function (resolve, reject) {
+                      window.__roomWalletResponse = function (rid, resultJson, errorCode, errorMessage) {
+                        if (errorCode === 0) {
+                          var value = null;
+                          try { value = JSON.parse(resultJson); } catch (e) { value = resultJson; }
+                          resolve(value);
+                        } else {
+                          var error = new Error(errorMessage || 'bridge error');
+                          error.code = errorCode;
+                          reject(error);
+                        }
+                      };
+                      window.RoomWallet.request(JSON.stringify(
+                        { id: id, kind: 'request', chain: 'EVM', method: 'eth_requestAccounts', params: [] }
+                      ));
+                    });
+                  }
+                  setTimeout(function () {
+                    roomConnect('$pageId').then(
+                      function (accounts) {
+                        var text = (accounts && accounts.join) ? accounts.join(',') : String(accounts);
+                        document.getElementById('out').innerText = '$marker' + text;
+                      },
+                      function (err) {
+                        document.getElementById('out').innerText = 'ERR:' + ((err && err.code) ? err.code : 'none');
+                      }
+                    );
+                  }, $delayMs);
+                </script>
+                </body></html>
+                """.trimIndent()
+            )
+
+    // ---------- UiAutomator helpers (proven patterns) --------------------
+
+    private fun launchMainActivity() {
+        val intent = targetContext.packageManager.getLaunchIntentForPackage(targetContext.packageName)
+            ?: Intent(Intent.ACTION_MAIN).apply {
+                setClassName(targetContext.packageName, "com.roombrowser.main.MainActivity")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK)
+        targetContext.startActivity(intent)
+    }
+
+    private fun hasText(text: String, timeoutMs: Long): Boolean =
+        device.wait(Until.hasObject(By.text(text)), timeoutMs)
+
+    private fun hasTextContains(part: String, timeoutMs: Long): Boolean =
+        device.wait(Until.hasObject(By.textContains(part)), timeoutMs)
+
+    private fun hasDesc(desc: String, timeoutMs: Long): Boolean =
+        device.wait(Until.hasObject(By.desc(desc)), timeoutMs)
+
+    private fun waitUntil(timeoutMs: Long, condition: () -> Boolean): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) return true
+            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+        }
+        return condition()
+    }
+
+    private fun waitGone(text: String, timeoutMs: Long): Boolean =
+        waitUntil(timeoutMs) { device.findObjects(By.text(text)).isEmpty() }
+
+    /** True when [text] is ABSENT for the whole [windowMs] (no late appearance). */
+    private fun staysAbsent(text: String, windowMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + windowMs
+        while (System.currentTimeMillis() < deadline) {
+            if (device.findObjects(By.text(text)).isNotEmpty()) return false
+            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+        }
+        return device.findObjects(By.text(text)).isEmpty()
+    }
+
+    /** Polls the WebView's DOM-rendered result marker (page a11y text). */
+    private fun pageResultText(prefix: String, timeoutMs: Long): String? {
+        fun probe(): List<String> =
+            device.findObjects(By.textContains(prefix)).mapNotNull { it.text }
+        val deadline = System.currentTimeMillis() + timeoutMs
+        var result = probe()
+        while (result.isEmpty() && System.currentTimeMillis() < deadline) {
+            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            result = probe()
+        }
+        return result.firstOrNull()
+    }
+
+    private fun clickCenter(node: UiObject2): Boolean = try {
+        val b = node.visibleBounds
+        // SHELL TAP (input tap) — deterministic on the busy CI a11y pipeline.
+        device.executeShellCommand("input tap ${b.centerX()} ${b.centerY()}")
+        device.waitForIdle(1_000)
+        true
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun clickSmart(node: UiObject2): Boolean {
+        var current: UiObject2? = node
+        var hops = 0
+        while (current != null && hops < 8) {
+            val clickable = try { current.isClickable } catch (_: Exception) { false }
+            if (clickable) {
+                try {
+                    current.click()
+                    device.waitForIdle(1_000)
+                    return true
+                } catch (_: Exception) {
+                }
+            }
+            current = try { current.parent } catch (_: Exception) { null }
+            hops++
+        }
+        return clickCenter(node)
+    }
+
+    private fun clickText(text: String, timeoutMs: Long): Boolean {
+        val node = device.wait(Until.findObject(By.text(text)), timeoutMs) ?: return false
+        return clickSmart(node)
+    }
+
+    private fun clickDesc(desc: String, timeoutMs: Long): Boolean {
+        val node = device.wait(Until.findObject(By.desc(desc)), timeoutMs) ?: return false
+        return clickSmart(node)
+    }
+
+    private fun dragUpQuarter() {
+        device.swipe(
+            device.displayWidth / 2, device.displayHeight * 5 / 8,
+            device.displayWidth / 2, device.displayHeight * 3 / 8, 100
+        )
+        device.waitForIdle(600)
+    }
+
+    /** Scroll-aware click (off-screen rows are not in the a11y tree). */
+    private fun clickTextWithScroll(text: String, attempts: Int = 14): Boolean {
+        for (i in 1..attempts) {
+            if (clickText(text, 1_500)) return true
+            dragUpQuarter()
+        }
+        return false
+    }
+
+    private fun imeShown(): Boolean = try {
+        device.executeShellCommand("dumpsys input_method | grep mInputShown")
+            .contains("mInputShown=true")
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun hideImeIfNeeded() {
+        if (imeShown()) {
+            device.pressBack()
+            device.waitForIdle(600)
+        }
+    }
+
+    private fun engineUiUp(timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (hasDesc("Address bar", 400)) return true
+            if (hasText("Search or type URL", 400)) return true
+            if (hasText("Privacy Dashboard", 400)) return true
+            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+        }
+        return hasDesc("Address bar", 500)
+    }
+
+    /** The start page is up exactly when the address pill says so. */
+    private fun homepageUp(timeoutMs: Long): Boolean =
+        device.wait(Until.hasObject(By.desc("Address bar: search or type URL")), timeoutMs) ||
+            hasText("Privacy Dashboard", 2_000)
+
+    /**
+     * Probe dump for failure messages. Word-cell texts ("<n>. <word>" —
+     * the reveal screen's recovery-phrase grid) are REDACTED: phrase
+     * material never reaches a log or a failure message.
+     */
+    private fun uiTree(): String = try {
+        val texts = runCatching {
+            device.findObjects(By.textContains(""))
+                .mapNotNull { it.text }
+                .map { if (wordCell.matches(it)) "<phrase cell redacted>" else it }
+                .distinct().take(60)
+        }.getOrDefault(emptyList())
+        val descs = runCatching {
+            device.findObjects(By.descContains("")).mapNotNull { it.contentDescription }
+                .distinct().take(30)
+        }.getOrDefault(emptyList())
+        "TEXTS: $texts\nDESCS: $descs"
+    } catch (t: Throwable) {
+        "probe dump failed: $t"
+    }
+
+    // ---------- Bootstrap: fresh per-run profiles -------------------------
+
+    /** TabsE2eTest bootstrap: one fresh profile, engine up on it. */
+    private fun bootstrapFreshEngine(): Boolean {
+        device.pressHome()
+        launchMainActivity()
+        device.waitForIdle(2_000)
+        assertTrue(
+            "Profile list or first-run state must appear",
+            hasText("Your profiles", 20_000) || hasText("Create Profile", 20_000)
+        )
+        assertTrue(
+            "Create Profile affordance must be reachable",
+            clickTextWithScroll("Create Profile")
+        )
+        assertTrue("Create-profile dialog should open", hasText("Cancel", 8_000))
+        val field = device.wait(Until.findObject(By.clazz("android.widget.EditText")), 8_000)
+        assertTrue("Name text field must be visible", field != null)
+        clickCenter(field!!)
+        device.executeShellCommand("input text $profileName1")
+        device.waitForIdle(1_000)
+        val cancel = device.findObjects(By.text("Cancel")).minByOrNull { it.visibleBounds.top }
+        val confirm = device.findObjects(By.text("Create Profile"))
+            .filter { c ->
+                cancel != null && kotlin.math.abs(
+                    c.visibleBounds.centerY() - cancel.visibleBounds.centerY()
+                ) < 200
+            }
+            .maxByOrNull { it.visibleBounds.centerX() }
+        assertTrue("Dialog confirm button must be found", confirm != null)
+        clickCenter(confirm!!)
+        assertTrue("Create dialog should close after confirm", waitGone("Cancel", 10_000))
+        return engineUiUp(40_000)
+    }
+
+    /** Opens a page-actions sheet entry by desc and VERIFIES the effect. */
+    private fun openSheetEntry(label: String, verify: () -> Boolean): Boolean {
+        for (round in 1..3) {
+            if (!hasDesc("Page actions and settings", 1_500)) {
+                device.pressBack()
+                device.waitForIdle(1_000)
+            }
+            if (!clickDesc("Page actions and settings", 6_000)) continue
+            for (attempt in 1..12) {
+                val node = device.wait(Until.findObject(By.desc(label)), 2_000)
+                if (node != null) {
+                    clickSmart(node)
+                    if (verify()) return true
+                    runCatching { clickCenter(node) }
+                    if (verify()) return true
+                }
+                dragUpQuarter()
+            }
+        }
+        return false
+    }
+
+    /**
+     * Loads [url] in the CURRENT tab through the real omnibox and waits for
+     * [contentMarker] in the page (TabsE2eTest retype rounds).
+     */
+    private fun loadInOmnibox(url: String, contentMarker: String): Boolean {
+        for (round in 1..3) {
+            if (hasText(contentMarker, 500)) return true
+            hideImeIfNeeded()
+            val field = device.wait(Until.findObject(By.desc("omni_field")), 4_000) ?: continue
+            clickSmart(field)
+            device.waitForIdle(500)
+            device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
+            device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
+            device.waitForIdle(300)
+            device.executeShellCommand("input text $url")
+            device.waitForIdle(600)
+            // IME Go action -> onOmniBoxInput -> loadUrl (same tab).
+            device.executeShellCommand("input keyevent 66")
+            if (hasText(contentMarker, 12_000)) return true
+            device.pressEnter()
+            if (hasText(contentMarker, 12_000)) return true
+        }
+        return false
+    }
+
+    /** Backs out of WalletActivity and the settings routes to the surface. */
+    private fun backToBrowsingSurface(): Boolean {
+        for (i in 1..6) {
+            if (homepageUp(1_500)) return true
+            device.pressBack()
+            device.waitForIdle(1_000)
+        }
+        return homepageUp(3_000)
+    }
+
+    /**
+     * Creates a SECOND profile through the REAL quick switcher: page menu ->
+     * "Switch profile" -> "Create New Profile" -> the dialog -> the switch
+     * runs the process-restart protocol and the engine relaunches bound to
+     * the new profile (TabsE2eTest's "later profile" path).
+     */
+    private fun createSecondProfileThroughSwitcher(): Boolean {
+        if (!openSheetEntry("Switch profile") { hasText("Switch Profile", 6_000) }) return false
+        if (!clickTextWithScroll("Create New Profile")) return false
+        assertTrue("Create-profile dialog should open", hasText("New Profile", 8_000))
+        val field = device.wait(Until.findObject(By.clazz("android.widget.EditText")), 8_000)
+            ?: return false
+        clickCenter(field)
+        device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
+        device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
+        device.waitForIdle(300)
+        device.executeShellCommand("input text $profileName2")
+        device.waitForIdle(1_000)
+        if (!clickText("Create", 5_000)) return false
+        // The switch kills the ':browser' process and restarts it bound to
+        // the new profile — the same engine-up the bootstrap waits for.
+        return engineUiUp(40_000)
+    }
+
+    // ---------- Onboarding helpers (create-flow spec test) ----------------
+
+    /** Shape of a reveal-screen word cell: "<1-based index>. <word>". */
+    private val wordCell = Regex("^\\d{1,2}\\. .+$")
+
+    /**
+     * Reads the revealed word cells (index -> word). The words stay in
+     * memory ONLY — they are never logged, asserted into a message or
+     * written anywhere.
+     */
+    private fun readWordCells(): Map<Int, String> {
+        val cells = device.findObjects(By.textContains(""))
+            .mapNotNull { it.text }
+            .mapNotNull { text ->
+                val dot = text.indexOf(". ")
+                val index = text.substringBefore(".").toIntOrNull()
+                if (dot > 0 && index != null && text.length > dot + 2) {
+                    index to text.substring(dot + 2)
+                } else {
+                    null
+                }
+            }
+            .filter { it.first in 1..24 && it.second.none { c -> c == '•' } }
+            .toMap()
+        return cells
+    }
+
+    /**
+     * Answers the 3-word confirmation quiz by READING each "Tap word #N"
+     * prompt and tapping the remembered word for that index. Each round is
+     * verification-driven: the answered prompt must disappear before the
+     * next one is read. Word material never reaches a message.
+     */
+    private fun answerQuiz(words: Map<Int, String>): Boolean {
+        for (attempt in 1..12) {
+            if (hasTextContains("All three words correct.", 1_000)) return true
+            val prompt = device.wait(Until.findObject(By.textStartsWith("Tap word #")), 3_000)
+                ?: continue
+            val promptText = prompt.text ?: continue
+            val number = promptText.removePrefix("Tap word #").trim().toIntOrNull() ?: continue
+            val wanted = words[number] ?: return false
+            if (!clickText(wanted, 5_000)) continue
+            // Verification-driven: the answered prompt disappears when the
+            // tap registers (the next prompt asks a different index).
+            waitGone(promptText, 6_000)
+        }
+        return hasTextContains("All three words correct.", 2_000)
+    }
+
+    // ---------- DB ground-truth helpers (test-process AppGraph) -----------
+
+    /** Returns the index of [needle] in [haystack], or -1. */
+    private fun bytesIndexOf(haystack: ByteArray, needle: ByteArray): Int {
+        if (needle.isEmpty() || haystack.size < needle.size) return -1
+        outer@ for (i in 0..haystack.size - needle.size) {
+            for (j in needle.indices) {
+                if (haystack[i + j] != needle[j]) continue@outer
+            }
+            return i
+        }
+        return -1
+    }
+
+    /**
+     * The stored mnemonic is ciphertext: the blob decrypts under the
+     * profile's own wallet key to [expected], and no dictionary word of the
+     * phrase occurs in the DECODED payload (the actual ciphertext; the
+     * base64 TEXT could coincidentally contain a short word as a
+     * substring — the decoded bytes are what is stored).
+     */
+    private fun assertMnemonicCiphertext(profileId: ProfileId, expected: String) {
+        val row = runBlocking {
+            (targetContext.applicationContext as com.roombrowser.RoomBrowserApp).graph
+                .database.walletDao().byProfile(profileId.value)
+        } ?: error("profile must have a wallet row")
+        val enc = row.mnemonicEnc ?: error("the wallet row must store a mnemonic blob")
+        assertThat(enc).isNotEmpty()
+        assertThat(enc).doesNotContain(expected)
+        val payload = Base64.getDecoder().decode(enc)
+        expected.split(' ').distinct().forEach { word ->
+            assertThat(bytesIndexOf(payload, word.toByteArray(Charsets.US_ASCII)))
+                .isEqualTo(-1)
+        }
+        assertThat(com.roombrowser.security.WalletKeyCrypto.decrypt(profileId, enc))
+            .isEqualTo(expected)
+    }
+
+    // ---------- The contract ------------------------------------------------
+
+    @Test
+    fun wallet_row_locked_pane_dapp_bridge_pipeline_and_repository_flow() {
+        assertTrue("Engine must come up on a fresh profile", bootstrapFreshEngine())
+        val appGraph = (targetContext.applicationContext as com.roombrowser.RoomBrowserApp).graph
+
+        // ================= Leg A: settings row + onboarding + locked pane ==
+        val profileId1 = ProfileId(
+            runBlocking {
+                appGraph.appState.activeProfileIdSnapshot()
+                    ?: error("engine must have persisted the active profile id")
+            }
+        )
+
+        assertTrue(
+            "Profile settings must open",
+            openSheetEntry("Profile settings") {
+                device.wait(Until.hasObject(By.textContains("Profile Settings —")), 8_000)
+            }
+        )
+        // The row is targeted by its SUBTITLE: the section header and the
+        // row title are both the bare text "Wallet" on this screen.
+        assertTrue(
+            "The Wallet settings row must be tappable",
+            clickTextWithScroll("Multi-chain wallet, accounts and dApp connections")
+        )
+        assertTrue(
+            "WalletActivity must open on the onboarding choice screen\n${uiTree()}",
+            hasText("Set up your wallet", 15_000)
+        )
+        assertTrue("The create option must be offered", hasText("Create a new wallet", 3_000))
+        assertTrue("The import option must be offered", hasText("Import with recovery phrase", 3_000))
+
+        val authenticators = BiometricManager.Authenticators.BIOMETRIC_WEAK or
+            BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        val canAuthenticate =
+            BiometricManager.from(targetContext).canAuthenticate(authenticators) ==
+                BiometricManager.BIOMETRIC_SUCCESS
+
+        // Leave the wallet surface, then give the profile a wallet at the
+        // repository level with the FIXED vector — exactly the state the
+        // create flow would produce for the default chains (EVM + Solana).
+        device.pressBack()
+        device.waitForIdle(1_000)
+        runBlocking {
+            val repo = appGraph.walletRepo
+            repo.createWallet(profileId1, "Wallet", ABANDON)
+            repo.addDerivedAccount(profileId1, ChainType.EVM, EVM0, EVM_PATH0, "EVM 1")
+            repo.addDerivedAccount(profileId1, ChainType.SOLANA, SOL0, SOL_PATH0, "Solana 1")
+        }
+
+        // Reopen: the wallet exists -> the LOCKED pane (WalletActivity's
+        // entry gate fails with no device credentials — the CI state).
+        assertTrue(
+            "The Wallet settings row must re-open the wallet surface",
+            clickTextWithScroll("Multi-chain wallet, accounts and dApp connections")
+        )
+        if (!canAuthenticate) {
+            assertTrue(
+                "The LOCKED pane must render — no crash\n${uiTree()}",
+                hasText("Wallet locked", 15_000)
+            )
+            assertTrue(
+                "The no-credential copy must show",
+                // contains, not equals: the pane renders the FULL two-sentence
+                // body ("This device has no screen lock. Set a PIN, pattern or
+                // password in system settings to use the wallet.").
+                hasTextContains("This device has no screen lock", 3_000)
+            )
+            assertTrue("The retry button must be present", hasText("Unlock", 5_000))
+            // Wallet contents are NEVER composed while locked.
+            assertTrue(
+                "Wallet contents must never render while locked",
+                device.findObjects(By.text("Networks")).isEmpty() &&
+                    device.findObjects(By.text("Accounts")).isEmpty()
+            )
+            assertTrue(
+                "A failed Unlock must keep the pane (graceful)\n${uiTree()}",
+                clickText("Unlock", 5_000) && hasText("Wallet locked", 5_000)
+            )
+            assertTrue("The activity must still be alive (no crash)", hasDesc("Close wallet", 3_000))
+        }
+        // (A device WITH credentials would raise the system prompt on entry;
+        //  the locked pane below it is the same pane — the repository-level
+        //  ground truth and Legs B/C are device-independent.)
+
+        // DB ground truth: the mnemonic is ciphertext, derived accounts
+        // carry no key material.
+        assertMnemonicCiphertext(profileId1, ABANDON)
+        val legAAccounts = runBlocking {
+            appGraph.database.walletAccountDao().forProfile(profileId1.value)
+        }
+        assertThat(legAAccounts.map { it.address }).containsExactly(EVM0, SOL0)
+        assertThat(legAAccounts.map { it.chainType }).containsExactly("EVM", "SOLANA")
+        legAAccounts.forEach { assertThat(it.privateKeyEnc).isNull() }
+
+        // ================= Leg B: dApp connect through the REAL bridge ======
+        assertTrue("Settings must be left for the browsing surface", backToBrowsingSurface())
+        assertTrue(
+            "The second profile must come up through the quick switcher",
+            createSecondProfileThroughSwitcher()
+        )
+        val profileId2 = ProfileId(
+            runBlocking {
+                appGraph.appState.activeProfileIdSnapshot()
+                    ?: error("the switched engine must persist the new active profile id")
+            }
+        )
+        assertThat(profileId2.value).isNotEqualTo(profileId1.value)
+
+        // Repository-level wallet + ONE EVM account for the fixed vector;
+        // the ':browser' engine (bound since its restart) observes the rows
+        // through Room multi-instance invalidation.
+        runBlocking {
+            val repo = appGraph.walletRepo
+            repo.createWallet(profileId2, "E2E Bridge Wallet", ABANDON)
+            repo.addDerivedAccount(profileId2, ChainType.EVM, EVM0, EVM_PATH0, "EVM 1")
+        }
+        assertThat(
+            runBlocking { appGraph.database.walletDao().byProfile(profileId2.value) }
+        ).isNotNull()
+
+        // (1) First connect: the sheet MUST appear and Approve hands the
+        //     page the account address (checksummed or not — dApps may get
+        //     either form, so the compare is case-insensitive).
+        assertTrue("The connect page must load", loadInOmnibox(urlConnect, "WC1-$tag"))
+        assertTrue("The Connect sheet must appear over the page", hasText("Connect site", 20_000))
+        assertTrue("The sheet must name the WebView-verified host", hasText("127.0.0.1", 3_000))
+        assertTrue("Approve must be clickable", clickText("Approve", 5_000))
+        assertTrue("The sheet must leave after Approve", waitGone("Connect site", 8_000))
+        val connectResult = pageResultText("RESULT:", 15_000)
+        assertTrue(
+            "The page must render the connect result (found ${connectResult ?: "nothing"})\n${uiTree()}",
+            connectResult != null && connectResult.substringAfter("RESULT:")
+                .equals(EVM0, ignoreCase = true)
+        )
+
+        // (2) The SAME host again: with the permission granted the bridge
+        //     answers SILENTLY — the address renders with NO sheet.
+        assertTrue("The silent re-connect page must load", loadInOmnibox(urlSilent, "WS2-$tag"))
+        val silentResult = pageResultText("SILENT:", 15_000)
+        assertTrue(
+            "The permitted re-connect must resolve with the address (found ${silentResult ?: "nothing"})\n${uiTree()}",
+            silentResult != null && silentResult.substringAfter("SILENT:")
+                .equals(EVM0, ignoreCase = true)
+        )
+        assertTrue(
+            "No Connect sheet may appear for an already-permitted host",
+            staysAbsent("Connect site", 2_000)
+        )
+
+        // (3) A DIFFERENT host: the sheet appears again and Reject settles
+        //     EIP-1193 4001 (the JS rejects with the bridge's error code).
+        assertTrue("The reject page must load", loadInOmnibox(urlReject, "WR3-$tag"))
+        assertTrue("The Connect sheet must appear for the new host", hasText("Connect site", 20_000))
+        assertTrue("The sheet must name the localhost host", hasText("localhost", 3_000))
+        assertTrue("Reject must be clickable", clickText("Reject", 5_000))
+        val rejectResult = pageResultText("ERR:", 15_000)
+        assertTrue(
+            "The rejected connect must surface error 4001 (found ${rejectResult ?: "nothing"})\n${uiTree()}",
+            rejectResult != null && rejectResult.substringAfter("ERR:") == "4001"
+        )
+
+        // DB ground truth: exactly the 127.0.0.1 permission exists; the
+        // rejected host was never granted.
+        val legBPerms = runBlocking {
+            appGraph.database.dappPermissionDao().allForProfile(profileId2.value)
+        }
+        assertThat(legBPerms.map { it.host }).containsExactly("127.0.0.1")
+        assertThat(legBPerms.single().chainType).isEqualTo("EVM")
+        assertThat(legBPerms.single().accountAddress).isEqualTo(EVM0)
+        assertThat(legBPerms.single().methodsJson).contains("eth_requestAccounts")
+
+        // ================= Leg C: repository/engine full flow ===============
+        // A third profile keeps this leg isolated from the UI legs.
+        val profileId3 = ProfileId(UUID.randomUUID().toString())
+        runBlocking {
+            appGraph.database.profileDao().upsert(
+                ProfileEntity(
+                    id = profileId3.value,
+                    name = "E2E Wallet C $tag",
+                    icon = "x",
+                    colorArgb = 0,
+                    isLocked = false,
+                    isDefault = false,
+                    createdAt = System.currentTimeMillis(),
+                    lastActiveAt = System.currentTimeMillis(),
+                    settingsJson = "{}"
+                )
+            )
+        }
+        val engine = appGraph.walletEngine
+        engine.bind(profileId3)
+        assertThat(engine.lockState.value).isEqualTo(WalletLockState.NO_WALLET)
+
+        // import the fixed phrase -> the golden index-0 EVM account.
+        runBlocking { engine.importWallet(ABANDON, "Leg C Wallet", listOf(ChainType.EVM)) }
+        assertTrue(
+            "The engine must observe the wallet (NO_WALLET -> LOCKED)",
+            waitUntil(10_000) { engine.lockState.value == WalletLockState.LOCKED }
+        )
+        assertTrue(
+            "The index-0 account must be observed",
+            waitUntil(10_000) { engine.accounts.value.size == 1 }
+        )
+        assertThat(engine.accounts.value.single().address).isEqualTo(EVM0)
+        assertThat(engine.accounts.value.single().path).isEqualTo(EVM_PATH0)
+
+        engine.unlock()
+        assertThat(engine.lockState.value).isEqualTo(WalletLockState.UNLOCKED)
+
+        // addDerivedAccount walks to the next BIP44 index (golden index-1).
+        val derived = runBlocking { engine.addDerivedAccount(ChainType.EVM) }
+            ?: error("addDerivedAccount must return the new account")
+        assertThat(derived.address).isEqualTo(EVM1)
+        assertThat(derived.path).isEqualTo(EVM_PATH1)
+
+        // importAccount with the fixed raw key -> the cross-validated address.
+        val imported = runBlocking { engine.importAccount(ChainType.EVM, SEED, "Imported key") }
+            ?: error("importAccount must return the new account")
+        assertThat(imported.address).isEqualTo(EVM_IMPORT)
+        assertTrue(
+            "All three accounts must be observed",
+            waitUntil(10_000) { engine.accounts.value.size == 3 }
+        )
+        assertThat(engine.accounts.value.map { it.address })
+            .containsExactly(EVM0, EVM1, EVM_IMPORT)
+
+        // The next free index is 2 (imports never count toward it).
+        assertThat(
+            runBlocking { appGraph.walletRepo.nextDerivationIndex(profileId3, ChainType.EVM) }
+        ).isEqualTo(2)
+
+        // Both reveal round-trips (unlocked session).
+        assertThat(runBlocking { engine.revealMnemonic() }).isEqualTo(ABANDON)
+        assertThat(runBlocking { appGraph.walletRepo.revealPrivateKey(imported.id) })
+            .isEqualTo(SEED)
+
+        // An instantly-refusing local RPC endpoint (nothing listens on the
+        // discard port) makes the offline contract deterministic: no hang,
+        // no external dependency, on ANY runner network.
+        val refusedNetwork = NetworkConfig.evm(
+            chainId = 42141337,
+            name = "E2E Refused RPC",
+            rpcUrls = listOf("http://127.0.0.1:9/"),
+            symbol = "TST",
+            explorer = null
+        )
+        assertThat(runBlocking { engine.addCustomNetwork(refusedNetwork) }).isTrue()
+        runBlocking { engine.setActiveNetwork(ChainType.EVM, REFUSED_NETWORK_ID) }
+        assertThat(engine.activeNetworks.value[ChainType.EVM]?.id).isEqualTo(REFUSED_NETWORK_ID)
+
+        // refreshBalances offline: every account settles as an Error entry —
+        // the withTimeout wrapper is the "does not hang" assertion itself.
+        runBlocking {
+            withTimeout(20_000) { engine.refreshBalances() }
+        }
+        val balances = engine.balances.value
+        assertThat(balances.keys).containsExactlyElementsIn(
+            engine.accounts.value.map { it.id }
+        )
+        balances.values.forEach { balance ->
+            assertThat(balance).isInstanceOf(BalanceResult.Error::class.java)
+        }
+
+        // estimateSendFee offline: null, never a crash and never a hang
+        // (withTimeout = the completion assertion).
+        val evm0 = engine.accounts.value.first { it.address == EVM0 }
+        assertThat(
+            runBlocking {
+                withTimeout(20_000) {
+                    engine.estimateSendFee(ChainType.EVM, REFUSED_NETWORK_ID, evm0.id, BURN_ADDRESS, "0.001")
+                }
+            }
+        ).isNull()
+
+        // sendNative to a garbage-but-valid-format address: the engine
+        // surfaces a typed WalletException immediately (adapter failures
+        // map to a loud error — never a hang, never a silent success).
+        val sendFailure = runBlocking {
+            withTimeout(20_000) {
+                try {
+                    engine.sendNative(evm0.id, REFUSED_NETWORK_ID, BURN_ADDRESS, "0.001")
+                    null
+                } catch (e: WalletException) {
+                    e
+                }
+            }
+        }
+        assertThat(sendFailure).isNotNull()
+
+        // The engine-level dApp pipeline: submit a Connect, approve it, the
+        // settle callback receives the EVM address array and isDappPermitted
+        // flips false -> true (the permission the bridge auto-checks).
+        val connectId = "e2e-leg-c-$tag"
+        val legCHost = "dapp.example.com"
+        assertThat(engine.isDappPermitted(legCHost, ChainType.EVM, EVM0, "eth_requestAccounts"))
+            .isFalse()
+        val settled = CountDownLatch(1)
+        val outcomeRef = AtomicReference<DappOutcome?>()
+        engine.submitDappRequest(
+            DappRequest.Connect(connectId, legCHost, ChainType.EVM, "https://$legCHost/")
+        ) { outcome ->
+            outcomeRef.set(outcome)
+            settled.countDown()
+        }
+        assertThat(engine.pendingRequests.value.map { it.id }).containsExactly(connectId)
+        engine.decideDappRequest(DappDecision(requestId = connectId, approved = true))
+        assertTrue("The approved Connect must settle", settled.await(15, TimeUnit.SECONDS))
+        val outcome = outcomeRef.get() ?: error("the settle callback must deliver an outcome")
+        assertThat(outcome.error).isNull()
+        assertThat(outcome.resultJson).isEqualTo("""["$EVM0"]""")
+        assertThat(engine.isDappPermitted(legCHost, ChainType.EVM, EVM0, "eth_requestAccounts"))
+            .isTrue()
+        assertThat(engine.pendingRequests.value).isEmpty()
+
+        // Cross-profile isolation: each leg's profile sees ONLY its own
+        // wallet rows, accounts and permissions.
+        val wallet1 = runBlocking { appGraph.walletRepo.wallet(profileId1) }
+        val wallet2 = runBlocking { appGraph.walletRepo.wallet(profileId2) }
+        val wallet3 = runBlocking { appGraph.walletRepo.wallet(profileId3) }
+        assertThat(wallet1).isNotNull()
+        assertThat(wallet2).isNotNull()
+        assertThat(wallet3).isNotNull()
+        assertThat(wallet1?.id).isNotEqualTo(wallet3?.id)
+        assertThat(wallet2?.id).isNotEqualTo(wallet3?.id)
+        assertThat(runBlocking { appGraph.walletRepo.accounts(profileId3) }.map { it.address })
+            .containsExactly(EVM0, EVM1, EVM_IMPORT)
+        assertThat(
+            runBlocking { appGraph.walletRepo.allDappPermissions(profileId3) }.map { it.host }
+        ).containsExactly(legCHost)
+        assertThat(
+            runBlocking { appGraph.walletRepo.allDappPermissions(profileId2) }.map { it.host }
+        ).containsExactly("127.0.0.1")
+        assertMnemonicCiphertext(profileId3, ABANDON)
+    }
+
+    /**
+     * The create-wallet onboarding contract: the reveal screen and the
+     * confirmation quiz MUST complete before the lockState flip can take
+     * the screen. The original bug (onboarding composed only while
+     * lockState == NO_WALLET, so engine.createWallet's immediate row
+     * persist swapped it out mid-flow) was fixed with the WalletRoot
+     * onboarding PIN — see the worklog entry for Task 5-fix.
+     */
+    @Test
+    fun create_flow_reveals_phrase_and_quiz_before_locking() {
+        assertTrue("Engine must come up on a fresh profile", bootstrapFreshEngine())
+        val appGraph = (targetContext.applicationContext as com.roombrowser.RoomBrowserApp).graph
+        val profileId1 = ProfileId(
+            runBlocking {
+                appGraph.appState.activeProfileIdSnapshot()
+                    ?: error("engine must have persisted the active profile id")
+            }
+        )
+
+        assertTrue(
+            "Profile settings must open",
+            openSheetEntry("Profile settings") {
+                device.wait(Until.hasObject(By.textContains("Profile Settings —")), 8_000)
+            }
+        )
+        assertTrue(
+            "The Wallet settings row must be tappable",
+            clickTextWithScroll("Multi-chain wallet, accounts and dApp connections")
+        )
+        assertTrue(
+            "WalletActivity must open on the onboarding choice screen",
+            hasText("Set up your wallet", 15_000)
+        )
+
+        // CHOICE -> CREATE_INTRO.
+        assertTrue("Create must be tappable", clickText("Create a new wallet", 5_000))
+        assertTrue("The create intro must render", hasText("Chains to enable", 8_000))
+
+        // CREATE_INTRO -> the wallet is created and the reveal screen shows
+        // the ONE-TIME phrase.
+        assertTrue("Create Wallet must be tappable", clickText("Create Wallet", 5_000))
+        assertTrue("The reveal screen must render", hasText("Your recovery phrase", 20_000))
+
+        // Reveal, then READ the 24 numbered cells (kept in memory only).
+        assertTrue("Reveal must be tappable", clickText("Reveal", 5_000))
+        assertTrue("Hide phrase must show once revealed", hasText("Hide phrase", 5_000))
+        val words = HashMap<Int, String>()
+        assertTrue(
+            "The 24 word cells must be readable after Reveal",
+            waitUntil(8_000) {
+                val cells = readWordCells()
+                if (cells.size == 24 && cells.keys.sorted() == (1..24).toList()) {
+                    words.putAll(cells)
+                    true
+                } else {
+                    false
+                }
+            }
+        )
+        val phrase = (1..24).joinToString(" ") { words.getValue(it) }
+
+        // REVEAL -> the confirmation quiz: read each "Tap word #N" prompt
+        // and tap the remembered word for that index.
+        assertTrue("I wrote it down must be tappable", clickText("I wrote it down", 5_000))
+        assertTrue("The quiz must render", hasText("Confirm your phrase", 10_000))
+        assertTrue("The quiz must be answerable", answerQuiz(words))
+        assertTrue("Done must be tappable", clickText("Done", 5_000))
+
+        // The gate fires after the quiz; with no device credentials it
+        // fails and the LOCKED pane takes over — gracefully.
+        val authenticators = BiometricManager.Authenticators.BIOMETRIC_WEAK or
+            BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        if (BiometricManager.from(targetContext).canAuthenticate(authenticators) !=
+            BiometricManager.BIOMETRIC_SUCCESS
+        ) {
+            assertTrue("The LOCKED pane must render after the gate fails", hasText("Wallet locked", 15_000))
+            assertTrue("The retry button must be present", hasText("Unlock", 5_000))
+            assertTrue(
+                "A failed Unlock must keep the pane (graceful)",
+                clickText("Unlock", 5_000) && hasText("Wallet locked", 5_000)
+            )
+        }
+
+        // DB ground truth: the just-shown phrase is stored as ciphertext.
+        assertMnemonicCiphertext(profileId1, phrase)
+    }
+}
