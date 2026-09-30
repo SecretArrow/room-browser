@@ -264,10 +264,23 @@ static int rb_selftest(const wchar_t *out_path)
 
     ST_CHECK(rb_theme_current(app) != NULL);
 
-    /* Mode "default" means "send no override", which is NULL — not "". */
+    /* A profile created by rb_data_init is deliberately NOT in "default" mode,
+     * and asserting that it were is what this check used to get wrong: the
+     * core hands every new profile a randomly picked desktop UA preset so two
+     * profiles are not trivially linkable (rb_profile_create's randomize_ua,
+     * the same defence the Android edition makes).  Both halves of the
+     * contract belong here — an override IS sent, and choosing "default"
+     * sends none — because the second half is the one a regression would
+     * quietly break, and this is the only place that reads it back through the
+     * chrome's own accessor rather than the core's. */
+    ua = rb_ua_current(app);
+    ST_CHECK(ua != NULL && ua[0] != '\0');
+    free(ua);
+    rb_pref_set(app, RB_PREF_UA_MODE, "default");
     ua = rb_ua_current(app);
     ST_CHECK(ua == NULL);
     free(ua);
+    rb_pref_set(app, RB_PREF_UA_MODE, "preset");
 
     /* A preference written through the chrome's own setter reads back, and
      * survives a save/load of the registry. */
