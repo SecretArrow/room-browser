@@ -2,13 +2,13 @@
  * Room Browser (desktop) - Windows downloads window.
  *
  * See downloads.h for what this is and why.  The one design note worth
- * repeating here: the rows are SNAPSHOTTED into the window when it opens,
- * rather than read from the store while it is painted.  rb_downloads_at()
- * hands out pointers into the store and the store can move them, so a paint
- * that walked it would be reading through a pointer a background download
- * could have invalidated between two rows.  The window is short-lived and the
- * list is bounded by what the profile has actually downloaded, so the copy
- * costs nothing that matters.
+ * repeating here: the rows are SNAPSHOTTED into the window, and re-snapshotted
+ * on a timer, rather than read from the store while it is painted.
+ * rb_downloads_at_for() hands out pointers into the store and the store can
+ * move them, so a paint that walked it would be reading through a pointer a
+ * background download could have invalidated between two rows.  The list is
+ * bounded by what the profile has actually downloaded, so the copy costs
+ * nothing that matters.
  */
 #include "downloads.h"
 
@@ -30,6 +30,7 @@
 
 #define RB_DL_LIST    4001
 #define RB_DL_CLEAR   4002
+#define RB_DL_TIMER   4003
 #define RB_DL_CLOSE   IDCANCEL
 
 /* One painted row: the file name, then the status line under it. */
@@ -58,22 +59,36 @@ static wchar_t *rb_dl_wide(const char *s)
     return rb_utf8_to_wide(s != NULL ? s : "");
 }
 
-/* The status line, spelled exactly as the GTK window spells it: the status
- * name, plus the progress while one is running, plus the error when one
- * failed.  Both editions read the same core strings, so the two windows
- * cannot describe one download differently. */
+/* The status line, carrying the same facts as the GTK window: the status name,
+ * the progress while one is active, the size, and the error when one failed.
+ * Both editions read the same core strings and the same core formatter, so the
+ * two windows cannot describe one download differently.  The separator is " - "
+ * rather than GTK's em dash because this file is compiled by MSVC, which reads
+ * a narrow literal in the system codepage. */
 static wchar_t *rb_dl_meta(const rb_download *dl)
 {
     char buf[512];
+    char have[32];
+    char total[32];
     const char *status = rb_download_status_name(dl->status);
 
-    if (dl->status == RB_DL_RUNNING && dl->total_bytes > 0) {
-        snprintf(buf, sizeof buf, "%s - %d%%  (%lld / %lld bytes)",
-                 status,
-                 rb_download_progress_percent(dl->downloaded_bytes,
-                                              dl->total_bytes),
-                 dl->downloaded_bytes, dl->total_bytes);
-    } else if (dl->status == RB_DL_FAILED && dl->error != NULL && dl->error[0]) {
+    rb_download_format_bytes(dl->downloaded_bytes, have, sizeof have);
+    rb_download_format_bytes(dl->total_bytes, total, sizeof total);
+
+    if (rb_download_is_active(dl)) {
+        if (dl->total_bytes > 0) {
+            snprintf(buf, sizeof buf, "%s - %d%%  (%s / %s)", status,
+                     rb_download_progress_percent(dl->downloaded_bytes,
+                                                  dl->total_bytes),
+                     have, total);
+        } else {
+            /* No length header: report what has arrived rather than inventing
+             * a percentage from a total the server never sent. */
+            snprintf(buf, sizeof buf, "%s - %s so far", status, have);
+        }
+    } else if (dl->status == RB_DL_COMPLETED) {
+        snprintf(buf, sizeof buf, "%s - %s", status, have);
+    } else if (dl->error != NULL && dl->error[0]) {
         snprintf(buf, sizeof buf, "%s - %s", status, dl->error);
     } else {
         snprintf(buf, sizeof buf, "%s", status);
@@ -94,19 +109,24 @@ static void rb_dl_rows_free(RbDownloads *d)
     d->n = 0;
 }
 
-/* Reads the store once, into the window's own copy. */
+/* Reads the ACTIVE profile's rows out of the store, into the window's own
+ * copy.  The list used to walk the whole store, which showed another profile's
+ * downloads and offered rows the "Clear list" button could not touch — it
+ * clears one profile (DownloadDao.deleteAllFor). */
 static void rb_dl_rows_build(RbDownloads *d)
 {
+    const rb_profile *p = rb_active_profile(d->app);
+    const char *pid = (p != NULL) ? p->id : "";
     int n, i;
 
     rb_dl_rows_free(d);
-    n = rb_downloads_count(d->app->downloads);
+    n = rb_downloads_count_for(d->app->downloads, pid);
     if (n > 0) {
         d->rows = (RbDlRow *)calloc((size_t)n, sizeof *d->rows);
         if (d->rows == NULL) return;
     }
     for (i = 0; i < n; i++) {
-        const rb_download *dl = rb_downloads_at(d->app->downloads, i);
+        const rb_download *dl = rb_downloads_at_for(d->app->downloads, pid, i);
         if (dl == NULL) continue;
         d->rows[d->n].name = rb_dl_wide(dl->file_name);
         d->rows[d->n].meta = rb_dl_meta(dl);
@@ -121,6 +141,27 @@ static void rb_dl_rows_build(RbDownloads *d)
         d->rows[0].meta = NULL;
         d->n = 1;
     }
+}
+
+/* Re-reads the store and repaints.
+ *
+ * The transfer a row describes keeps arriving while the window is open, so the
+ * window follows it on a timer instead of freezing at the figures it was opened
+ * with.  LB_RESETCONTENT is what keeps the item count and the snapshot in step:
+ * the listbox owns one item per row and rb_dl_draw_row indexes the snapshot by
+ * itemID, so the two must never disagree. */
+static void rb_dl_rows_apply(RbDownloads *d)
+{
+    int i;
+
+    if (d->list == NULL) return;
+    rb_dl_rows_build(d);
+    SendMessageW(d->list, LB_RESETCONTENT, 0, 0);
+    for (i = 0; i < d->n; i++) {
+        SendMessageW(d->list, LB_ADDSTRING, 0, (LPARAM)L"");
+    }
+    SendMessageW(d->list, LB_SETCURSEL, (WPARAM)-1, 0);
+    InvalidateRect(d->list, NULL, TRUE);
 }
 
 /* ------------------------------------------------------------------ */
@@ -251,6 +292,12 @@ static LRESULT CALLBACK rb_dl_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             return (LRESULT)d->app->br_chrome;
         }
         break;
+    case WM_TIMER:
+        if (d != NULL && wp == RB_DL_TIMER) {
+            rb_dl_rows_apply(d);
+            return 0;
+        }
+        break;
     case WM_COMMAND:
         if (d != NULL) {
             int id = LOWORD(wp);
@@ -270,6 +317,11 @@ static LRESULT CALLBACK rb_dl_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 int rb_downloads_is_msg(const MSG *msg)
 {
     if (g_dl == NULL || msg == NULL) return 0;
+    /* A timer is never a dialog-key message, and the window's live refresh
+     * depends on it reaching the window proc: IsDialogMessageW swallows
+     * anything it claims to have processed, so this is spelled out rather than
+     * left to what it happens to return. */
+    if (msg->message == WM_TIMER) return 0;
     return IsDialogMessageW(g_dl->dlg, (LPMSG)msg) ? 1 : 0;
 }
 
@@ -352,14 +404,7 @@ void rb_show_downloads(App *app)
                         d->fnt);
     if (d->list == NULL) { rb_dl_close(d); return; }
 
-    rb_dl_rows_build(d);
-    {
-        int i;
-        for (i = 0; i < d->n; i++) {
-            SendMessageW(d->list, LB_ADDSTRING, 0, (LPARAM)L"");
-        }
-        SendMessageW(d->list, LB_SETCURSEL, (WPARAM)-1, 0);
-    }
+    rb_dl_rows_apply(d);
 
     y = rc.bottom - RB_DL_MARGIN - RB_DL_BTNH;
     rb_dl_ctl(d, L"BUTTON", L"Clear list", WS_TABSTOP | BS_PUSHBUTTON,
@@ -375,4 +420,7 @@ void rb_show_downloads(App *app)
     EnableWindow(app->hwnd, FALSE);
     ShowWindow(d->dlg, SW_SHOW);
     SetForegroundWindow(d->dlg);
+    /* The timer belongs to the window, so DestroyWindow in rb_dl_close takes
+     * it down with the dialog; there is nothing to kill by hand. */
+    SetTimer(d->dlg, RB_DL_TIMER, 1000, NULL);
 }

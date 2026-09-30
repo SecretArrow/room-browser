@@ -457,6 +457,16 @@ int rb_data_init(App *app)
     rb_history_load(app->history, app->path_history);
     rb_bookmarks_load(app->bookmarks, app->path_bookmarks);
     rb_downloads_load(app->downloads, app->path_downloads);
+    /* Every row the last run left QUEUED or RUNNING describes a transfer this
+     * process never had: the platform engine that owned it (WebKitDownload on
+     * GTK, WebView2's DownloadOperation on Windows) died with the last
+     * process.  Android re-queues these because its engine issues the HTTP
+     * request itself and can resume with a Range header; here there is no
+     * transfer left to resume, so the honest outcome is FAILED with a reason
+     * the user can read — not a row that claims to be running forever. */
+    if (rb_downloads_reconcile(app->downloads, NULL, "Interrupted") > 0) {
+        rb_downloads_save(app->downloads, app->path_downloads);
+    }
 
     rb_profile_registry_load(app->profiles, app->path_profiles);
     if (rb_profile_count(app->profiles) == 0) {
@@ -1878,6 +1888,13 @@ void rb_do_switch_profile(App *app, const char *to_id)
         case RB_SWITCH_DESTROY_BROWSER_CONTEXT:
             rb_tabs_destroy_all(app);
             rb_gw_context_free(app);
+            /* The context that owned this profile's transfers is gone with it,
+             * so any row of this profile still marked QUEUED or RUNNING is
+             * describing a download nothing is carrying any more.  Done here
+             * rather than later because rb_data_shutdown, a few steps down,
+             * is what writes the store back to disk. */
+            rb_downloads_reconcile(app->downloads, from_id,
+                                   "Profile switched");
             break;
         case RB_SWITCH_FLUSH_PROFILE_STATE:
             rb_data_shutdown(app);
@@ -3481,38 +3498,68 @@ static void rb_show_history_dialog(App *app)
     gtk_widget_show_all(dlg);
 }
 
-/* One row: name, then a status line that carries the progress/error. */
+/* The status line under a row's name: what state the download is in, and the
+ * figures that go with it.
+ *
+ * Sizes go through the core formatter so a download reads the same here as it
+ * does on Android ("1.4 MB", not "1468006 bytes"), and an unknown length is
+ * reported as what has arrived so far rather than as a percentage invented from
+ * a total the server never sent. */
+static void rb_dl_set_meta(GtkWidget *label, const rb_download *dl)
+{
+    char meta[320];
+    char have[32];
+    char total[32];
+    const char *status = rb_download_status_name(dl->status);
+
+    rb_download_format_bytes(dl->downloaded_bytes, have, sizeof have);
+    rb_download_format_bytes(dl->total_bytes, total, sizeof total);
+
+    if (rb_download_is_active(dl)) {
+        if (dl->total_bytes > 0) {
+            snprintf(meta, sizeof meta, "%s — %d%%  (%s / %s)", status,
+                     rb_download_progress_percent(dl->downloaded_bytes,
+                                                  dl->total_bytes),
+                     have, total);
+        } else {
+            snprintf(meta, sizeof meta, "%s — %s so far", status, have);
+        }
+    } else if (dl->status == RB_DL_COMPLETED) {
+        snprintf(meta, sizeof meta, "%s — %s", status, have);
+    } else if (dl->error != NULL && dl->error[0] != '\0') {
+        snprintf(meta, sizeof meta, "%s — %s", status, dl->error);
+    } else {
+        snprintf(meta, sizeof meta, "%s", status);
+    }
+    gtk_label_set_text(GTK_LABEL(label), meta);
+}
+
+/* One row: name, then the status line above.
+ *
+ * The meta label is stashed on the row so the dialog's timer can rewrite it in
+ * place — that is what keeps the window live without the list being torn down
+ * and rebuilt under the user's scroll position on every tick. */
 static void rb_downloads_add_row(GtkWidget *list, const rb_download *dl)
 {
     GtkWidget *row = gtk_list_box_row_new();
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     GtkWidget *l1 = gtk_label_new(dl->file_name ? dl->file_name : "");
-    char meta[320];
-    const char *status = rb_download_status_name(dl->status);
-
-    if (dl->status == RB_DL_RUNNING && dl->total_bytes > 0) {
-        snprintf(meta, sizeof meta, "%s — %d%%  (%lld / %lld bytes)",
-                 status, rb_download_progress_percent(dl->downloaded_bytes,
-                                                      dl->total_bytes),
-                 dl->downloaded_bytes, dl->total_bytes);
-    } else if (dl->status == RB_DL_FAILED && dl->error && dl->error[0]) {
-        snprintf(meta, sizeof meta, "%s — %s", status, dl->error);
-    } else {
-        snprintf(meta, sizeof meta, "%s", status);
-    }
+    GtkWidget *l2 = gtk_label_new("");
 
     gtk_label_set_ellipsize(GTK_LABEL(l1), PANGO_ELLIPSIZE_END);
     gtk_label_set_xalign(GTK_LABEL(l1), 0.0f);
     g_object_set_data_full(G_OBJECT(row), "url",
                            rb_strdup(dl->url ? dl->url : ""), g_free);
     gtk_box_pack_start(GTK_BOX(vbox), l1, TRUE, TRUE, 0);
-    {
-        GtkWidget *l2 = gtk_label_new(meta);
-        gtk_label_set_ellipsize(GTK_LABEL(l2), PANGO_ELLIPSIZE_MIDDLE);
-        gtk_label_set_xalign(GTK_LABEL(l2), 0.0f);
-        rb_add_class(l2, "rb-dim");
-        gtk_box_pack_start(GTK_BOX(vbox), l2, TRUE, TRUE, 0);
-    }
+
+    gtk_label_set_ellipsize(GTK_LABEL(l2), PANGO_ELLIPSIZE_MIDDLE);
+    gtk_label_set_xalign(GTK_LABEL(l2), 0.0f);
+    rb_add_class(l2, "rb-dim");
+    gtk_box_pack_start(GTK_BOX(vbox), l2, TRUE, TRUE, 0);
+
+    rb_dl_set_meta(l2, dl);
+    g_object_set_data(G_OBJECT(row), "rb-meta", l2);
+
     gtk_container_add(GTK_CONTAINER(row), vbox);
     gtk_list_box_insert(GTK_LIST_BOX(list), row, -1);
 }
@@ -3531,10 +3578,103 @@ static void on_dl_clear_clicked(GtkButton *button, gpointer user_data)
     gtk_widget_destroy(gtk_widget_get_toplevel(GTK_WIDGET(button)));
 }
 
+/* The open downloads window, and the timer that keeps it moving.
+ *
+ * A download manager whose window freezes at the figures it was opened with is
+ * not a download manager: the transfer it is describing keeps arriving while
+ * the user watches it.  The timer lives exactly as long as the dialog does. */
+typedef struct {
+    App *app;
+    GtkWidget *list;
+    guint timer;
+    int rows;   /* rows currently in the list, 0 when the placeholder is shown */
+} RbDlDialog;
+
+static void rb_dl_fill_rows(RbDlDialog *st)
+{
+    const rb_profile *p = rb_active_profile(st->app);
+    const char *pid = (p != NULL) ? p->id : "";
+    GList *kids;
+    GList *it;
+    int n;
+    int i;
+
+    kids = gtk_container_get_children(GTK_CONTAINER(st->list));
+    for (it = kids; it != NULL; it = it->next) {
+        gtk_widget_destroy(GTK_WIDGET(it->data));
+    }
+    g_list_free(kids);
+
+    /* The ACTIVE profile's rows, which is also what "Clear list" clears.  The
+     * list used to walk the whole store, so it offered rows the button could
+     * not touch and showed another profile's downloads. */
+    n = rb_downloads_count_for(st->app->downloads, pid);
+    st->rows = n;
+    for (i = 0; i < n; i++) {
+        const rb_download *dl = rb_downloads_at_for(st->app->downloads, pid, i);
+        if (dl != NULL) {
+            rb_downloads_add_row(st->list, dl);
+        }
+    }
+    if (n == 0) {
+        GtkWidget *row = gtk_list_box_row_new();
+        gtk_container_add(GTK_CONTAINER(row),
+                          gtk_label_new("(no downloads yet)"));
+        gtk_list_box_insert(GTK_LIST_BOX(st->list), row, -1);
+    }
+    gtk_widget_show_all(st->list);
+}
+
+static gboolean on_dl_tick(gpointer user_data)
+{
+    RbDlDialog *st = (RbDlDialog *)user_data;
+    const rb_profile *p = rb_active_profile(st->app);
+    const char *pid = (p != NULL) ? p->id : "";
+    int n = rb_downloads_count_for(st->app->downloads, pid);
+    int i;
+
+    /* A row appeared or went away — a new download, or one cleared while the
+     * window was open — so the structure has to be rebuilt. */
+    if (n != st->rows) {
+        rb_dl_fill_rows(st);
+        return G_SOURCE_CONTINUE;
+    }
+    /* Otherwise only the figures moved.  The rows are updated in place: a
+     * rebuild would reset the scroll position once a second, which on a long
+     * list is worse than a stale figure. */
+    for (i = 0; i < n; i++) {
+        GtkWidget *row =
+            gtk_list_box_get_row_at_index(GTK_LIST_BOX(st->list), i);
+        const rb_download *dl = rb_downloads_at_for(st->app->downloads, pid, i);
+        GtkWidget *meta;
+
+        if (row == NULL || dl == NULL) continue;
+        meta = (GtkWidget *)g_object_get_data(G_OBJECT(row), "rb-meta");
+        if (meta != NULL) {
+            rb_dl_set_meta(meta, dl);
+        }
+    }
+    return G_SOURCE_CONTINUE;
+}
+
+static void on_dl_dialog_destroy(GtkWidget *widget, gpointer user_data)
+{
+    RbDlDialog *st = (RbDlDialog *)user_data;
+    (void)widget;
+    /* The timer holds a pointer to this state, so it has to be gone before the
+     * state is: otherwise the next tick rewrites labels belonging to a list
+     * that no longer exists. */
+    if (st->timer != 0) {
+        g_source_remove(st->timer);
+        st->timer = 0;
+    }
+    g_free(st);
+}
+
 static void rb_show_downloads_dialog(App *app)
 {
     GtkWidget *dlg, *scroll, *list, *clear;
-    int n, i;
+    RbDlDialog *st;
 
     dlg = gtk_dialog_new_with_buttons("Downloads", GTK_WINDOW(app->win),
             GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
@@ -3547,21 +3687,15 @@ static void rb_show_downloads_dialog(App *app)
     list = gtk_list_box_new();
     gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
 
-    n = rb_downloads_count(app->downloads);
-    for (i = 0; i < n; i++) {
-        const rb_download *dl = rb_downloads_at(app->downloads, i);
-        if (dl != NULL) rb_downloads_add_row(list, dl);
-    }
-    if (n == 0) {
-        GtkWidget *row = gtk_list_box_row_new();
-        gtk_container_add(GTK_CONTAINER(row),
-                          gtk_label_new("(no downloads yet)"));
-        gtk_list_box_insert(GTK_LIST_BOX(list), row, -1);
-    }
+    st = g_new0(RbDlDialog, 1);
+    st->app = app;
+    st->list = list;
+    rb_dl_fill_rows(st);
 
     clear = gtk_button_new_with_label("Clear list");
     g_signal_connect(clear, "clicked", G_CALLBACK(on_dl_clear_clicked), app);
     g_signal_connect(dlg, "response", G_CALLBACK(on_dialog_response), NULL);
+    g_signal_connect(dlg, "destroy", G_CALLBACK(on_dl_dialog_destroy), st);
 
     gtk_container_add(GTK_CONTAINER(scroll), list);
     gtk_container_add(GTK_CONTAINER(gtk_dialog_get_content_area(GTK_DIALOG(dlg))),
@@ -3575,6 +3709,7 @@ static void rb_show_downloads_dialog(App *app)
                       clear);
     G_GNUC_END_IGNORE_DEPRECATIONS
     gtk_widget_show_all(dlg);
+    st->timer = g_timeout_add(1000, on_dl_tick, st);
 }
 
 static void on_menu_downloads(GtkMenuItem *item, gpointer user_data)

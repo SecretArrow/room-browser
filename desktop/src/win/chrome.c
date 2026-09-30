@@ -198,6 +198,16 @@ int rb_data_init(App *app)
     rb_history_load(app->history, app->path_history);
     rb_bookmarks_load(app->bookmarks, app->path_bookmarks);
     rb_downloads_load(app->downloads, app->path_downloads);
+    /* Every row the last run left QUEUED or RUNNING describes a transfer this
+     * process never had: the platform engine that owned it (WebKitDownload on
+     * GTK, WebView2's DownloadOperation on Windows) died with the last
+     * process.  Android re-queues these because its engine issues the HTTP
+     * request itself and can resume with a Range header; here there is no
+     * transfer left to resume, so the honest outcome is FAILED with a reason
+     * the user can read — not a row that claims to be running forever. */
+    if (rb_downloads_reconcile(app->downloads, NULL, "Interrupted") > 0) {
+        rb_downloads_save(app->downloads, app->path_downloads);
+    }
 
     rb_profile_registry_load(app->profiles, app->path_profiles);
     if (rb_profile_count(app->profiles) == 0) {
@@ -972,6 +982,13 @@ void rb_do_switch_profile(App *app, const char *to_id)
              * what makes the profile still there when it is switched back
              * to. */
             rb_wv_shutdown(app);
+            /* The engine that owned this profile's transfers went with it, so
+             * any row of this profile still marked QUEUED or RUNNING is
+             * describing a download nothing is carrying any more.  Done here
+             * rather than later because rb_data_shutdown, a few steps down,
+             * is what writes the store back to disk. */
+            rb_downloads_reconcile(app->downloads, from_id,
+                                   "Profile switched");
             break;
         case RB_SWITCH_FLUSH_PROFILE_STATE:
             rb_data_shutdown(app);

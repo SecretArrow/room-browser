@@ -22,6 +22,9 @@
 #ifndef RB_DOWNLOADS_H
 #define RB_DOWNLOADS_H
 
+/* size_t, for the formatter's buffer length. */
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -75,6 +78,25 @@ void          rb_downloads_free(rb_downloads *d);
 int                rb_downloads_count(const rb_downloads *d);
 const rb_download *rb_downloads_at(const rb_downloads *d, int index);
 const rb_download *rb_downloads_by_id(const rb_downloads *d, long long id);
+
+/* ---- profile-scoped view ----
+ *
+ * The store holds every profile's rows (one file, one object, so a profile
+ * switch does not have to tear it down), but a downloads window shows one
+ * profile at a time.  Both editions used to walk the whole store while their
+ * "Clear list" button cleared only the active profile — the list offered rows
+ * the button could not touch, and the two disagreed about what "the list"
+ * means.
+ *
+ * A NULL or blank `profile_id` counts every row, which is what plain
+ * rb_downloads_count()/rb_downloads_at() do; the _for variants exist so the
+ * two editions cannot drift apart on the question. */
+
+int rb_downloads_count_for(const rb_downloads *d, const char *profile_id);
+
+/* The `index`-th row of `profile_id`, newest first.  NULL when out of range. */
+const rb_download *rb_downloads_at_for(const rb_downloads *d,
+                                       const char *profile_id, int index);
 
 /* ---- filenames (DownloadEngine.guessFileName / sanitize) ---- */
 
@@ -164,6 +186,19 @@ int rb_download_can_resume(const rb_download *dl);
  * Clamped, so a server that over-reports cannot push a bar past its end. */
 int rb_download_progress_percent(long long downloaded, long long total);
 
+/* A byte count as a short string: "0 B", "512 B", "1.4 MB", "2.0 GB" — the
+ * same rules as Android's DownloadFormat.bytes(), so one download is not
+ * described as "1.4 MB" on the phone and "1468006 bytes" on the desktop.
+ *
+ * Writes into `out` (always NUL-terminated, never longer than `cap`; nothing
+ * is written when `cap` is 0).  A negative count is the app's "unknown"
+ * sentinel and renders as "?" rather than as a negative size.
+ *
+ * ASCII only, deliberately: this file is compiled by MSVC as well as gcc, and
+ * MSVC reads a narrow string literal in the system codepage, so an em dash
+ * written here would reach a Windows user as mojibake. */
+void rb_download_format_bytes(long long bytes, char *out, size_t cap);
+
 /* ---- scheduling ---- */
 
 /* How many downloads are RUNNING right now. */
@@ -177,6 +212,24 @@ int rb_downloads_running_count(const rb_downloads *d);
  * Marking them RUNNING here rather than in the caller is what stops a second
  * pump() from handing the same download out twice. */
 int rb_downloads_pump(rb_downloads *d, long long *out_ids, int max_ids);
+
+/* Demotes rows left QUEUED or RUNNING by a transfer that no longer exists.
+ *
+ * The platform engines own the transfer on the desktop (WebKitDownload,
+ * WebView2's DownloadOperation) and neither survives the process, so a row
+ * still marked active after a restart, or after the engine that was feeding it
+ * has been torn down by a profile switch, is describing a transfer that is
+ * gone.  Android re-queues these, because its engine issues the HTTP request
+ * itself and can resume with a Range header; the desktop cannot re-issue a
+ * transfer the platform has forgotten, so the honest outcome is FAILED with
+ * `reason` recorded — not a "QUEUED" row that never starts and not a
+ * "RUNNING" row that never finishes.
+ *
+ * Restricts itself to `profile_id` (every profile when it is NULL/blank), so a
+ * profile switch only rewrites the rows of the profile being left behind.
+ * Returns how many rows were changed. */
+int rb_downloads_reconcile(rb_downloads *d, const char *profile_id,
+                           const char *reason);
 
 /* ---- persistence ---- */
 

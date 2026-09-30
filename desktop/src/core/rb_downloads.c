@@ -504,6 +504,55 @@ const rb_download *rb_downloads_by_id(const rb_downloads *d, long long id)
     return NULL;
 }
 
+/* 1 when the row belongs to `profile_id`.  A blank id is not a filter: it is
+ * the "every profile" case, which is what the store-wide walkers do. */
+static int rb_dl_in_profile(const rb_download *dl, const char *profile_id)
+{
+    if (rb_dl_blank(profile_id)) {
+        return 1;
+    }
+    return (dl->profile_id != NULL && strcmp(dl->profile_id, profile_id) == 0)
+               ? 1
+               : 0;
+}
+
+int rb_downloads_count_for(const rb_downloads *d, const char *profile_id)
+{
+    int i;
+    int n = 0;
+
+    if (d == NULL) {
+        return 0;
+    }
+    for (i = 0; i < d->count; i++) {
+        if (rb_dl_in_profile(&d->items[i], profile_id)) {
+            n++;
+        }
+    }
+    return n;
+}
+
+const rb_download *rb_downloads_at_for(const rb_downloads *d,
+                                       const char *profile_id, int index)
+{
+    int i;
+    int seen = 0;
+
+    if (d == NULL || index < 0) {
+        return NULL;
+    }
+    for (i = 0; i < d->count; i++) {
+        if (!rb_dl_in_profile(&d->items[i], profile_id)) {
+            continue;
+        }
+        if (seen == index) {
+            return &d->items[i];
+        }
+        seen++;
+    }
+    return NULL;
+}
+
 long long rb_downloads_enqueue(rb_downloads *d, const char *profile_id,
                                const char *url, const char *suggested_name,
                                const char *mime_type, long long now_ms)
@@ -733,6 +782,90 @@ int rb_download_progress_percent(long long downloaded, long long total)
     return (int)pct;
 }
 
+/* 1024^(unit+1): the divisor that turns bytes into whole units (unit 0 = KB).
+ *
+ * Everything below is integer arithmetic, not floating point, for two reasons:
+ * the desktop core links no math library, and the rounding rule has to be the
+ * SAME one Android applies, or the two editions would disagree about a boundary
+ * the user can see.  The largest divisor is 1024^4 (TB). */
+static long long rb_dl_unit_divisor(int unit)
+{
+    long long divisor = 1;
+    int i;
+
+    for (i = 0; i <= unit; i++) {
+        divisor *= 1024;
+    }
+    return divisor;
+}
+
+/* bytes / 1024^(unit+1) rounded to a whole number, half away from zero — the
+ * same figure Android computes as scaled.roundToInt().  The whole/rest split
+ * keeps every intermediate inside a long long even for a byte count near
+ * LLONG_MAX, where `bytes + divisor / 2` would wrap. */
+static long long rb_dl_round_at(long long bytes, int unit)
+{
+    long long divisor = rb_dl_unit_divisor(unit);
+    long long whole = bytes / divisor;
+    long long rest = bytes % divisor;
+
+    return whole + ((rest * 2 >= divisor) ? 1 : 0);
+}
+
+/* The same figure times ten: the tenth the formatter prints below 100. */
+static long long rb_dl_tenths_at(long long bytes, int unit)
+{
+    long long divisor = rb_dl_unit_divisor(unit);
+    long long whole = bytes / divisor;
+    long long rest = bytes % divisor;
+
+    return whole * 10 + (rest * 10 + divisor / 2) / divisor;
+}
+
+void rb_download_format_bytes(long long bytes, char *out, size_t cap)
+{
+    static const char *const units[] = { "KB", "MB", "GB", "TB" };
+    int unit = 0;
+    long long rounded;
+    long long t;
+
+    if (out == NULL || cap == 0) {
+        return;
+    }
+    if (bytes < 0) {
+        /* The total_bytes sentinel.  "?" and not an em dash: see the note in
+         * the header about MSVC and non-ASCII string literals. */
+        snprintf(out, cap, "?");
+        return;
+    }
+    if (bytes < 1024) {
+        snprintf(out, cap, "%lld B", bytes);
+        return;
+    }
+    /* Promotion is decided on the ROUNDED figure, because that is the one that
+     * gets printed: 1_048_300 bytes is 1023.7 KB, and a test on the raw value
+     * would stop there and print "1024 KB" — a number the next unit exists for.
+     * Android tests the same thing as scaled.roundToInt() >= 1024. */
+    while (unit < 3 && rb_dl_round_at(bytes, unit) >= 1024) {
+        unit++;
+    }
+    rounded = rb_dl_round_at(bytes, unit);
+    if (rounded >= 100) {
+        /* Below 100 a tenth is meaningful ("1.4 MB"); above it the tenth is
+         * noise on a number the user is only glancing at ("128 MB").
+         *
+         * The threshold is on the WHOLE figure, not on the tenth, because that
+         * is what Android does (rounded >= 100) and the two are not the same
+         * test: 99.49 MB has a whole figure of 99 and a tenth figure of 995, so
+         * deciding on the tenth would print "100 MB" where Android prints
+         * "99.5 MB". */
+        snprintf(out, cap, "%lld %s", rounded, units[unit]);
+    } else {
+        t = rb_dl_tenths_at(bytes, unit);
+        snprintf(out, cap, "%lld.%lld %s", t / 10, t % 10, units[unit]);
+    }
+}
+
 /* ------------------------------ scheduling ------------------------------ */
 
 int rb_downloads_running_count(const rb_downloads *d)
@@ -786,6 +919,32 @@ int rb_downloads_pump(rb_downloads *d, long long *out_ids, int max_ids)
         out_ids[started++] = d->items[best].id;
     }
     return started;
+}
+
+int rb_downloads_reconcile(rb_downloads *d, const char *profile_id,
+                           const char *reason)
+{
+    const char *why = rb_dl_blank(reason) ? "Interrupted" : reason;
+    int changed = 0;
+    int i;
+
+    if (d == NULL) {
+        return 0;
+    }
+    for (i = 0; i < d->count; i++) {
+        if (!rb_dl_in_profile(&d->items[i], profile_id)) {
+            continue;
+        }
+        if (d->items[i].status != RB_DL_QUEUED &&
+            d->items[i].status != RB_DL_RUNNING) {
+            continue;
+        }
+        d->items[i].status = RB_DL_FAILED;
+        free(d->items[i].error);
+        d->items[i].error = rb_json_strdup(why);
+        changed++;
+    }
+    return changed;
 }
 
 /* ------------------------------ persistence ----------------------------- */

@@ -40,11 +40,17 @@ browser is original C: a portable core plus one thin platform layer per OS.
 - **History** — most-recent-first, consecutive duplicates collapsed, bounded at
   10 000 entries, persisted as JSON lines; the menu offers the 10 latest.
 - **Downloads** — the active profile's records, newest first, each row a file
-  name over its status (with progress while one is running and the error when
-  one failed), plus "Clear list". Both editions have the window and show the
-  same core strings, so they cannot describe one download differently. Clearing
-  removes the *records* of that profile only; the files on disk are the user's
-  and are never touched. Neither edition opens the file from the list.
+  name over a status line: the state, the percentage and both sizes ("1.4 MB /
+  3.1 MB"), or the error when one failed, or "3.2 MB so far" when the server
+  never sent a length. Plus "Clear list". The window is live — both editions
+  re-read the store once a second, so a transfer that is still arriving keeps
+  counting up while it is on screen. Sizes go through one core formatter, so
+  the same download cannot read "1.4 MB" on one edition and "1468006 bytes" on
+  the other, and both editions show the *same profile's* rows, which is what
+  the "Clear list" button has always cleared: the list and the button now agree
+  about what "the list" is. Clearing removes the *records* of that profile only;
+  the files on disk are the user's and are never touched. Neither edition opens
+  the file from the list.
 - **Find in page** (*Menu → Find in page*, <kbd>Ctrl</kbd>+<kbd>F</kbd>) — the
   same bar Android's FindInPageBar is: a field, previous, next and close, with
   the search re-running on every keystroke, <kbd>Enter</kbd> stepping forward
@@ -284,6 +290,14 @@ Outputs:
   switches), and both editions show the active profile's downloads — the record
   of what was fetched, newest first, with "Clear list". Neither window opens the
   file: the list is a record, and the file belongs to the user.
+- A download that was still running when the browser closed, or when the profile
+  was switched, is recorded as FAILED with the reason ("Interrupted", "Profile
+  switched") rather than resumed. The transfer belongs to the platform engine —
+  WebKitDownload on GTK, WebView2's DownloadOperation on Windows — and neither
+  survives the process that created it; unlike Android, whose engine issues the
+  HTTP request itself and can resume with a Range header, there is nothing left
+  here to resume. Marking the row failed is the honest outcome; a row that
+  claimed to be running forever would be the lie.
 - History is capped at 10 000 entries; bookmarks are a flat list in insertion
   order.
 - The omnibox heuristic treats any input with interior whitespace or

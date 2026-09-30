@@ -3563,6 +3563,191 @@ static void test_rb_downloads(void)
     rb_downloads_free(NULL); /* must not crash */
 }
 
+/* A byte count must read the same on both editions.  Every expectation below is
+ * also asserted by android/core/domain's DownloadFormatTest: the two formatters
+ * are separate implementations in separate languages, and the only thing
+ * keeping them honest is that they answer the same questions the same way. */
+static void check_bytes(long long value, const char *want, int line)
+{
+    char buf[32];
+
+    rb_download_format_bytes(value, buf, sizeof buf);
+    g_checks++;
+    if (!STREQ(buf, want)) {
+        fprintf(stderr, "FAIL %s:%d: %lld formatted as \"%s\", want \"%s\"\n",
+                __FILE__, line, value, buf, want);
+        exit(1);
+    }
+}
+
+#define CHECK_BYTES(value, want) check_bytes((value), (want), __LINE__)
+
+static void test_rb_download_format(void)
+{
+    char buf[32];
+
+    /* Below a kilobyte the count stays exact. */
+    CHECK_BYTES(0, "0 B");
+    CHECK_BYTES(1, "1 B");
+    CHECK_BYTES(1023, "1023 B");
+
+    /* One of each unit, and the two-gigabyte case the old screen printed as
+     * "2097152 KB" — it divided by 1024 once and called the result KB. */
+    CHECK_BYTES(1024LL, "1.0 KB");
+    CHECK_BYTES(1024LL * 1024, "1.0 MB");
+    CHECK_BYTES(1024LL * 1024 * 1024, "1.0 GB");
+    CHECK_BYTES(1024LL * 1024 * 1024 * 1024, "1.0 TB");
+    CHECK_BYTES(2LL * 1024 * 1024 * 1024, "2.0 GB");
+
+    /* Above a hundred the tenth is noise on a figure the user is glancing at. */
+    CHECK_BYTES(150LL * 1024 * 1024, "150 MB");
+    CHECK_BYTES(999LL * 1024 * 1024, "999 MB");
+
+    /* Both thresholds are decided on the ROUNDED figure, because that is the
+     * one that gets printed.  104_805_417 bytes is 99.9502 MB: under 100, but
+     * it prints as 100, so it must take the no-tenth branch rather than
+     * printing "100.0 MB".  1_048_300 bytes is 1023.7 KB, which rounds to
+     * "1024 KB" — a figure the megabyte exists for. */
+    CHECK_BYTES(104805417LL, "100 MB");
+    CHECK_BYTES(1048300LL, "1.0 MB");
+
+    /* The boundary between the two branches, and the reason the branch is
+     * decided on the whole figure rather than the tenth: 104_280_884 bytes is
+     * 99.4499 MB, whose whole figure is 99 but whose tenth figure is 995.  A
+     * formatter that tested the tenth would print "100 MB" here. */
+    CHECK_BYTES(104280884LL, "99.5 MB");
+    CHECK_BYTES(104333312LL, "100 MB"); /* exactly 99.5 MB */
+
+    /* Negative is the unknown-length sentinel, never a negative size. */
+    CHECK_BYTES(-1, "?");
+    CHECK_BYTES(-1024, "?");
+
+    /* A buffer too small truncates but stays NUL-terminated, and writes nothing
+     * past its cap. */
+    memset(buf, 'x', sizeof buf);
+    rb_download_format_bytes(150LL * 1024 * 1024, buf, 5);
+    CHECK(STREQ(buf, "150 "));
+    CHECK(buf[5] == 'x');
+
+    memset(buf, 'x', sizeof buf);
+    rb_download_format_bytes(150LL * 1024 * 1024, buf, 1);
+    CHECK(buf[0] == '\0');
+    CHECK(buf[1] == 'x');
+
+    /* Degenerate arguments must not crash. */
+    rb_download_format_bytes(1024, NULL, sizeof buf);
+    rb_download_format_bytes(1024, buf, 0);
+}
+
+static void test_rb_downloads_scoped(void)
+{
+    rb_downloads *d = rb_downloads_new();
+    long long a;
+    long long b;
+    long long c;
+
+    a = rb_downloads_enqueue(d, "p1", "https://h/a.bin", "a.bin", "", 100);
+    b = rb_downloads_enqueue(d, "p2", "https://h/b.bin", "b.bin", "", 200);
+    c = rb_downloads_enqueue(d, "p1", "https://h/c.bin", "c.bin", "", 300);
+    CHECK(a != 0 && b != 0 && c != 0);
+
+    /* A blank or absent profile is the "every profile" case, not a filter that
+     * matches nothing — that is what makes the two editions agree when they
+     * have no active profile to hand. */
+    CHECK(rb_downloads_count(d) == 3);
+    CHECK(rb_downloads_count_for(d, NULL) == 3);
+    CHECK(rb_downloads_count_for(d, "") == 3);
+
+    CHECK(rb_downloads_count_for(d, "p1") == 2);
+    CHECK(rb_downloads_count_for(d, "p2") == 1);
+    CHECK(rb_downloads_count_for(d, "p3") == 0);
+
+    /* Newest first within the profile, and another profile's row is not part of
+     * the numbering: p1's list is c then a, never c then b. */
+    CHECK(rb_downloads_at_for(d, "p1", 0)->id == c);
+    CHECK(rb_downloads_at_for(d, "p1", 1)->id == a);
+    CHECK(rb_downloads_at_for(d, "p1", 2) == NULL);
+    CHECK(rb_downloads_at_for(d, "p2", 0)->id == b);
+    CHECK(rb_downloads_at_for(d, "p2", 1) == NULL);
+    CHECK(rb_downloads_at_for(d, "p3", 0) == NULL);
+    CHECK(rb_downloads_at_for(d, NULL, 0)->id == c);
+    CHECK(rb_downloads_at_for(d, NULL, 2)->id == a);
+
+    /* Degenerate arguments answer NULL rather than reading off the front of the
+     * array. */
+    CHECK(rb_downloads_at_for(d, "p1", -1) == NULL);
+    CHECK(rb_downloads_at_for(NULL, "p1", 0) == NULL);
+    CHECK(rb_downloads_count_for(NULL, "p1") == 0);
+
+    rb_downloads_free(d);
+}
+
+static void test_rb_downloads_reconcile(void)
+{
+    rb_downloads *d = rb_downloads_new();
+    const rb_download *dl;
+    long long queued;
+    long long running;
+    long long paused;
+    long long done;
+    long long failed;
+    long long cancelled;
+    long long other;
+
+    queued = rb_downloads_enqueue(d, "p1", "https://h/q", "q.bin", "", 10);
+    running = rb_downloads_enqueue(d, "p1", "https://h/r", "r.bin", "", 20);
+    paused = rb_downloads_enqueue(d, "p1", "https://h/p", "p.bin", "", 30);
+    done = rb_downloads_enqueue(d, "p1", "https://h/d", "d.bin", "", 40);
+    failed = rb_downloads_enqueue(d, "p1", "https://h/f", "f.bin", "", 50);
+    cancelled = rb_downloads_enqueue(d, "p1", "https://h/c", "c.bin", "", 60);
+    other = rb_downloads_enqueue(d, "p2", "https://h/o", "o.bin", "", 70);
+
+    CHECK(rb_downloads_set_status(d, running, RB_DL_RUNNING, NULL) == 1);
+    CHECK(rb_downloads_set_status(d, paused, RB_DL_PAUSED, NULL) == 1);
+    CHECK(rb_downloads_complete(d, done, "/tmp/d.bin", 42, 45) == 1);
+    CHECK(rb_downloads_set_status(d, failed, RB_DL_FAILED, "connection reset")
+          == 1);
+    CHECK(rb_downloads_set_status(d, cancelled, RB_DL_CANCELLED, NULL) == 1);
+
+    /* Only the profile being left behind: p2's queued row still has a transfer
+     * coming to it, and must survive. */
+    CHECK(rb_downloads_reconcile(d, "p1", "Restarted") == 2);
+    dl = rb_downloads_by_id(d, queued);
+    CHECK(dl->status == RB_DL_FAILED);
+    CHECK(STREQ(dl->error, "Restarted"));
+    dl = rb_downloads_by_id(d, running);
+    CHECK(dl->status == RB_DL_FAILED);
+    CHECK(STREQ(dl->error, "Restarted"));
+    CHECK(rb_downloads_by_id(d, other)->status == RB_DL_QUEUED);
+
+    /* Everything else is left exactly as it was.  A PAUSED row in particular:
+     * its partial file is still on disk and the user asked for the stop, so
+     * calling it failed would be a claim about a transfer nobody interrupted.
+     * And a FAILED row keeps its own reason rather than gaining this one. */
+    CHECK(rb_downloads_by_id(d, paused)->status == RB_DL_PAUSED);
+    CHECK(rb_downloads_by_id(d, done)->status == RB_DL_COMPLETED);
+    CHECK(STREQ(rb_downloads_by_id(d, done)->destination, "/tmp/d.bin"));
+    dl = rb_downloads_by_id(d, failed);
+    CHECK(dl->status == RB_DL_FAILED);
+    CHECK(STREQ(dl->error, "connection reset"));
+    CHECK(rb_downloads_by_id(d, cancelled)->status == RB_DL_CANCELLED);
+
+    /* Nothing left to demote, so a startup that reconciles twice does not
+     * rewrite the store on the second pass. */
+    CHECK(rb_downloads_reconcile(d, "p1", "Restarted") == 0);
+
+    /* A blank profile is every profile, and a blank reason still records
+     * something a user can read rather than an empty error line. */
+    CHECK(rb_downloads_reconcile(d, NULL, NULL) == 1);
+    dl = rb_downloads_by_id(d, other);
+    CHECK(dl->status == RB_DL_FAILED);
+    CHECK(STREQ(dl->error, "Interrupted"));
+    CHECK(rb_downloads_reconcile(d, "", "x") == 0);
+    CHECK(rb_downloads_reconcile(NULL, "p1", "x") == 0);
+
+    rb_downloads_free(d);
+}
+
 /* -------------------------------- rb_dns --------------------------------- */
 
 static void test_rb_dns(void)
@@ -4745,6 +4930,9 @@ int main(void)
     test_rb_https();
     test_rb_download_names();
     test_rb_downloads();
+    test_rb_download_format();
+    test_rb_downloads_scoped();
+    test_rb_downloads_reconcile();
     test_rb_tabs();
     test_rb_history();
     test_rb_history_ops();

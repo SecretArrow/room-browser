@@ -375,6 +375,12 @@ static void on_download_started(WebKitWebContext *context,
                               uri, suggested, mime, rb_profile_now_ms());
     if (id == 0) return;
 
+    /* WebKit started this transfer already: there is no queue on this edition
+     * and no pump() to wait behind, so the row is RUNNING from the first byte.
+     * Leaving it QUEUED (which is what this did) made a download that was
+     * visibly progressing describe itself as waiting its turn. */
+    rb_downloads_set_status(app->downloads, id, RB_DL_RUNNING, NULL);
+
     /* WebKit falls back to its own temporary location unless we take over. */
     webkit_download_set_allow_overwrite(dl, FALSE);
     rb_dl_set_id(dl, id);
