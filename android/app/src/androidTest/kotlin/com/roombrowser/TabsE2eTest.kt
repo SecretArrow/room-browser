@@ -434,7 +434,7 @@ class TabsE2eTest {
 
         // ---- 1. Tab A = the initial start-page tab, loaded with page A ----
         assertTrue(
-            "Page A must load through the omnibox\n$uiTree()",
+            "Page A must load through the omnibox\n${uiTree()}",
             loadInOmnibox(urlA, contentA)
         )
 
@@ -444,7 +444,7 @@ class TabsE2eTest {
             openSheetEntry("New tab") { homepageUp(8_000) }
         )
         assertTrue(
-            "Page B must load into the NEW tab\n$uiTree()",
+            "Page B must load into the NEW tab\n${uiTree()}",
             loadInOmnibox(urlB, contentB)
         )
 
@@ -463,7 +463,7 @@ class TabsE2eTest {
         // ---- 4. Switch to A: content intact (per-tab WebView) -------------
         assertTrue("Tab A's card must be selectable", selectCardByTitle(titleA))
         assertTrue(
-            "Switching back to A must show A's page, not B's\n$uiTree()",
+            "Switching back to A must show A's page, not B's\n${uiTree()}",
             hasText(contentA, 15_000)
         )
 
@@ -471,7 +471,7 @@ class TabsE2eTest {
         assertTrue("Tab grid must re-open", openTabGrid())
         assertTrue("Tab B's card must be selectable", selectCardByTitle(titleB))
         assertTrue(
-            "Switching back to B must show B's page\n$uiTree()",
+            "Switching back to B must show B's page\n${uiTree()}",
             hasText(contentB, 15_000)
         )
 
@@ -498,7 +498,7 @@ class TabsE2eTest {
         // ---- 8. A and C are still correct ----------------------------------
         assertTrue("Tab A's card must still be selectable", selectCardByTitle(titleA))
         assertTrue(
-            "Tab A must still show its page after B was closed\n$uiTree()",
+            "Tab A must still show its page after B was closed\n${uiTree()}",
             hasText(contentA, 15_000)
         )
         assertTrue("Tab grid must re-open (for C)", openTabGrid())

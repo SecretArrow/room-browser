@@ -237,7 +237,7 @@ class PasswordsE2eTest {
                 clickTextWithScroll("Passwords")
             )
             assertTrue(
-                "PasswordsActivity must open on its LOCKED pane — no crash\n$uiTree()",
+                "PasswordsActivity must open on its LOCKED pane — no crash\n${uiTree()}",
                 hasText("Vault locked", 15_000)
             )
             assertTrue("The locked pane must offer the retry (Unlock) button", hasText("Unlock", 5_000))
@@ -245,7 +245,7 @@ class PasswordsE2eTest {
             // pane (with its retry button) must stay — gracefully.
             assertTrue("The Unlock button must be clickable", clickText("Unlock", 5_000))
             assertTrue(
-                "A failed unlock must keep the vault locked\n$uiTree()",
+                "A failed unlock must keep the vault locked\n${uiTree()}",
                 hasText("Vault locked", 5_000)
             )
         }

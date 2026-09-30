@@ -267,7 +267,7 @@ class NetworkWarningActivityE2eTest {
         armPendingDecision(profileId)
         relaunchEngine()
         assertTrue(
-            "The warning activity must come up over the gated engine\n$uiTree()",
+            "The warning activity must come up over the gated engine\n${uiTree()}",
             hasText(warningTitle, 20_000)
         )
         assertTrue("The warning must show the current IP from the extras", hasText("Current IP: $ip", 5_000))
@@ -298,7 +298,7 @@ class NetworkWarningActivityE2eTest {
         device.pressBack()
         device.waitForIdle(1_000)
         assertTrue(
-            "Back must NOT release the gate — the warning must come straight back\n$uiTree()",
+            "Back must NOT release the gate — the warning must come straight back\n${uiTree()}",
             hasText(warningTitle, 12_000)
         )
         assertTrue("The pending decision must still be persisted after Back", pendingDecisionOrNull() != null)
@@ -319,7 +319,7 @@ class NetworkWarningActivityE2eTest {
         // The sheet's copy line sits at its top — check it BEFORE scrolling.
         assertTrue("The quick switcher sheet must be open", hasTextContains("Switching closes", 8_000))
         assertTrue(
-            "Switch Profile must release the engine and re-open the quick switcher\n$uiTree()",
+            "Switch Profile must release the engine and re-open the quick switcher\n${uiTree()}",
             hasTextWithScroll("Create New Profile")
         )
         assertTrue(
