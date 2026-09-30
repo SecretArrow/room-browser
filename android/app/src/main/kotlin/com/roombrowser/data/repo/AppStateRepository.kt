@@ -63,7 +63,20 @@ data class AgentSettings(
      * means the built-in policy in
      * [com.roombrowser.domain.agent.ActionGate.DEFAULT_POLICY].
      */
-    val decisionPolicy: String = ""
+    val decisionPolicy: String = "",
+    /**
+     * YOLO — every state-changing action runs without asking.
+     *
+     * Set from the approval prompt's third answer ("Always allow"), not just
+     * from the settings switch, because that is where the user is actually
+     * being interrupted and decides they would rather not be. It overrides
+     * BOTH rules at once: the local decision gate is not consulted and the
+     * Confirm actions prompt is not shown. Off by default, and the only
+     * setting in this app that removes every check at once — so it is
+     * surfaced in the chat when it turns on and in the panel on every turn
+     * while it is on.
+     */
+    val yolo: Boolean = false
 )
 
 @Serializable

@@ -77,6 +77,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -105,6 +106,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.agent.AgentAttachment
 import com.roombrowser.agent.AgentEntry
+import com.roombrowser.agent.ApprovalAnswer
 import com.roombrowser.agent.BrowserAgentController
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.data.db.AgentProviderEntity
@@ -649,10 +651,26 @@ private fun ApprovalCard(approval: com.roombrowser.agent.AgentApproval, agent: B
             Spacer(Modifier.height(4.dp))
             Text(approval.label, style = MaterialTheme.typography.bodyMedium)
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { agent.respondApproval(true) }) { Text("Allow") }
-                OutlinedButton(onClick = { agent.respondApproval(false) }) { Text("Deny") }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(onClick = { agent.respondApproval(ApprovalAnswer.Allow) }) { Text("Allow") }
+                OutlinedButton(onClick = { agent.respondApproval(ApprovalAnswer.Deny) }) { Text("Deny") }
+                // Third answer, and the one that outlives the action. It sits
+                // last and is labelled with its consequence rather than a
+                // joke: tapping it stops the agent asking about anything ever
+                // again, which is too much to hide behind the word "YOLO".
+                TextButton(onClick = { agent.respondApproval(ApprovalAnswer.AlwaysAllow) }) {
+                    Text("Always allow")
+                }
             }
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "\"Always allow\" stops the agent asking about anything, until you turn it " +
+                    "off in AI Agent settings.",
+                style = MaterialTheme.typography.labelSmall
+            )
         }
     }
 }

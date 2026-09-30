@@ -23,7 +23,7 @@ device. It is **not** an anonymity tool.
 | Cookies | Third-party cookies blockable per profile/site |
 | Downloads | Filename sanitization (path traversal / separators / double-dot collapse), explicit notifications |
 | Malicious sites | Bundled blocklist + heuristics (http, IP-literal URLs, punycode) surfaced as warnings/blocks |
-| Agent actions | Every state-changing tool call passes a gate: **Confirm actions** (a blanket Allow/Deny prompt) and, optionally, a local Ollama decision model that judges the action first. Neither is a security boundary — see below |
+| Agent actions | Every state-changing tool call passes a gate: **Confirm actions** (a blanket Allow/Deny prompt) and, optionally, a local Ollama decision model that judges the action first. Both are bypassed while **YOLO** is on. None of the three is a security boundary — see below |
 | Credentials | **Never stored by Room Browser.** Autofill is delegated to the Android autofill framework; no plaintext (or any) credential storage exists in the app |
 | Secrets in repo | None. Signing comes exclusively from environment variables / CI secrets |
 | Backups | `allowBackup=false` + data-extraction rules exclude the DB, profile dirs and DataStore — isolated state cannot leak into cloud backups |
@@ -168,23 +168,27 @@ desktop profile may claim one, under the rules stated there.
 #### The agent's action gate (Android)
 
 Room Agent drives the real browser, so the app has to answer a question no
-sandbox can: *should this click happen?* Two rules apply to every
+sandbox can: *should this click happen?* Three rules apply to every
 state-changing tool call — clicking, typing, submitting, and the four social
 `auto_*` actions — in this order:
 
-1. **Confirm actions** — the blanket Allow/Deny prompt, off by default.
-2. **The local decision gate** — an optional Ollama decision model asked to
+0. **YOLO** — every action runs. Nothing below is consulted, neither the
+   model nor the user. It is first because it is not a decision at all: it is
+   the user having said they do not want to be asked.
+1. **The local decision gate** — an optional Ollama decision model asked to
    choose `allow`, `confirm` or `deny` for the action, given the action's
    label, the page's URL and title, and the user's own policy text. It runs
    on the user's own machine (`POST /v1/systemone`, Ollama 0.35+), so the
    action text never leaves it.
+2. **Confirm actions** — the blanket Allow/Deny prompt, off by default. It
+   has a third answer, **Always allow**, which turns rule 0 on.
 
 The gate only ever **adds** a decision. An `allow` lets an action the blanket
 rule would have asked about proceed unasked; a `deny` refuses it and returns
 the reason to the model as the tool result, so it changes course instead of
-retrying; a `confirm` — and every failure — falls through to rule 1.
+retrying; a `confirm` — and every failure — falls through to rule 2.
 
-**Neither rule is a security boundary, and this document will not pretend
+**None of these is a security boundary, and this document will not pretend
 otherwise.** Confirm actions is a UI prompt: it protects the user from an
 agent they did not intend, not from an attacker, and a user who taps Allow
 without reading has given the agent the run of the machine. The decision gate
@@ -193,6 +197,17 @@ argued out of a decision by the page it is judging, and its `confidence`
 field measures how concentrated its probabilities are, not how likely it is
 to be right. What the gate buys is fewer interruptions, which is what makes
 Confirm actions usable enough to leave on.
+
+**YOLO is the absence of both checks**, and it is the one setting in this app
+whose "on" state is indistinguishable from the app working normally: no
+prompt appears, so nothing on screen says the checks are gone. It is
+deliberately reachable from the approval prompt itself — the moment a person
+wants it is the moment they are being interrupted — and it is persisted, so
+it outlives the turn it was chosen in. Because it is invisible in use, the
+app says it in the chat the first time it is turned on, on every subsequent
+turn while it is on, and in a warning paragraph on the settings screen that
+renders only while the switch is on. Turning it off restores rules 1 and 2
+exactly as they were.
 
 One consequence is worth stating plainly, because it is invisible from the
 switch: **with Confirm actions off, a decision gate that cannot be reached
@@ -205,7 +220,9 @@ Confirm actions as the switch that gives a hard guarantee.
 The gate is refused for every provider that cannot serve it: `/v1/systemone`
 scores answer tokens directly and Ollama serves it only for local GGUF
 weights, never for cloud, MLX or Safetensors models. Only `OLLAMA`-protocol
-providers appear in the picker.
+providers appear in the picker. YOLO is not a gate feature and is not
+restricted that way — it is a local decision, so it applies to every
+provider, Ollama included.
 
 ## Reporting
 

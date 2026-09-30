@@ -573,9 +573,10 @@ class AgentSettingsE2eTest {
         //
         // Order matters. flipSwitch only advances the viewport downwards, and
         // off-screen rows of a scrollable column are not in the a11y tree, so
-        // both flips happen at the switch first and the policy field is found
-        // on the way down. Checking it first and then flipping would need a
-        // scroll back up that flipSwitch cannot do.
+        // every switch is flipped FIRST, in top-to-bottom order, and the
+        // policy field — which sits below all of them, in the gate's own
+        // section — is found on the way down at the end. A check that needed
+        // to scroll back up would fail outright: flipSwitch cannot go up.
         assertTrue(
             "Local decision gate switch must flip ON",
             flipSwitch("Local decision gate", wantOn = true)
@@ -584,6 +585,27 @@ class AgentSettingsE2eTest {
             "Local decision gate switch must flip OFF",
             flipSwitch("Local decision gate", wantOn = false)
         )
+
+        // ---- 6c. YOLO ------------------------------------------------------
+        // YOLO's "on" state is indistinguishable from the app working
+        // normally, which is the whole reason it is dangerous. The screen
+        // therefore owes the user a sentence saying otherwise, and flipping
+        // the switch must actually render it — an off-by-one in the condition
+        // that draws it would leave the app silently unguarded with nothing
+        // on screen to say so, and that is worth an assertion.
+        assertTrue(
+            "YOLO switch must flip ON",
+            flipSwitch("YOLO: always allow", wantOn = true)
+        )
+        assertTrue(
+            "YOLO must show its warning while it is on",
+            device.wait(Until.hasObject(By.textContains("YOLO is ON")), 5_000)
+        )
+        assertTrue(
+            "YOLO switch must flip OFF",
+            flipSwitch("YOLO: always allow", wantOn = false)
+        )
+
         var policySeen = false
         for (i in 1..18) {
             if (hasDesc("decision_gate_policy", 700)) { policySeen = true; break }

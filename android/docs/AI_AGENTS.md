@@ -160,9 +160,13 @@ change is picked up by the running browser instantly.
   default; also switchable from Browser Settings).
 * **Confirm actions** — require Allow/Deny approval before every click,
   type or submit (off by default = fully autonomous within the step budget).
+  The prompt has a third answer, **Always allow**, which turns YOLO on.
 * **Local decision gate** — hand the *which* actions need a human to a local
   Ollama decision model, so Confirm actions stops interrupting you for
   routine work. See below.
+* **YOLO: always allow** — never ask. This is not a faster policy, it is the
+  absence of one: the decision gate is not consulted and no prompt appears,
+  on **every** provider, Ollama included. See below for what it costs you.
 * **Include current page by default** — attaches a page snapshot to the
   first message of each turn (the switch shows green when on, matching the
   panel chip's included state).
@@ -246,6 +250,41 @@ the two rules compose, and the gate only ever *adds* a decision.
 The action text and the page's URL and title are the only things sent, and
 they go to your own machine. Nothing about the gate leaves the device.
 
+## YOLO: always allow
+
+Every prompt in the agent has a third answer next to Allow and Deny:
+**Always allow**. It is not "allow this one too" — it switches the asking
+off, for every action, from that moment until you turn it back on.
+
+It exists because the alternative is worse. A person who is being interrupted
+by a prompt they do not want to read has two options without it: tap Allow
+without reading every time (which is what the prompt was supposed to prevent),
+or go into settings and turn Confirm actions off, which also stops the gate
+that was doing useful work. YOLO is the honest version of "stop asking me",
+said once, at the moment the person actually means it.
+
+What it does, precisely: **both** rules are bypassed. The local decision gate
+is not consulted — no request goes to Ollama — and the Confirm actions prompt
+is not shown. Every click, keystroke, form submission and `auto_*` post runs
+immediately, on any site, including ones where you are signed in.
+
+Three things make it visible, because a setting whose "on" state looks
+identical to the app working normally is the dangerous kind:
+
+* the chat says so the moment it is turned on;
+* the chat says so again at the start of **every** turn while it is on;
+* the settings screen shows a red paragraph under the switch, rendered only
+  while the switch is on.
+
+It applies to **every** provider, Ollama included, because it is a local
+decision and needs no model. That is the difference between it and the
+decision gate, which only Ollama can serve.
+
+Turning it off restores both rules exactly as they were; nothing else about
+the agent changes. `SECURITY.md` states plainly that it is the one setting
+here with no guarantee attached to it at all — the guarantee was the prompt,
+and YOLO is what you get when you ask for the prompt to stop.
+
 ## Privacy model (honest)
 
 * Agent requests go **directly** from the device to the configured
@@ -321,7 +360,9 @@ providers are app-global credentials.
   pill is hidden by default), adds a provider via the settings/editor
   activities against a local MockWebServer, fetches its model list,
   verifies the saved selection in the panel, exercises the Show/Hide AI
-  Agent button toggle (off → pill hidden, on → pill shown, off → hidden)
+  Agent button toggle (off → pill hidden, on → pill shown, off → hidden),
+  flips the Local decision gate and YOLO switches and checks that YOLO's
+  warning paragraph actually renders while it is on,
   and opens the chat-history activity.
 
 ## Tips

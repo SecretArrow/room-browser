@@ -101,12 +101,24 @@ internal fun formatSize(bytes: Long): String = when {
     else -> String.format(java.util.Locale.ROOT, "%.1f MB", bytes / (1024.0 * 1024.0))
 }
 
-/** A pending action that waits for the user's Allow/Deny decision. */
+/**
+ * What the user answered at the approval prompt.
+ *
+ * [AlwaysAllow] is the third button and the only answer that outlives the
+ * action it was given for: it turns on [AgentSettings.yolo], so nothing asks
+ * again until the user turns it back off. It is deliberately the answer that
+ * is hardest to reach — last in the row, labelled with what it actually does
+ * rather than with a joke — because it is the one that removes every check
+ * there is.
+ */
+enum class ApprovalAnswer { Allow, AlwaysAllow, Deny }
+
+/** A pending action that waits for the user's Allow/Deny/Always-allow answer. */
 data class AgentApproval(
     val name: String,
     val label: String,
     val at: Long,
-    val respond: (Boolean) -> Unit
+    val respond: (ApprovalAnswer) -> Unit
 )
 
 /**
@@ -430,8 +442,8 @@ class BrowserAgentController(
         entries = entries + AgentEntry.Notice("Stopped by user", error = true, at = System.currentTimeMillis())
     }
 
-    fun respondApproval(allow: Boolean) {
-        approval?.let { it.respond(allow) }
+    fun respondApproval(answer: ApprovalAnswer) {
+        approval?.let { it.respond(answer) }
         approval = null
     }
 
@@ -455,6 +467,17 @@ class BrowserAgentController(
         val display = if (attachments.isEmpty()) text
         else text + "\n📎 " + attachments.joinToString(", ") { it.name }
         entries = entries + AgentEntry.User(display, System.currentTimeMillis())
+        // YOLO has no prompt to remind anyone it is on, which is exactly why
+        // it needs saying: the user turned it on at a prompt, possibly days
+        // ago, and every turn since has looked identical to one where the
+        // checks were still in place. One line per turn is cheap.
+        if (settings.yolo) {
+            note(
+                "YOLO is on — this turn's actions run without asking. " +
+                    "Turn it off in AI Agent settings.",
+                error = true
+            )
+        }
         var streamingIndex = -1
         try {
             // "Delete all agent chats" can run in the settings ACTIVITY while
@@ -630,19 +653,26 @@ class BrowserAgentController(
         AgentForeground.status(text ?: "Working…")
     }
 
-    private suspend fun requestApproval(name: String, label: String): Boolean {
-        if (!settings.confirmActions) return true
+    /**
+     * Asks the user about one action under the Confirm actions rule.
+     *
+     * Reached only when the local gate declined to settle the action itself.
+     * A timeout and a cancelled turn both deny: the failure mode of an
+     * unanswered prompt must never be that the agent proceeds.
+     */
+    private suspend fun requestApproval(name: String, label: String): ApprovalAnswer {
+        if (!settings.confirmActions) return ApprovalAnswer.Allow
         setStatus("Approve? $label")
         return try {
             withTimeout(APPROVAL_TIMEOUT_MS) {
                 suspendCancellableCoroutine { continuation ->
-                    approval = AgentApproval(name, label, SystemClock.elapsedRealtime()) { allow ->
-                        if (continuation.isActive) continuation.resume(allow)
+                    approval = AgentApproval(name, label, SystemClock.elapsedRealtime()) { answer ->
+                        if (continuation.isActive) continuation.resume(answer)
                     }
                 }
             }
         } catch (ce: CancellationException) {
-            false // timeout or turn cancelled → deny
+            ApprovalAnswer.Deny // timeout or turn cancelled → deny
         } finally {
             approval = null
         }
@@ -651,19 +681,25 @@ class BrowserAgentController(
     /**
      * The gate every state-changing tool call passes through.
      *
-     * Two rules apply, in this order:
+     * Three rules apply, in this order:
      *
+     *  0. **YOLO** ([AgentSettings.yolo]) — every action runs. Nothing below
+     *     is consulted, not the model and not the user. It is first because
+     *     it is the only rule that is not a decision: it is the user having
+     *     said they do not want to be asked. It is reachable from the
+     *     approval prompt's third answer as well as from settings, since the
+     *     moment a person wants it is the moment they are being interrupted.
      *  1. The **local decision gate** (see [AgentSettings.decisionGate]), when
      *     the user has pointed it at an Ollama decision model. It answers
      *     allow / confirm / deny, and only the first and last are settled
      *     here — "confirm" means the model declined to decide alone, which is
      *     exactly what rule 2 is for.
      *  2. **Confirm actions**, the blanket Allow/Deny prompt that has always
-     *     been there.
+     *     been there. Its third answer, "Always allow", turns rule 0 on.
      *
-     * So the gate can only ever *add* a decision. Turning it on never takes
-     * away a prompt the user asked for, with one deliberate exception: an
-     * action the blanket rule would have asked about can now run unasked,
+     * So the gate can only ever *add* a decision. Turning rule 1 on never
+     * takes away a prompt the user asked for, with one deliberate exception:
+     * an action the blanket rule would have asked about can now run unasked,
      * because the local model read the user's own policy and said it was
      * routine. That is the entire point of the feature, and it is why the
      * policy text is the user's to write.
@@ -675,10 +711,23 @@ class BrowserAgentController(
      * exactly as they did before this feature existed. Confirm actions is the
      * switch that gives a hard guarantee; this one buys fewer interruptions.
      */
-    private suspend fun gate(name: String, label: String): ActionVerdict =
-        localVerdict(name, label)
-            ?: if (requestApproval(name, label)) ActionVerdict.Allow
-            else ActionVerdict.Deny("the user denied this action")
+    private suspend fun gate(name: String, label: String): ActionVerdict {
+        if (settings.yolo) return ActionVerdict.Allow
+        localVerdict(name, label)?.let { return it }
+        return when (requestApproval(name, label)) {
+            ApprovalAnswer.Allow -> ActionVerdict.Allow
+            ApprovalAnswer.AlwaysAllow -> {
+                updateSettings { it.copy(yolo = true) }
+                note(
+                    "YOLO on — every action from now on runs without asking, " +
+                        "including clicks, typing and posts. Turn it off in AI Agent settings.",
+                    error = true
+                )
+                ActionVerdict.Allow
+            }
+            ApprovalAnswer.Deny -> ActionVerdict.Deny("the user denied this action")
+        }
+    }
 
     /**
      * The local model's verdict, or null when the decision belongs to the

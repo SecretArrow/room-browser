@@ -364,6 +364,34 @@ private fun AgentSettingsRoot(
                     controller.updateSettings { s -> s.copy(decisionGate = checked) }
                 }
             )
+            // YOLO sits below both rules because it overrides both. The
+            // paragraph under the switch is not optional decoration: a switch
+            // in a list is easy to leave on, and this is the one setting in
+            // the app whose "on" state is indistinguishable from the app
+            // working normally.
+            // The title carries no parentheses on purpose: UiAutomator's
+            // By.desc treats its argument as a regular expression, so a ")"
+            // in a switch title would make the E2E selector miss the row.
+            SettingSwitchRow(
+                title = "YOLO: always allow",
+                subtitle = "Never ask. The decision gate is not consulted and no Allow/Deny " +
+                    "prompt appears — every click, keystroke and post runs immediately",
+                checked = controller.settings.yolo,
+                onCheckedChange = { checked -> controller.updateSettings { s -> s.copy(yolo = checked) } }
+            )
+            if (controller.settings.yolo) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+                    Text(
+                        "YOLO is ON. The agent will click, type, submit and post on any site " +
+                            "with no confirmation and no policy check, including sites where you " +
+                            "are signed in. Nothing else on this screen limits it — the decision " +
+                            "gate and Confirm actions are both bypassed. Turn this off to get " +
+                            "them back.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
             // Included page = GREEN (user request: "jika include page
             // di-ikutkan maka warna hijau") — local twin of SettingSwitchRow
             // with a green checked switch, matching the panel chip.

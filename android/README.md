@@ -52,7 +52,9 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
   history and Allow/Deny action approvals — and an optional **local
   decision gate** that asks an Ollama decision model (`nimble`, `tev1`)
   whether each action is routine, so Confirm actions only interrupts you
-  when it should. The composer supports
+  when it should. Every prompt also offers **Always allow** (YOLO), which
+  stops the asking entirely — a deliberate, loudly-announced removal of
+  both checks rather than a quiet setting. The composer supports
   **file attachments** (attach icon next to "Include page", which turns
   green with a check icon when the page is included) — text files
   are inlined into the prompt so the agent can work with them. **Social automation tools**
