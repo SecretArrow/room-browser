@@ -66,6 +66,7 @@ extern "C" {
 #define IDM_BOOKMARK  3002
 #define IDM_ABOUT     3003
 #define IDM_PREFS     3004
+#define IDM_DOWNLOADS 3005
 #define IDM_HIST_FIRST 3100
 #define RB_HIST_MENU_MAX 16
 
@@ -202,6 +203,10 @@ char *rb_ua_current(App *app);
 /* The active profile's theme, and the palette resolved from it. */
 const rb_theme *rb_theme_current(App *app);
 void rb_theme_apply(App *app);     /* rebuild palette + brushes, repaint */
+
+/* Dark title bar via runtime-loaded dwmapi; a silent no-op where the OS
+ * does not have the attribute.  Shared by every window the chrome opens. */
+void rb_apply_dark_titlebar(HWND hwnd);
 
 /* A modal message box parented to the window. */
 void rb_warn(App *app, const char *title, const char *body);

@@ -29,6 +29,7 @@
 
 #include "chrome.h"
 #include "webview.h"
+#include "downloads.h"
 #include "prefs.h"
 #include "rb_version.h"
 
@@ -451,7 +452,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
          * arrow keys move between its controls, Enter presses the default
          * button, Escape cancels.  It returns FALSE for every other window,
          * so the main chrome is untouched. */
-        if (!rb_prefs_is_msg(&msg)) {
+        if (!rb_prefs_is_msg(&msg) && !rb_downloads_is_msg(&msg)) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }

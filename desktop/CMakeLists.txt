@@ -46,6 +46,7 @@ if(RB_BUILD_GUI AND WIN32)
     add_executable(RoomBrowser WIN32
         src/win/main.c
         src/win/chrome.c
+        src/win/downloads.c
         src/win/prefs.c
         src/win/webview.c
         ${CMAKE_CURRENT_BINARY_DIR}/app.rc)

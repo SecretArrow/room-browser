@@ -28,6 +28,12 @@ browser is original C: a portable core plus one thin platform layer per OS.
   URL; persisted as JSON lines.
 - **History** — most-recent-first, consecutive duplicates collapsed, bounded at
   10 000 entries, persisted as JSON lines; the menu offers the 10 latest.
+- **Downloads** — the active profile's records, newest first, each row a file
+  name over its status (with progress while one is running and the error when
+  one failed), plus "Clear list". Both editions have the window and show the
+  same core strings, so they cannot describe one download differently. Clearing
+  removes the *records* of that profile only; the files on disk are the user's
+  and are never touched. Neither edition opens the file from the list.
 - **Settings** — plain `key=value` lines: `home`, `search_engine`,
   `javascript` (default **1**).  The preferences window (menu → Preferences,
   or <kbd>Ctrl</kbd>+<kbd>,</kbd>) edits the profile's full setting set —
@@ -227,8 +233,9 @@ Outputs:
 - No private/incognito mode, context-menu customization, or per-site shields;
   the "Brave-inspired" part is strictly the chrome design. Content blocking is
   real on both editions (the bundled host list, filtered by each profile's
-  switches), and Linux additionally has a downloads window. Windows records
-  downloads but has no window to show them in yet.
+  switches), and both editions show the active profile's downloads — the record
+  of what was fetched, newest first, with "Clear list". Neither window opens the
+  file: the list is a record, and the file belongs to the user.
 - History is capped at 10 000 entries; bookmarks are a flat list in insertion
   order.
 - The omnibox heuristic treats any input with interior whitespace or

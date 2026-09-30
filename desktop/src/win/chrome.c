@@ -25,6 +25,7 @@
 #include <wchar.h>
 
 #include "chrome.h"
+#include "downloads.h"
 #include "webview.h"
 #include "prefs.h"
 #include "resource.h"
@@ -1380,6 +1381,7 @@ static void rb_menu_show(App *app)
     AppendMenuW(m, MF_POPUP, (UINT_PTR)prof, L"Profile");
 
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING, IDM_DOWNLOADS, L"Downloads");
     AppendMenuW(m, MF_STRING, IDM_PREFS, L"Profile settings");
     AppendMenuW(m, MF_STRING, IDM_ABOUT, L"About");
 
@@ -1413,6 +1415,8 @@ static void rb_on_command(App *app, int id, int notify)
         rb_do_toggle_bookmark(app);
     } else if (id == IDM_ABOUT) {
         rb_show_about(app);
+    } else if (id == IDM_DOWNLOADS) {
+        rb_show_downloads(app);
     } else if (id == IDM_PREFS) {
         rb_show_prefs(app);
     } else if (id == IDM_PROF_ADD) {
@@ -1481,7 +1485,7 @@ static LRESULT CALLBACK rb_omni_subclass(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
 /* ------------------------------------------------------------------ */
 /* Dark title bar via runtime-loaded dwmapi (silent fallback). */
 
-static void rb_apply_dark_titlebar(HWND hwnd)
+void rb_apply_dark_titlebar(HWND hwnd)
 {
     typedef HRESULT (WINAPI *PFN_DwmSetWindowAttribute)(HWND, DWORD, LPCVOID, DWORD);
     HMODULE mod = LoadLibraryW(L"dwmapi.dll");
