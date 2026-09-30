@@ -47,6 +47,38 @@ the device.
   microphone access remain permission-gated.
 - User-Agent spoofing changes only the UA string — never real platform
   capabilities. No fingerprinting-bypass claims are made anywhere in the app.
+
+### What a profile's device presents, exactly
+
+A profile may be assigned one of the bundled real Android devices. That
+assignment is a *claim*, not an emulation, and the difference is the whole
+point of this section. What changes:
+
+- the `User-Agent` header and `navigator.userAgent`
+- `navigator.userAgentData` — `brands`, `mobile`, `platform`, and the
+  high-entropy values `model`, `platformVersion`, `uaFullVersion`,
+  `fullVersionList` and `formFactor`, which are the client hints that would
+  otherwise name the real handset
+- `navigator.platform`, `navigator.deviceMemory`, `navigator.hardwareConcurrency`
+- the WebGL `UNMASKED_VENDOR_WEBGL` / `UNMASKED_RENDERER_WEBGL` strings
+
+What deliberately does **not** change, because it would be both a lie and a
+detectable one:
+
+- **Screen geometry.** `screen.width/height`, `innerWidth/innerHeight`,
+  `devicePixelRatio`, `screen.orientation`, and the layout that follows from
+  them. A page is really laid out on this phone's screen; a claimed viewport
+  would render it wrongly *and* be contradicted by the viewport itself.
+- **Real capabilities.** Camera, microphone, sensors, codecs, battery, and
+  every permission stay the hardware's own.
+
+This raises the cost of the cheap, scripted checks that compare a UA against
+a handful of obvious properties. It does **not** make a profile
+undetectable, and the app does not claim it does: a page that inspects
+`Function.prototype.toString` on the patched accessors, times a WebGL draw
+call, or correlates dozens of unrelated signals can still tell. Profiles are
+for keeping separate identities separate, not for evading a determined
+fingerprinter.
 - Safe Browsing status follows the system WebView component.
 
 ## Reporting

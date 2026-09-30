@@ -35,7 +35,11 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
   pause/resume/retry and correct scoped-storage usage.
 - **DNS privacy** — per-profile and global DoH/DoT configuration for app
   connections (see honest limitations below).
-- **User-Agent manager** — per-profile Android/desktop presets or custom UA.
+- **Device identity manager** — every profile presents a real Android handset
+  from the bundled 1021-device catalogue (UA, client hints, platform version,
+  memory, cores, GPU strings); presets and a custom UA remain available, and
+  choosing one steps the device aside so a profile never carries two
+  identities. See SECURITY.md for exactly what is and is not presented.
 - **Profile Network Conflict Protection** — optional, informational warning when
   a profile is opened from a public IP previously associated with another profile.
 - **Omnibox intelligence** — URL/host/IP/localhost/file-URI detection, search,
@@ -127,10 +131,12 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
   are **OFF out of the box** (opt-in per profile in settings) so pages
   render exactly as their authors intended; malicious-site blocking and
   HTTPS-First-with-fallback stay on. Every NEW profile also automatically
-  identifies as a randomly picked common mobile browser User-Agent
-  (Chrome / Firefox / Edge / Samsung Internet — fingerprint diversity
-  between profiles; change it any time in Profile settings). Strict modes
-  stay one toggle away in settings.
+  presents itself as a **different real Android device**, drawn from a
+  bundled catalogue of 1021 handsets (Samsung, Google, Xiaomi, OnePlus,
+  OPPO, vivo, realme, Motorola, Sony, ASUS, Nothing and more, 2022-2025),
+  so two profiles never present the same fingerprint — change the device,
+  or pick one no other profile is using, any time in Profile settings.
+  Strict modes stay one toggle away in settings.
 - **Proper system-UI integration** — edge-to-edge with explicit
   `WindowInsets` handling: the toolbar, omnibox, sheets and dialogs never
   overlap the 3-button navigation bar (Back / Home / Recents) or the status

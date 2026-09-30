@@ -1,10 +1,12 @@
 package com.roombrowser.domain.profile
 
 import com.google.common.truth.Truth.assertThat
+import com.roombrowser.domain.model.Devices
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.model.UaMode
+import com.roombrowser.domain.model.UserAgents
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
 import org.junit.Test
@@ -130,17 +132,86 @@ class ProfileManagerTest {
     }
 
     @Test
-    fun `new profile gets randomized mobile UA when none set`() = runTest {
+    fun `new profile gets a device when none set`() = runTest {
         val randomManager = ProfileManager(
             store,
             clock = { now },
-            randomUaPresetId = { "firefox_android" }
+            randomDeviceId = { "samsung-sm-s918b" }
         )
         val p = randomManager.create("Random", "r", 0)
-        assertThat(p.settings.uaMode).isEqualTo(UaMode.PRESET)
-        assertThat(p.settings.uaPresetId).isEqualTo("firefox_android")
-        // The randomized UA is what gets persisted, not just what is returned.
-        assertThat(store.profiles().single().settings.uaPresetId).isEqualTo("firefox_android")
+        assertThat(p.settings.deviceId).isEqualTo("samsung-sm-s918b")
+        assertThat(p.settings.uaMode).isEqualTo(UaMode.DEFAULT)
+        // The assignment is what gets persisted, not just what is returned.
+        assertThat(store.profiles().single().settings.deviceId).isEqualTo("samsung-sm-s918b")
+    }
+
+    @Test
+    fun `second profile is offered the devices already taken`() = runTest {
+        val offered = mutableListOf<Set<String>>()
+        val randomManager = ProfileManager(
+            store,
+            clock = { now },
+            randomDeviceId = { taken ->
+                offered += taken
+                "device-" + taken.size
+            }
+        )
+        randomManager.create("One", "1", 0)
+        randomManager.create("Two", "2", 0)
+        randomManager.create("Three", "3", 0)
+        // Each new profile sees every device handed out before it, so the
+        // picker can keep them distinct.
+        assertThat(offered).containsExactly(setOf(), setOf("device-0"), setOf("device-0", "device-1"))
+    }
+
+    @Test
+    fun `duplicate does not reuse the source device`() = runTest {
+        val randomManager = ProfileManager(
+            store,
+            clock = { now },
+            randomDeviceId = { taken -> if ("device-a" in taken) "device-b" else "device-a" }
+        )
+        val original = randomManager.create("Research", "R", 0)
+        val copy = randomManager.duplicate(original.id, CopyOptions())
+        assertThat(original.settings.deviceId).isEqualTo("device-a")
+        assertThat(copy.settings.deviceId).isEqualTo("device-b")
+    }
+
+    @Test
+    fun `setDevice clears a preset so identity has one answer`() = runTest {
+        val p = manager.create(
+            "Work", "w", 0,
+            settings = ProfileSettings(uaMode = UaMode.PRESET, uaPresetId = "firefox_android"),
+            randomizeDevice = false
+        )
+        assertThat(p.settings.deviceId).isNull()
+        val device = Devices.all.first()
+        manager.setDevice(p.id, device.id)
+        val after = manager.profiles().single().settings
+        assertThat(after.deviceId).isEqualTo(device.id)
+        assertThat(after.uaMode).isEqualTo(UaMode.DEFAULT)
+        assertThat(after.uaPresetId).isNull()
+        assertThat(after.customUserAgent).isNull()
+        // ...and the device's UA is what the profile now sends.
+        assertThat(UserAgents.effectiveUserAgent(after)).isEqualTo(device.userAgent)
+    }
+
+    @Test
+    fun `setDevice rejects an unknown id`() = runTest {
+        val p = manager.create("Work", "w", 0)
+        var thrown = false
+        try { manager.setDevice(p.id, "no-such-device") } catch (e: IllegalArgumentException) { thrown = true }
+        assertThat(thrown).isTrue()
+    }
+
+    @Test
+    fun `clearing the device leaves the profile on the WebView default`() = runTest {
+        val p = manager.create("Work", "w", 0, randomizeDevice = false)
+        manager.setDevice(p.id, Devices.all.first().id)
+        manager.setDevice(p.id, null)
+        val after = manager.profiles().single().settings
+        assertThat(after.deviceId).isNull()
+        assertThat(UserAgents.effectiveUserAgent(after)).isNull()
     }
 
     @Test
@@ -148,7 +219,7 @@ class ProfileManagerTest {
         val randomManager = ProfileManager(
             store,
             clock = { now },
-            randomUaPresetId = { "firefox_android" }
+            randomDeviceId = { "samsung-sm-s918b" }
         )
         val p = randomManager.create(
             "Custom", "c", 0,
@@ -160,16 +231,26 @@ class ProfileManagerTest {
     }
 
     @Test
-    fun `import path does not randomize`() = runTest {
+    fun `import path does not assign a device`() = runTest {
         val randomManager = ProfileManager(
             store,
             clock = { now },
-            randomUaPresetId = { "firefox_android" }
+            randomDeviceId = { "samsung-sm-s918b" }
         )
-        val p = randomManager.create("Imported", "i", 0, randomizeUserAgent = false)
+        val p = randomManager.create("Imported", "i", 0, randomizeDevice = false)
+        assertThat(p.settings.deviceId).isNull()
         assertThat(p.settings.uaMode).isEqualTo(UaMode.DEFAULT)
         assertThat(p.settings.uaPresetId).isNull()
         assertThat(p.settings.customUserAgent).isNull()
+    }
+
+    @Test
+    fun `the catalogue is large enough to keep profiles distinct`() {
+        // Distinct assignment is only meaningful while the catalogue has room:
+        // a catalogue that ran out would start handing back shared devices.
+        assertThat(Devices.all.size).isAtLeast(1000)
+        assertThat(Devices.all.map { it.id }.toSet()).hasSize(Devices.all.size)
+        assertThat(Devices.all.map { it.userAgent }.toSet()).hasSize(Devices.all.size)
     }
 }
 

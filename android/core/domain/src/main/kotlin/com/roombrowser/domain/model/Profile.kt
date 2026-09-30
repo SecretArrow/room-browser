@@ -97,6 +97,13 @@ data class ProfileSettings(
     val showRecentSites: Boolean = true,
     val showClock: Boolean = true,
     // User agent
+    //
+    // The device is the single control for browser identity: when [deviceId]
+    // names a device, that handset's UA is the one the profile sends and the
+    // two fields below are not consulted. Choosing a preset or a custom UA in
+    // settings clears [deviceId] instead, so a profile never carries two
+    // contradictory identities.
+    val deviceId: String? = null,
     val uaMode: UaMode = UaMode.DEFAULT,
     val uaPresetId: String? = null,
     val customUserAgent: String? = null,
@@ -157,6 +164,19 @@ data class ProfileSettings(
         )
     }
 }
+
+/**
+ * The identity fields answer one question — what does this profile claim to
+ * be — so at most one of them is ever set. These two helpers are how a screen
+ * hands that choice over: picking a preset or a custom UA drops the device,
+ * because the UA is then the whole answer. The other direction is
+ * [ProfileManager.setDevice], which drops the UA fields.
+ */
+fun ProfileSettings.withUserAgentPreset(presetId: String?): ProfileSettings =
+    copy(deviceId = null, uaMode = UaMode.PRESET, uaPresetId = presetId)
+
+fun ProfileSettings.withCustomUserAgent(value: String?): ProfileSettings =
+    copy(deviceId = null, uaMode = UaMode.CUSTOM, customUserAgent = value)
 
 /** Global (browser-wide) settings, independent of any profile. */
 @Serializable

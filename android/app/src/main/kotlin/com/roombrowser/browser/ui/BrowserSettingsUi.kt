@@ -9,17 +9,21 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenuItem
@@ -50,6 +54,8 @@ import androidx.compose.ui.unit.dp
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.domain.model.BrowserGlobalSettings
+import com.roombrowser.domain.model.Device
+import com.roombrowser.domain.model.Devices
 import com.roombrowser.domain.model.DnsMode
 import com.roombrowser.domain.model.NetworkRetention
 import com.roombrowser.domain.model.ProfileSettings
@@ -355,6 +361,16 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
         scope.launch { viewModel.updateSettings(new) }
     }
 
+    // Device identity. The catalogue is over a thousand entries, so the
+    // picker is a search field over a list rather than a dropdown, and it
+    // marks the devices other profiles are already presenting as.
+    val currentDevice = UserAgents.device(settings)
+    var showDevicePicker by remember { mutableStateOf(false) }
+    var inUse by remember { mutableStateOf(emptySet<String>()) }
+    LaunchedEffect(showDevicePicker, currentDevice) {
+        if (showDevicePicker) inUse = viewModel.devicesInUse()
+    }
+
     Column(
         Modifier
             .fillMaxSize()
@@ -448,6 +464,51 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
         }
         InfoNote("Android WebView does not expose full WebRTC IP-handling control to normal apps. Camera/microphone grants stay under permission control; local IP exposure limits are documented in SECURITY.md.")
 
+        SectionHeader("Device")
+        SettingsGroup {
+            SettingActionRow(
+                title = "Device",
+                subtitle = "The handset this profile presents itself as. It supplies the " +
+                    "User-Agent, platform version and hardware the profile reports.",
+                value = currentDevice?.let { "${it.brand} ${it.model}" } ?: "None",
+                onClick = { showDevicePicker = true }
+            )
+            SettingActionRow(
+                title = "Use a device no other profile is using",
+                subtitle = "Picks at random from the bundled catalogue of real devices",
+                onClick = {
+                    scope.launch {
+                        viewModel.pickFreeDevice()?.let { viewModel.setDevice(it.id) }
+                    }
+                }
+            )
+            if (currentDevice != null) {
+                SettingActionRow(
+                    title = "Stop presenting as a device",
+                    subtitle = "Falls back to the User-Agent setting below",
+                    onClick = { scope.launch { viewModel.setDevice(null) } }
+                )
+            }
+        }
+        if (currentDevice != null) {
+            InfoNote(
+                "${currentDevice.brand} ${currentDevice.model} (${currentDevice.code}), ${currentDevice.year}\n" +
+                    "Android ${currentDevice.androidVersion} — Chrome ${currentDevice.chromeVersion} — " +
+                    "${currentDevice.deviceMemoryGb} GB RAM, ${currentDevice.hardwareConcurrency} cores\n" +
+                    "${currentDevice.userAgent}"
+            )
+        }
+        if (showDevicePicker) {
+            DevicePickerDialog(
+                inUse = inUse,
+                onDismiss = { showDevicePicker = false },
+                onPick = { device ->
+                    showDevicePicker = false
+                    scope.launch { viewModel.setDevice(device?.id) }
+                }
+            )
+        }
+
         SectionHeader("User-Agent")
         SettingsGroup {
             DropdownRow(
@@ -464,6 +525,10 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                     update(settings.copy(uaMode = UaMode.entries.first { it.name == value }))
                 }
             )
+            InfoNote(
+                "A device, when one is assigned, is the single control: it supplies the " +
+                    "User-Agent, so the preset and custom fields below are ignored while it is set."
+            )
             if (settings.uaMode == UaMode.PRESET) {
                 DropdownRow(
                     label = "Preset",
@@ -471,7 +536,7 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                         preset.id to preset.label + if (preset.isDesktop) "  (desktop)" else ""
                     },
                     selected = settings.uaPresetId ?: "",
-                    onSelect = { value -> update(settings.copy(uaPresetId = value)) }
+                    onSelect = { value -> update(settings.withUserAgentPreset(value)) }
                 )
             }
             if (settings.uaMode == UaMode.CUSTOM) {
@@ -486,7 +551,7 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                         modifier = Modifier.fillMaxWidth()
                     )
                     TextButton(
-                        onClick = { update(settings.copy(customUserAgent = custom.trim())) },
+                        onClick = { update(settings.withCustomUserAgent(custom.trim())) },
                         modifier = Modifier.align(Alignment.End)
                     ) { Text("Apply") }
                 }
@@ -747,6 +812,90 @@ private fun DropdownRow(
             }
         }
     }
+}
+
+/**
+ * Search-and-pick over the whole device catalogue. A profile per handset is
+ * the point of the catalogue, so the ones other profiles already present as
+ * are marked rather than hidden — the user can still choose one, they are
+ * just told it is a repeat.
+ */
+@Composable
+private fun DevicePickerDialog(
+    inUse: Set<String>,
+    onDismiss: () -> Unit,
+    onPick: (Device?) -> Unit
+) {
+    val extras = LocalRoomExtras.current
+    var query by remember { mutableStateOf("") }
+    val results = remember(query) {
+        val needle = query.trim().lowercase()
+        if (needle.isEmpty()) {
+            Devices.all
+        } else {
+            Devices.all.filter {
+                it.brand.lowercase().contains(needle) ||
+                    it.model.lowercase().contains(needle) ||
+                    it.code.lowercase().contains(needle) ||
+                    it.year.toString() == needle
+            }
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Device (${results.size} of ${Devices.all.size})") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    label = { Text("Search brand, model, code or year") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                    item {
+                        // "No device" is a real choice: the profile then sends
+                        // whatever the User-Agent setting below says.
+                        TextButton(onClick = { onPick(null) }) {
+                            Text("No device (use the User-Agent setting)")
+                        }
+                    }
+                    items(results, key = { it.id }) { device ->
+                        val taken = device.id in inUse
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { onPick(device) }
+                                .padding(horizontal = 4.dp, vertical = 8.dp)
+                        ) {
+                            Text(
+                                "${device.brand} ${device.model}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = extras.textPrimary
+                            )
+                            val marks = buildString {
+                                append(device.code)
+                                append(" · ")
+                                append(device.year)
+                                append(" · Android ")
+                                append(device.androidVersion)
+                                if (device.formFactor == "tablet") append(" · tablet")
+                                if (taken) append(" · used by another profile")
+                            }
+                            Text(
+                                marks,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (taken) extras.primary else extras.textSecondary
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
 @Composable

@@ -185,8 +185,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     icon = payload.profile.icon,
                     colorArgb = payload.profile.colorArgb,
                     settings = payload.profile.settings,
-                    // Imports preserve the payload's UA verbatim — no randomization.
-                    randomizeUserAgent = false
+                    // Imports preserve the payload's identity verbatim — no
+                    // device assignment.
+                    randomizeDevice = false
                 )
                 payload.bookmarks.forEach {
                     graph.browserRepo.addBookmark(created.id, it.url, it.title, it.folder)

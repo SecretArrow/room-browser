@@ -32,6 +32,8 @@ import com.roombrowser.data.repo.PermissionKind
 import com.roombrowser.domain.engine.FilterEngine
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.model.BrowserGlobalSettings
+import com.roombrowser.domain.model.Device
+import com.roombrowser.domain.model.Devices
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
@@ -1051,6 +1053,31 @@ class BrowserViewModel(
     }
 
     fun profileSettings(): ProfileSettings = profile.settings
+
+    // ---------- Device identity ----------
+
+    /**
+     * Point this profile at a device, or null to take its device away.
+     *
+     * Goes through the profile manager rather than [updateSettings] because
+     * assigning a device also clears any UA preset (one identity, one
+     * control), and the open pages then have to be reconfigured with the new
+     * UA.
+     */
+    suspend fun setDevice(deviceId: String?) {
+        graph.profileManager.setDevice(profileId, deviceId)
+        // Re-read rather than patch the local copy: assigning a device also
+        // clears the UA fields, and the manager is what decides that.
+        profile = graph.profileRepo.getProfile(profileId) ?: profile
+        reconfigureAllWebViews()
+    }
+
+    /** A device no other profile is presenting as. */
+    suspend fun pickFreeDevice(): Device? =
+        graph.profileManager.pickFreeDeviceId(profileId)?.let { Devices.find(it) }
+
+    /** Device ids other profiles are already presenting as. */
+    suspend fun devicesInUse(): Set<String> = graph.profileManager.devicesInUse(except = profileId)
 
     // ---------- QR ----------
 

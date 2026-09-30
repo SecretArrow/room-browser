@@ -7,12 +7,16 @@ import android.webkit.WebSettings
 import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewDatabase
+import androidx.webkit.ScriptHandler
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
+import com.roombrowser.domain.model.Device
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
-import com.roombrowser.domain.model.WebRtcPolicy
 import com.roombrowser.domain.model.UaMode
 import com.roombrowser.domain.model.UserAgents
+import com.roombrowser.domain.model.WebRtcPolicy
 import java.io.File
 
 /**
@@ -32,6 +36,12 @@ object ProfileEngine {
 
     @Volatile
     private var boundProfileId: ProfileId? = null
+
+    /**
+     * The device shim currently installed per WebView, so reconfiguring a
+     * live WebView replaces its script instead of adding another one.
+     */
+    private val deviceShims = java.util.WeakHashMap<WebView, ScriptHandler>()
 
     /** WebView package name for the diagnostics screen. */
     fun engineName(context: Context): String = runCatching {
@@ -159,6 +169,8 @@ object ProfileEngine {
         UserAgents.effectiveUserAgent(settings)?.let { s.userAgentString = it }
         s.textZoom = (settings.fontScale * 100f).toInt().coerceIn(50, 200)
 
+        applyDeviceShim(webView, UserAgents.device(settings))
+
         // Cookies
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
@@ -173,6 +185,28 @@ object ProfileEngine {
     }
 
     /**
+     * Install (or clear) the device shim for one WebView.
+     *
+     * `configure` runs again every time settings change, so the previous
+     * script is removed first — otherwise a long session would stack one copy
+     * of the shim per edit. The script is idempotent, but leaking handlers is
+     * still a leak.
+     */
+    private fun applyDeviceShim(webView: WebView, device: Device?) {
+        val previous = deviceShims.remove(webView)
+        if (previous != null && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            runCatching { WebViewCompat.removeDocumentStartJavaScript(webView, previous) }
+        }
+        if (device == null) return
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        runCatching {
+            deviceShims[webView] = WebViewCompat.addDocumentStartJavaScript(
+                webView, DeviceShim.scriptFor(device), setOf("*")
+            )
+        }
+    }
+
+    /**
      * Desktop-site toggle for a specific WebView (per-tab / per-site).
      */
     fun applyDesktopMode(webView: WebView, profile: Profile, desktop: Boolean) {
@@ -181,6 +215,10 @@ object ProfileEngine {
             s.userAgentString = UserAgents.all.first { it.id == "chrome_windows" }.value
             s.useWideViewPort = true
             s.loadWithOverviewMode = false
+            // A desktop UA with an Android client-hint set underneath it is a
+            // contradiction, so the device shim comes off while desktop mode
+            // is on and goes back when it is turned off.
+            applyDeviceShim(webView, null)
         } else {
             s.useWideViewPort = true
             s.loadWithOverviewMode = true
@@ -188,6 +226,7 @@ object ProfileEngine {
                 UaMode.DEFAULT -> s.userAgentString = null
                 else -> UserAgents.effectiveUserAgent(profile.settings)?.let { s.userAgentString = it }
             }
+            applyDeviceShim(webView, UserAgents.device(profile.settings))
         }
     }
 

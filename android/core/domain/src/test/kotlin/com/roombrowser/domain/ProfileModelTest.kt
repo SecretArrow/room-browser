@@ -52,6 +52,71 @@ class ProfileModelTest {
     }
 
     @Test
+    fun `a device is the single control for identity`() {
+        val device = Devices.all.first { it.formFactor == "phone" }
+        val withDevice = ProfileSettings(deviceId = device.id)
+        assertThat(UserAgents.device(withDevice)).isEqualTo(device)
+        assertThat(UserAgents.effectiveUserAgent(withDevice)).isEqualTo(device.userAgent)
+
+        // Even alongside a preset the device wins, because that is what the
+        // profile was told to look like; the settings screen is what stops
+        // the two from both being set in the first place.
+        val both = ProfileSettings(
+            deviceId = device.id,
+            uaMode = UaMode.PRESET,
+            uaPresetId = "firefox_android"
+        )
+        assertThat(UserAgents.effectiveUserAgent(both)).isEqualTo(device.userAgent)
+
+        // Choosing a UA hands the answer back to the preset.
+        val preset = both.withUserAgentPreset("firefox_android")
+        assertThat(preset.deviceId).isNull()
+        assertThat(UserAgents.effectiveUserAgent(preset)).contains("Firefox")
+
+        val custom = both.withCustomUserAgent("MyUA/1.0")
+        assertThat(custom.deviceId).isNull()
+        assertThat(UserAgents.effectiveUserAgent(custom)).isEqualTo("MyUA/1.0")
+    }
+
+    @Test
+    fun `an unknown device id is not an identity`() {
+        val settings = ProfileSettings(deviceId = "no-such-device")
+        assertThat(UserAgents.device(settings)).isNull()
+        assertThat(UserAgents.effectiveUserAgent(settings)).isNull()
+    }
+
+    @Test
+    fun `device entries describe a real handset`() {
+        val byId = Devices.byId
+        assertThat(byId).hasSize(Devices.all.size)
+        for (d in Devices.all) {
+            assertThat(d.year).isAtLeast(2022)
+            assertThat(d.androidVersion).isNotEmpty()
+            assertThat(d.userAgent).contains(d.code)
+            assertThat(d.userAgent).contains("Android ${d.androidVersion}")
+            assertThat(d.userAgent).contains("Chrome/${d.chromeVersion}")
+            // A tablet's Chrome omits "Mobile"; a phone's does not.
+            assertThat(d.userAgent.contains(" Mobile ")).isEqualTo(d.formFactor == "phone")
+            // Chromium only ever reports a power of two here.
+            assertThat(d.deviceMemoryGb).isAnyOf(1, 2, 4, 8)
+            assertThat(d.hardwareConcurrency).isAtLeast(2)
+        }
+        assertThat(Devices.find(null)).isNull()
+        assertThat(Devices.find("no-such-device")).isNull()
+    }
+
+    @Test
+    fun `random respects the devices already taken`() {
+        val taken = Devices.all.take(Devices.all.size - 1).map { it.id }.toSet()
+        val last = Devices.all.last()
+        repeat(5) { assertThat(Devices.random(taken).id).isEqualTo(last.id) }
+        // An exhausted catalogue falls back to the whole pool rather than
+        // failing: one shared device beats no device at all.
+        val all = Devices.all.map { it.id }.toSet()
+        repeat(5) { assertThat(Devices.random(all).id).isIn(all) }
+    }
+
+    @Test
     fun `compatibility defaults`() {
         val s = ProfileSettings()
         // Annoyance shields are OFF by default (opt-in via Settings).
@@ -67,14 +132,19 @@ class ProfileModelTest {
     }
 
     @Test
-    fun `random android preset id stays within mobile presets`() {
-        val mobileIds = setOf("chrome_android", "firefox_android", "edge_android", "samsung_android")
-        assertThat(UserAgents.randomizableIds).containsExactlyElementsIn(mobileIds)
-        repeat(50) {
-            val id = UserAgents.randomAndroidPresetId()
-            assertThat(mobileIds).contains(id)
-            assertThat(id).isNotEqualTo("webview")
+    fun `every preset has a distinct id and a non-blank value but webview`() {
+        assertThat(UserAgents.all.map { it.id }.toSet()).hasSize(UserAgents.all.size)
+        for (p in UserAgents.all) {
+            if (p.id == "webview") {
+                assertThat(p.value).isEmpty()
+            } else {
+                assertThat(p.value).isNotEmpty()
+            }
+            assertThat(p.label).isNotEmpty()
         }
+        assertThat(UserAgents.androidPresets).isNotEmpty()
+        assertThat(UserAgents.desktopPresets).isNotEmpty()
+        assertThat(UserAgents.byId("no-such-preset")).isNull()
     }
 
     @Test

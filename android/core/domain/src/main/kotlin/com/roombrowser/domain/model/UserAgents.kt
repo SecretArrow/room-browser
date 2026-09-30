@@ -1,9 +1,20 @@
 package com.roombrowser.domain.model
 
 /**
- * User-Agent presets. Changing the UA string does NOT change platform
- * characteristics, screen size, web APIs or device capabilities — this
- * is documented clearly in the UI and in SECURITY.md.
+ * User-Agent presets.
+ *
+ * A preset says which browser a profile claims to be; a [Device] says which
+ * handset it claims to be, and carries the UA that handset's Chrome sends.
+ * The device is the richer of the two — it also decides the platform version,
+ * build id, memory, core count and GPU strings the profile reports — so when
+ * both are configured the device wins, and the settings screen clears one
+ * when the other is chosen.
+ *
+ * What this changes is the identity a site is told, not the machine. Screen
+ * size, viewport size, devicePixelRatio and the layout that follows from them
+ * always report the real device, because a page laid out for a viewport the
+ * phone does not have renders wrong. See SECURITY.md for the full list of
+ * what is and is not presented.
  */
 data class UserAgentPreset(
     val id: String,
@@ -104,30 +115,27 @@ object UserAgents {
 
     val desktopPresets: List<UserAgentPreset> = all.filter { it.isDesktop }
 
-    /**
-     * UA ids eligible for random assignment to NEW profiles (mobile only —
-     * a desktop UA on a phone serves desktop pages by default). WEBVIEW is
-     * excluded on purpose: it maps to "use the WebView default", so picking
-     * it would be a no-op override.
-     */
-    val randomizableIds: List<String> = listOf(
-        CHROME_ANDROID.id,
-        FIREFOX_ANDROID.id,
-        EDGE_ANDROID.id,
-        SAMSUNG_ANDROID.id
-    )
-
-    /** Randomly picks one of the randomizable mobile preset ids. */
-    fun randomAndroidPresetId(): String = randomizableIds.random()
-
     fun byId(id: String): UserAgentPreset? = all.firstOrNull { it.id == id }
 
     /**
-     * Resolve the effective UA for a profile. Null means "use WebView default".
+     * The device this profile presents itself as, or null when it was never
+     * assigned one (a profile created before devices existed, or one whose
+     * settings were imported).
      */
-    fun effectiveUserAgent(settings: ProfileSettings): String? = when (settings.uaMode) {
-        UaMode.DEFAULT -> null
-        UaMode.PRESET -> settings.uaPresetId?.let { byId(it)?.value?.ifEmpty { null } }
-        UaMode.CUSTOM -> settings.customUserAgent?.takeIf { it.isNotBlank() }
+    fun device(settings: ProfileSettings): Device? = Devices.find(settings.deviceId)
+
+    /**
+     * Resolve the effective UA for a profile. Null means "use WebView default".
+     *
+     * A device, when one is assigned, is the single control: it supplies the
+     * UA, so the preset and custom fields are not consulted.
+     */
+    fun effectiveUserAgent(settings: ProfileSettings): String? {
+        device(settings)?.let { return it.userAgent }
+        return when (settings.uaMode) {
+            UaMode.DEFAULT -> null
+            UaMode.PRESET -> settings.uaPresetId?.let { byId(it)?.value?.ifEmpty { null } }
+            UaMode.CUSTOM -> settings.customUserAgent?.takeIf { it.isNotBlank() }
+        }
     }
 }

@@ -1,10 +1,10 @@
 package com.roombrowser.domain.profile
 
+import com.roombrowser.domain.model.Devices
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.model.UaMode
-import com.roombrowser.domain.model.UserAgents
 
 /**
  * Storage port implemented by the app layer (Room-backed).
@@ -40,24 +40,29 @@ interface TabCountStore {
  * Profile manager: create / open / edit / duplicate / delete / rename /
  * re-style / reset / lock. UUID is the immutable storage identity.
  *
- * [randomUaPresetId] picks the user agent for newly created profiles that
- * have no explicit UA configured (injectable for deterministic tests).
+ * [randomDeviceId] picks the device for newly created profiles that have no
+ * explicit identity configured; it is handed the ids already in use so two
+ * profiles do not present the same handset (injectable for deterministic
+ * tests).
  */
 class ProfileManager(
     private val store: ProfileStore,
     private val clock: () -> Long = { System.currentTimeMillis() },
-    private val randomUaPresetId: () -> String = { UserAgents.randomAndroidPresetId() }
+    private val randomDeviceId: (Set<String>) -> String? = { taken ->
+        Devices.random(taken).id
+    }
 ) {
 
     /**
      * Create a new profile.
      *
-     * Every newly created profile automatically identifies as a randomly
-     * picked common mobile browser UA (fingerprint diversity between
-     * profiles). Explicit UA settings are always respected: randomization
-     * only kicks in when [settings] still uses [UaMode.DEFAULT]. Import /
-     * restore callers pass [randomizeUserAgent] = false so the payload's
-     * settings are preserved verbatim.
+     * Every newly created profile automatically presents itself as a distinct
+     * Android device, drawn from the bundled catalogue of real handsets
+     * (fingerprint diversity between profiles). An explicit identity is
+     * always respected: assignment only kicks in when [settings] names no
+     * device and still uses [UaMode.DEFAULT]. Import / restore callers pass
+     * [randomizeDevice] = false so the payload's settings are preserved
+     * verbatim.
      */
     suspend fun create(
         name: String,
@@ -65,7 +70,7 @@ class ProfileManager(
         colorArgb: Long,
         settings: ProfileSettings = ProfileSettings(),
         isDefault: Boolean = false,
-        randomizeUserAgent: Boolean = true
+        randomizeDevice: Boolean = true
     ): Profile {
         val trimmed = name.trim()
         require(trimmed.isNotEmpty()) { "Profile name must not be empty" }
@@ -75,8 +80,9 @@ class ProfileManager(
             "A profile with this name already exists"
         }
         val effectiveSettings =
-            if (randomizeUserAgent && settings.uaMode == UaMode.DEFAULT) {
-                settings.copy(uaMode = UaMode.PRESET, uaPresetId = randomUaPresetId())
+            if (randomizeDevice && settings.deviceId == null && settings.uaMode == UaMode.DEFAULT) {
+                val taken = existing.mapNotNull { it.settings.deviceId }.toSet()
+                settings.copy(deviceId = randomDeviceId(taken))
             } else {
                 settings
             }
@@ -94,6 +100,13 @@ class ProfileManager(
         return profile
     }
 
+    /**
+     * Copy a profile. The copy is a different identity: when the source
+     * presented itself as a device, the copy gets a device no other profile
+     * is using, so the two do not look like the same handset (which would
+     * defeat the point of separate profiles). Cosmetic and setting fields
+     * are still copied.
+     */
     suspend fun duplicate(id: ProfileId, options: CopyOptions, nameSuffix: String = " Copy"): Profile {
         val source = store.get(id) ?: throw IllegalArgumentException("Profile not found: $id")
         val existingNames = store.profiles().map { it.name.lowercase() }
@@ -103,13 +116,20 @@ class ProfileManager(
             candidate = source.name + nameSuffix + " " + i
             i++
         }
+        val settings = if (source.settings.deviceId != null) {
+            val taken = store.profiles().mapNotNull { it.settings.deviceId }.toSet()
+            source.settings.copy(deviceId = randomDeviceId(taken))
+        } else {
+            source.settings
+        }
         val copy = source.copy(
             id = ProfileId.new(),
             name = candidate,
             isDefault = false,
             isLocked = false,
             createdAt = clock(),
-            lastActiveAt = clock()
+            lastActiveAt = clock(),
+            settings = settings
         )
         store.put(copy)
         store.copyProfileData(source.id, copy.id, options)
@@ -160,6 +180,50 @@ class ProfileManager(
     suspend fun updateSettings(id: ProfileId, settings: ProfileSettings) {
         store.updateSettings(id, settings)
     }
+
+    /**
+     * Point a profile at a device, or (with null) take its device away.
+     *
+     * The device is the single control for identity, so assigning one clears
+     * the UA preset and custom fields rather than leaving two contradictory
+     * answers behind.
+     */
+    suspend fun setDevice(id: ProfileId, deviceId: String?) {
+        val profile = store.get(id) ?: throw IllegalArgumentException("Profile not found: $id")
+        require(deviceId == null || Devices.find(deviceId) != null) {
+            "Unknown device: $deviceId"
+        }
+        store.updateSettings(
+            id,
+            profile.settings.copy(
+                deviceId = deviceId,
+                uaMode = if (deviceId != null) UaMode.DEFAULT else profile.settings.uaMode,
+                uaPresetId = if (deviceId != null) null else profile.settings.uaPresetId,
+                customUserAgent = if (deviceId != null) null else profile.settings.customUserAgent
+            )
+        )
+    }
+
+    /**
+     * A device no other profile is using — what the "change device" action
+     * draws from. The profile being changed does not count as a user of its
+     * own device, so asking for a new one never hands back the current one
+     * unless it is genuinely the last handset left.
+     */
+    suspend fun pickFreeDeviceId(id: ProfileId): String? {
+        val taken = store.profiles()
+            .filter { it.id != id }
+            .mapNotNull { it.settings.deviceId }
+            .toSet()
+        return randomDeviceId(taken)
+    }
+
+    /** The ids every other profile is presenting as, for a picker's "in use" mark. */
+    suspend fun devicesInUse(except: ProfileId? = null): Set<String> =
+        store.profiles()
+            .filter { it.id != except }
+            .mapNotNull { it.settings.deviceId }
+            .toSet()
 
     suspend fun markActive(id: ProfileId) {
         val profile = store.get(id) ?: return
