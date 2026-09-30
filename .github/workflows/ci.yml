@@ -532,16 +532,40 @@ jobs:
           path: desktop-dist
 
       - name: Collect artifacts and checksums
+        env:
+          # The same value the build stamped into versionName, so the names
+          # below can be checked against it rather than assumed.
+          VERSION: ${{ steps.tag.outputs.version }}
         run: |
           mkdir -p release-out
           cp android/app/build/outputs/apk/release/*.apk release-out/
-          cp android/app/build/outputs/bundle/release/*.aab release-out/ || true
+          # The bundle ships as app-release.aab out of Gradle: neither versioned
+          # nor distinguishable between releases, so it is renamed here to the
+          # name RELEASE.md documents.
+          for f in android/app/build/outputs/bundle/release/*.aab; do
+            [ -e "$f" ] || continue
+            cp "$f" "release-out/room-browser-v${VERSION}-release.aab"
+          done
           # Desktop artifacts are OPTIONAL — attached only when the desktop
           # jobs succeeded (Android-first release policy). Never block on them.
           cp desktop-dist/desktop-windows/* release-out/ 2>/dev/null || true
           cp desktop-dist/desktop-linux/* release-out/ 2>/dev/null || true
           # The Android APK is the required deliverable of every release.
           test -n "$(ls release-out/*.apk 2>/dev/null)" || { echo "APK missing — Android release build failed"; exit 1; }
+          # A release whose files are named after a DIFFERENT version is how
+          # this went unnoticed for 96 releases: the tag said v1.0.96 and every
+          # APK said v1.0.0, and nothing compared the two.  Fail loudly rather
+          # than publish artifacts that cannot be told apart.
+          named=0
+          for f in release-out/room-browser-v*.apk; do
+            [ -e "$f" ] || continue
+            named=1
+            case "$(basename "$f")" in
+              "room-browser-v${VERSION}-"*) ;;
+              *) echo "::error::$(basename "$f") does not carry version ${VERSION}"; exit 1 ;;
+            esac
+          done
+          [ "$named" -eq 1 ] || { echo "::error::no APK is named room-browser-v${VERSION}-*"; exit 1; }
           cd release-out && sha256sum * > checksums.sha256 && cd ..
           ls -lh release-out/
 
