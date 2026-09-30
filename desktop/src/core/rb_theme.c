@@ -274,6 +274,49 @@ rb_theme_colors rb_theme_palette(const rb_theme *t, rb_theme_mode mode,
     return c;
 }
 
+/* Perceived luminance, 0..255 (ITU-R BT.601 weights). */
+static int rb_theme_luma(unsigned int argb)
+{
+    int r, g, b;
+
+    rb_theme_rgb(argb, &r, &g, &b);
+    return (r * 299 + g * 587 + b * 114) / 1000;
+}
+
+rb_theme_colors rb_theme_high_contrast(rb_theme_colors c)
+{
+    /* The background the theme already chose decides which way "high
+     * contrast" goes, so a caller never has to tell light from dark. */
+    if (rb_theme_luma(c.background) < 128) {
+        c.background     = 0xFF000000u;
+        c.surface        = 0xFF000000u;
+        c.surface_alt    = 0xFF0A0A0Au;
+        c.address_bar    = 0xFF000000u;
+        c.tab_bar        = 0xFF000000u;
+        c.nav_bar        = 0xFF000000u;
+        c.border         = 0xFF6E6E6Eu;
+        c.text_primary   = 0xFFFFFFFFu;
+        c.text_secondary = 0xFFCFCFCFu;
+        c.icon           = 0xFFFFFFFFu;
+    } else {
+        c.background     = 0xFFFFFFFFu;
+        c.surface        = 0xFFFFFFFFu;
+        c.surface_alt    = 0xFFF2F2F2u;
+        c.address_bar    = 0xFFFFFFFFu;
+        c.tab_bar        = 0xFFFFFFFFu;
+        c.nav_bar        = 0xFFFFFFFFu;
+        c.border         = 0xFF8A8A8Au;
+        c.text_primary   = 0xFF000000u;
+        c.text_secondary = 0xFF3A3A3Au;
+        c.icon           = 0xFF000000u;
+    }
+    /* primary, secondary, button and selection are left alone on purpose:
+     * they are the theme's accents, and a profile's accent is how its chrome
+     * is told apart.  They are already drawn against both ends of the range
+     * in the palettes that ship. */
+    return c;
+}
+
 unsigned int rb_theme_color_at(const rb_theme_colors *c, int token)
 {
     if (c == NULL) {

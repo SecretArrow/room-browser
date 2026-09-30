@@ -1566,6 +1566,58 @@ static void test_rb_theme(void)
         CHECK(a.primary == t->dark.primary);
     }
 
+    /* High contrast is the desktop "High contrast" switch.  It has to hold for
+     * every built-in theme, because a user turning it on is asking for
+     * legibility and cannot be told "not for this palette". */
+    {
+        for (i = 0; i < rb_theme_count(); i++) {
+            const rb_theme *t = rb_theme_at(i);
+            rb_theme_colors dark, light, hc;
+
+            CHECK(t != NULL);
+            /* a dark palette goes to true black chrome with white text... */
+            dark = rb_theme_palette(t, RB_THEME_DARK, 1);
+            hc = rb_theme_high_contrast(dark);
+            CHECK(hc.background == 0xFF000000u);
+            CHECK(hc.surface == 0xFF000000u);
+            CHECK(hc.address_bar == 0xFF000000u);
+            CHECK(hc.tab_bar == 0xFF000000u);
+            CHECK(hc.nav_bar == 0xFF000000u);
+            CHECK(hc.text_primary == 0xFFFFFFFFu);
+            CHECK(hc.icon == 0xFFFFFFFFu);
+            /* the accent survives: it is how a profile's chrome is told
+             * apart, and the AMOLED override keeps it for the same reason */
+            CHECK(hc.primary == dark.primary);
+            CHECK(hc.secondary == dark.secondary);
+            CHECK(hc.button == dark.button);
+
+            /* ...and a light one to true white with black text */
+            light = rb_theme_palette(t, RB_THEME_LIGHT, 0);
+            hc = rb_theme_high_contrast(light);
+            CHECK(hc.background == 0xFFFFFFFFu);
+            CHECK(hc.tab_bar == 0xFFFFFFFFu);
+            CHECK(hc.text_primary == 0xFF000000u);
+            CHECK(hc.primary == light.primary);
+
+            /* the property that matters: whatever came in, text and the
+             * surface it sits on are now at opposite ends */
+            CHECK(rb_theme_high_contrast(dark).text_primary !=
+                  rb_theme_high_contrast(dark).background);
+            CHECK(rb_theme_high_contrast(light).text_primary !=
+                  rb_theme_high_contrast(light).background);
+        }
+
+        /* The direction follows the palette it is handed, not the mode it came
+         * from: an AMOLED palette is already black, so it stays black. */
+        {
+            const rb_theme *t = rb_theme_default();
+            rb_theme_colors a = rb_theme_palette(t, RB_THEME_AMOLED, 0);
+
+            CHECK(rb_theme_high_contrast(a).background == 0xFF000000u);
+            CHECK(rb_theme_high_contrast(a).text_primary == 0xFFFFFFFFu);
+        }
+    }
+
     /* hex formatting drops alpha and is exactly 7 bytes + NUL */
     {
         char hex[8];

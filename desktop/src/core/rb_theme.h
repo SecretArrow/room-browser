@@ -102,6 +102,17 @@ const rb_theme    *rb_theme_resolve(const char *id);/* never NULL */
 rb_theme_colors    rb_theme_palette(const rb_theme *t, rb_theme_mode mode,
                                     int system_dark);
 
+/* The desktop "High contrast" switch, applied to an already-resolved palette:
+ * chrome to true black or true white with text at the opposite end, accents
+ * kept.  Which of the two is decided from the background the palette already
+ * has, so the caller does not have to know whether the theme is dark.
+ *
+ * Deliberately the same shape as the AMOLED override inside rb_theme_palette
+ * rather than a per-channel formula: a formula would have to be tuned against
+ * all 18 palettes, and this has to be right the first time on a setting whose
+ * whole purpose is legibility. */
+rb_theme_colors    rb_theme_high_contrast(rb_theme_colors c);
+
 /* Colour of one token index (out-of-range -> 0). */
 unsigned int       rb_theme_color_at(const rb_theme_colors *c, int token);
 

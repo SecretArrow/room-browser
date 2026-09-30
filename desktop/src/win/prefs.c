@@ -193,10 +193,13 @@ static void pf_apply(App *app, RbPrefs *pf, const char *key)
                    rb_strdup(rb_pref(app, RB_PREF_HOME_LOCAL,
                                      "https://duckduckgo.com")));
     } else if (strcmp(key, RB_PREF_THEME) == 0 ||
-               strcmp(key, RB_PREF_ACCENT_ARGB) == 0) {
-        /* Rebuilds the palette brushes from the new theme.  The editor is
-         * drawn from that same palette, so it has to be repainted with it —
-         * otherwise the window would keep the old colours until reopened. */
+               strcmp(key, RB_PREF_ACCENT_ARGB) == 0 ||
+               strcmp(key, RB_PREF_HIGH_CONTRAST) == 0) {
+        /* Rebuilds the palette brushes from the new theme.  High contrast is a
+         * second way of asking for a different palette, so it repaints through
+         * the same path.  The editor is drawn from that same palette, so it
+         * has to be repainted with it — otherwise the window would keep the
+         * old colours until reopened. */
         rb_theme_apply(app);
         if (pf != NULL && pf->dlg != NULL) {
             RedrawWindow(pf->dlg, NULL, NULL,
@@ -520,7 +523,8 @@ static void pf_build_appearance(RbPrefs *pf)
     y += pf_switch(pf, 0, y, RB_PREF_REDUCED_MOTION, 0, L"Reduce motion",
                    L"Stops the page-load strip sweeping; it still shows a load");
     y += pf_switch(pf, 0, y, RB_PREF_HIGH_CONTRAST, 0, L"High contrast",
-                   L"Strengthens the contrast between text and its background");
+                   L"Draws the chrome in true black or true white with text at "
+                   L"the opposite end, keeping the theme's accent colours");
 }
 
 static void pf_build_search(RbPrefs *pf)
@@ -713,14 +717,22 @@ static void pf_build_home(RbPrefs *pf)
                   rb_pref(pf->app, RB_PREF_HOME_LOCAL,
                           "https://duckduckgo.com"), L"Homepage");
     y += pf_switch(pf, 5, y, RB_PREF_HOMEPAGE_ENABLED, 1, L"Show homepage",
-                   NULL);
+                   L"Off opens an empty tab; on opens the homepage above");
     y += pf_switch(pf, 5, y, RB_PREF_SHOW_PRIVACY_STATS, 1,
-                   L"Show privacy statistics", NULL);
+                   L"Show privacy statistics",
+                   L"Android's new-tab card; this edition has no new-tab page, "
+                   L"so the switch is stored for parity and changes nothing here");
     y += pf_switch(pf, 5, y, RB_PREF_SHOW_RECENT_SITES, 1,
-                   L"Show recent sites", NULL);
-    y += pf_switch(pf, 5, y, RB_PREF_SHOW_CLOCK, 1, L"Show clock", NULL);
+                   L"Show recent sites",
+                   L"Android's new-tab card; this edition has no new-tab page, "
+                   L"so the switch is stored for parity and changes nothing here");
+    y += pf_switch(pf, 5, y, RB_PREF_SHOW_CLOCK, 1, L"Show clock",
+                   L"Android's new-tab clock; this edition has no new-tab page, "
+                   L"so the switch is stored for parity and changes nothing here");
     y += pf_switch(pf, 5, y, RB_PREF_DESKTOP_MODE_DEFAULT, 0,
-                   L"Request desktop sites by default", NULL);
+                   L"Request desktop sites by default",
+                   L"Already true here: this is a desktop browser, so there is "
+                   L"no mobile mode for it to override");
     y += pf_switch(pf, 5, y, RB_PREF_AUTOFILL_ENABLED, 0,
                    L"Autofill integration",
                    L"Android delegates this to the system autofill framework, "

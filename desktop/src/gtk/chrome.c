@@ -334,6 +334,12 @@ void rb_css_load(App *app)
     const rb_theme *t = app ? rb_theme_current(app) : rb_theme_default();
     rb_theme_mode mode = app ? rb_theme_mode_current(app) : RB_THEME_DARK;
     rb_theme_colors c = rb_theme_palette(t, mode, rb_system_is_dark());
+
+    /* "High contrast" is a property of the chrome, like the theme itself, so
+     * it is applied where the palette is resolved rather than at every use. */
+    if (app && rb_pref_int(app, RB_PREF_HIGH_CONTRAST, 0)) {
+        c = rb_theme_high_contrast(c);
+    }
     char *css = rb_css_build(&c, t->corner_radius);
 
     if (css == NULL) return;
@@ -984,7 +990,12 @@ void rb_do_add_tab(App *app, const char *url)
     WebKitWebView *wv;
     GtkWidget *hbox, *lbl, *close, *icon;
     const char *home = app->home_url ? app->home_url : "https://duckduckgo.com";
-    const char *target = (url && url[0]) ? url : home;
+    /* A tab opened without an address lands on the homepage, unless the
+     * profile turned that off — in which case it opens empty.  Reading the
+     * switch here is what makes it real: it used to be stored and ignored. */
+    const char *target = (url && url[0]) ? url
+                       : (rb_pref_int(app, RB_PREF_HOMEPAGE_ENABLED, 1)
+                              ? home : "about:blank");
     long id;
     int idx;
 
@@ -1741,7 +1752,10 @@ static void rb_prefs_apply_key(App *app, const char *key)
                strcmp(key, RB_PREF_CUSTOM_USER_AGENT) == 0) {
         rb_gw_apply_ua(app);
     } else if (strcmp(key, RB_PREF_THEME) == 0 ||
-               strcmp(key, RB_PREF_ACCENT_ARGB) == 0) {
+               strcmp(key, RB_PREF_ACCENT_ARGB) == 0 ||
+               strcmp(key, RB_PREF_HIGH_CONTRAST) == 0) {
+        /* High contrast is a second way of asking for a different palette, so
+         * it repaints through the same path as the theme itself. */
         rb_css_load(app);
     } else if (strcmp(key, RB_PREF_FONT_SCALE) == 0) {
         /* Scales the UI font.  No stylesheet reload: the scale rides on
@@ -2314,7 +2328,8 @@ static void rb_show_prefs_dialog_impl(App *app)
                 "Stops the page-load strip sweeping and the toolkit's own "
                 "transitions; a load is still shown");
     rb_pref_row(grid, r++, app, RB_PREF_HIGH_CONTRAST, 0, "High contrast",
-                "Strengthens the contrast between text and its background");
+                "Draws the chrome in true black or true white with text at "
+                "the opposite end, keeping the theme's accent colours");
     gtk_notebook_append_page(GTK_NOTEBOOK(notebook), rb_pref_scrolled(grid),
                              gtk_label_new("Appearance"));
 
@@ -2492,14 +2507,22 @@ static void rb_show_prefs_dialog_impl(App *app)
                       "Homepage");
     r += 2;
     rb_pref_row(grid, r++, app, RB_PREF_HOMEPAGE_ENABLED, 1, "Show homepage",
-                NULL);
+                "Off opens an empty tab; on opens the homepage above");
     rb_pref_row(grid, r++, app, RB_PREF_SHOW_PRIVACY_STATS, 1,
-                "Show privacy statistics", NULL);
+                "Show privacy statistics",
+                "Android's new-tab card; this edition has no new-tab page, so "
+                "the switch is stored for parity and changes nothing here");
     rb_pref_row(grid, r++, app, RB_PREF_SHOW_RECENT_SITES, 1,
-                "Show recent sites", NULL);
-    rb_pref_row(grid, r++, app, RB_PREF_SHOW_CLOCK, 1, "Show clock", NULL);
+                "Show recent sites",
+                "Android's new-tab card; this edition has no new-tab page, so "
+                "the switch is stored for parity and changes nothing here");
+    rb_pref_row(grid, r++, app, RB_PREF_SHOW_CLOCK, 1, "Show clock",
+                "Android's new-tab clock; this edition has no new-tab page, so "
+                "the switch is stored for parity and changes nothing here");
     rb_pref_row(grid, r++, app, RB_PREF_DESKTOP_MODE_DEFAULT, 0,
-                "Request desktop sites by default", NULL);
+                "Request desktop sites by default",
+                "Already true here: this is a desktop browser, so there is no "
+                "mobile mode for it to override");
     rb_pref_row(grid, r++, app, RB_PREF_AUTOFILL_ENABLED, 0,
                 "Autofill integration",
                 "Android delegates this to the system autofill framework, which "

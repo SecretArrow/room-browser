@@ -463,6 +463,12 @@ void rb_theme_apply(App *app)
 
     app->pal = rb_theme_palette(t, rb_theme_mode_of(app), rb_system_is_dark());
 
+    /* "High contrast" is a property of the chrome, like the theme itself, so
+     * it is applied where the palette is resolved rather than at every use. */
+    if (rb_pref_int(app, RB_PREF_HIGH_CONTRAST, 0)) {
+        app->pal = rb_theme_high_contrast(app->pal);
+    }
+
     if (app->br_chrome)   DeleteObject(app->br_chrome);
     if (app->br_toolbar)  DeleteObject(app->br_toolbar);
     if (app->br_tab_idle) DeleteObject(app->br_tab_idle);
@@ -698,9 +704,14 @@ void rb_do_new_tab(App *app)
  * for every tab it re-creates and the homepage is only the fallback. */
 void rb_do_add_tab(App *app, const char *url)
 {
+    /* A tab opened without an address lands on the homepage, unless the
+     * profile turned that off — in which case it opens empty.  Reading the
+     * switch here is what makes it real: it used to be stored and ignored. */
     const char *target = (url != NULL && url[0] != '\0')
         ? url
-        : (app->home_url ? app->home_url : "https://duckduckgo.com");
+        : (rb_pref_int(app, RB_PREF_HOMEPAGE_ENABLED, 1)
+               ? (app->home_url ? app->home_url : "https://duckduckgo.com")
+               : "about:blank");
     long id = rb_tabs_add(app->tabs, "New Tab", target, rb_profile_now_ms());
     app->active_id = id;
     rb_tabs_rebuild(app);
