@@ -615,13 +615,21 @@ void rb_profiles_save(App *app)
 
 /* The active profile's effective User-Agent, malloc'd — or NULL when the
  * engine default should be sent untouched.  Mirrors UserAgents.
- * effectiveUserAgent(): the profile's ua_mode picks between the engine
- * default, one of the presets, and a free-form string. */
+ * effectiveUserAgent(): a device, when the profile presents one, decides the
+ * UA on its own; otherwise the profile's ua_mode picks between the engine
+ * default, one of the presets, and a free-form string.  The device wins
+ * because it also decides the shim, and a UA that disagreed with the machine
+ * behind it would be the contradiction the whole feature exists to avoid. */
 char *rb_ua_current(App *app)
 {
-    const char *mode = rb_pref(app, RB_PREF_UA_MODE, "default");
+    const char *mode;
     rb_ua_mode m = RB_UA_MODE_DEFAULT;
+    char *device_ua = rb_device_ua_for(rb_pref(app, RB_PREF_DEVICE_ID, NULL));
 
+    if (device_ua != NULL) {
+        return device_ua;
+    }
+    mode = rb_pref(app, RB_PREF_UA_MODE, "default");
     if (mode != NULL) {
         if (strcmp(mode, "preset") == 0) {
             m = RB_UA_MODE_PRESET;
@@ -1719,6 +1727,7 @@ static void rb_prefs_apply_key(App *app, const char *key)
         rb_bookmarks_bar_refresh(app);
     } else if (strcmp(key, RB_PREF_UA_MODE) == 0 ||
                strcmp(key, RB_PREF_UA_PRESET_ID) == 0 ||
+               strcmp(key, RB_PREF_DEVICE_ID) == 0 ||
                strcmp(key, RB_PREF_CUSTOM_USER_AGENT) == 0) {
         rb_gw_apply_ua(app);
     } else if (strcmp(key, RB_PREF_THEME) == 0 ||
@@ -1879,6 +1888,77 @@ static void rb_pref_note_row(GtkWidget *grid, int row, const char *text)
     gtk_widget_set_hexpand(l, TRUE);
     gtk_widget_set_opacity(l, 0.72);
     gtk_grid_attach(GTK_GRID(grid), l, 0, row, 2, 1);
+}
+
+/* The strings behind the device combo, owned by the combo itself.  A
+ * GtkComboBoxText with a few hundred rows is not a usable list — but it does
+ * have type-ahead, so typing "len" jumps straight to the Lenovo machines,
+ * which is the same job the Android picker's search field does. */
+typedef struct {
+    char **ids;
+    char **labels;
+} rb_device_choices;
+
+static void rb_device_choices_free(gpointer p)
+{
+    rb_device_choices *c = (rb_device_choices *)p;
+    int i;
+
+    if (c == NULL) return;
+    for (i = 0; c->ids != NULL && c->ids[i] != NULL; i++) g_free(c->ids[i]);
+    for (i = 0; c->labels != NULL && c->labels[i] != NULL; i++) g_free(c->labels[i]);
+    g_free(c->ids);
+    g_free(c->labels);
+    g_free(c);
+}
+
+/* The device row: a profile presents a real machine, or it presents nothing
+ * and the User-Agent settings below decide.  Choosing a device IS choosing
+ * the User-Agent, so the two are one control rather than two that can
+ * disagree. */
+static void rb_pref_device_row(GtkWidget *grid, int row, App *app)
+{
+    const char *current = rb_pref(app, RB_PREF_DEVICE_ID, "");
+    GtkWidget *label = gtk_label_new("Device");
+    GtkWidget *combo = gtk_combo_box_text_new();
+    rb_pref_choices *ch = g_new0(rb_pref_choices, 1);
+    rb_device_choices *dc = g_new0(rb_device_choices, 1);
+    int n = rb_device_count();
+    int i, sel = 0;
+
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_widget_set_hexpand(label, TRUE);
+    gtk_grid_attach(GTK_GRID(grid), label, 0, row, 1, 1);
+
+    dc->ids = g_new0(char *, (size_t)n + 2);
+    dc->labels = g_new0(char *, (size_t)n + 2);
+    dc->ids[0] = g_strdup("");
+    dc->labels[0] = g_strdup("No device — use the User-Agent setting");
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(combo), dc->labels[0]);
+    if (current == NULL || current[0] == '\0') sel = 0;
+
+    for (i = 0; i < n; i++) {
+        const rb_device *d = rb_device_at(i);
+        if (d == NULL) continue;
+        dc->ids[i + 1] = g_strdup(d->id);
+        dc->labels[i + 1] = g_strdup_printf("%s %s — %s (%d)",
+                                            d->brand, d->model,
+                                            rb_device_os_name(d->os), d->year);
+        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(combo),
+                                       dc->labels[i + 1]);
+        if (current != NULL && strcmp(current, d->id) == 0) sel = i + 1;
+    }
+
+    ch->key = RB_PREF_DEVICE_ID;
+    ch->ids = (const char *const *)dc->ids;
+    ch->labels = (const char *const *)dc->labels;
+    ch->is_theme = 0;
+    gtk_combo_box_set_active(GTK_COMBO_BOX(combo), sel);
+    g_object_set_data_full(G_OBJECT(combo), "rb-pref-choices", ch, g_free);
+    g_object_set_data_full(G_OBJECT(combo), "rb-device-choices", dc,
+                           rb_device_choices_free);
+    g_signal_connect(combo, "changed", G_CALLBACK(on_pref_combo), app);
+    gtk_grid_attach(GTK_GRID(grid), combo, 1, row, 1, 1);
 }
 
 /* An entry row with an Apply button: the value is written when Apply is
@@ -2201,6 +2281,16 @@ static void rb_show_prefs_dialog_impl(App *app)
     grid = rb_pref_page();
     r = 0;
     {
+        /* The device comes first because it decides the User-Agent: with a
+         * machine chosen, the three rows below are not consulted at all. */
+        rb_pref_device_row(grid, r++, app);
+        rb_pref_note_row(grid, r++,
+                         "A device sets the User-Agent and everything a page can "
+                         "ask about the machine — platform, client hints, memory, "
+                         "cores, WebGL. Screen size is left alone: the page is "
+                         "really laid out on this screen.");
+    }
+    {
         static const char *ids[4] = { "default", "preset", "custom", NULL };
         static const char *labels[4] = { "Default (WebKit)",
                                          "Preset", "Custom", NULL };
@@ -2234,11 +2324,18 @@ static void rb_show_prefs_dialog_impl(App *app)
     r += 2;
     {
         char *ua = rb_ua_current(app);
+        const char *device_id = rb_pref(app, RB_PREF_DEVICE_ID, "");
+        gboolean has_device = (device_id != NULL && device_id[0] != '\0');
         GtkWidget *note = gtk_label_new(NULL);
         char *markup = g_markup_printf_escaped(
-            "<small>Current: %s\nChanging the User-Agent string does not change "
-            "any other platform or device characteristic.</small>",
-            (ua != NULL) ? ua : "the engine default");
+            "<small>Current: %s\n%s</small>",
+            (ua != NULL) ? ua : "the engine default",
+            has_device
+                ? "Set by the device above, along with the platform "
+                  "characteristics that go with it. Choose \"No device\" to "
+                  "set the string on its own."
+                : "On its own, a User-Agent string changes no other platform "
+                  "or device characteristic.");
         gtk_label_set_markup(GTK_LABEL(note), markup);
         gtk_label_set_xalign(GTK_LABEL(note), 0.0f);
         gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);

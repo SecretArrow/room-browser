@@ -360,11 +360,19 @@ void rb_profiles_save(App *app)
     }
 }
 
+/* The active profile's effective User-Agent, malloc'd — or NULL when the
+ * engine default should be sent untouched.  A device, when the profile
+ * presents one, decides the UA on its own; otherwise ua_mode picks between
+ * the engine default, a preset, and a free-form string.  The device wins
+ * because it also decides the shim: see rb_ua_current in the GTK edition. */
 char *rb_ua_current(App *app)
 {
-    const char *mode = rb_pref(app, RB_PREF_UA_MODE, "default");
+    const char *mode;
     rb_ua_mode m = RB_UA_MODE_DEFAULT;
+    char *device_ua = rb_device_ua_for(rb_pref(app, RB_PREF_DEVICE_ID, NULL));
 
+    if (device_ua != NULL) return device_ua;
+    mode = rb_pref(app, RB_PREF_UA_MODE, "default");
     if (mode != NULL) {
         if (strcmp(mode, "preset") == 0) m = RB_UA_MODE_PRESET;
         else if (strcmp(mode, "custom") == 0) m = RB_UA_MODE_CUSTOM;

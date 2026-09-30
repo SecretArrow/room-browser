@@ -873,12 +873,67 @@ static void rb_gw_ua_apply_to(App *app, WebKitSettings *settings)
     free(ua);
 }
 
+/* ------------------------------------------------------------------ */
+/* Device shim
+ *
+ * A profile that presents a real machine sends that machine's User-Agent
+ * (above) AND answers the questions a page asks about it — platform, client
+ * hints, memory, cores, WebGL.  A UA string on its own is the cheapest thing
+ * to fake and the easiest to contradict, so the two travel together: this
+ * runs wherever the UA is applied.
+ *
+ * The script is per view, and it is stored ON the view rather than in a
+ * table keyed by it: a table would outlive the view and a later view could
+ * be allocated at the same address, finding another view's script.  Storing
+ * it as object data ties its lifetime to the view's. */
+
+static const char *RB_DEVICE_SCRIPT_KEY = "rb-device-script";
+
+static void rb_gw_device_apply_to(App *app, WebKitWebView *wv)
+{
+    WebKitUserContentManager *ucm;
+    WebKitUserScript *previous;
+    WebKitUserScript *script;
+    const rb_device *device;
+    char *js;
+
+    if (wv == NULL) return;
+    ucm = webkit_web_view_get_user_content_manager(wv);
+    if (ucm == NULL) return;
+
+    /* configure() runs again on every settings change, so the old script is
+     * removed first — otherwise a long session stacks one copy per edit. */
+    previous = g_object_get_data(G_OBJECT(wv), RB_DEVICE_SCRIPT_KEY);
+    if (previous != NULL) {
+        webkit_user_content_manager_remove_script(ucm, previous);
+        g_object_set_data(G_OBJECT(wv), RB_DEVICE_SCRIPT_KEY, NULL);
+    }
+
+    device = rb_device_by_id(rb_pref(app, RB_PREF_DEVICE_ID, NULL));
+    if (device == NULL) return;
+
+    js = rb_device_shim_js(device);
+    if (js == NULL) return;
+    script = webkit_user_script_new(js,
+                                    WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+                                    WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
+                                    NULL, NULL);
+    free(js);
+    if (script == NULL) return;
+
+    webkit_user_content_manager_add_script(ucm, script);
+    /* Takes the reference; the view's destruction drops the script too. */
+    g_object_set_data_full(G_OBJECT(wv), RB_DEVICE_SCRIPT_KEY, script,
+                           g_object_unref);
+}
+
 void rb_gw_apply_ua(App *app)
 {
     int i;
     for (i = 0; i < app->tabs_n; i++) {
         if (app->tabs[i].wv) {
             rb_gw_ua_apply_to(app, webkit_web_view_get_settings(app->tabs[i].wv));
+            rb_gw_device_apply_to(app, app->tabs[i].wv);
         }
     }
 }
@@ -902,6 +957,7 @@ WebKitWebView *rb_gw_new_view(App *app)
     g_object_set(settings, "enable-javascript", app->js_enabled ? TRUE : FALSE, NULL);
     g_object_set(settings, "enable-developer-extras", FALSE, NULL);
     rb_gw_ua_apply_to(app, settings);
+    rb_gw_device_apply_to(app, wv);
 
     /* A view created after the rules were compiled gets them immediately;
      * one created while the compile is still running picks them up from the

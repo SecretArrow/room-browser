@@ -31,8 +31,19 @@ browser is original C: a portable core plus one thin platform layer per OS.
 - **Settings** — plain `key=value` lines: `home`, `search_engine`,
   `javascript` (default **1**).  The preferences window (menu → Preferences,
   or <kbd>Ctrl</kbd>+<kbd>,</kbd>) edits the profile's full setting set —
-  theme, text size, search, privacy and blocking, User-Agent, DNS, homepage
-  and the clear-data actions — the same keys the Android edition stores.
+  theme, text size, search, privacy and blocking, device, User-Agent, DNS,
+  homepage and the clear-data actions — the same keys the Android edition
+  stores.
+- **Device identity manager** — every profile presents a real machine from a
+  bundled catalogue of 235 laptops and desktops (2022–2025, Windows, macOS
+  and Linux), not just a User-Agent string. A device sets the UA *and*
+  everything a page can ask about the machine — `navigator.platform`, the
+  client hints (`architecture`, `bitness`, `formFactor`, `platformVersion`,
+  `uaFullVersion`), `deviceMemory`, `hardwareConcurrency` and the WebGL
+  vendor/renderer strings — so the two can never disagree. The catalogue is
+  all-distinct: no two entries are the same fingerprint. Screen geometry is
+  deliberately left alone, because the page really is laid out on this
+  screen; see `SECURITY.md` for exactly what changes and what does not.
 - **Dark chrome everywhere** — tab strip `#202124`, toolbar `#292A2D`,
   omnibox `#3C3D41`, text `#E8EAED`, accent `#A78BFA` (GTK via a
   `GtkCssProvider` stylesheet, Windows via owner-draw + dark title bar).

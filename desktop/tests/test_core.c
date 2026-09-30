@@ -35,6 +35,7 @@
 #include "core/rb_dns.h"
 #include "core/rb_ipconflict.h"
 #include "core/rb_switch.h"
+#include "core/rb_devices.h"
 
 #define TMP "rb-test-tmp.txt"
 #define TMP_DIR "rb-test-dir"
@@ -4165,6 +4166,250 @@ static void test_rb_switch(void)
     rb_switch_free(NULL); /* must not crash */
 }
 
+/* ------------------------------- rb_devices ------------------------------ */
+
+/* Counts non-overlapping occurrences of `needle` in `hay`. */
+static int count_of(const char *hay, const char *needle)
+{
+    int n = 0;
+    size_t len = strlen(needle);
+    const char *p = hay;
+
+    while ((p = strstr(p, needle)) != NULL) {
+        n++;
+        p += len;
+    }
+    return n;
+}
+
+static void test_rb_devices(void)
+{
+    int n = rb_device_count();
+    int i, j;
+    const rb_device *d;
+
+    /* Large enough that profiles keep distinct identities, and not empty even
+     * if the generator is ever run with a trimmed list. */
+    CHECK(n >= 100);
+    /* NULL and "" are both "no device", so a profile that has never been
+     * assigned one needs no special case anywhere. */
+    CHECK(rb_device_by_id(NULL) == NULL);
+    CHECK(rb_device_by_id("") == NULL);
+    CHECK(rb_device_by_id("no-such-device") == NULL);
+    CHECK(rb_device_at(-1) == NULL);
+    CHECK(rb_device_at(n) == NULL);
+
+    for (i = 0; i < n; i++) {
+        d = rb_device_at(i);
+        CHECK(d != NULL);
+        CHECK(d->id != NULL && d->id[0] != '\0');
+        CHECK(d->brand != NULL && d->brand[0] != '\0');
+        CHECK(d->model != NULL && d->model[0] != '\0');
+        CHECK(d->ua != NULL && d->ua[0] != '\0');
+        CHECK(d->gpu_vendor != NULL && d->gpu_vendor[0] != '\0');
+        CHECK(d->gpu_renderer != NULL && d->gpu_renderer[0] != '\0');
+        CHECK(d->year >= 2022 && d->year <= 2025);
+
+        /* The lookup by id finds the entry it names. */
+        CHECK(rb_device_by_id(d->id) == d);
+
+        /* A desktop browser that announced itself as a phone would be handed
+         * mobile layouts, which is the one thing this must never do. */
+        CHECK(strstr(d->ua, "Mobile") == NULL);
+        CHECK(strstr(d->ua, "Android") == NULL);
+        CHECK(strstr(d->ua, "Mozilla/5.0 (") == d->ua);
+        CHECK(strstr(d->ua, "Chrome/") != NULL);
+
+        /* Chrome reduced the desktop UA string in 2022: the build number is
+         * not in it any more. A full version here is a string no real Chrome
+         * sends. */
+        {
+            const char *c = strstr(d->ua, "Chrome/");
+            const char *dot = strchr(c + 7, '.');
+            CHECK(dot != NULL);
+            CHECK(STREQ(dot, ".0.0.0 Safari/537.36"));
+        }
+
+        /* The platform strings follow the operating system, and the client
+         * hint platform is the same fact in Chrome's vocabulary. */
+        if (STREQ(d->os, "windows")) {
+            CHECK(STREQ(d->platform, "Win32"));
+            CHECK(STREQ(d->ua_platform, "Windows"));
+            CHECK(strstr(d->ua, "Windows NT 10.0; Win64; x64") != NULL);
+        } else if (STREQ(d->os, "macos")) {
+            CHECK(STREQ(d->platform, "MacIntel"));
+            CHECK(STREQ(d->ua_platform, "macOS"));
+            CHECK(strstr(d->ua, "Macintosh; Intel Mac OS X 10_15_7") != NULL);
+        } else if (STREQ(d->os, "linux")) {
+            CHECK(STREQ(d->platform, "Linux x86_64"));
+            CHECK(STREQ(d->ua_platform, "Linux"));
+            CHECK(strstr(d->ua, "X11; Linux x86_64") != NULL);
+        } else {
+            CHECK(0); /* unknown os */
+        }
+
+        /* ARM only where it is real: Apple Silicon. */
+        if (STREQ(d->arch, "arm")) {
+            CHECK(STREQ(d->os, "macos"));
+        } else {
+            CHECK(STREQ(d->arch, "x86"));
+        }
+
+        /* Chromium caps navigator.deviceMemory at 8, so a bigger machine
+         * reports 8 rather than its real size. */
+        CHECK(d->memory >= 1 && d->memory <= 8);
+        CHECK(d->cores >= 2 && d->cores <= 64);
+        CHECK(d->platform_version != NULL && d->platform_version[0] != '\0');
+        CHECK(STREQ(d->form, "laptop") || STREQ(d->form, "desktop"));
+    }
+
+    /* Every device is a distinct identity: no two share an id, and no two
+     * share a whole fingerprint. Two entries that agreed on all of it would
+     * be one machine under two names, and two profiles given them would be
+     * indistinguishable - which is the point of having a catalogue. */
+    for (i = 0; i < n; i++) {
+        const rb_device *a = rb_device_at(i);
+        for (j = i + 1; j < n; j++) {
+            const rb_device *b = rb_device_at(j);
+            CHECK(!STREQ(a->id, b->id));
+            CHECK(!(STREQ(a->ua, b->ua) && STREQ(a->arch, b->arch) &&
+                    STREQ(a->platform, b->platform) &&
+                    STREQ(a->ua_platform, b->ua_platform) &&
+                    STREQ(a->platform_version, b->platform_version) &&
+                    STREQ(a->gpu_vendor, b->gpu_vendor) &&
+                    STREQ(a->gpu_renderer, b->gpu_renderer) &&
+                    a->cores == b->cores && a->memory == b->memory));
+        }
+    }
+}
+
+static void test_rb_device_behaviour(void)
+{
+    const rb_device *d = rb_device_at(0);
+    const rb_device *picked;
+    const char *taken[3];
+    char *ua;
+    char *js;
+    int n = rb_device_count();
+    int i;
+
+    /* The UA helper resolves through the same "no device" rule. */
+    CHECK(rb_device_ua_for(NULL) == NULL);
+    CHECK(rb_device_ua_for("") == NULL);
+    CHECK(rb_device_ua_for("no-such-device") == NULL);
+    ua = rb_device_ua_for(d->id);
+    CHECK(ua != NULL);
+    CHECK(STREQ(ua, d->ua));
+    free(ua);
+
+    /* A random pick never returns a device that is already spoken for, so
+     * two profiles created in a row do not land on the same machine. */
+    for (i = 0; i < n; i++) {
+        const rb_device *a = rb_device_at(i);
+        const rb_device *b = rb_device_at((i + 1) % n);
+        taken[0] = a->id;
+        taken[1] = b->id;
+        taken[2] = NULL;
+        picked = rb_device_random(taken, 2);
+        CHECK(picked != NULL);
+        CHECK(!STREQ(picked->id, a->id));
+        CHECK(!STREQ(picked->id, b->id));
+    }
+
+    /* An exhausted pool still returns a machine: one shared device beats no
+     * assignment at all. */
+    {
+        const char **all = (const char **)malloc((size_t)n * sizeof(char *));
+        CHECK(all != NULL);
+        for (i = 0; i < n; i++) all[i] = rb_device_at(i)->id;
+        picked = rb_device_random(all, n);
+        CHECK(picked != NULL);
+        free(all);
+    }
+    /* No exclusions at all is the first-profile case. */
+    CHECK(rb_device_random(NULL, 0) != NULL);
+
+    /* A NULL device has no script; a real one produces a complete one. */
+    CHECK(rb_device_shim_js(NULL) == NULL);
+
+    for (i = 0; i < n; i++) {
+        d = rb_device_at(i);
+        js = rb_device_shim_js(d);
+        CHECK(js != NULL);
+        /* A leftover placeholder is a syntax error in the page, not a silent
+         * no-op, so this is the check that matters most. */
+        CHECK(strstr(js, "__") == NULL);
+        CHECK(strstr(js, d->ua) != NULL);
+        CHECK(strstr(js, d->gpu_renderer) != NULL);
+        CHECK(strstr(js, d->platform) != NULL);
+        CHECK(strstr(js, d->ua_platform) != NULL);
+        CHECK(strstr(js, "var MEMORY = ") != NULL);
+        CHECK(strstr(js, "var CORES = ") != NULL);
+        /* A desktop never claims to be a phone, in the UA or in the hints. */
+        CHECK(strstr(js, "mobile: false") != NULL);
+        CHECK(strstr(js, "formFactor = 'Desktop'") != NULL);
+        CHECK(strstr(js, "out.bitness = '64'") != NULL);
+        /* Nothing geometric: the page really is laid out on this screen. */
+        CHECK(strstr(js, "innerWidth") == NULL);
+        CHECK(strstr(js, "innerHeight") == NULL);
+        CHECK(strstr(js, "devicePixelRatio") == NULL);
+        CHECK(strstr(js, "availWidth") == NULL);
+        /* Balanced and self-contained enough to be pasted into a page. */
+        CHECK(count_of(js, "function") >= 3);
+        CHECK(js[strlen(js) - 1] == '\n');
+        free(js);
+    }
+}
+
+static void test_rb_device_shim_escaping(void)
+{
+    /* A device whose fields carry JavaScript metacharacters. The catalogue's
+     * own values are plain ASCII, but the escaping must hold regardless of
+     * where a value came from - a value that closed its own string literal
+     * would run whatever followed it in the page. */
+    rb_device hostile;
+    char *js;
+    const rb_device *clean = rb_device_at(0);
+
+    memset(&hostile, 0, sizeof hostile);
+    hostile.id = "hostile";
+    hostile.brand = "X'); alert('pwned'); //";
+    hostile.model = "M\\'";
+    hostile.year = 2024;
+    hostile.os = "windows";
+    hostile.form = "laptop";
+    hostile.arch = "x86";
+    hostile.chrome = "131.0.6778.135";
+    hostile.gpu_vendor = "V\\";
+    hostile.gpu_renderer = "R\nsecond line";
+    hostile.cores = 8;
+    hostile.memory = 8;
+    hostile.platform = "Win32";
+    hostile.ua_platform = "Windows";
+    hostile.platform_version = "15.0.0";
+    hostile.ua = "UA'; alert('pwned'); //";
+
+    js = rb_device_shim_js(&hostile);
+    CHECK(js != NULL);
+    CHECK(strstr(js, "\\'") != NULL);          /* the quote is escaped */
+    CHECK(strstr(js, "alert('pwned')") == NULL); /* so it never closes */
+    CHECK(strstr(js, "\\n") != NULL);          /* nor does a newline */
+    free(js);
+
+    /* A device with no hostile characters produces a script with exactly the
+     * same number of lines: nothing in a field leaked a newline. */
+    js = rb_device_shim_js(clean);
+    CHECK(js != NULL);
+    {
+        rb_device same = *clean;
+        char *plain = rb_device_shim_js(&same);
+        CHECK(plain != NULL);
+        CHECK(count_of(plain, "\n") == count_of(js, "\n"));
+        free(plain);
+    }
+    free(js);
+}
+
 int main(void)
 {
     test_rb_str();
@@ -4190,6 +4435,9 @@ int main(void)
     test_rb_dns();
     test_rb_ipconflict();
     test_rb_switch();
+    test_rb_devices();
+    test_rb_device_behaviour();
+    test_rb_device_shim_escaping();
     remove(TMP);
     (void)rb_paths_remove_tree(TMP_DIR);
     printf("core checks: %d\n", g_checks);

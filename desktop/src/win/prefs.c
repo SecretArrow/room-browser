@@ -227,13 +227,20 @@ static void pf_refresh_notes(RbPrefs *pf)
 
     if (pf->ua_note != NULL) {
         char *ua = rb_ua_current(app);
+        const char *device_id = rb_pref(app, RB_PREF_DEVICE_ID, "");
+        int has_device = (device_id != NULL && device_id[0] != '\0');
         wchar_t *wua = rb_utf8_to_wide((ua != NULL) ? ua : "the engine default");
         wchar_t buf[512];
         if (wua != NULL) {
             swprintf(buf, 512,
-                     L"Current: %ls\nChanging the User-Agent string does not "
-                     L"change any other platform or device characteristic.",
-                     wua);
+                     L"Current: %ls\n%ls",
+                     wua,
+                     has_device
+                         ? L"Set by the device above, along with the platform "
+                           L"characteristics that go with it. Choose \"No "
+                           L"device\" to set the string on its own."
+                         : L"On its own, a User-Agent string changes no other "
+                           L"platform or device characteristic.");
             free(wua);
         } else {
             swprintf(buf, 512, L"Current: the engine default");
@@ -583,7 +590,37 @@ static void pf_build_ua(RbPrefs *pf)
     static const char *ids[66];
     static const char *labels[66];
     static char buf[64][128];
+    /* The device list is generated and runs to a few hundred machines, so it
+     * gets its own storage: the caption is built from the catalogue rather
+     * than written out here.  Static, like the preset arrays above, because
+     * one settings window exists at a time. */
+    static const char *dev_ids[RB_DEVICE_CHOICES_MAX + 2];
+    static const char *dev_labels[RB_DEVICE_CHOICES_MAX + 2];
+    static char dev_buf[RB_DEVICE_CHOICES_MAX + 2][128];
     int n = rb_ua_count(), i, y = 0;
+    int dn = rb_device_count(), j;
+
+    if (dn > RB_DEVICE_CHOICES_MAX) dn = RB_DEVICE_CHOICES_MAX;
+    dev_ids[0] = "";
+    dev_labels[0] = "No device - use the User-Agent setting";
+    for (j = 0; j < dn; j++) {
+        const rb_device *d = rb_device_at(j);
+        if (d == NULL || d->id == NULL) continue;
+        dev_ids[j + 1] = d->id;
+        snprintf(dev_buf[j + 1], sizeof dev_buf[j + 1], "%s %s - %s (%d)",
+                 (d->brand != NULL) ? d->brand : "",
+                 (d->model != NULL) ? d->model : "",
+                 rb_device_os_name(d->os), d->year);
+        dev_labels[j + 1] = dev_buf[j + 1];
+    }
+    dn++;
+    dev_ids[dn] = NULL;
+    dev_labels[dn] = NULL;
+
+    /* A device decides the User-Agent, so it comes first: with one chosen,
+     * the three rows below are not consulted at all. */
+    y += pf_combo(pf, 3, y, RB_PREF_DEVICE_ID, dev_ids, dev_labels,
+                  rb_pref(pf->app, RB_PREF_DEVICE_ID, ""), L"Device");
 
     y += pf_combo(pf, 3, y, RB_PREF_UA_MODE, mode_ids, mode_labels,
                   rb_pref(pf->app, RB_PREF_UA_MODE, "default"),

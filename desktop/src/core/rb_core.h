@@ -18,6 +18,7 @@
 #define RB_CORE_H
 
 #include "rb_bookmarks.h"
+#include "rb_devices.h"
 #include "rb_dns.h"
 #include "rb_downloads.h"
 #include "rb_filterlist.h"

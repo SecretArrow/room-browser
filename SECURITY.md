@@ -79,6 +79,35 @@ undetectable, and the app does not claim it does: a page that inspects
 call, or correlates dozens of unrelated signals can still tell. Profiles are
 for keeping separate identities separate, not for evading a determined
 fingerprinter.
+
+#### The desktop editions
+
+Both desktop editions present a machine from the same idea, with the rules a
+desktop needs rather than the ones a phone does. A profile may be assigned
+one of 235 real laptops and desktops (2022–2025, Windows, macOS and Linux),
+and what it presents is the same list as above, with these differences:
+
+- `mobile` is always `false` and `formFactor` is `"Desktop"`.
+- `model` is the **empty string**. Chrome reports no model on a desktop, so
+  a profile that invented one would be the only desktop in the world with a
+  model name.
+- `architecture` and `bitness` follow the machine's CPU: Apple Silicon
+  reports `arm`, everything else `x86`, always 64-bit.
+- `navigator.platform` and `userAgentData.platform` follow the OS —
+  `Win32`/`Windows`, `MacIntel`/`macOS`, `Linux x86_64`/`Linux`.
+- The User-Agent carries the **major** Chrome version only
+  (`Chrome/131.0.0.0`), which is the reduced form Chrome has sent since
+  2022; the build number lives in the `uaFullVersion` client hint.
+- `deviceMemory` is never above 8, because that is where Chromium caps it —
+  a 64 GB workstation honestly reports 8, exactly as a real one does.
+
+The catalogue is also **all-distinct**: no two machines in it present the
+same fingerprint, and a curated machine that could not be told apart from
+one already listed was left out rather than shipped as a second name for the
+same identity. Two profiles assigned such a pair would present the same
+machine, which is the thing the catalogue exists to prevent. Screen geometry
+and real capabilities are excluded here for the same reasons as on Android.
+
 - Safe Browsing status follows the system WebView component.
 
 ## Reporting

@@ -71,6 +71,12 @@ extern "C" {
 #define RB_PREF_UA_PRESET_ID         "ua_preset_id"
 #define RB_PREF_CUSTOM_USER_AGENT    "custom_user_agent"
 
+/* The real machine this profile presents. When set it decides the User-Agent
+ * and the device shim, and the three keys above are not consulted - one
+ * control, so the UA can never disagree with the machine behind it. Empty or
+ * absent means the profile presents nothing and the keys above decide. */
+#define RB_PREF_DEVICE_ID            "device_id"
+
 /* DNS */
 #define RB_PREF_DNS_MODE             "dns_mode"     /* system|auto|doh|dot     */
 #define RB_PREF_DOH_URL              "doh_url"

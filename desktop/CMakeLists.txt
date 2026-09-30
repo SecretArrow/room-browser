@@ -29,6 +29,8 @@ add_library(rb_core STATIC
     src/core/rb_downloads.c
     src/core/rb_dns.c
     src/core/rb_ipconflict.c
+    src/core/rb_devices.c
+    src/core/rb_device.c
     src/core/rb_switch.c)
 target_include_directories(rb_core PUBLIC src ${CMAKE_CURRENT_BINARY_DIR})
 

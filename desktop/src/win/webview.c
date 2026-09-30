@@ -121,6 +121,9 @@ static const IID rb_iid_profile2 = {
 static const IID rb_iid_clear_done = {
     /* ICoreWebView2ClearBrowsingDataCompletedHandler */
     0xe9710a06, 0x1d1d, 0x49b2, {0x82, 0x34, 0x22, 0x6f, 0x35, 0x84, 0x6a, 0xe5} };
+static const IID rb_iid_script_done = {
+    /* ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler */
+    0xb99369f3, 0x9b11, 0x47b5, {0xbc, 0x6f, 0x8e, 0x78, 0x95, 0xfc, 0xea, 0x17} };
 
 static int rb_iid_eq(REFIID a, const IID *b)
 {
@@ -135,6 +138,10 @@ typedef struct TabView {
     ICoreWebView2Controller *ctrl;   /* NULL until the controller is ready */
     ICoreWebView2 *wv;               /* NULL until the controller is ready */
     int creating;
+    /* The id WebView2 returned for this view's device script, or NULL.  The
+     * id is the only handle for taking the script off again, and the runtime
+     * hands it over asynchronously. */
+    char *script_id;
 } TabView;
 
 struct RbViews {
@@ -1457,22 +1464,154 @@ static void rb_wv_apply_web_settings(App *app, ICoreWebView2 *wv)
     /* The User-Agent is the one setting that needs the newer interface:
      * put_UserAgent lives on ICoreWebView2Settings2, not on the base
      * settings object.  A NULL from rb_ua_current() means the profile wants
-     * the engine default, which is exactly what happens when the put is
-     * skipped. */
+     * the engine default, and the way to ask for that is the empty string —
+     * skipping the put would leave the previous profile's string in place,
+     * which is what a switch to "no device" or to the default has to undo. */
     ua = rb_ua_current(app);
-    if (ua != NULL) {
+    {
         ICoreWebView2Settings2 *st2 = NULL;
         if (SUCCEEDED(wv->lpVtbl->QueryInterface(
                 wv, &rb_iid_settings2, (void **)&st2)) && st2 != NULL) {
             wchar_t *wua = rb_utf8_to_wide(ua);
-            if (wua != NULL) {
-                st2->lpVtbl->put_UserAgent(st2, wua);
-                free(wua);
-            }
+            st2->lpVtbl->put_UserAgent(st2, (wua != NULL) ? wua : L"");
+            free(wua);
             st2->lpVtbl->Release(st2);
         }
-        free(ua);
     }
+    free(ua);
+
+    /* The UA describes a machine, so the rest of that machine's answers are
+     * installed alongside it. */
+    rb_wv_apply_device_script(app, wv);
+}
+
+/* ------------------------------------------------------------------ */
+/* Device shim
+ *
+ * The Win32 twin of the GTK edition's rb_gw_device_apply_to.  A profile that
+ * presents a real machine has to answer what a page asks about it, not just
+ * its User-Agent string: platform, client hints, memory, cores, WebGL.
+ *
+ * WebView2 injects at document start through AddScriptToExecuteOnDocument
+ * Created, and hands back an id asynchronously — that id is the only handle
+ * for removing the script again.  Without the removal every settings change
+ * would stack another copy on every page of every tab, so the id is kept on
+ * the tab and the old script is taken off first.
+ *
+ * This is the one handler in this file that is NOT a process-lifetime
+ * singleton: it carries the view it was created for, so it is allocated per
+ * call and released properly once the runtime is done with it. */
+
+typedef struct {
+    ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler base;
+    App *app;
+    ICoreWebView2 *wv;
+    ULONG refs;
+} ScriptHandler;
+
+static HRESULT STDMETHODCALLTYPE ScriptHandler_QueryInterface(
+    ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler *self,
+    REFIID riid, void **ppv)
+{
+    ScriptHandler *h = (ScriptHandler *)self;
+    if (!ppv) return E_POINTER;
+    if (rb_iid_eq(riid, &rb_iid_iunknown) || rb_iid_eq(riid, &rb_iid_script_done)) {
+        *ppv = self;
+        h->refs++;
+        return S_OK;
+    }
+    *ppv = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG STDMETHODCALLTYPE ScriptHandler_AddRef(
+    ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler *self)
+{
+    return ++((ScriptHandler *)self)->refs;
+}
+
+static ULONG STDMETHODCALLTYPE ScriptHandler_Release(
+    ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler *self)
+{
+    ScriptHandler *h = (ScriptHandler *)self;
+    if (h->refs > 0 && --h->refs == 0) {
+        free(h);
+        return 0;
+    }
+    return h->refs;
+}
+
+static HRESULT STDMETHODCALLTYPE ScriptHandler_Invoke(
+    ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler *self,
+    HRESULT errorCode, LPCWSTR id)
+{
+    ScriptHandler *h = (ScriptHandler *)self;
+    TabView *tv = rb_views_by_wv((h->app != NULL) ? h->app->views : NULL, h->wv);
+
+    if (tv != NULL && SUCCEEDED(errorCode) && id != NULL) {
+        char *uid = rb_wide_to_utf8(id);
+        free(tv->script_id);
+        tv->script_id = uid;
+    }
+    return S_OK;
+}
+
+static ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandlerVtbl
+    g_script_vtbl = {
+        ScriptHandler_QueryInterface,
+        ScriptHandler_AddRef,
+        ScriptHandler_Release,
+        ScriptHandler_Invoke
+    };
+
+/* Installs (or clears) the device script on one view.  Called wherever the
+ * User-Agent is applied, because the two describe the same machine and a UA
+ * that disagreed with the shim behind it is the contradiction this exists to
+ * avoid. */
+static void rb_wv_apply_device_script(App *app, ICoreWebView2 *wv)
+{
+    TabView *tv;
+    const rb_device *device;
+    ScriptHandler *h;
+    char *js;
+    wchar_t *wjs;
+
+    if (app == NULL || wv == NULL) return;
+    tv = rb_views_by_wv(app->views, wv);
+    if (tv == NULL) return;
+
+    if (tv->script_id != NULL) {
+        wchar_t *wid = rb_utf8_to_wide(tv->script_id);
+        if (wid != NULL) {
+            wv->lpVtbl->RemoveScriptToExecuteOnDocumentCreated(wv, wid);
+            free(wid);
+        }
+        free(tv->script_id);
+        tv->script_id = NULL;
+    }
+
+    device = rb_device_by_id(rb_pref(app, RB_PREF_DEVICE_ID, NULL));
+    if (device == NULL) return;
+
+    js = rb_device_shim_js(device);
+    if (js == NULL) return;
+    wjs = rb_utf8_to_wide(js);
+    free(js);
+    if (wjs == NULL) return;
+
+    h = (ScriptHandler *)calloc(1, sizeof(*h));
+    if (h == NULL) {
+        free(wjs);
+        return;
+    }
+    h->base.lpVtbl = &g_script_vtbl;
+    h->app = app;
+    h->wv = wv;
+    h->refs = 1; /* ours; dropped below, the runtime keeps its own */
+
+    wv->lpVtbl->AddScriptToExecuteOnDocumentCreated(wv, wjs, &h->base);
+    h->base.lpVtbl->Release(&h->base);
+    free(wjs);
 }
 
 /* Re-applies the settings to every live view.  The preferences editor calls
@@ -1829,6 +1968,8 @@ void rb_wv_drop_tab(App *app, long tab_id)
                 tv->wv->lpVtbl->Release(tv->wv);
                 tv->wv = NULL;
             }
+            free(tv->script_id);
+            tv->script_id = NULL;
             memmove(&v->items[i], &v->items[i + 1],
                     (size_t)(v->n - i - 1) * sizeof(v->items[0]));
             v->n--;
@@ -1931,6 +2072,8 @@ void rb_wv_shutdown(App *app)
             tv->wv->lpVtbl->Release(tv->wv);
             tv->wv = NULL;
         }
+        free(tv->script_id);
+        tv->script_id = NULL;
     }
     free(v->items);
     if (v->env) {
