@@ -23,3 +23,4 @@ rootProject.name = "RoomBrowser"
 
 include(":app")
 include(":core:domain")
+include(":core:wallet")

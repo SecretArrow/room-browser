@@ -1,0 +1,34 @@
+plugins {
+    alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.kotlin.serialization)
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        freeCompilerArgs.add("-Xjsr305=strict")
+    }
+}
+
+dependencies {
+    implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.kotlinx.serialization.json)
+
+    // JSON-RPC transports for every chain (shared with the app's OkHttp).
+    implementation(libs.okhttp)
+    // EVM: secp256k1 signing, RLP, EIP-155/1559 transactions, EIP-712 typed
+    // data, V3 keystore files, BIP39 mnemonics, scrypt.
+    implementation(libs.web3j.core)
+    // ed25519 (Solana/Aptos/Sui), blake2b, sha3, ripemd160, EC point math for BIP32.
+    implementation(libs.bouncycastle.provider)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.truth)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)
+}

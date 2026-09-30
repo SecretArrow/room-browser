@@ -1,0 +1,106 @@
+package com.roombrowser.domain.wallet.model
+
+import kotlinx.serialization.Serializable
+
+/** The chain families this wallet supports. Each has its own adapter. */
+enum class ChainType(val displayName: String) {
+    EVM("EVM"),
+    SOLANA("Solana"),
+    APTOS("Aptos"),
+    SUI("Sui"),
+    COSMOS("Cosmos"),
+    BITCOIN("Bitcoin"),
+    TRON("TRON");
+
+    companion object {
+        fun fromName(name: String): ChainType? =
+            entries.firstOrNull { it.name.equals(name, ignoreCase = true) }
+    }
+}
+
+/**
+ * A user-visible network/chain configuration. Chain IDs are strings because
+ * different ecosystems identify chains differently: EVM uses decimal/hex
+ * numbers ("1", "0x1"), Solana uses genesis hashes ("mainnet-beta"), Cosmos
+ * uses chain-id slugs ("cosmoshub-4"), Bitcoin/TRON use a small enum.
+ */
+@Serializable
+data class NetworkConfig(
+    /** Stable identifier: "<chainType>:<chainId>", e.g. "EVM:137". */
+    val id: String,
+    val chainType: ChainType,
+    val chainId: String,
+    val name: String,
+    val rpcUrls: List<String>,
+    val nativeSymbol: String,
+    val nativeDecimals: Int = 18,
+    val explorerUrl: String? = null,
+    /** Extra endpoints some chains need (LCD for Cosmos, indexer for BTC). */
+    val lcdUrl: String? = null,
+    val indexerUrl: String? = null,
+    val isTestnet: Boolean = false,
+    /** bech32 human-readable part for Cosmos chains (e.g. "cosmos", "osmo"). */
+    val bech32Hrp: String? = null,
+    /** Cosmos coin type for BIP44 (118 default; Injective uses 60). */
+    val coinType: Int? = null
+) {
+    companion object {
+        fun evm(chainId: Long, name: String, rpcUrls: List<String>, symbol: String, explorer: String?, testnet: Boolean = false): NetworkConfig =
+            NetworkConfig(
+                id = "EVM:$chainId",
+                chainType = ChainType.EVM,
+                chainId = chainId.toString(),
+                name = name,
+                rpcUrls = rpcUrls,
+                nativeSymbol = symbol,
+                nativeDecimals = 18,
+                explorerUrl = explorer,
+                isTestnet = testnet
+            )
+    }
+}
+
+/** An account derived or imported for one chain. Pure data — no key material. */
+data class WalletAccountInfo(
+    val id: String,
+    val walletId: String,
+    val chainType: ChainType,
+    val address: String,
+    val label: String,
+    /** Derivation path for mnemonic-derived accounts ("" for imports). */
+    val path: String,
+    /** DERIVED = from the wallet mnemonic, IMPORTED = private key/keystore. */
+    val source: Source
+) {
+    enum class Source { DERIVED, IMPORTED }
+}
+
+/** Result of a balance query; formatted decimal string or null when offline. */
+sealed interface BalanceResult {
+    data class Ok(val amount: String, val symbol: String) : BalanceResult
+    data class Error(val message: String) : BalanceResult
+}
+
+/** Result of broadcasting a signed transaction. */
+sealed interface BroadcastResult {
+    data class Ok(val hash: String) : BroadcastResult
+    data class Error(val message: String) : BroadcastResult
+}
+
+/** A chain-agnostic fee/gas estimate shown on the confirmation screen. */
+@Serializable
+data class FeeEstimate(
+    val label: String,
+    val estimatedCost: String
+)
+
+/** Standard wallet errors surfaced to the dApp bridge and dashboard. */
+sealed class WalletException(message: String) : Exception(message) {
+    class NetworkUnavailable(message: String = "Network unavailable") : WalletException(message)
+    class RpcError(val code: Int, message: String) : WalletException(message)
+    class UserRejected(message: String = "User rejected the request") : WalletException(message)
+    class Unauthorized(message: String) : WalletException(message)
+    class UnsupportedMethod(message: String) : WalletException(message)
+    class InvalidParams(message: String) : WalletException(message)
+    class ChainNotSupported(message: String) : WalletException(message)
+}

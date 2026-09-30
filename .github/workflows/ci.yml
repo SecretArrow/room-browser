@@ -148,9 +148,9 @@ jobs:
         # twice. A genuinely broken test fails both attempts, so the gate
         # still holds; the annotation keeps the retry visible, not silent.
         run: |
-          ./gradlew testDebugUnitTest :core:domain:test --console=plain --continue || {
+          ./gradlew testDebugUnitTest :core:domain:test :core:wallet:test --console=plain --continue || {
             echo "::warning title=Unit tests flaked::First attempt failed — retrying once. A load-induced flake passes now; a real failure fails again."
-            ./gradlew testDebugUnitTest :core:domain:test --console=plain --continue
+            ./gradlew testDebugUnitTest :core:domain:test :core:wallet:test --console=plain --continue
           }
 
       - name: Debug build (all ABIs)
@@ -173,6 +173,7 @@ jobs:
           path: |
             android/app/build/reports/tests/
             android/core/domain/build/reports/tests/
+            android/core/wallet/build/reports/tests/
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------
@@ -433,7 +434,10 @@ jobs:
 
   # ---------------------------------------------------------------------
   # AUTO-RELEASE: on every green main push AND on v* tags.
-  # Android: signed per-ABI APKs + universal + AAB.
+  # Android: per-ABI DEBUG APKs + universal (interim policy: the debug
+  # edition ships until the release-signed build is ordered separately
+  # with its passphrase — do not flip this back to assembleRelease without
+  # that instruction).
   # Desktop: windows zip + linux deb/tar.gz (downloaded from the desktop
   # matrix jobs of this same run). Version numbering continues from the
   # highest existing v1.0.x tag (the repo moved, run numbers restarted).
@@ -498,31 +502,12 @@ jobs:
           # filename: the tag without its "v" (v1.0.95 -> 1.0.95).
           echo "version=${TAG#v}"      >> "$GITHUB_OUTPUT"
 
-      - name: Decode signing keystore (from repository secrets)
-        run: |
-          if [ -n "${{ secrets.ROOMBROWSER_KEYSTORE_B64 }}" ]; then
-            echo "${{ secrets.ROOMBROWSER_KEYSTORE_B64 }}" | base64 -d > $HOME/room-browser-release.jks
-            echo "ROOMBROWSER_KEYSTORE=$HOME/room-browser-release.jks"      >> $GITHUB_ENV
-            echo "ROOMBROWSER_STORE_PASSWORD=${{ secrets.ROOMBROWSER_STORE_PASSWORD }}" >> $GITHUB_ENV
-            echo "ROOMBROWSER_KEY_ALIAS=${{ secrets.ROOMBROWSER_KEY_ALIAS }}"           >> $GITHUB_ENV
-            echo "ROOMBROWSER_KEY_PASSWORD=${{ secrets.ROOMBROWSER_KEY_PASSWORD }}"     >> $GITHUB_ENV
-            echo "SIGNING_MODE=release-keyed" >> $GITHUB_ENV
-          else
-            echo "SIGNING_MODE=debug-fallback" >> $GITHUB_ENV
-            echo "No signing secrets found — building with debug-signing fallback. See RELEASE.md." >> $GITHUB_STEP_SUMMARY
-          fi
-
-      - name: Build signed release APKs (ABI splits + universal)
+      - name: Build per-ABI debug APKs (interim debug-edition policy)
         env:
           # Stamps versionName (and therefore the APK filenames) with the tag
           # this release is being published under.
           RB_VERSION_NAME: ${{ steps.tag.outputs.version }}
-        run: cd android && ./gradlew assembleRelease --console=plain
-
-      - name: Build Android App Bundle
-        env:
-          RB_VERSION_NAME: ${{ steps.tag.outputs.version }}
-        run: cd android && ./gradlew bundleRelease --console=plain
+        run: cd android && ./gradlew assembleDebug --console=plain
 
       - name: Download desktop artifacts (this run, if any)
         uses: actions/download-artifact@v4
@@ -538,14 +523,7 @@ jobs:
           VERSION: ${{ steps.tag.outputs.version }}
         run: |
           mkdir -p release-out
-          cp android/app/build/outputs/apk/release/*.apk release-out/
-          # The bundle ships as app-release.aab out of Gradle: neither versioned
-          # nor distinguishable between releases, so it is renamed here to the
-          # name RELEASE.md documents.
-          for f in android/app/build/outputs/bundle/release/*.aab; do
-            [ -e "$f" ] || continue
-            cp "$f" "release-out/room-browser-v${VERSION}-release.aab"
-          done
+          cp android/app/build/outputs/apk/debug/*.apk release-out/
           # Desktop artifacts are OPTIONAL — attached only when the desktop
           # jobs succeeded (Android-first release policy). Never block on them.
           cp desktop-dist/desktop-windows/* release-out/ 2>/dev/null || true
@@ -587,7 +565,7 @@ jobs:
           body: |
             ## Room Browser ${{ steps.tag.outputs.tag }}
 
-            **Android: signed per-ABI APKs + universal + AAB. Desktop: Windows portable zip + Ubuntu deb/tar.gz (pure-C browser).**
+            **Android: per-ABI DEBUG APKs + universal (debug edition — the release-signed build ships separately once ordered). Desktop: Windows portable zip + Ubuntu deb/tar.gz (pure-C browser).**
 
             | Artifact | Target |
             |---|---|
@@ -595,7 +573,6 @@ jobs:
             | `armeabi-v7a` | older 32-bit ARM devices |
             | `x86_64` / `x86` | emulators, x86 devices |
             | `universal` | all ABIs (larger download) |
-            | `.aab` | Play Store upload |
             | `*-windows-x64.zip` | Windows 10/11 — portable zip (exe + WebView2Loader.dll) |
             | `*_amd64.deb` | Ubuntu/Debian — `apt` package (pulls GTK3 + WebKitGTK deps) |
             | `*-linux-x64.tar.gz` | any modern Linux with GTK3 + WebKitGTK |
@@ -612,4 +589,5 @@ jobs:
             > repository keystore. Updating over an APK from the previous
             > repository requires a one-time uninstall/reinstall.
 
-            ${{ env.SIGNING_MODE == 'debug-fallback' && '⚠️ Built with fallback debug signing — configure repository secrets (see android/RELEASE.md) for production signing.' || '✅ Signed with the release keystore.' }}
+            ⚠️ Debug edition: debug-signed per-ABI APKs. The release-signed
+            > build ships separately once ordered with its passphrase.
