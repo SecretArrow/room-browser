@@ -373,13 +373,13 @@ open class WalletEngine(
             }
             ChainType.COSMOS -> {
                 val key = parseSecp256k1Key(trimmed, chainType)
-                val compressed = Bip32PrivateKey.publicKeyPoint(key).getEncoded(true)
+                val compressed = Bip32PrivateKey.compressedPublicKeyOf(key)
                 val hrp = cosmosHomeNetwork().bech32Hrp ?: "cosmos"
                 registry.cosmos.bech32Address(compressed, hrp) to canonicalSecpKey(key)
             }
             ChainType.BITCOIN -> {
                 val key = parseSecp256k1Key(trimmed, chainType)
-                val compressed = Bip32PrivateKey.publicKeyPoint(key).getEncoded(true)
+                val compressed = Bip32PrivateKey.compressedPublicKeyOf(key)
                 registry.bitcoin.p2wpkhAddress(compressed, testnet = false) to canonicalSecpKey(key)
             }
             ChainType.TRON -> {
@@ -753,7 +753,7 @@ open class WalletEngine(
             ChainType.COSMOS -> {
                 val key = secpPrivateKey(account)
                 registry.cosmos.sendNative(
-                    network, key, Bip32PrivateKey.publicKeyPoint(key).getEncoded(true),
+                    network, key, Bip32PrivateKey.compressedPublicKeyOf(key),
                     account.address, to, baseAmount.toString(), cosmosBaseDenom(network)
                 )
             }

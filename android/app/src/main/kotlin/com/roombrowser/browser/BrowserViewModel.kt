@@ -124,7 +124,7 @@ class BrowserViewModel(
     private val walletBridges = java.util.WeakHashMap<WebView, com.roombrowser.browser.wallet.dapp.WalletBridge>()
 
     /** Last-seen wallet state, so event collectors only emit on CHANGE. */
-    private var lastWalletChainIds: Map<com.roombrowser.domain.wallet.model.ChainType, String> = emptyMap()
+    private var lastWalletChainIds: Map<com.roombrowser.domain.wallet.model.ChainType, com.roombrowser.domain.wallet.model.NetworkConfig> = emptyMap()
     private var lastWalletEvmAddresses: List<String> = emptyList()
 
     lateinit var downloadEngine: DownloadEngine
@@ -1460,7 +1460,7 @@ class BrowserViewModel(
                         // LATER change emits chainChanged (EVM: hex chainId).
                         if (previous.isNotEmpty()) {
                             active.forEach { (chain, network) ->
-                                if (previous[chain] != network.chainId &&
+                                if (previous[chain]?.chainId != network.chainId &&
                                     chain == com.roombrowser.domain.wallet.model.ChainType.EVM
                                 ) {
                                     val hex = "0x" + network.chainId.toLongOrNull(10)

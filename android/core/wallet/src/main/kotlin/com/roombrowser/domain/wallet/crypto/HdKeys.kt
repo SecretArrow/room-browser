@@ -63,6 +63,14 @@ class Bip32PrivateKey(
         const val HARDENED_BIT = 0x80000000L
 
         /**
+         * The compressed SEC1 encoding (0x02/0x03 || x, 33 bytes) of the
+         * secp256k1 public key for a raw private-key scalar. App-layer seam:
+         * callers outside this module get a ByteArray so BouncyCastle types
+         * never leak into their compile classpath.
+         */
+        fun compressedPublicKeyOf(key: BigInteger): ByteArray = publicKeyPoint(key).getEncoded(true)
+
+        /**
          * The secp256k1 public-key point for [key]:
          *  - a private-key scalar (≤ 256 bits) → G · key, or
          *  - a public key in web3j's x||y BigInteger encoding (≥ 257 bits:

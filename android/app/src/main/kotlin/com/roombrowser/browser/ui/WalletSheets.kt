@@ -61,12 +61,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.roombrowser.browser.wallet.DappDecision
 import com.roombrowser.browser.wallet.DappRequest
+import com.roombrowser.browser.wallet.NetworkRecord
 import com.roombrowser.browser.wallet.WalletEngineApi
 import com.roombrowser.domain.wallet.model.BroadcastResult
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.FeeEstimate
 import com.roombrowser.domain.wallet.model.NetworkConfig
-import com.roombrowser.domain.wallet.model.NetworkRecord
 import com.roombrowser.qr.QrCodeGenerator
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.LocalRoomExtras
