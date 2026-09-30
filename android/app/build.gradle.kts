@@ -132,14 +132,18 @@ android {
     }
     packaging {
         resources {
+            // License/metadata files that multiple transitive jars ship in
+            // identical paths (web3j via :core:wallet drags Apache
+            // httpclient/httpcore, jackson, AWS's jackson fork — each with
+            // its own LICENSE/NOTICE/DEPENDENCIES copies). None of them is
+            // read at runtime; patterns cover the whole family so a new
+            // transitive jar cannot resurrect the merge failure.
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "/META-INF/INDEX.LIST"
-            // web3j (via :core:wallet) drags Apache httpclient/httpcore,
-            // whose jars both ship META-INF/DEPENDENCIES — harmless license
-            // metadata that Android's merger refuses to duplicate.
             excludes += "/META-INF/DEPENDENCIES"
-            excludes += "/META-INF/NOTICE"
-            excludes += "/META-INF/NOTICE.txt"
+            excludes += "/META-INF/LICENSE*"
+            excludes += "/META-INF/*LICENSE*"
+            excludes += "/META-INF/NOTICE*"
         }
     }
     lint {
