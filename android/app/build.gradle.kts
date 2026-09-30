@@ -133,14 +133,16 @@ android {
     packaging {
         resources {
             // License/metadata files that multiple transitive jars ship in
-            // identical paths (web3j via :core:wallet drags Apache
-            // httpclient/httpcore, jackson, AWS's jackson fork — each with
-            // its own LICENSE/NOTICE/DEPENDENCIES copies). None of them is
-            // read at runtime; patterns cover the whole family so a new
-            // transitive jar cannot resurrect the merge failure.
+            // identical paths (:core:wallet's web3j-crypto tree: jackson
+            // core/databind/annotations + tuweni-bytes/units each ship
+            // LICENSE/NOTICE; tuweni also DISCLAIMER; jackson-core ships the
+            // FastDoubleParser-* variants). None is read at runtime; the
+            // patterns cover the whole family (verified by listing every
+            // jar's META-INF — see the worklog, Task 5-ci-fix).
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "/META-INF/INDEX.LIST"
             excludes += "/META-INF/DEPENDENCIES"
+            excludes += "/META-INF/DISCLAIMER"
             excludes += "/META-INF/LICENSE*"
             excludes += "/META-INF/*LICENSE*"
             excludes += "/META-INF/NOTICE*"

@@ -23,7 +23,7 @@ dependencies {
     implementation(libs.okhttp)
     // EVM: secp256k1 signing, RLP, EIP-155/1559 transactions, EIP-712 typed
     // data, V3 keystore files, BIP39 mnemonics, scrypt.
-    implementation(libs.web3j.core)
+    implementation(libs.web3j.crypto)
     // ed25519 (Solana/Aptos/Sui), blake2b, sha3, ripemd160, EC point math for BIP32.
     implementation(libs.bouncycastle.provider)
 
