@@ -78,6 +78,7 @@ extern "C" {
 #define IDM_PREFS     3004
 #define IDM_DOWNLOADS 3005
 #define IDM_BMBAR     3006
+#define IDM_TRANSLATE 3007
 #define IDM_HIST_FIRST 3100
 #define RB_HIST_MENU_MAX 16
 

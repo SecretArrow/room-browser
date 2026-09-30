@@ -872,3 +872,62 @@ char *rb_url_upgrade_to_https(const char *url, int *out_upgraded)
     }
     return out.data;
 }
+
+/* ------------------------------------------------------------------ */
+/* Percent-encoding, and the Google Translate wrapper.
+ *
+ * rb_search_encode() is the same encoding with one extra rule — it trims the
+ * query's leading and trailing whitespace, which is what a search box wants
+ * and exactly what a value embedded in another URL's query string must not
+ * get.  The unreserved set and the %XX spelling are shared; the trimming is
+ * why this is a separate function rather than a call to that one. */
+char *rb_url_encode_component(const char *s)
+{
+    rb_str out;
+    const char *p;
+
+    rb_str_init(&out);
+    if (s != NULL) {
+        for (p = s; *p != '\0'; p++) {
+            unsigned char c = (unsigned char)*p;
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' ||
+                c == '~') {
+                char one[2];
+                one[0] = (char)c;
+                one[1] = '\0';
+                rb_str_append(&out, one);
+            } else {
+                rb_str_appendf(&out, "%%%02X", (unsigned)c);
+            }
+        }
+    }
+    /* The contract is a string, never NULL: "" encodes to "", and a caller
+     * concatenating the result must not have to guard it.  rb_str leaves the
+     * buffer unallocated when nothing was appended. */
+    if (out.data == NULL) {
+        return rb_url_dupn("", 0);
+    }
+    return out.data;
+}
+
+char *rb_url_translate_wrapper(const char *url, const char *target)
+{
+    rb_str out;
+    char *encoded;
+
+    /* Android's TranslateDialog refuses to build the wrapper for its own
+     * about: page; the same guard, spelled for every scheme the browser owns
+     * rather than for the one page Android happens to have. */
+    if (url == NULL || url[0] == '\0' || rb_ci_eq(url, 6, "about:")) {
+        return NULL;
+    }
+    encoded = rb_url_encode_component(url);
+    rb_str_init(&out);
+    rb_str_append(&out, "https://translate.google.com/translate?sl=auto&tl=");
+    rb_str_append(&out, (target != NULL) ? target : "");
+    rb_str_append(&out, "&u=");
+    rb_str_append(&out, encoded);
+    free(encoded);
+    return out.data;
+}

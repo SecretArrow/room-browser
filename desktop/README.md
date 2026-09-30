@@ -45,6 +45,16 @@ browser is original C: a portable core plus one thin platform layer per OS.
   same core strings, so they cannot describe one download differently. Clearing
   removes the *records* of that profile only; the files on disk are the user's
   and are never touched. Neither edition opens the file from the list.
+- **Translate this page** (*Menu → Translate this page*) — opens Android's
+  Google Translate web wrapper for the current page in a new tab:
+  `https://translate.google.com/translate?sl=auto&tl=<target>&u=<page>`. The
+  target language is the profile's **Translate target language** setting
+  (default `id`), the same row Preferences already had; the URL is built by
+  one core function, so both editions send the identical request. It refuses
+  the browser's own `about:` pages and says so, which is the guard Android's
+  dialog makes. The wrapper is Google's page, not ours: it sees the URL you
+  asked it to translate, and some sites do not survive it — Android's dialog
+  carries the same warning and this edition is no different.
 - **Settings** — plain `key=value` lines: `home`, `search_engine`,
   `javascript` (default **1**).  The preferences window (menu → Preferences,
   or <kbd>Ctrl</kbd>+<kbd>,</kbd>) edits the profile's full setting set —

@@ -746,6 +746,32 @@ void rb_do_activate(App *app, long id)
     rb_wv_activate(app, id);
 }
 
+/* Android's TranslateDialog, minus the dialog: the target language already
+ * has a row in Preferences, so the only thing a menu item has to decide is
+ * whether to translate this page.  The wrapper URL comes from core, so both
+ * editions send the identical request. */
+static void rb_do_translate(App *app)
+{
+    rb_tab *t = app->active_id ? rb_tabs_get(app->tabs, app->active_id) : NULL;
+    const char *target = rb_pref(app, RB_PREF_TRANSLATE_TARGET, "id");
+    char *wrap;
+
+    if (t == NULL || t->url == NULL || t->url[0] == '\0') {
+        rb_warn(app, "Cannot translate", "Open a page first.");
+        return;
+    }
+    wrap = rb_url_translate_wrapper(t->url, target);
+    if (wrap == NULL) {
+        /* Only the browser's own pages get here, which is the same guard
+         * Android's dialog makes before it builds the URL. */
+        rb_warn(app, "Cannot translate",
+                "This is one of the browser's own pages, not a web page.");
+        return;
+    }
+    rb_do_add_tab(app, wrap);
+    free(wrap);
+}
+
 void rb_do_navigate(App *app, const char *url)
 {
     rb_tab *t;
@@ -1690,6 +1716,7 @@ static void rb_menu_show(App *app)
                                      ? MF_CHECKED : 0),
                 IDM_BMBAR, L"Show bookmarks bar");
     AppendMenuW(m, MF_STRING, IDM_DOWNLOADS, L"Downloads");
+    AppendMenuW(m, MF_STRING, IDM_TRANSLATE, L"Translate this page");
     AppendMenuW(m, MF_STRING, IDM_PREFS, L"Profile settings");
     AppendMenuW(m, MF_STRING, IDM_ABOUT, L"About");
 
@@ -1729,6 +1756,8 @@ static void rb_on_command(App *app, int id, int notify)
         rb_bmbar_refresh(app);
     } else if (id == IDM_DOWNLOADS) {
         rb_show_downloads(app);
+    } else if (id == IDM_TRANSLATE) {
+        rb_do_translate(app);
     } else if (id == IDM_PREFS) {
         rb_show_prefs(app);
     } else if (id == IDM_PROF_ADD) {

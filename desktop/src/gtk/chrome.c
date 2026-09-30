@@ -1083,6 +1083,32 @@ void rb_do_close_tab_id(App *app, long id)
     rb_update_all(app);
 }
 
+/* Android's TranslateDialog, minus the dialog: the target language already
+ * has a row in Preferences, so the only thing a menu item has to decide is
+ * whether to translate this page.  The wrapper URL comes from core, so both
+ * editions send the identical request. */
+static void rb_do_translate(App *app)
+{
+    rb_tab *t = app->active_id ? rb_tabs_get(app->store, app->active_id) : NULL;
+    const char *target = rb_pref(app, RB_PREF_TRANSLATE_TARGET, "id");
+    char *wrap;
+
+    if (t == NULL || t->url == NULL || t->url[0] == '\0') {
+        rb_warn(app, "Cannot translate", "Open a page first.");
+        return;
+    }
+    wrap = rb_url_translate_wrapper(t->url, target);
+    if (wrap == NULL) {
+        /* Only the browser's own pages get here, which is the same guard
+         * Android's dialog makes before it builds the URL. */
+        rb_warn(app, "Cannot translate",
+                "This is one of the browser's own pages, not a web page.");
+        return;
+    }
+    rb_do_add_tab(app, wrap);
+    free(wrap);
+}
+
 void rb_do_navigate(App *app, const char *url)
 {
     rb_tab *t;
@@ -2784,6 +2810,13 @@ static void on_menu_prefs(GtkMenuItem *item, gpointer user_data)
     rb_show_prefs_dialog(app);
 }
 
+static void on_menu_translate(GtkMenuItem *item, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    (void)item;
+    rb_do_translate(app);
+}
+
 /* ------------------------------------------------------------------ */
 /* Profiles menu
 
@@ -2925,6 +2958,10 @@ static void rb_build_menu(App *app)
 
     item = gtk_menu_item_new_with_label("Downloads");
     g_signal_connect(item, "activate", G_CALLBACK(on_menu_downloads), app);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = gtk_menu_item_new_with_label("Translate this page");
+    g_signal_connect(item, "activate", G_CALLBACK(on_menu_translate), app);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
     item = gtk_menu_item_new_with_label("Preferences");

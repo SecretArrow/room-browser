@@ -119,6 +119,36 @@ char *rb_url_display(const char *url);
  * *out_upgraded may be NULL when the caller does not care. */
 char *rb_url_upgrade_to_https(const char *url, int *out_upgraded);
 
+/* Percent-encodes every byte outside the RFC 3986 unreserved set
+ * (A-Z a-z 0-9 - . _ ~) as UTF-8 %XX.  Never NULL; "" encodes to "".
+ *
+ * Deliberately not rb_search_encode(), which applies the same encoding but
+ * also trims leading and trailing whitespace — right for a search box, wrong
+ * for a value that has to survive verbatim inside another URL's query. */
+char *rb_url_encode_component(const char *s);
+
+/* The Google Translate web wrapper for `url`, in language `target`:
+ *
+ *   https://translate.google.com/translate?sl=auto&tl=<target>&u=<url encoded>
+ *
+ * the URL Android's TranslateDialog builds, `sl=auto` included (the source
+ * language is whatever the page is).  Not byte-identical to Android's: that
+ * one spells the value with Java's URLEncoder, which writes a space as "+"
+ * and escapes "~", where this writes "%20" and leaves "~" alone.  Both forms
+ * decode to the same string in the `u` parameter, and this one is the RFC
+ * 3986 spelling, so the request that leaves here is the same request.
+ *
+ * `target` is used verbatim: a blank value produces "tl=", which is what
+ * Android produces from a blank setting too, and inventing a fallback here
+ * would translate the same stored value into two different languages
+ * depending on which edition read it.
+ *
+ * NULL when there is nothing to translate — a NULL or empty URL, or one whose
+ * scheme is "about:".  Android refuses its own about:home page; this refuses
+ * every page the browser owns rather than the one page Android happens to
+ * have. */
+char *rb_url_translate_wrapper(const char *url, const char *target);
+
 #ifdef __cplusplus
 }
 #endif

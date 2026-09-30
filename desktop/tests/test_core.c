@@ -371,6 +371,63 @@ static void test_rb_url(void)
         CHECK(STREQ(u, "https://example.com"));
         free(u);
     }
+
+    /* --- percent-encoding, and the translate wrapper built on it --- */
+    {
+        char *s;
+
+        s = rb_url_encode_component("a b/c?d=e&f");
+        CHECK(STREQ(s, "a%20b%2Fc%3Fd%3De%26f"));
+        free(s);
+        /* The unreserved set is exactly what stays literal. */
+        s = rb_url_encode_component("AZaz09-._~");
+        CHECK(STREQ(s, "AZaz09-._~"));
+        free(s);
+        /* The contract is a string, never NULL — "" included. */
+        s = rb_url_encode_component(NULL);
+        CHECK(s != NULL && STREQ(s, ""));
+        free(s);
+        s = rb_url_encode_component("");
+        CHECK(s != NULL && STREQ(s, ""));
+        free(s);
+        /* The deliberate difference from rb_search_encode(): a value on its
+         * way into another URL's query keeps every byte it was handed, where
+         * the search encoder trims.  Both are right for their own caller. */
+        s = rb_url_encode_component(" a ");
+        CHECK(STREQ(s, "%20a%20"));
+        free(s);
+        s = rb_search_encode(" a ");
+        CHECK(STREQ(s, "a"));
+        free(s);
+
+        /* The wrapper: sl is always auto, the target is verbatim, and the
+         * page URL goes in as one opaque value — its own ? and & are encoded
+         * so they cannot end the u parameter early. */
+        s = rb_url_translate_wrapper("https://example.com/a?b=1&c=2", "id");
+        CHECK(STREQ(s, "https://translate.google.com/translate?sl=auto&tl=id"
+                       "&u=https%3A%2F%2Fexample.com%2Fa%3Fb%3D1%26c%3D2"));
+        free(s);
+        /* A blank target is passed through, because that is what Android's
+         * dialog does with a blank setting. */
+        s = rb_url_translate_wrapper("https://example.com", "");
+        CHECK(STREQ(s, "https://translate.google.com/translate?sl=auto&tl="
+                       "&u=https%3A%2F%2Fexample.com"));
+        free(s);
+        s = rb_url_translate_wrapper("https://example.com", NULL);
+        CHECK(s != NULL && strstr(s, "&tl=&u=") != NULL);
+        free(s);
+
+        /* Nothing to translate: no page, or one of the browser's own. */
+        CHECK(rb_url_translate_wrapper(NULL, "id") == NULL);
+        CHECK(rb_url_translate_wrapper("", "id") == NULL);
+        CHECK(rb_url_translate_wrapper("about:blank", "id") == NULL);
+        CHECK(rb_url_translate_wrapper("ABOUT:home", "id") == NULL);
+        /* ...but a real page whose path merely starts with the word is not
+         * one of them. */
+        s = rb_url_translate_wrapper("https://about.example.com/", "id");
+        CHECK(s != NULL);
+        free(s);
+    }
 }
 
 /* --------------------------------- rb_tabs ------------------------------- */
