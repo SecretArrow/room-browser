@@ -82,14 +82,13 @@ class DeviceShimTest {
         // A 393x852 claim is portrait; a 852x393 claim is the same screen held
         // the other way, and it must not answer "portrait-primary". Getting
         // this wrong is self-evident from the numbers, which is why it is a
-        // check rather than a comment.
+        // check rather than a comment. Both answers are asserted because both
+        // are what a page reads: `type` is the shape and `angle` the way round.
         val portrait = DeviceShim.scriptFor(device, ClaimedScreen(393, 852))
-        assertThat(portrait).contains("var SCREEN_LANDSCAPE = false;")
         assertThat(portrait).contains("var TYPE = 'portrait-primary';")
         assertThat(portrait).contains("var ANGLE = 0;")
 
         val landscape = DeviceShim.scriptFor(device, ClaimedScreen(852, 393))
-        assertThat(landscape).contains("var SCREEN_LANDSCAPE = true;")
         assertThat(landscape).contains("var TYPE = 'landscape-primary';")
         assertThat(landscape).contains("var ANGLE = 90;")
     }

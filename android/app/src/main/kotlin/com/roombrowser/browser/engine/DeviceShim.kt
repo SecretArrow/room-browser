@@ -73,7 +73,6 @@ object DeviceShim {
     private fun screenScript(screen: ClaimedScreen): String = SCREEN
         .replace("__SCREEN_W__", screen.widthPx.toString())
         .replace("__SCREEN_H__", screen.heightPx.toString())
-        .replace("__SCREEN_LANDSCAPE__", screen.isLandscape.toString())
         .replace(
             "__SCREEN_TYPE__",
             jsString(if (screen.isLandscape) "landscape-primary" else "portrait-primary")
@@ -209,7 +208,6 @@ object DeviceShim {
   try {
     var SCREEN_W = __SCREEN_W__;
     var SCREEN_H = __SCREEN_H__;
-    var LANDSCAPE = __SCREEN_LANDSCAPE__;
     var TYPE = __SCREEN_TYPE__;
     var ANGLE = __SCREEN_ANGLE__;
 
