@@ -244,6 +244,7 @@ typedef struct {
 static void rb_wv_ensure_active(App *app);
 static void rb_wv_wire(App *app, TabView *tv);
 static void rb_wv_apply_web_settings(App *app, ICoreWebView2 *wv);
+static void rb_wv_apply_device_script(App *app, ICoreWebView2 *wv);
 static void rb_wv_unavailable(App *app);
 static void rb_wv_area(App *app, RECT *r);
 static TabView *rb_views_slot(struct RbViews *v, long tab_id);
