@@ -13,6 +13,7 @@ import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.profile.CopyOptions
 import com.roombrowser.domain.profile.ProfileStore
 import com.roombrowser.security.VaultCrypto
+import com.roombrowser.security.WalletKeyCrypto
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.json.Json
@@ -38,6 +39,11 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
     private val statsDao = db.statsDao()
     private val downloadDao = db.downloadDao()
     private val credentialDao = db.credentialDao()
+    private val walletDao = db.walletDao()
+    private val walletAccountDao = db.walletAccountDao()
+    private val walletNetworkDao = db.walletNetworkDao()
+    private val dappPermissionDao = db.dappPermissionDao()
+    private val walletActivityDao = db.walletActivityDao()
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -76,6 +82,20 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
             // data (and its passwords) stay recoverable on restore.
             credentialDao.deleteAllForProfile(id.value)
             VaultCrypto.deleteKey(id)
+            // Wallet data is profile data too: same rows-first-then-key
+            // order as the credentials cascade (fail closed — a mid-cascade
+            // death leaves ciphertext undecryptable, never a decryptable
+            // orphan), and the wallet's Keystore key is separate from the
+            // password vault's. Accounts go before the wallets row they
+            // reference; cascadeData=false keeps the key on purpose so the
+            // profile's wallet (and passwords) stay recoverable on restore.
+            walletAccountDao.deleteAllForProfile(id.value)
+            walletDao.deleteAllForProfile(id.value)
+            walletNetworkDao.deleteAllForProfile(id.value)
+            walletNetworkDao.deleteActiveNetworksForProfile(id.value)
+            dappPermissionDao.deleteAllForProfile(id.value)
+            walletActivityDao.deleteAllForProfile(id.value)
+            WalletKeyCrypto.deleteKey(id)
         }
     }
 

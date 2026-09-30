@@ -296,3 +296,153 @@ data class CredentialEntity(
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long
 )
+
+// =========================================================================
+// MULTI-CHAIN CRYPTO WALLET — schema v8
+// =========================================================================
+
+/**
+ * The profile's wallet (one per profile in v1 — enforced by the UNIQUE
+ * index on profile_id). The BIP39 mnemonic is stored ONLY as ciphertext:
+ * mnemonic_enc is the AndroidKeyStore AES-256-GCM blob produced by the
+ * profile's wallet key (alias roomwallet-&lt;safeSuffix&gt;, see
+ * com.roombrowser.security.WalletKeyCrypto). A NULL mnemonic means a
+ * wallet built from imported accounts only — no seed phrase exists to
+ * reveal. A plaintext mnemonic never reaches disk in any form.
+ */
+@Entity(
+    tableName = "wallets",
+    indices = [Index(value = ["profile_id"], unique = true)]
+)
+data class WalletEntity(
+    @PrimaryKey @ColumnInfo(name = "id") val id: String, // UUID
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    @ColumnInfo(name = "label") val label: String,
+    /** base64(iv||ciphertext+tag) under the profile's wallet key; null = no mnemonic. */
+    @ColumnInfo(name = "mnemonic_enc") val mnemonicEnc: String?,
+    @ColumnInfo(name = "created_at") val createdAt: Long
+)
+
+/**
+ * One derived or imported account on one chain. No plaintext key material:
+ * private_key_enc holds the imported key's vault blob and is NULL for
+ * mnemonic-derived accounts (their key is re-derived from the wallet's
+ * encrypted mnemonic on use, never stored). The UNIQUE index keeps one
+ * address per (wallet, chain): re-adding an existing account fails loudly
+ * at the schema level.
+ */
+@Entity(
+    tableName = "wallet_accounts",
+    indices = [
+        Index("wallet_id"),
+        Index(value = ["wallet_id", "chain_type", "address"], unique = true)
+    ]
+)
+data class WalletAccountEntity(
+    @PrimaryKey @ColumnInfo(name = "id") val id: String, // UUID
+    @ColumnInfo(name = "wallet_id") val walletId: String,
+    /** ChainType name ("EVM", "SOLANA", ...). */
+    @ColumnInfo(name = "chain_type") val chainType: String,
+    @ColumnInfo(name = "address") val address: String,
+    @ColumnInfo(name = "label") val label: String,
+    /** BIP44 path for derived accounts; "" for imports. */
+    @ColumnInfo(name = "path") val path: String,
+    /** WalletAccountRecord.Source name: "DERIVED" or "IMPORTED". */
+    @ColumnInfo(name = "source") val source: String,
+    /** base64(iv||ciphertext+tag) for imported keys; null for derived. */
+    @ColumnInfo(name = "private_key_enc") val privateKeyEnc: String?,
+    @ColumnInfo(name = "created_at") val createdAt: Long
+)
+
+/**
+ * A network row of a profile: the full [com.roombrowser.domain.wallet.model.NetworkConfig]
+ * serialized as JSON in `payload` (schema stays stable when the config
+ * gains fields), plus per-profile UI state. `id` IS the NetworkConfig id
+ * ("EVM:137", "SOLANA:mainnet-beta", ...); the UNIQUE(profile_id, id)
+ * index makes seeding and upserts idempotent per profile.
+ */
+@Entity(
+    tableName = "wallet_networks",
+    indices = [
+        Index("profile_id"),
+        Index(value = ["profile_id", "id"], unique = true)
+    ]
+)
+data class WalletNetworkEntity(
+    @PrimaryKey @ColumnInfo(name = "id") val id: String,
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    @ColumnInfo(name = "enabled") val enabled: Boolean,
+    @ColumnInfo(name = "is_custom") val isCustom: Boolean,
+    /** NetworkConfig JSON (kotlinx.serialization). */
+    @ColumnInfo(name = "payload") val payload: String
+)
+
+/**
+ * A granted dApp permission. The host is the WebView-VERIFIED host (never
+ * the page's claimed origin), and the UNIQUE index keeps one row per
+ * (profile, host, chain, account) so a re-grant refreshes the methods
+ * list instead of stacking duplicates.
+ */
+@Entity(
+    tableName = "dapp_permissions",
+    indices = [
+        Index("profile_id"),
+        Index(
+            value = ["profile_id", "host", "chain_type", "account_address"],
+            unique = true
+        )
+    ]
+)
+data class DappPermissionEntity(
+    @PrimaryKey @ColumnInfo(name = "id") val id: String, // UUID; stable across re-grants
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    @ColumnInfo(name = "host") val host: String,
+    /** ChainType name. */
+    @ColumnInfo(name = "chain_type") val chainType: String,
+    @ColumnInfo(name = "account_address") val accountAddress: String,
+    /** JSON array of permitted method names. */
+    @ColumnInfo(name = "methods_json") val methodsJson: String,
+    @ColumnInfo(name = "granted_at") val grantedAt: Long
+)
+
+/**
+ * Locally-recorded wallet activity — what THIS wallet sent or signed, not
+ * chain indexing. Rows are append-only history for the activity list.
+ */
+@Entity(
+    tableName = "wallet_activities",
+    indices = [Index("profile_id")]
+)
+data class WalletActivityEntity(
+    @PrimaryKey @ColumnInfo(name = "id") val id: String,
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    /** ChainType name. */
+    @ColumnInfo(name = "chain_type") val chainType: String,
+    @ColumnInfo(name = "network_name") val networkName: String,
+    /** WalletActivityRecord.Kind name (SEND, SIGN_MESSAGE, ...). */
+    @ColumnInfo(name = "kind") val kind: String,
+    @ColumnInfo(name = "account_address") val accountAddress: String,
+    @ColumnInfo(name = "to_address") val toAddress: String?,
+    /** Human-readable amount, e.g. "0.1 ETH" or "message". */
+    @ColumnInfo(name = "display_amount") val displayAmount: String,
+    @ColumnInfo(name = "hash") val hash: String?,
+    @ColumnInfo(name = "explorer_url") val explorerUrl: String?,
+    @ColumnInfo(name = "created_at") val createdAt: Long
+)
+
+/**
+ * The profile's explicitly-chosen active network per chain family
+ * (the "current network" selector). Absent row = fall back to the first
+ * ENABLED network of the chain (see WalletRepository.activeNetwork).
+ */
+@Entity(
+    tableName = "wallet_active_networks",
+    primaryKeys = ["profile_id", "chain_type"]
+)
+data class WalletActiveNetworkEntity(
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    /** ChainType name. */
+    @ColumnInfo(name = "chain_type") val chainType: String,
+    /** The chosen wallet_networks.id for that chain. */
+    @ColumnInfo(name = "network_id") val networkId: String
+)

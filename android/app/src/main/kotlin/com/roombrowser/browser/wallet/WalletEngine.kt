@@ -1,0 +1,1615 @@
+package com.roombrowser.browser.wallet
+
+import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.browser.wallet.dapp.WalletBridgeProtocol
+import com.roombrowser.domain.wallet.chains.ChainRegistry
+import com.roombrowser.domain.wallet.chains.cosmos.CosmosAdapter
+import com.roombrowser.domain.wallet.chains.evm.EvmAdapter
+import com.roombrowser.domain.wallet.crypto.Base58
+import com.roombrowser.domain.wallet.crypto.Bip32PrivateKey
+import com.roombrowser.domain.wallet.crypto.Ed25519
+import com.roombrowser.domain.wallet.crypto.Hashes
+import com.roombrowser.domain.wallet.crypto.Hex
+import com.roombrowser.domain.wallet.crypto.Mnemonics
+import com.roombrowser.domain.wallet.crypto.Slip10Ed25519Key
+import com.roombrowser.domain.wallet.model.BalanceResult
+import com.roombrowser.domain.wallet.model.BroadcastResult
+import com.roombrowser.domain.wallet.model.ChainType
+import com.roombrowser.domain.wallet.model.FeeEstimate
+import com.roombrowser.domain.wallet.model.NetworkConfig
+import com.roombrowser.domain.wallet.model.WalletException
+import com.roombrowser.domain.wallet.wire.ProtoWriter
+import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import java.math.BigDecimal
+import java.math.BigInteger
+import java.util.Base64
+import java.util.UUID
+
+/**
+ * Thrown by every [WalletEngine] operation that needs key material while the
+ * session is LOCKED (or no wallet exists). The UI layer runs its biometric
+ * gate, calls [WalletEngine.unlock], and only then retries — the engine
+ * itself never prompts and never stores key material outside the repository.
+ */
+class WalletLockedException : IllegalStateException(
+    "The wallet is locked; unlock the session before using key material"
+)
+
+/**
+ * Wallet orchestration for the bound profile: session lock, wallet lifecycle,
+ * account derivation/import, balances, networks, native sends and the dApp
+ * request queue — the implementation of the frozen [WalletEngineApi].
+ *
+ * CONSTRUCTOR (manual DI — wired by the app integrator, no Android Context):
+ * ```kotlin
+ * WalletEngine(
+ *     repo: WalletRepositoryApi,
+ *     registry: ChainRegistry = ChainRegistry(),
+ *     clock: () -> Long = System::currentTimeMillis
+ * )
+ * ```
+ *
+ * Threading model:
+ *  - every mutating/lifecycle entry point ([bind], [unbind], [unlock], [lock],
+ *    [submitDappRequest], [decideDappRequest], [isDappPermitted]) is called on
+ *    the main thread (the UI and the WebView bridge live there), matching the
+ *    session-lock convention used by the app's credential repository;
+ *  - all public suspend APIs are main-safe: repository calls run through the
+ *    repository's own IO dispatching, and CPU-heavy crypto (BIP39 seed →
+ *    PBKDF2, BIP32/SLIP-0010 derivations, signing) runs on
+ *    [cryptoDispatcher] (Dispatchers.Default in production);
+ *  - all observable state is [StateFlow]; dApp settle callbacks run exactly
+ *    once, on the main thread.
+ *
+ * KEY-MATERIAL POLICY: plaintext keys exist only between a reveal call and
+ * the signing call inside one operation. Nothing is logged; the engine holds
+ * no cache of mnemonics or private keys — every operation re-reveals through
+ * [WalletRepositoryApi].
+ *
+ * DERIVATION POLICY (per chain, through the chain's own adapter — never
+ * hand-rolled here): EVM m/44'/60'/0'/0/i, Solana m/44'/501'/i'/0',
+ * Aptos m/54'/6'/0'/0'/i (the adapter's Petra-compatible canonical path),
+ * Sui m/44'/784'/0'/0', Cosmos m/44'/118'/0'/0/i (coin 118, hrp "cosmos"),
+ * Bitcoin m/84'/0'/0'/0/i (mainnet BIP84) and TRON m/44'/195'/0'/0/i.
+ */
+open class WalletEngine(
+    private val repo: WalletRepositoryApi,
+    private val registry: ChainRegistry = ChainRegistry(),
+    private val clock: () -> Long = System::currentTimeMillis
+) : WalletEngineApi {
+
+    // ------------------------------------------------------------------
+    // Scope + dispatchers
+    // ------------------------------------------------------------------
+
+    /**
+     * Where CPU-heavy crypto runs (BIP39 seed derivation, HD walks, signing).
+     * Internal open so JVM tests can swap in a virtual-time dispatcher.
+     */
+    internal open val cryptoDispatcher: CoroutineDispatcher = Dispatchers.Default
+
+    /**
+     * Main-thread scope for state mutations and collector lifetimes. A plain
+     * SupervisorJob: one cancelled collector must never take down the others.
+     */
+    private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+
+    // ------------------------------------------------------------------
+    // State
+    // ------------------------------------------------------------------
+
+    private val profileState = MutableStateFlow<ProfileId?>(null)
+    private val unlockedState = MutableStateFlow(false)
+
+    private val lockStateBacking = MutableStateFlow(WalletLockState.NO_WALLET)
+    private val walletState = MutableStateFlow<WalletSummary?>(null)
+    private val accountsState = MutableStateFlow<List<WalletAccountRecord>>(emptyList())
+    private val balancesState = MutableStateFlow<Map<String, BalanceResult>>(emptyMap())
+    private val networksState = MutableStateFlow<List<NetworkRecord>>(emptyList())
+    private val activeNetworksState = MutableStateFlow<Map<ChainType, NetworkConfig>>(emptyMap())
+    private val pendingRequestsState = MutableStateFlow<List<DappRequest>>(emptyList())
+    private val activitiesState = MutableStateFlow<List<WalletActivityRecord>>(emptyList())
+    private val permissionsState = MutableStateFlow<List<DappPermissionRecord>>(emptyList())
+
+    override val lockState: StateFlow<WalletLockState> get() = lockStateBacking.asStateFlow()
+    override val wallet: StateFlow<WalletSummary?> get() = walletState.asStateFlow()
+    override val accounts: StateFlow<List<WalletAccountRecord>> get() = accountsState.asStateFlow()
+    override val balances: StateFlow<Map<String, BalanceResult>> get() = balancesState.asStateFlow()
+    override val networks: StateFlow<List<NetworkRecord>> get() = networksState.asStateFlow()
+    override val activeNetworks: StateFlow<Map<ChainType, NetworkConfig>> =
+        activeNetworksState.asStateFlow()
+    override val pendingRequests: StateFlow<List<DappRequest>> =
+        pendingRequestsState.asStateFlow()
+    override val activities: StateFlow<List<WalletActivityRecord>> =
+        activitiesState.asStateFlow()
+
+    /** Collector-generation handles — cancel-and-replace on (re)bind (Task 1-a hygiene). */
+    private var bindJob: Job? = null
+    private var activeNetworksJob: Job? = null
+    private var balancesJob: Job? = null
+
+    /**
+     * dApp queue bookkeeping (main thread only): [dappCallbacks] holds the
+     * bridge callback per request id (original AND coalesced ids);
+     * [coalescedInto] maps a coalesced duplicate onto the id that actually
+     * shows in the prompt queue.
+     */
+    private val dappCallbacks = mutableMapOf<String, (DappOutcome) -> Unit>()
+    private val coalescedInto = mutableMapOf<String, String>()
+
+    // ------------------------------------------------------------------
+    // Session
+    // ------------------------------------------------------------------
+
+    override fun bind(profileId: ProfileId) {
+        // Cancel-and-replace: exactly ONE collector generation is alive (the
+        // observeTabCounts duplicate-collector fix, applied to wallet state).
+        bindJob?.cancel()
+        activeNetworksJob?.cancel()
+        balancesJob?.cancel()
+        settleAllPending(WalletBridgeError.DISCONNECTED, "Profile changed")
+        unlockedState.value = false
+        profileState.value = profileId
+        walletState.value = null
+        accountsState.value = emptyList()
+        balancesState.value = emptyMap()
+        networksState.value = emptyList()
+        activeNetworksState.value = emptyMap()
+        activitiesState.value = emptyList()
+        permissionsState.value = emptyList()
+        refreshLockState()
+        bindJob = engineScope.launch {
+            launch {
+                repo.observeWallet(profileId).collect {
+                    walletState.value = it
+                    refreshLockState()
+                }
+            }
+            launch {
+                repo.observeAccounts(profileId).collect { accountsState.value = it }
+            }
+            launch {
+                repo.observeNetworks(profileId).collect { records ->
+                    networksState.value = records
+                    refreshActiveNetworks(profileId)
+                }
+            }
+            launch {
+                repo.observeActivities(profileId).collect { activitiesState.value = it }
+            }
+            // Idempotent on the repository side; first bind seeds the defaults.
+            quiet { repo.ensureDefaultNetworks(profileId) }
+            permissionsState.value = quiet { repo.allDappPermissions(profileId) } ?: emptyList()
+            refreshActiveNetworksNow(profileId)
+            // Fire-and-forget balance refresh; offline is silent (see refreshBalances).
+            balancesJob = launch { quiet { refreshBalances() } }
+        }
+    }
+
+    override fun unbind() {
+        bindJob?.cancel()
+        bindJob = null
+        activeNetworksJob?.cancel()
+        activeNetworksJob = null
+        balancesJob?.cancel()
+        balancesJob = null
+        settleAllPending(WalletBridgeError.DISCONNECTED, "Wallet disconnected")
+        profileState.value = null
+        unlockedState.value = false
+        walletState.value = null
+        accountsState.value = emptyList()
+        balancesState.value = emptyMap()
+        networksState.value = emptyList()
+        activeNetworksState.value = emptyMap()
+        activitiesState.value = emptyList()
+        permissionsState.value = emptyList()
+        refreshLockState()
+    }
+
+    /**
+     * Marks the session unlocked. The caller MUST have completed its own
+     * biometric/device-credential gate first — this records the gate result,
+     * it never runs a gate.
+     */
+    override fun unlock() {
+        unlockedState.value = true
+        refreshLockState()
+    }
+
+    /** Re-locks the session (explicit lock, backgrounding, profile switch). */
+    override fun lock() {
+        unlockedState.value = false
+        refreshLockState()
+    }
+
+    private fun refreshLockState() {
+        lockStateBacking.value = when {
+            walletState.value == null -> WalletLockState.NO_WALLET
+            unlockedState.value -> WalletLockState.UNLOCKED
+            else -> WalletLockState.LOCKED
+        }
+    }
+
+    private fun requireBound(): ProfileId =
+        profileState.value ?: throw WalletException.Unauthorized(
+            "Wallet engine is not bound to a profile"
+        )
+
+    private fun requireUnlocked() {
+        if (lockStateBacking.value != WalletLockState.UNLOCKED) throw WalletLockedException()
+    }
+
+    /**
+     * Fails closed for key-material PRODUCING operations while a wallet
+     * exists behind a locked session: creating or importing a wallet must
+     * not run behind the gate. NO_WALLET is deliberately allowed — onboarding
+     * (the only NO_WALLET caller) must be able to create the first wallet.
+     */
+    private fun requireNotLocked() {
+        if (lockStateBacking.value == WalletLockState.LOCKED) throw WalletLockedException()
+    }
+
+    // ------------------------------------------------------------------
+    // Wallet lifecycle
+    // ------------------------------------------------------------------
+
+    override suspend fun createWallet(label: String, enabledChains: List<ChainType>): String {
+        val profileId = requireBound()
+        requireNotLocked()
+        val mnemonic = Mnemonics.generate()
+        repo.createWallet(profileId, label, mnemonic)
+        seedInitialAccounts(profileId, mnemonic, enabledChains)
+        // The ONE time the plaintext leaves the vault: the caller shows it to
+        // the user; nothing else ever stores it outside the repository.
+        return mnemonic
+    }
+
+    override suspend fun importWallet(mnemonic: String, label: String, enabledChains: List<ChainType>) {
+        val profileId = requireBound()
+        requireNotLocked()
+        if (!Mnemonics.isValid(mnemonic)) {
+            throw WalletException.InvalidParams("Not a valid BIP39 mnemonic")
+        }
+        val normalized = Mnemonics.normalize(mnemonic)
+        repo.createWallet(profileId, label, normalized)
+        seedInitialAccounts(profileId, normalized, enabledChains)
+    }
+
+    override suspend fun revealMnemonic(): String? {
+        val profileId = requireBound()
+        requireUnlocked()
+        return repo.revealMnemonic(profileId)
+    }
+
+    /** Derives index-0 accounts for every enabled chain from [mnemonic]. */
+    private suspend fun seedInitialAccounts(
+        profileId: ProfileId,
+        mnemonic: String,
+        enabledChains: List<ChainType>
+    ) {
+        if (enabledChains.isEmpty()) return
+        repo.ensureDefaultNetworks(profileId)
+        withContext(cryptoDispatcher) {
+            val seed = Mnemonics.toSeed(Mnemonics.normalize(mnemonic))
+            enabledChains.forEach { chain ->
+                val derived = deriveDerivedAccount(chain, seed, 0)
+                repo.addDerivedAccount(
+                    profileId, chain, derived.first, derived.second, "${chain.displayName} 1"
+                )
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Accounts
+    // ------------------------------------------------------------------
+
+    override suspend fun addDerivedAccount(chainType: ChainType): WalletAccountRecord? {
+        val profileId = requireBound()
+        requireUnlocked()
+        val mnemonic = repo.revealMnemonic(profileId) ?: return null
+        val index = repo.nextDerivationIndex(profileId, chainType)
+        return withContext(cryptoDispatcher) {
+            val seed = Mnemonics.toSeed(Mnemonics.normalize(mnemonic))
+            val derived = deriveDerivedAccount(chainType, seed, index)
+            repo.addDerivedAccount(
+                profileId, chainType, derived.first, derived.second, "${chainType.displayName} ${index + 1}"
+            )
+        }
+    }
+
+    override suspend fun importAccount(
+        chainType: ChainType,
+        privateKey: String,
+        label: String
+    ): WalletAccountRecord? {
+        val profileId = requireBound()
+        requireUnlocked()
+        val trimmed = privateKey.trim()
+        val (address, storedKey) = when (chainType) {
+            ChainType.EVM -> {
+                val key = parseSecp256k1Key(trimmed, chainType)
+                registry.evm.addressFromPrivateKey(key) to canonicalSecpKey(key)
+            }
+            ChainType.SOLANA -> {
+                val seed = parseEd25519Seed(trimmed, chainType)
+                val address = Base58.encode(Ed25519.publicKeyFromSeed(seed))
+                address to Base58.encode(seed)
+            }
+            ChainType.APTOS -> {
+                val seed = parseEd25519Seed(trimmed, chainType)
+                val pubkey = Ed25519.publicKeyFromSeed(seed)
+                aptosAddress(pubkey) to Hex.encode(seed)
+            }
+            ChainType.SUI -> {
+                val seed = parseEd25519Seed(trimmed, chainType)
+                val pubkey = Ed25519.publicKeyFromSeed(seed)
+                suiAddress(pubkey) to Hex.encode(seed)
+            }
+            ChainType.COSMOS -> {
+                val key = parseSecp256k1Key(trimmed, chainType)
+                val compressed = Bip32PrivateKey.publicKeyPoint(key).getEncoded(true)
+                val hrp = cosmosHomeNetwork().bech32Hrp ?: "cosmos"
+                registry.cosmos.bech32Address(compressed, hrp) to canonicalSecpKey(key)
+            }
+            ChainType.BITCOIN -> {
+                val key = parseSecp256k1Key(trimmed, chainType)
+                val compressed = Bip32PrivateKey.publicKeyPoint(key).getEncoded(true)
+                registry.bitcoin.p2wpkhAddress(compressed, testnet = false) to canonicalSecpKey(key)
+            }
+            ChainType.TRON -> {
+                val key = parseSecp256k1Key(trimmed, chainType)
+                registry.tron.addressFromPrivateKey(key) to canonicalSecpKey(key)
+            }
+        }
+        return repo.addImportedAccount(profileId, chainType, address, storedKey, label)
+    }
+
+    override suspend fun renameAccount(accountId: String, label: String) {
+        requireBound()
+        repo.renameAccount(accountId, label)
+    }
+
+    override suspend fun removeAccount(accountId: String) {
+        requireBound()
+        repo.removeAccount(accountId)
+    }
+
+    /**
+     * Canonical per-chain derivation through the chain's own adapter.
+     * Returns (address, path). Pure CPU — call inside [cryptoDispatcher].
+     */
+    private fun deriveDerivedAccount(
+        chainType: ChainType,
+        seed: ByteArray,
+        index: Int
+    ): Pair<String, String> = when (chainType) {
+        ChainType.EVM -> registry.evm.deriveAccount(seed, index).let { it.address to it.path }
+        ChainType.SOLANA -> registry.solana.deriveAccount(seed, index).let { it.address to it.path }
+        ChainType.APTOS -> registry.aptos.deriveAccount(seed, index).let { it.address to it.path }
+        ChainType.SUI -> registry.sui.deriveAccount(seed, index).let { it.address to it.path }
+        ChainType.COSMOS -> registry.cosmos.deriveAccount(seed, cosmosHomeNetwork(), index)
+            .let { it.address to it.path }
+        ChainType.BITCOIN -> registry.bitcoin.deriveAccount(seed, bitcoinHomeNetwork(), index)
+            .let { it.address to it.path }
+        ChainType.TRON -> registry.tron.deriveAccount(seed, index).let { it.address to it.path }
+    }
+
+    /** The chain's canonical home network for derivation (Cosmos: coin 118 + hrp). */
+    private fun cosmosHomeNetwork(): NetworkConfig =
+        registry.defaultNetworks(ChainType.COSMOS).first()
+
+    /** Bitcoin mainnet home (coin 0, hrp "bc") for derivation. */
+    private fun bitcoinHomeNetwork(): NetworkConfig =
+        registry.defaultNetworks(ChainType.BITCOIN).first()
+
+    // ------------------------------------------------------------------
+    // Balances
+    // ------------------------------------------------------------------
+
+    override suspend fun refreshBalances() {
+        val profileId = requireBound()
+        val current = repo.accounts(profileId)
+        if (current.isEmpty()) {
+            balancesState.value = emptyMap()
+            return
+        }
+        // One async per account: a failure stays inside its own child (no
+        // sibling cancellation) and the shared map is assembled by THIS
+        // coroutine only — the children inherit the caller's dispatcher,
+        // which is not guaranteed to be single-threaded.
+        val fetched: List<Pair<String, BalanceResult?>> = coroutineScope {
+            current.map { account -> async { account.id to fetchBalanceQuietly(account, profileId) } }
+                .awaitAll()
+        }
+        val results = mutableMapOf<String, BalanceResult>()
+        fetched.forEach { (id, result) -> if (result != null) results[id] = result }
+        // Merge: keep stale entries for accounts that went silent this round
+        // (offline = quiet, never an error row), drop entries of removed accounts.
+        val alive = current.map { it.id }.toSet()
+        balancesState.value = balancesState.value.filterKeys { it in alive } + results
+    }
+
+    /** One account's balance, with failures downgraded to [BalanceResult.Error]. */
+    private suspend fun fetchBalanceQuietly(
+        account: WalletAccountRecord,
+        profileId: ProfileId
+    ): BalanceResult? = try {
+        fetchAccountBalance(account, profileId)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: WalletException) {
+        // One account's failure marks only that account; the siblings keep going.
+        BalanceResult.Error(e.message ?: "Balance query failed")
+    } catch (_: Exception) {
+        BalanceResult.Error("Balance query failed")
+    }
+
+    /**
+     * One account's balance against the chain's ACTIVE network. Returns null
+     * for offline silence (no active network / adapter returned null); throws
+     * [WalletException] for explicit RPC failures. Internal open: JVM tests
+     * fake the network leg here.
+     */
+    internal open suspend fun fetchAccountBalance(
+        account: WalletAccountRecord,
+        profileId: ProfileId
+    ): BalanceResult? {
+        val network = repo.activeNetwork(profileId, account.chainType) ?: return null
+        val address = account.address
+        val amount: String? = when (account.chainType) {
+            ChainType.EVM -> registry.evm.getBalance(network, address)
+                ?.let { formatBaseUnits(it, network.nativeDecimals) }
+            ChainType.SOLANA -> registry.solana.getBalance(network, address)
+                ?.let { formatBaseUnits(BigInteger.valueOf(it), network.nativeDecimals) }
+            ChainType.APTOS -> registry.aptos.getBalance(network, address)
+                ?.let { formatBaseUnits(BigInteger.valueOf(it), network.nativeDecimals) }
+            ChainType.SUI -> registry.sui.getBalance(network, address)
+                ?.let { formatBaseUnits(BigInteger.valueOf(it), network.nativeDecimals) }
+            ChainType.COSMOS -> registry.cosmos.getBalance(network, address)
+                ?.let { raw -> cosmosRawBalance(raw, network) }
+            ChainType.BITCOIN -> formatBaseUnits(
+                BigInteger.valueOf(registry.bitcoin.getBalanceSats(network, address)),
+                network.nativeDecimals
+            )
+            ChainType.TRON -> registry.tron.getTrxBalance(network, address)
+                ?.let { formatBaseUnits(BigInteger.valueOf(it), network.nativeDecimals) }
+        }
+        return amount?.let { BalanceResult.Ok(it, network.nativeSymbol) }
+    }
+
+    /** "1234 uatom" (adapter shape) → display decimals; symbol comes from the network. */
+    private fun cosmosRawBalance(raw: String, network: NetworkConfig): String? {
+        val amount = raw.trim().split(' ', limit = 2).firstOrNull()?.toBigIntegerOrNull()
+            ?: return null
+        return formatBaseUnits(amount, network.nativeDecimals)
+    }
+
+    // ------------------------------------------------------------------
+    // Networks
+    // ------------------------------------------------------------------
+
+    override suspend fun setActiveNetwork(chainType: ChainType, networkId: String) {
+        val profileId = requireBound()
+        val record = repo.networks(profileId)
+            .firstOrNull { it.config.id == networkId }
+            ?: throw WalletException.InvalidParams("Unknown network '$networkId'")
+        if (record.config.chainType != chainType) {
+            throw WalletException.InvalidParams(
+                "Network '$networkId' is not a ${chainType.displayName} network"
+            )
+        }
+        repo.setActiveNetwork(profileId, chainType, networkId)
+        refreshActiveNetworksNow(profileId)
+    }
+
+    override suspend fun addCustomNetwork(config: NetworkConfig): Boolean {
+        val profileId = requireBound()
+        if (!isValidNetworkConfig(config)) return false
+        repo.upsertCustomNetwork(profileId, config)
+        refreshActiveNetworksNow(profileId)
+        return true
+    }
+
+    override suspend fun removeCustomNetwork(networkId: String) {
+        val profileId = requireBound()
+        repo.removeCustomNetwork(profileId, networkId)
+        refreshActiveNetworksNow(profileId)
+    }
+
+    override suspend fun setNetworkEnabled(networkId: String, enabled: Boolean) {
+        val profileId = requireBound()
+        repo.setNetworkEnabled(profileId, networkId, enabled)
+        refreshActiveNetworksNow(profileId)
+    }
+
+    /**
+     * Refreshes the Chainlist catalog and upserts the networks that are not
+     * already known, disabled by default (they are discovery results, not
+     * user choices). Returns how many are newly known; 0 offline — never throws.
+     */
+    override suspend fun refreshChainlist(): Int {
+        val profileId = requireBound()
+        return try {
+            val catalog = fetchChainlistCatalog()
+            val known = repo.networks(profileId).map { it.config.id }.toHashSet()
+            val fresh = catalog.filter { it.id !in known }
+            fresh.forEach { config ->
+                repo.upsertCustomNetwork(profileId, config)
+                repo.setNetworkEnabled(profileId, config.id, false)
+            }
+            refreshActiveNetworksNow(profileId)
+            fresh.size
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            0
+        }
+    }
+
+    /**
+     * The live Chainlist catalog. Internal open: JVM tests inject a fixed
+     * list (the real call goes to chainid.network).
+     */
+    internal open suspend fun fetchChainlistCatalog(): List<NetworkConfig> =
+        registry.chainlist.catalog(forceRefresh = true)
+
+    /** Shared validation for UI-added networks and wallet_addEthereumChain. */
+    internal fun isValidNetworkConfig(config: NetworkConfig): Boolean {
+        val decimalOrHexChainId = config.chainId.toLongOrNull() != null ||
+            config.chainId.removePrefix("0x").toLongOrNull(16) != null
+        return config.id.isNotBlank() &&
+            config.name.isNotBlank() &&
+            config.rpcUrls.any { it.startsWith("http://") || it.startsWith("https://") } &&
+            config.nativeDecimals > 0 &&
+            (config.chainType != ChainType.EVM || decimalOrHexChainId)
+    }
+
+    /**
+     * Rebuilds activeNetworks from the repository (there is no observe API
+     * for the active row, so this polls on network-list changes and writes).
+     * Cancel-and-replace per call (Task 1-a hygiene).
+     */
+    private fun refreshActiveNetworks(profileId: ProfileId) {
+        activeNetworksJob?.cancel()
+        activeNetworksJob = engineScope.launch { refreshActiveNetworksNow(profileId) }
+    }
+
+    private suspend fun refreshActiveNetworksNow(profileId: ProfileId) {
+        val chains = networksState.value.map { it.config.chainType }.distinct()
+        val map = mutableMapOf<ChainType, NetworkConfig>()
+        chains.forEach { chain ->
+            quiet { repo.activeNetwork(profileId, chain) }?.let { map[chain] = it }
+        }
+        activeNetworksState.value = map
+    }
+
+    // ------------------------------------------------------------------
+    // Sending (dashboard)
+    // ------------------------------------------------------------------
+
+    override suspend fun estimateSendFee(
+        chainType: ChainType,
+        networkId: String,
+        fromAccountId: String,
+        to: String,
+        amount: String
+    ): FeeEstimate? {
+        return try {
+            val profileId = profileState.value ?: return null
+            val account = repo.accounts(profileId).firstOrNull { it.id == fromAccountId } ?: return null
+            val network = repo.networks(profileId)
+                .firstOrNull { it.config.id == networkId }?.config ?: return null
+            if (network.chainType != chainType || account.chainType != chainType) return null
+            when (chainType) {
+                ChainType.EVM -> {
+                    val endpoint = network.rpcUrls.firstOrNull() ?: return null
+                    val value = parseAmountToBaseUnits(amount, network.nativeDecimals) ?: return null
+                    evmFeeEstimate(endpoint, account.address, to.takeIf { it.isNotBlank() }, value)
+                        ?.let { wei ->
+                            FeeEstimate(
+                                label = "Estimated gas fee",
+                                estimatedCost = formatBaseUnits(wei, network.nativeDecimals) +
+                                    " " + network.nativeSymbol
+                            )
+                        }
+                }
+                else -> null
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * EVM gas*price estimate in base units. Internal open: JVM tests inject
+     * the result (the real path is two RPC calls).
+     */
+    internal open suspend fun evmFeeEstimate(
+        endpoint: String,
+        from: String,
+        to: String?,
+        value: BigInteger
+    ): BigInteger? {
+        val fees = registry.evm.suggestFees(endpoint) ?: return null
+        val gas = try {
+            registry.evm.estimateGas(endpoint, from, to, value, "0x")
+        } catch (_: WalletException) {
+            return null
+        }
+        return gas.multiply(fees.first)
+    }
+
+    override suspend fun sendNative(
+        accountId: String,
+        networkId: String,
+        to: String,
+        amount: String
+    ): BroadcastResult {
+        val profileId = requireBound()
+        requireUnlocked()
+        val account = repo.accounts(profileId).firstOrNull { it.id == accountId }
+            ?: throw WalletException.InvalidParams("Unknown account '$accountId'")
+        val network = repo.networks(profileId)
+            .firstOrNull { it.config.id == networkId }?.config
+            ?: throw WalletException.InvalidParams("Unknown network '$networkId'")
+        if (network.chainType != account.chainType) {
+            throw WalletException.InvalidParams(
+                "Network '${network.name}' does not match the account's chain ${account.chainType.displayName}"
+            )
+        }
+        validateRecipient(account.chainType, network, to)
+        val baseAmount = parseAmountToBaseUnits(amount, network.nativeDecimals)
+            ?: throw WalletException.InvalidParams("Invalid amount '$amount'")
+        val result = signAndBroadcastNative(account, network, to, baseAmount)
+        return when (result) {
+            is BroadcastResult.Ok -> {
+                recordActivity(
+                    kind = WalletActivityRecord.Kind.SEND,
+                    account = account,
+                    network = network,
+                    toAddress = to,
+                    displayAmount = "$amount ${network.nativeSymbol}",
+                    hash = result.hash,
+                    explorer = explorerUrl(account.chainType, network, result.hash)
+                )
+                result
+            }
+            is BroadcastResult.Error ->
+                throw WalletException.RpcError(-1, result.message)
+        }
+    }
+
+    /**
+     * The per-chain native send (key reveal + adapter send path). Internal
+     * open: JVM tests fake this seam so the happy path needs no network.
+     */
+    internal open suspend fun signAndBroadcastNative(
+        account: WalletAccountRecord,
+        network: NetworkConfig,
+        to: String,
+        baseAmount: BigInteger
+    ): BroadcastResult {
+        val longAmount = toLongAmount(baseAmount, account.chainType)
+        return when (account.chainType) {
+            ChainType.EVM -> {
+                val key = secpPrivateKey(account)
+                val (_, signedRaw) = registry.evm.prepareAndSign(
+                    network, key, account.address, to, baseAmount, "0x",
+                    null, null, null, null, null
+                )
+                registry.evm.broadcastRaw(network, signedRaw)
+            }
+            ChainType.SOLANA ->
+                registry.solana.sendNative(
+                    network, ed25519Seed(account), account.address, to, longAmount
+                )
+            ChainType.APTOS -> {
+                val seed = ed25519Seed(account)
+                try {
+                    val submitted = registry.aptos.signAndSubmit(
+                        network, seed, Ed25519.publicKeyFromSeed(seed), account.address,
+                        aptosTransferPayload(to, baseAmount)
+                    )
+                    BroadcastResult.Ok(submitted.hash)
+                } catch (e: WalletException) {
+                    BroadcastResult.Error(e.message ?: "Aptos submit failed")
+                }
+            }
+            ChainType.SUI -> {
+                val seed = ed25519Seed(account)
+                registry.sui.sendSui(
+                    network, seed, Ed25519.publicKeyFromSeed(seed),
+                    account.address, to, longAmount
+                )
+            }
+            ChainType.COSMOS -> {
+                val key = secpPrivateKey(account)
+                registry.cosmos.sendNative(
+                    network, key, Bip32PrivateKey.publicKeyPoint(key).getEncoded(true),
+                    account.address, to, baseAmount.toString(), cosmosBaseDenom(network)
+                )
+            }
+            ChainType.BITCOIN -> {
+                val key = secpPrivateKey(account)
+                val prepared = registry.bitcoin.buildAndSignSend(
+                    network, key, account.address, to, longAmount
+                )
+                registry.bitcoin.broadcast(network, prepared.rawSignedHex)
+            }
+            ChainType.TRON ->
+                registry.tron.sendTrx(
+                    network, secpPrivateKey(account), account.address, to, longAmount
+                )
+        }
+    }
+
+    /** entry_function_payload for 0x1::aptos_account::transfer. */
+    private fun aptosTransferPayload(to: String, amount: BigInteger): JsonObject =
+        buildJsonObject {
+            put("type", JsonPrimitive("entry_function_payload"))
+            put("function", JsonPrimitive("0x1::aptos_account::transfer"))
+            put("type_arguments", JsonArray(emptyList()))
+            put("arguments", buildJsonArray {
+                add(JsonPrimitive(to))
+                add(JsonPrimitive(amount.toString()))
+            })
+        }
+
+    /** Best-effort LCD base denom from the symbol (uatom/osmo/utia; INJ is "inj"). */
+    private fun cosmosBaseDenom(network: NetworkConfig): String {
+        val symbol = network.nativeSymbol.lowercase()
+        return if (network.nativeDecimals == 18) symbol else "u$symbol"
+    }
+
+    private fun validateRecipient(chainType: ChainType, network: NetworkConfig, to: String) {
+        val ok = when (chainType) {
+            ChainType.EVM -> registry.evm.isValidAddress(to)
+            ChainType.SOLANA -> registry.solana.isValidAddress(to)
+            ChainType.APTOS -> registry.aptos.isValidAddress(to)
+            ChainType.SUI -> registry.sui.isValidAddress(to)
+            ChainType.COSMOS -> registry.cosmos.isValidAddress(to, network.bech32Hrp)
+            ChainType.BITCOIN -> registry.bitcoin.isValidAddress(to, network.isTestnet)
+            ChainType.TRON -> registry.tron.isValidAddress(to)
+        }
+        if (!ok) {
+            throw WalletException.InvalidParams(
+                "Invalid ${chainType.displayName} recipient address '$to'"
+            )
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // dApp request pipeline
+    // ------------------------------------------------------------------
+
+    /**
+     * Bridge entry point. Semantically-identical requests from the same host
+     * (e.g. a second Connect while one is already showing) are COALESCED: no
+     * second prompt appears; when the original settles, every coalesced
+     * request settles with the SAME outcome under its own id. Request ids
+     * are unique per caller; re-submitting an id that is already pending
+     * replaces its callback and its queue entry — never a second prompt and
+     * never a stale coalesced mapping.
+     */
+    override fun submitDappRequest(request: DappRequest, onSettled: (DappOutcome) -> Unit) {
+        if (profileState.value == null) {
+            onSettled(
+                DappOutcome(
+                    request.id, null,
+                    WalletBridgeError(WalletBridgeError.DISCONNECTED, "Wallet disconnected")
+                )
+            )
+            return
+        }
+        // A stale coalesced mapping for this id must never steal the new settle.
+        coalescedInto.remove(request.id)
+        val twin = pendingRequestsState.value.firstOrNull {
+            it.id != request.id && it.sameSemanticsAs(request)
+        }
+        if (twin != null) {
+            coalescedInto[request.id] = twin.id
+            dappCallbacks[request.id] = onSettled
+            return
+        }
+        dappCallbacks[request.id] = onSettled
+        val current = pendingRequestsState.value
+        pendingRequestsState.value = if (current.any { it.id == request.id }) {
+            current.map { if (it.id == request.id) request else it }
+        } else {
+            current + request
+        }
+    }
+
+    /**
+     * UI entry point. Unknown/already-settled ids are silent no-ops. The
+     * decision executes on the engine scope: state on Main.immediate, crypto
+     * on [cryptoDispatcher]; settle callbacks run exactly once, on main.
+     */
+    override fun decideDappRequest(decision: DappDecision) {
+        val original = pendingRequestsState.value.firstOrNull { it.id == decision.requestId } ?: return
+        val profileId = profileState.value ?: return
+        pendingRequestsState.value = pendingRequestsState.value.filterNot { it.id == original.id }
+        engineScope.launch {
+            val outcome = try {
+                executeDecision(original, decision, profileId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: WalletLockedException) {
+                DappOutcome(
+                    original.id, null,
+                    WalletBridgeError(WalletBridgeError.UNAUTHORIZED, "Unlock the wallet first")
+                )
+            } catch (e: WalletException.InvalidParams) {
+                DappOutcome(
+                    original.id, null,
+                    WalletBridgeError(WalletBridgeError.INVALID_PARAMS, e.message ?: "Invalid parameters")
+                )
+            } catch (e: WalletException) {
+                DappOutcome(
+                    original.id, null,
+                    WalletBridgeError(WalletBridgeError.INTERNAL, e.message ?: "Request failed")
+                )
+            } catch (e: Exception) {
+                DappOutcome(
+                    original.id, null,
+                    WalletBridgeError(WalletBridgeError.INTERNAL, e.message ?: "Request failed")
+                )
+            }
+            settleDappOutcome(original.id, outcome)
+        }
+    }
+
+    override fun isDappPermitted(
+        host: String,
+        chainType: ChainType,
+        accountAddress: String,
+        method: String
+    ): Boolean {
+        if (host.isBlank()) return false
+        return permissionsState.value.any {
+            it.host == host && it.chainType == chainType &&
+                it.accountAddress == accountAddress && method in it.methods
+        }
+    }
+
+    /** Executes one approved/rejected decision into a settle outcome. */
+    private suspend fun executeDecision(
+        request: DappRequest,
+        decision: DappDecision,
+        profileId: ProfileId
+    ): DappOutcome {
+        if (!decision.approved) {
+            return DappOutcome(
+                request.id, null,
+                WalletBridgeError(WalletBridgeError.USER_REJECTED, "User rejected the request")
+            )
+        }
+        return when (request) {
+            is DappRequest.Connect -> executeConnect(request, decision, profileId)
+            is DappRequest.SignMessage -> executeSignMessage(request, profileId)
+            is DappRequest.SignTypedData -> executeSignTypedData(request, profileId)
+            is DappRequest.SendTransaction -> executeSendTransaction(request, profileId)
+            is DappRequest.SwitchChain -> executeSwitchChain(request, profileId)
+            is DappRequest.AddChain -> executeAddChain(request, profileId)
+        }
+    }
+
+    private suspend fun executeConnect(
+        request: DappRequest.Connect,
+        decision: DappDecision,
+        profileId: ProfileId
+    ): DappOutcome {
+        val accounts = repo.accounts(profileId)
+        val chosen = if (decision.chosenAccountId != null) {
+            accounts.firstOrNull {
+                it.id == decision.chosenAccountId && it.chainType == request.chainType
+            }
+                ?: return DappOutcome(
+                    request.id, null,
+                    WalletBridgeError(WalletBridgeError.UNAUTHORIZED, "Unknown account")
+                )
+        } else {
+            accounts.firstOrNull { it.chainType == request.chainType }
+                ?: return DappOutcome(
+                    request.id, null,
+                    WalletBridgeError(
+                        WalletBridgeError.UNAUTHORIZED,
+                        "No ${request.chainType.displayName} account to connect"
+                    )
+                )
+        }
+        repo.grantDappPermission(
+            profileId, request.host, request.chainType, chosen.address,
+            dappMethodsFor(request.chainType)
+        )
+        permissionsState.value = quiet { repo.allDappPermissions(profileId) } ?: emptyList()
+        // Prompted Connects resolve with the bridge's per-chain success
+        // shapes (EVM/SUI address ARRAY, SOLANA {"publicKey"},
+        // APTOS/TRON {"address"}) — byte-identical to the bridge's own
+        // silent auto-approve, so a dApp cannot tell the paths apart.
+        return DappOutcome(
+            request.id,
+            WalletBridgeProtocol.connectSuccessResult(request.chainType, chosen.address),
+            null
+        )
+    }
+
+    private suspend fun executeSignMessage(
+        request: DappRequest.SignMessage,
+        profileId: ProfileId
+    ): DappOutcome {
+        if (lockStateBacking.value != WalletLockState.UNLOCKED) {
+            return DappOutcome(
+                request.id, null,
+                WalletBridgeError(WalletBridgeError.UNAUTHORIZED, "Unlock the wallet to sign")
+            )
+        }
+        val account = findAccountForAddress(repo.accounts(profileId), request)
+            ?: return DappOutcome(
+                request.id, null,
+                WalletBridgeError(WalletBridgeError.UNAUTHORIZED, "No matching account")
+            )
+        val signature = signDappMessage(account, request.message)
+        recordActivity(
+            kind = WalletActivityRecord.Kind.SIGN_MESSAGE,
+            account = account,
+            network = quiet { repo.activeNetwork(profileId, account.chainType) },
+            toAddress = null,
+            displayAmount = "message",
+            hash = null,
+            explorer = null
+        )
+        return DappOutcome(request.id, JsonPrimitive(signature).toString(), null)
+    }
+
+    private suspend fun executeSignTypedData(
+        request: DappRequest.SignTypedData,
+        profileId: ProfileId
+    ): DappOutcome {
+        if (request.chainType != ChainType.EVM) {
+            return DappOutcome(
+                request.id, null,
+                WalletBridgeError(
+                    WalletBridgeError.UNSUPPORTED_METHOD,
+                    "eth_signTypedData_v4 is EVM-only"
+                )
+            )
+        }
+        if (lockStateBacking.value != WalletLockState.UNLOCKED) {
+            return DappOutcome(
+                request.id, null,
+                WalletBridgeError(WalletBridgeError.UNAUTHORIZED, "Unlock the wallet to sign")
+            )
+        }
+        val account = findAccountForAddress(repo.accounts(profileId), request)
+            ?: return DappOutcome(
+                request.id, null,
+                WalletBridgeError(WalletBridgeError.UNAUTHORIZED, "No matching account")
+            )
+        val signature = withContext(cryptoDispatcher) {
+            registry.evm.signTypedData(secpPrivateKey(account), request.typedDataJson)
+        }
+        recordActivity(
+            kind = WalletActivityRecord.Kind.SIGN_MESSAGE,
+            account = account,
+            network = quiet { repo.activeNetwork(profileId, ChainType.EVM) },
+            toAddress = null,
+            displayAmount = "typed data",
+            hash = null,
+            explorer = null
+        )
+        return DappOutcome(request.id, JsonPrimitive(signature).toString(), null)
+    }
+
+    private suspend fun executeSendTransaction(
+        request: DappRequest.SendTransaction,
+        profileId: ProfileId
+    ): DappOutcome {
+        if (lockStateBacking.value != WalletLockState.UNLOCKED) {
+            return DappOutcome(
+                request.id, null,
+                WalletBridgeError(WalletBridgeError.UNAUTHORIZED, "Unlock the wallet to send")
+            )
+        }
+        if (request.chainType == ChainType.BITCOIN) {
+            return DappOutcome(
+                request.id, null,
+                WalletBridgeError(
+                    WalletBridgeError.UNSUPPORTED_METHOD,
+                    "Bitcoin dApp transactions are not supported"
+                )
+            )
+        }
+        val account = findAccountForAddress(repo.accounts(profileId), request)
+            ?: return DappOutcome(
+                request.id, null,
+                WalletBridgeError(WalletBridgeError.UNAUTHORIZED, "No matching account")
+            )
+        val network = resolveDappNetwork(request, profileId)
+            ?: return DappOutcome(
+                request.id, null,
+                WalletBridgeError(
+                    WalletBridgeError.CHAIN_DISCONNECTED,
+                    "No active network for ${request.chainType.displayName}"
+                )
+            )
+        val evmParams = if (request.chainType == ChainType.EVM) {
+            parseEvmTransactionParams(request.txParamsJson)
+        } else {
+            null
+        }
+        val result = signAndBroadcastDappTransaction(request, account, network, evmParams)
+        val resultJson = when {
+            result.hash != null -> JsonPrimitive(result.hash).toString()
+            result.signature != null -> JsonPrimitive(result.signature).toString()
+            else -> return DappOutcome(
+                request.id, null,
+                WalletBridgeError(WalletBridgeError.INTERNAL, "No hash or signature produced")
+            )
+        }
+        recordActivity(
+            kind = WalletActivityRecord.Kind.DAPP_SEND,
+            account = account,
+            network = network,
+            toAddress = evmParams?.to,
+            displayAmount = dappDisplayAmount(evmParams, network, result.feeLabel),
+            hash = result.hash ?: result.signature,
+            explorer = result.hash?.let { explorerUrl(request.chainType, network, it) }
+        )
+        return DappOutcome(request.id, resultJson, null)
+    }
+
+    private suspend fun executeSwitchChain(
+        request: DappRequest.SwitchChain,
+        profileId: ProfileId
+    ): DappOutcome {
+        val record = repo.networks(profileId)
+            .firstOrNull { it.config.id == request.targetNetworkId }
+        if (record == null || !record.enabled || record.config.chainType != request.chainType) {
+            return DappOutcome(
+                request.id, null,
+                WalletBridgeError(
+                    WalletBridgeError.UNRECOGNIZED_CHAIN,
+                    "Unrecognized chain '${request.targetNetworkId}'"
+                )
+            )
+        }
+        repo.setActiveNetwork(profileId, record.config.chainType, record.config.id)
+        refreshActiveNetworksNow(profileId)
+        // EIP-1193: a successful switch resolves with null.
+        return DappOutcome(request.id, null, null)
+    }
+
+    private suspend fun executeAddChain(
+        request: DappRequest.AddChain,
+        profileId: ProfileId
+    ): DappOutcome {
+        if (!isValidNetworkConfig(request.proposed)) {
+            return DappOutcome(
+                request.id, null,
+                WalletBridgeError(
+                    WalletBridgeError.INVALID_PARAMS,
+                    "Proposed chain is not a usable network"
+                )
+            )
+        }
+        repo.upsertCustomNetwork(profileId, request.proposed)
+        return DappOutcome(request.id, null, null)
+    }
+
+    /**
+     * The per-chain dApp transaction execution (parse + sign + broadcast).
+     * Internal open: JVM tests fake this seam so the happy path needs no
+     * network.
+     */
+    internal open suspend fun signAndBroadcastDappTransaction(
+        request: DappRequest.SendTransaction,
+        account: WalletAccountRecord,
+        network: NetworkConfig,
+        evmParams: EvmAdapter.TransactionParams?
+    ): DappTransactionResult {
+        when (account.chainType) {
+            ChainType.EVM -> {
+                val params = evmParams ?: parseEvmTransactionParams(request.txParamsJson)
+                val to = params.to
+                if (to != null && !registry.evm.isValidAddress(to)) {
+                    throw WalletException.InvalidParams("Invalid 'to' address")
+                }
+                val key = secpPrivateKey(account)
+                val (prepared, signedRaw) = registry.evm.prepareAndSign(
+                    network, key, account.address, to, params.value, params.data,
+                    params.gasLimit, params.gasPrice, params.maxFeePerGas,
+                    params.maxPriorityFeePerGas, params.nonce
+                )
+                val feeLabel = formatBaseUnits(prepared.estimatedFeeWei, network.nativeDecimals) +
+                    " " + network.nativeSymbol + " gas"
+                return when (val sent = registry.evm.broadcastRaw(network, signedRaw)) {
+                    is BroadcastResult.Ok ->
+                        DappTransactionResult(hash = sent.hash, signature = null, feeLabel = feeLabel)
+                    is BroadcastResult.Error ->
+                        throw WalletException.RpcError(-1, sent.message)
+                }
+            }
+            ChainType.SOLANA -> {
+                val base64Tx = request.txParamsJson.trim().let {
+                    (json.parseToJsonElement(it) as? JsonObject)
+                        ?.get("transaction")?.jsonPrimitive?.content ?: it
+                }
+                registry.solana.parseTransaction(base64Tx) // validates signer membership
+                val signed = registry.solana.signTransaction(
+                    ed25519Seed(account), account.address, base64Tx
+                )
+                val endpoint = network.rpcUrls.firstOrNull()
+                    ?: throw WalletException.InvalidParams("Network has no RPC endpoint")
+                return when (val sent = registry.solana.broadcast(endpoint, signed)) {
+                    is BroadcastResult.Ok ->
+                        DappTransactionResult(hash = sent.hash, signature = null, feeLabel = "5000 lamports")
+                    is BroadcastResult.Error ->
+                        throw WalletException.RpcError(-1, sent.message)
+                }
+            }
+            ChainType.APTOS -> {
+                val fields = json.parseToJsonElement(request.txParamsJson) as? JsonObject
+                    ?: throw WalletException.InvalidParams("tx params must be a JSON object")
+                val payload = fields["payload"] as? JsonObject
+                if (payload != null) {
+                    val seed = ed25519Seed(account)
+                    val submitted = registry.aptos.signAndSubmit(
+                        network, seed, Ed25519.publicKeyFromSeed(seed), account.address, payload
+                    )
+                    return DappTransactionResult(
+                        hash = submitted.hash, signature = null,
+                        feeLabel = "${submitted.maxGasAmount} gas @ ${submitted.gasUnitPrice}"
+                    )
+                }
+                val txBytes = fields["txBytes"]?.jsonPrimitive?.content
+                    ?: throw WalletException.InvalidParams("Missing payload or txBytes")
+                // sign-only flow: the dApp broadcasts the signed transaction itself.
+                val signature = registry.aptos.signSerializedTransaction(
+                    ed25519Seed(account), account.address, txBytes
+                )
+                return DappTransactionResult(hash = null, signature = signature, feeLabel = null)
+            }
+            ChainType.SUI -> {
+                val txBytes = (json.parseToJsonElement(request.txParamsJson) as? JsonObject)
+                    ?.get("txBytes")?.jsonPrimitive?.content
+                    ?: throw WalletException.InvalidParams("Missing txBytes")
+                val seed = ed25519Seed(account)
+                val signature = registry.sui.signTransaction(
+                    seed, Ed25519.publicKeyFromSeed(seed), txBytes
+                )
+                return when (val sent = registry.sui.executeTransactionBlock(network, txBytes, signature)) {
+                    is BroadcastResult.Ok ->
+                        DappTransactionResult(hash = sent.hash, signature = null, feeLabel = "gas object")
+                    is BroadcastResult.Error ->
+                        throw WalletException.RpcError(-1, sent.message)
+                }
+            }
+            ChainType.COSMOS -> {
+                val fields = json.parseToJsonElement(request.txParamsJson) as? JsonObject
+                    ?: throw WalletException.InvalidParams("tx params must be a JSON object")
+                val body = fields["bodyBytes"]?.jsonPrimitive?.content?.let { decodeBase64(it) }
+                    ?: throw WalletException.InvalidParams("Missing bodyBytes")
+                val authInfo = fields["authInfoBytes"]?.jsonPrimitive?.content?.let { decodeBase64(it) }
+                    ?: throw WalletException.InvalidParams("Missing authInfoBytes")
+                val lcd = network.lcdUrl
+                    ?: throw WalletException.InvalidParams("Network has no LCD endpoint")
+                val signature = registry.cosmos.signDirect(
+                    secpPrivateKey(account),
+                    CosmosAdapter.DirectSignDoc(
+                        bodyBytes = body,
+                        authInfoBytes = authInfo,
+                        chainId = fields["chainId"]?.jsonPrimitive?.content ?: network.chainId,
+                        accountNumber = fields["accountNumber"]?.jsonPrimitive?.content ?: "0"
+                    )
+                )
+                val txRaw = ProtoWriter()
+                    .writeBytes(1, body)
+                    .writeBytes(2, authInfo)
+                    .writeBytes(3, decodeBase64(signature.signatureBase64))
+                    .bytes()
+                return when (val sent = registry.cosmos.broadcastTx(lcd, txRaw)) {
+                    is BroadcastResult.Ok ->
+                        DappTransactionResult(hash = sent.hash, signature = null, feeLabel = "2500 fee")
+                    is BroadcastResult.Error ->
+                        throw WalletException.RpcError(-1, sent.message)
+                }
+            }
+            ChainType.TRON -> {
+                val tx = json.parseToJsonElement(request.txParamsJson) as? JsonObject
+                    ?: throw WalletException.InvalidParams("tx params must be a JSON object")
+                val endpoint = network.rpcUrls.firstOrNull()
+                    ?: throw WalletException.InvalidParams("Network has no RPC endpoint")
+                val (signed, _) = registry.tron.signTransaction(
+                    secpPrivateKey(account), account.address, tx
+                )
+                return when (val sent = registry.tron.broadcast(endpoint, signed)) {
+                    is BroadcastResult.Ok ->
+                        DappTransactionResult(hash = sent.hash, signature = null, feeLabel = "bandwidth + energy")
+                    is BroadcastResult.Error ->
+                        throw WalletException.RpcError(-1, sent.message)
+                }
+            }
+            ChainType.BITCOIN ->
+                throw WalletException.UnsupportedMethod(
+                    "Bitcoin dApp transactions are not supported"
+                )
+        }
+    }
+
+    /** Parses EVM dApp tx params (hex or decimal values) — pure, no network. */
+    internal fun parseEvmTransactionParams(txParamsJson: String): EvmAdapter.TransactionParams {
+        val obj = try {
+            json.parseToJsonElement(txParamsJson)
+        } catch (_: SerializationException) {
+            throw WalletException.InvalidParams("tx params must be a JSON object")
+        } as? JsonObject
+            ?: throw WalletException.InvalidParams("tx params must be a JSON object")
+        fun str(name: String): String? =
+            (obj[name] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+        fun num(name: String): BigInteger? = str(name)?.let {
+            try {
+                registry.evm.parseValue(it)
+            } catch (e: WalletException.InvalidParams) {
+                throw WalletException.InvalidParams("Invalid $name: ${e.message}")
+            }
+        }
+        return EvmAdapter.TransactionParams(
+            from = "",
+            to = str("to"),
+            value = num("value") ?: BigInteger.ZERO,
+            data = str("data") ?: str("input") ?: "0x",
+            gasLimit = num("gas") ?: num("gasLimit"),
+            gasPrice = num("gasPrice"),
+            maxFeePerGas = num("maxFeePerGas"),
+            maxPriorityFeePerGas = num("maxPriorityFeePerGas"),
+            nonce = num("nonce")
+        )
+    }
+
+    /** The per-chain dApp message signing — local crypto only. */
+    private suspend fun signDappMessage(account: WalletAccountRecord, message: String): String {
+        val bytes = messageBytes(message)
+        val cosmosChainId = if (account.chainType == ChainType.COSMOS) {
+            quiet { repo.activeNetwork(requireBound(), ChainType.COSMOS) }?.chainId ?: ""
+        } else {
+            ""
+        }
+        return withContext(cryptoDispatcher) {
+            when (account.chainType) {
+                ChainType.EVM -> registry.evm.personalSign(secpPrivateKey(account), bytes)
+                ChainType.SOLANA -> registry.solana.signMessage(ed25519Seed(account), bytes)
+                ChainType.APTOS -> registry.aptos.signWalletMessage(
+                    ed25519Seed(account), message, nonce = ""
+                ).signatureHex
+                ChainType.SUI -> registry.sui.signPersonalMessage(
+                    ed25519Seed(account), Ed25519.publicKeyFromSeed(ed25519Seed(account)),
+                    Base64.getEncoder().encodeToString(bytes)
+                )
+                ChainType.COSMOS -> registry.cosmos.signArbitrary(
+                    secpPrivateKey(account), cosmosChainId, account.address, message
+                ).signatureBase64
+                ChainType.BITCOIN -> registry.bitcoin.signMessage(secpPrivateKey(account), bytes)
+                ChainType.TRON -> registry.tron.signMessageV2(secpPrivateKey(account), bytes)
+            }
+        }
+    }
+
+    /** personal_sign message bytes: hex when it looks like hex, else utf-8. */
+    private fun messageBytes(message: String): ByteArray =
+        if (message.length % 2 == 0 && message.startsWith("0x") &&
+            message.drop(2).all { it in "0123456789abcdefABCDEF" }
+        ) Hex.decode(message) else message.toByteArray(Charsets.UTF_8)
+
+    private fun findAccountForAddress(
+        accounts: List<WalletAccountRecord>,
+        request: DappRequest
+    ): WalletAccountRecord? {
+        val address = when (request) {
+            is DappRequest.SignMessage -> request.accountAddress
+            is DappRequest.SignTypedData -> request.accountAddress
+            is DappRequest.SendTransaction -> request.accountAddress
+            else -> return null
+        }
+        return accounts.firstOrNull {
+            it.chainType == request.chainType && addressesMatch(it.address, address, request.chainType)
+        }
+    }
+
+    /** EVM addresses match case-insensitively (checksum vs lowercase); base58 exactly. */
+    private fun addressesMatch(stored: String, requested: String, chainType: ChainType): Boolean =
+        if (chainType == ChainType.EVM) stored.equals(requested, ignoreCase = true)
+        else stored == requested
+
+    private suspend fun resolveDappNetwork(
+        request: DappRequest.SendTransaction,
+        profileId: ProfileId
+    ): NetworkConfig? {
+        val all = repo.networks(profileId)
+        request.networkId.takeIf { it.isNotBlank() }?.let { id ->
+            all.firstOrNull { it.config.id == id && it.config.chainType == request.chainType }
+                ?.let { return it.config }
+        }
+        return repo.activeNetwork(profileId, request.chainType)
+    }
+
+    private fun dappDisplayAmount(
+        evmParams: EvmAdapter.TransactionParams?,
+        network: NetworkConfig,
+        feeLabel: String?
+    ): String {
+        val amount = evmParams?.value
+            ?.takeIf { it.signum() > 0 }
+            ?.let { formatBaseUnits(it, network.nativeDecimals) + " " + network.nativeSymbol }
+            ?: "contract call"
+        return if (feeLabel != null) "$amount (fee ~$feeLabel)" else amount
+    }
+
+    /** Settles one original request AND every coalesced duplicate of it. */
+    private fun settleDappOutcome(originalId: String, outcome: DappOutcome) {
+        val ids = mutableListOf(originalId)
+        val iterator = coalescedInto.entries.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            if (entry.value == originalId) {
+                ids += entry.key
+                iterator.remove()
+            }
+        }
+        ids.forEach { id ->
+            val callback = dappCallbacks.remove(id) ?: return@forEach
+            callback(outcome.copy(requestId = id))
+        }
+    }
+
+    private fun settleAllPending(code: Int, message: String) {
+        val requests = pendingRequestsState.value.toList()
+        pendingRequestsState.value = emptyList()
+        requests.forEach { request ->
+            settleDappOutcome(
+                request.id,
+                DappOutcome(request.id, null, WalletBridgeError(code, message))
+            )
+        }
+        dappCallbacks.clear()
+        coalescedInto.clear()
+    }
+
+    /** Canonical method set granted on Connect (recorded with the permission). */
+    private fun dappMethodsFor(chainType: ChainType): List<String> = when (chainType) {
+        ChainType.EVM -> listOf(
+            "eth_accounts", "eth_requestAccounts", "personal_sign", "eth_signTypedData_v4",
+            "eth_signTransaction", "eth_sendTransaction",
+            "wallet_switchEthereumChain", "wallet_addEthereumChain"
+        )
+        ChainType.SOLANA -> listOf(
+            "connect", "signMessage", "signTransaction", "signAndSendTransaction"
+        )
+        ChainType.APTOS -> listOf(
+            "connect", "signMessage", "signTransaction", "signAndSubmitTransaction"
+        )
+        ChainType.SUI -> listOf(
+            "connect", "signPersonalMessage", "signTransaction", "signAndExecuteTransaction"
+        )
+        ChainType.COSMOS -> listOf("enable", "signAmino", "signDirect", "signArbitrary")
+        ChainType.BITCOIN -> listOf("connect", "signMessage", "signTransaction")
+        ChainType.TRON -> listOf("connect", "signMessage", "signTransaction")
+    }
+
+    // ------------------------------------------------------------------
+    // Key material (revealed per operation, never cached)
+    // ------------------------------------------------------------------
+
+    private suspend fun seedFor(profileId: ProfileId): ByteArray? =
+        repo.revealMnemonic(profileId)?.let { mnemonic ->
+            withContext(cryptoDispatcher) { Mnemonics.toSeed(Mnemonics.normalize(mnemonic)) }
+        }
+
+    /** secp256k1 scalar (EVM/Cosmos/Bitcoin/TRON) for derived OR imported accounts. */
+    private suspend fun secpPrivateKey(account: WalletAccountRecord): BigInteger {
+        if (account.source == WalletAccountRecord.Source.DERIVED) {
+            val seed = seedFor(requireBound())
+                ?: throw WalletException.Unauthorized("Wallet has no mnemonic")
+            if (account.path.isBlank()) {
+                throw WalletException.Unauthorized("Derived account has no path")
+            }
+            return withContext(cryptoDispatcher) {
+                Bip32PrivateKey.derive(seed, account.path).key
+            }
+        }
+        val key = repo.revealPrivateKey(account.id)
+            ?: throw WalletException.Unauthorized("Account has no stored private key")
+        return parseSecp256k1Key(key, account.chainType)
+    }
+
+    /** 32-byte ed25519 seed (Solana/Aptos/Sui) for derived OR imported accounts. */
+    private suspend fun ed25519Seed(account: WalletAccountRecord): ByteArray {
+        if (account.source == WalletAccountRecord.Source.DERIVED) {
+            val seed = seedFor(requireBound())
+                ?: throw WalletException.Unauthorized("Wallet has no mnemonic")
+            if (account.path.isBlank()) {
+                throw WalletException.Unauthorized("Derived account has no path")
+            }
+            return withContext(cryptoDispatcher) {
+                Slip10Ed25519Key.derive(seed, account.path).seed
+            }
+        }
+        val key = repo.revealPrivateKey(account.id)
+            ?: throw WalletException.Unauthorized("Account has no stored private key")
+        return parseEd25519Seed(key, account.chainType)
+    }
+
+    private fun parseSecp256k1Key(key: String, chainType: ChainType): BigInteger {
+        val clean = key.removePrefix("0x").removePrefix("0X")
+        val parsed = runCatching { BigInteger(clean, 16) }.getOrNull()
+            ?: throw WalletException.InvalidParams("Invalid ${chainType.displayName} private key")
+        if (parsed.signum() <= 0 || parsed >= Bip32PrivateKey.CURVE_N) {
+            throw WalletException.InvalidParams("${chainType.displayName} private key out of range")
+        }
+        return parsed
+    }
+
+    /** Solana imports are base58; Aptos/Sui SDKs use hex — accept either. */
+    private fun parseEd25519Seed(key: String, chainType: ChainType): ByteArray =
+        Base58.decodeOrNull(key)?.takeIf { it.size == 32 }
+            ?: Hex.decodeOrNull(key)?.takeIf { it.size == 32 }
+            ?: throw WalletException.InvalidParams(
+                "Invalid ${chainType.displayName} private key (expected 32-byte base58 or hex)"
+            )
+
+    /** Stored-key form for secp chains: 64 hex chars, no 0x. */
+    private fun canonicalSecpKey(key: BigInteger): String = key.toString(16).padStart(64, '0')
+
+    private fun aptosAddress(pubkey: ByteArray): String =
+        "0x" + Hex.encode(Hashes.sha3_256(pubkey + byteArrayOf(0x00)))
+
+    private fun suiAddress(pubkey: ByteArray): String =
+        "0x" + Hex.encode(Hashes.blake2b256(byteArrayOf(0x00) + pubkey))
+
+    // ------------------------------------------------------------------
+    // Activity log
+    // ------------------------------------------------------------------
+
+    private suspend fun recordActivity(
+        kind: WalletActivityRecord.Kind,
+        account: WalletAccountRecord,
+        network: NetworkConfig?,
+        toAddress: String?,
+        displayAmount: String,
+        hash: String?,
+        explorer: String?
+    ) {
+        val profileId = profileState.value ?: return
+        repo.recordActivity(
+            WalletActivityRecord(
+                id = UUID.randomUUID().toString(),
+                profileId = profileId,
+                chainType = account.chainType,
+                networkName = network?.name ?: "",
+                kind = kind,
+                accountAddress = account.address,
+                toAddress = toAddress,
+                displayAmount = displayAmount,
+                hash = hash,
+                explorerUrl = explorer,
+                createdAt = clock()
+            )
+        )
+    }
+
+    /** Best-effort explorer link per chain family. */
+    private fun explorerUrl(chainType: ChainType, network: NetworkConfig, hash: String): String? {
+        val base = network.explorerUrl?.trimEnd('/') ?: return null
+        return when (chainType) {
+            ChainType.EVM, ChainType.SOLANA, ChainType.SUI, ChainType.BITCOIN -> "$base/tx/$hash"
+            ChainType.APTOS -> "$base/txn/$hash"
+            ChainType.COSMOS -> "$base/txs/$hash"
+            ChainType.TRON -> "$base/#/transaction/$hash"
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Amount helpers
+    // ------------------------------------------------------------------
+
+    /** "0.1" (decimals=18) → 10^17; null on blank/negative/unparsable. */
+    internal fun parseAmountToBaseUnits(amount: String, decimals: Int): BigInteger? = try {
+        val parsed = BigDecimal(amount.trim())
+        if (parsed.signum() < 0) null
+        else parsed.movePointRight(decimals).toBigIntegerExact()
+    } catch (_: NumberFormatException) {
+        null
+    } catch (_: ArithmeticException) {
+        null
+    }
+
+    /** 10^17 → "0.1" (plain string, no scientific notation). */
+    internal fun formatBaseUnits(value: BigInteger, decimals: Int): String =
+        BigDecimal(value).movePointLeft(decimals).stripTrailingZeros().toPlainString()
+
+    private fun toLongAmount(value: BigInteger, chainType: ChainType): Long {
+        if (value.bitLength() > 62) {
+            throw WalletException.InvalidParams("${chainType.displayName} amount too large")
+        }
+        return value.toLong()
+    }
+
+    private fun decodeBase64(text: String): ByteArray = Base64.getDecoder().decode(text)
+
+    /** Runs [block], converting any failure (but never cancellation) to null. */
+    private inline fun <T> quiet(block: () -> T): T? = try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+}
+
+/** Result of the dApp transaction seam: a broadcast hash and/or a raw signature. */
+internal data class DappTransactionResult(
+    val hash: String?,
+    val signature: String?,
+    val feeLabel: String?
+)
+
+/** Semantic-duplicate check for request coalescing (same host + same payload). */
+internal fun DappRequest.sameSemanticsAs(other: DappRequest): Boolean {
+    if (this::class != other::class) return false
+    if (host != other.host || chainType != other.chainType) return false
+    return when (this) {
+        is DappRequest.Connect -> {
+            val that = other as DappRequest.Connect
+            originUrl == that.originUrl
+        }
+        is DappRequest.SignMessage -> {
+            val that = other as DappRequest.SignMessage
+            accountAddress == that.accountAddress && message == that.message
+        }
+        is DappRequest.SignTypedData -> {
+            val that = other as DappRequest.SignTypedData
+            accountAddress == that.accountAddress && typedDataJson == that.typedDataJson
+        }
+        is DappRequest.SendTransaction -> {
+            val that = other as DappRequest.SendTransaction
+            networkId == that.networkId && accountAddress == that.accountAddress &&
+                txParamsJson == that.txParamsJson
+        }
+        is DappRequest.SwitchChain -> {
+            val that = other as DappRequest.SwitchChain
+            targetNetworkId == that.targetNetworkId
+        }
+        is DappRequest.AddChain -> {
+            val that = other as DappRequest.AddChain
+            proposed == that.proposed
+        }
+    }
+}

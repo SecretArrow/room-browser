@@ -27,6 +27,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
@@ -775,6 +776,26 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 leadingIcon = Icons.Filled.Key,
                 onClick = {
                     PasswordsActivity.launch(
+                        context,
+                        profileId = viewModel.profileId.value,
+                        profileName = viewModel.profile.name
+                    )
+                }
+            )
+        }
+
+        SectionHeader("Wallet")
+        SettingsGroup {
+            // Multi-chain wallet for THIS profile (EVM, Solana, Aptos, Sui,
+            // Cosmos, Bitcoin, TRON). Runs in the ':browser' process like the
+            // password manager, so its unlock session is shared with the
+            // in-page dApp bridge (window.ethereum & friends).
+            SettingActionRow(
+                title = "Wallet",
+                subtitle = "Multi-chain wallet, accounts and dApp connections",
+                leadingIcon = Icons.Filled.AccountBalanceWallet,
+                onClick = {
+                    WalletActivity.launch(
                         context,
                         profileId = viewModel.profileId.value,
                         profileName = viewModel.profile.name

@@ -395,6 +395,22 @@ fun BrowserScreen(
         )
     }
 
+    // ---------- Wallet dApp confirmation sheet (render point only) ------
+    // The engine (bound to this profile, shared with the wallet dashboard)
+    // owns the pending-request queue; the FIRST pending request renders as
+    // a confirmation sheet. The sheet itself settles the request through
+    // engine.decideDappRequest (Approve or Reject — outside-tap/back =
+    // reject), after which it leaves composition on its own; onDismiss is
+    // deliberately empty for that reason.
+    val pendingWalletRequests by viewModel.walletEngine.pendingRequests.collectAsState()
+    pendingWalletRequests.firstOrNull()?.let { request ->
+        WalletDappRequestSheet(
+            request = request,
+            engine = viewModel.walletEngine,
+            onDismiss = { }
+        )
+    }
+
     // ---------- System-Back exit confirmation (non-home, no history) ------
     // Fired by the BackHandler's `!isHomepage` branch: the current page has
     // no back history left, so leaving the app requires an EXPLICIT choice.

@@ -49,7 +49,38 @@ class AppGraph(context: Context) {
         )
     }
 
+    /**
+     * Multi-chain wallet: per-profile wallet data. The DAOs are plain Room;
+     * the cryptor is the AndroidKeyStore-backed WalletKeyCrypto — a SEPARATE
+     * key from the password vault's (alias roomwallet-<safeSuffix>), so the
+     * two vaults never share key material. Plaintext key material crosses
+     * this boundary only via WalletRepository's create/import/reveal calls;
+     * reveal is the UI layer's to gate behind biometrics.
+     */
+    val walletRepo: com.roombrowser.data.repo.WalletRepository by lazy {
+        com.roombrowser.data.repo.WalletRepository(
+            database.walletDao(),
+            database.walletAccountDao(),
+            database.walletNetworkDao(),
+            database.dappPermissionDao(),
+            database.walletActivityDao(),
+            com.roombrowser.security.WalletKeyCrypto
+        )
+    }
+
     val profileManager: ProfileManager by lazy { ProfileManager(profileRepo) }
+
+    /**
+     * Wallet engine: the session/state holder for the bound profile's wallet
+     * (accounts, balances, networks, dApp request queue). Main-thread
+     * confined like the rest of the graph; both wallet surfaces (WalletActivity
+     * and the browsing engine's dApp bridge) live in the ':browser' process,
+     * so they share ONE engine instance — unlocking in the dashboard unlocks
+     * in-page dApp signing for the same session, and vice versa.
+     */
+    val walletEngine: com.roombrowser.browser.wallet.WalletEngine by lazy {
+        com.roombrowser.browser.wallet.WalletEngine(walletRepo)
+    }
 
     val filterEngine: FilterEngine by lazy { FilterListLoader.load(appContext) }
 

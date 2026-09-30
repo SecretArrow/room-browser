@@ -11,6 +11,7 @@ import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.roombrowser.browser.RoomVaultScript
+import com.roombrowser.browser.wallet.dapp.RoomWalletScript
 import com.roombrowser.domain.model.ClaimedScreen
 import com.roombrowser.domain.model.Device
 import com.roombrowser.domain.model.Profile
@@ -53,6 +54,14 @@ object ProfileEngine {
      * a reconfigure must never stack a second document-start handler either.
      */
     private val vaultScripts = java.util.WeakHashMap<WebView, ScriptHandler>()
+
+    /**
+     * The wallet dApp provider script currently installed per WebView —
+     * same replace-on-reconfigure pattern as [vaultScripts]: the script is
+     * idempotent (window.__roomWalletInstalled guard) but a reconfigure
+     * must never stack a second document-start handler.
+     */
+    private val walletScripts = java.util.WeakHashMap<WebView, ScriptHandler>()
 
     /** WebView package name for the diagnostics screen. */
     fun engineName(context: Context): String = runCatching {
@@ -188,6 +197,13 @@ object ProfileEngine {
         // ViewModel's createWebView) + the detection/fill script.
         applyVaultScript(webView)
 
+        // Wallet dApp providers: ANOTHER separate document-start script
+        // (window.ethereum / window.solana / window.aptos / window.suiWallet /
+        // window.tronLink). Always installed — a page with no wallet sees
+        // nothing happen; the native RoomWallet interface (added by the
+        // ViewModel's createWebView) stays silent until a dApp calls it.
+        applyWalletScript(webView)
+
         // Cookies
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
@@ -248,6 +264,24 @@ object ProfileEngine {
         runCatching {
             vaultScripts[webView] = WebViewCompat.addDocumentStartJavaScript(
                 webView, RoomVaultScript.SCRIPT, setOf("*")
+            )
+        }
+    }
+
+    /**
+     * Install the wallet dApp provider script for one WebView. Always
+     * installed — providers stay dormant until a dApp actually calls them,
+     * and a locked/absent wallet answers requests with errors, never
+     * prompts. Same WebView-feature availability limit as [applyVaultScript].
+     */
+    private fun applyWalletScript(webView: WebView) {
+        walletScripts.remove(webView)?.let { previous ->
+            runCatching { previous.remove() }
+        }
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        runCatching {
+            walletScripts[webView] = WebViewCompat.addDocumentStartJavaScript(
+                webView, RoomWalletScript.SCRIPT, setOf("*")
             )
         }
     }

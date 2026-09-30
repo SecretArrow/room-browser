@@ -485,3 +485,211 @@ interface CredentialDao {
     @Query("SELECT COUNT(*) FROM credentials WHERE profile_id = :profileId")
     suspend fun countForProfile(profileId: String): Int
 }
+
+// =========================================================================
+// MULTI-CHAIN CRYPTO WALLET
+// =========================================================================
+
+@Dao
+interface WalletDao {
+    @Upsert
+    suspend fun upsert(entity: WalletEntity)
+
+    @Query("SELECT * FROM wallets WHERE profile_id = :profileId LIMIT 1")
+    suspend fun byProfile(profileId: String): WalletEntity?
+
+    @Query("SELECT * FROM wallets WHERE profile_id = :profileId LIMIT 1")
+    fun observeByProfile(profileId: String): Flow<WalletEntity?>
+
+    @Query("SELECT * FROM wallets WHERE id = :id")
+    suspend fun byId(id: String): WalletEntity?
+
+    /** Profile-deletion / delete-wallet cascade. */
+    @Query("DELETE FROM wallets WHERE profile_id = :profileId")
+    suspend fun deleteAllForProfile(profileId: String)
+}
+
+@Dao
+interface WalletAccountDao {
+    @Upsert
+    suspend fun upsert(entity: WalletAccountEntity)
+
+    @Query("SELECT * FROM wallet_accounts WHERE id = :id")
+    suspend fun byId(id: String): WalletAccountEntity?
+
+    /**
+     * Accounts of a profile's wallet, newest-created last. JOIN through
+     * wallets because accounts are keyed by wallet id, not profile id —
+     * profile isolation lives in the WHERE clause.
+     */
+    @Query(
+        "SELECT wallet_accounts.* FROM wallet_accounts INNER JOIN wallets " +
+            "ON wallet_accounts.wallet_id = wallets.id " +
+            "WHERE wallets.profile_id = :profileId " +
+            "ORDER BY wallet_accounts.created_at ASC, wallet_accounts.id ASC"
+    )
+    fun observeForProfile(profileId: String): Flow<List<WalletAccountEntity>>
+
+    /** Suspend twin of [observeForProfile]. */
+    @Query(
+        "SELECT wallet_accounts.* FROM wallet_accounts INNER JOIN wallets " +
+            "ON wallet_accounts.wallet_id = wallets.id " +
+            "WHERE wallets.profile_id = :profileId " +
+            "ORDER BY wallet_accounts.created_at ASC, wallet_accounts.id ASC"
+    )
+    suspend fun forProfile(profileId: String): List<WalletAccountEntity>
+
+    /**
+     * DERIVED accounts of one chain — the input to
+     * nextDerivationIndex (imports carry no BIP44 path and never count).
+     */
+    @Query(
+        "SELECT wallet_accounts.* FROM wallet_accounts INNER JOIN wallets " +
+            "ON wallet_accounts.wallet_id = wallets.id " +
+            "WHERE wallets.profile_id = :profileId " +
+            "AND wallet_accounts.chain_type = :chainType " +
+            "AND wallet_accounts.source = 'DERIVED'"
+    )
+    suspend fun derivedForProfileChain(profileId: String, chainType: String): List<WalletAccountEntity>
+
+    @Query("UPDATE wallet_accounts SET label = :label WHERE id = :id")
+    suspend fun rename(id: String, label: String)
+
+    @Query("DELETE FROM wallet_accounts WHERE id = :id")
+    suspend fun delete(id: String)
+
+    /** Delete-wallet cascade: all accounts of one wallet. */
+    @Query("DELETE FROM wallet_accounts WHERE wallet_id = :walletId")
+    suspend fun deleteForWallet(walletId: String)
+
+    /**
+     * Profile-deletion cascade: accounts via their wallet's profile. The
+     * subquery (instead of a stored profile_id column) keeps the account
+     * schema wallet-owned.
+     */
+    @Query(
+        "DELETE FROM wallet_accounts WHERE wallet_id IN " +
+            "(SELECT id FROM wallets WHERE profile_id = :profileId)"
+    )
+    suspend fun deleteAllForProfile(profileId: String)
+}
+
+@Dao
+interface WalletNetworkDao {
+    /** Insert-or-replace by (profile, id) — seeding, upserts, active edits. */
+    @Upsert
+    suspend fun upsert(entity: WalletNetworkEntity)
+
+    /**
+     * Deterministic listing order: seeded defaults first, customs last,
+     * then network id ascending. After ensureDefaultNetworks exactly one
+     * network per chain family is enabled (its mainnet), so "first enabled
+     * of the chain" below resolves to the family mainnet until the user
+     * enables more.
+     */
+    @Query(
+        "SELECT * FROM wallet_networks WHERE profile_id = :profileId " +
+            "ORDER BY is_custom ASC, id ASC"
+    )
+    fun observeForProfile(profileId: String): Flow<List<WalletNetworkEntity>>
+
+    /** Suspend twin of [observeForProfile]. */
+    @Query(
+        "SELECT * FROM wallet_networks WHERE profile_id = :profileId " +
+            "ORDER BY is_custom ASC, id ASC"
+    )
+    suspend fun forProfile(profileId: String): List<WalletNetworkEntity>
+
+    @Query("SELECT * FROM wallet_networks WHERE profile_id = :profileId AND id = :networkId")
+    suspend fun byProfileAndId(profileId: String, networkId: String): WalletNetworkEntity?
+
+    /** No-op when the network id is unknown for the profile. */
+    @Query(
+        "UPDATE wallet_networks SET enabled = :enabled " +
+            "WHERE profile_id = :profileId AND id = :networkId"
+    )
+    suspend fun setEnabled(profileId: String, networkId: String, enabled: Boolean)
+
+    @Query("DELETE FROM wallet_networks WHERE profile_id = :profileId AND id = :networkId")
+    suspend fun delete(profileId: String, networkId: String)
+
+    /** Profile-deletion / delete-wallet cascade. */
+    @Query("DELETE FROM wallet_networks WHERE profile_id = :profileId")
+    suspend fun deleteAllForProfile(profileId: String)
+
+    // -- active-network selection (wallet_active_networks) ------------------
+
+    /** Insert-or-replace by (profile, chain). */
+    @Upsert
+    suspend fun upsertActive(entity: WalletActiveNetworkEntity)
+
+    @Query(
+        "SELECT * FROM wallet_active_networks " +
+            "WHERE profile_id = :profileId AND chain_type = :chainType"
+    )
+    suspend fun activeNetwork(profileId: String, chainType: String): WalletActiveNetworkEntity?
+
+    /** Profile-deletion / delete-wallet cascade. */
+    @Query("DELETE FROM wallet_active_networks WHERE profile_id = :profileId")
+    suspend fun deleteActiveNetworksForProfile(profileId: String)
+}
+
+@Dao
+interface DappPermissionDao {
+    /** Insert-or-replace by id (the repository keeps ids stable on re-grant). */
+    @Upsert
+    suspend fun upsert(entity: DappPermissionEntity)
+
+    /** The row behind the (profile, host, chain, account) unique key. */
+    @Query(
+        "SELECT * FROM dapp_permissions WHERE profile_id = :profileId " +
+            "AND host = :host AND chain_type = :chainType " +
+            "AND account_address = :accountAddress"
+    )
+    suspend fun byKey(
+        profileId: String,
+        host: String,
+        chainType: String,
+        accountAddress: String
+    ): DappPermissionEntity?
+
+    @Query(
+        "SELECT * FROM dapp_permissions WHERE profile_id = :profileId AND host = :host " +
+            "ORDER BY chain_type ASC, account_address ASC"
+    )
+    suspend fun forHost(profileId: String, host: String): List<DappPermissionEntity>
+
+    @Query(
+        "SELECT * FROM dapp_permissions WHERE profile_id = :profileId " +
+            "ORDER BY host ASC, chain_type ASC, account_address ASC"
+    )
+    suspend fun allForProfile(profileId: String): List<DappPermissionEntity>
+
+    /** Drops every account permission of the (profile, host, chain) pair. */
+    @Query(
+        "DELETE FROM dapp_permissions WHERE profile_id = :profileId " +
+            "AND host = :host AND chain_type = :chainType"
+    )
+    suspend fun revokeForHostAndChain(profileId: String, host: String, chainType: String)
+
+    /** Profile-deletion / delete-wallet cascade. */
+    @Query("DELETE FROM dapp_permissions WHERE profile_id = :profileId")
+    suspend fun deleteAllForProfile(profileId: String)
+}
+
+@Dao
+interface WalletActivityDao {
+    /** Insert-or-replace by id (activity ids are minted by the caller). */
+    @Upsert
+    suspend fun upsert(entity: WalletActivityEntity)
+
+    @Query(
+        "SELECT * FROM wallet_activities WHERE profile_id = :profileId " +
+            "ORDER BY created_at DESC, id DESC"
+    )
+    fun observeForProfile(profileId: String): Flow<List<WalletActivityEntity>>
+
+    /** Profile-deletion / delete-wallet cascade. */
+    @Query("DELETE FROM wallet_activities WHERE profile_id = :profileId")
+    suspend fun deleteAllForProfile(profileId: String)
+}

@@ -148,6 +148,9 @@ android {
 
 dependencies {
     implementation(project(":core:domain"))
+    // Multi-chain wallet core (chain adapters + crypto). App-side wallet
+    // layers (contract/engine/bridge/repository/UI) build on it.
+    implementation(project(":core:wallet"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)

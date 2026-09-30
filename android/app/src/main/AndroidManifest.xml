@@ -166,6 +166,20 @@
             android:windowSoftInputMode="adjustResize" />
 
         <!--
+          Multi-chain wallet — dashboard, onboarding, send/receive and dApp
+          confirmations for the bound profile. ':browser' process like the
+          password manager: WalletEngine is per-process AppGraph state, so
+          unlocking here shares the session with the in-page dApp bridge;
+          it never hosts a WebView.
+        -->
+        <activity
+            android:name=".browser.ui.WalletActivity"
+            android:process=":browser"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode|locale|layoutDirection|fontScale"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!--
           AI agent background execution: while an agent turn runs, this
           dataSync foreground service keeps the ':browser' process alive and
           holds a partial wake lock, so tasks continue with the app in the

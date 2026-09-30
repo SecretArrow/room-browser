@@ -34,9 +34,15 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         AgentProviderEntity::class,
         AgentSessionEntity::class,
         AgentMessageEntity::class,
-        CredentialEntity::class
+        CredentialEntity::class,
+        WalletEntity::class,
+        WalletAccountEntity::class,
+        WalletNetworkEntity::class,
+        DappPermissionEntity::class,
+        WalletActivityEntity::class,
+        WalletActiveNetworkEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -52,6 +58,11 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun themeDao(): ThemeDao
     abstract fun agentDao(): AgentDao
     abstract fun credentialDao(): CredentialDao
+    abstract fun walletDao(): WalletDao
+    abstract fun walletAccountDao(): WalletAccountDao
+    abstract fun walletNetworkDao(): WalletNetworkDao
+    abstract fun dappPermissionDao(): DappPermissionDao
+    abstract fun walletActivityDao(): WalletActivityDao
 
     companion object {
         const val NAME = "room-browser.db"
@@ -200,6 +211,119 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v7 → v8: adds the multi-chain wallet tables (wallets /
+         * wallet_accounts / wallet_networks / dapp_permissions /
+         * wallet_activities / wallet_active_networks). Purely additive
+         * CREATE TABLE + INDEX statements — no existing table is touched,
+         * so the migration is lossless. The column sets mirror the wallet
+         * entities exactly (same snake_case names, NOT NULL on non-null
+         * Kotlin types), which is what Room's schema validation compares
+         * against after a migration.
+         */
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `wallets` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`profile_id` TEXT NOT NULL, " +
+                        "`label` TEXT NOT NULL, " +
+                        "`mnemonic_enc` TEXT, " +
+                        "`created_at` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_wallets_profile_id` " +
+                        "ON `wallets` (`profile_id`)"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `wallet_accounts` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`wallet_id` TEXT NOT NULL, " +
+                        "`chain_type` TEXT NOT NULL, " +
+                        "`address` TEXT NOT NULL, " +
+                        "`label` TEXT NOT NULL, " +
+                        "`path` TEXT NOT NULL, " +
+                        "`source` TEXT NOT NULL, " +
+                        "`private_key_enc` TEXT, " +
+                        "`created_at` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_wallet_accounts_wallet_id` " +
+                        "ON `wallet_accounts` (`wallet_id`)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS " +
+                        "`index_wallet_accounts_wallet_id_chain_type_address` " +
+                        "ON `wallet_accounts` (`wallet_id`, `chain_type`, `address`)"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `wallet_networks` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`profile_id` TEXT NOT NULL, " +
+                        "`enabled` INTEGER NOT NULL, " +
+                        "`is_custom` INTEGER NOT NULL, " +
+                        "`payload` TEXT NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_wallet_networks_profile_id` " +
+                        "ON `wallet_networks` (`profile_id`)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_wallet_networks_profile_id_id` " +
+                        "ON `wallet_networks` (`profile_id`, `id`)"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `dapp_permissions` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`profile_id` TEXT NOT NULL, " +
+                        "`host` TEXT NOT NULL, " +
+                        "`chain_type` TEXT NOT NULL, " +
+                        "`account_address` TEXT NOT NULL, " +
+                        "`methods_json` TEXT NOT NULL, " +
+                        "`granted_at` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_dapp_permissions_profile_id` " +
+                        "ON `dapp_permissions` (`profile_id`)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS " +
+                        "`index_dapp_permissions_profile_id_host_chain_type_account_address` " +
+                        "ON `dapp_permissions` (`profile_id`, `host`, `chain_type`, `account_address`)"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `wallet_activities` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`profile_id` TEXT NOT NULL, " +
+                        "`chain_type` TEXT NOT NULL, " +
+                        "`network_name` TEXT NOT NULL, " +
+                        "`kind` TEXT NOT NULL, " +
+                        "`account_address` TEXT NOT NULL, " +
+                        "`to_address` TEXT, " +
+                        "`display_amount` TEXT NOT NULL, " +
+                        "`hash` TEXT, " +
+                        "`explorer_url` TEXT, " +
+                        "`created_at` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_wallet_activities_profile_id` " +
+                        "ON `wallet_activities` (`profile_id`)"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `wallet_active_networks` (" +
+                        "`profile_id` TEXT NOT NULL, " +
+                        "`chain_type` TEXT NOT NULL, " +
+                        "`network_id` TEXT NOT NULL, " +
+                        "PRIMARY KEY(`profile_id`, `chain_type`))"
+                )
+            }
+        }
+
         @Volatile
         private var instance: AppDatabase? = null
 
@@ -213,7 +337,7 @@ abstract class AppDatabase : RoomDatabase() {
                 .enableMultiInstanceInvalidation()
                 .addMigrations(
                     MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4,
-                    MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7
+                    MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8
                 )
                 .build()
     }

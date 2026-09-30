@@ -115,6 +115,18 @@ class BrowserViewModel(
     private val dnsMonitor = DnsMonitor()
     val networkIdentity = NetworkIdentity(appState, browserRepo, graph.ipConflictDetector)
 
+    /**
+     * Per-WebView dApp bridges (window.ethereum & friends). Weak keys: a
+     * destroyed engine's bridge must not outlive it — GC reclaims both. Used
+     * to push accountsChanged/chainChanged events to every live page after
+     * the user switches networks or accounts in the wallet dashboard.
+     */
+    private val walletBridges = java.util.WeakHashMap<WebView, com.roombrowser.browser.wallet.dapp.WalletBridge>()
+
+    /** Last-seen wallet state, so event collectors only emit on CHANGE. */
+    private var lastWalletChainIds: Map<com.roombrowser.domain.wallet.model.ChainType, String> = emptyMap()
+    private var lastWalletEvmAddresses: List<String> = emptyList()
+
     lateinit var downloadEngine: DownloadEngine
         private set
 
@@ -408,6 +420,16 @@ class BrowserViewModel(
             appState.setActiveProfile(profileId.value)
             graph.profileRepo.touch(profileId, System.currentTimeMillis())
             loadSiteSettingsSnapshot()
+
+            // Wallet engine follows the SAME profile binding as everything
+            // else in this process. Bind BEFORE tabs restore so an early
+            // dApp call (restored page auto-connecting) meets a bound
+            // engine. NOT unbound in onCleared: the ':browser' process is
+            // one-profile-per-process and dies with this ViewModel's
+            // activity — an unbind here could yank the session out from
+            // under WalletActivity, which shares the same engine instance.
+            graph.walletEngine.bind(profileId)
+            observeWalletEvents()
 
             // Restore persisted tabs: the first tab's engine is built RIGHT HERE
             // via selectTab (lazily, with a reload) — previously the restored
@@ -781,6 +803,24 @@ class BrowserViewModel(
         webView.addJavascriptInterface(
             RoomVaultBridge(webView, vaultCallbacks),
             RoomVaultBridge.JS_INTERFACE_NAME
+        )
+        // Wallet dApp bridge: page JS sees window.ethereum / window.solana /
+        // window.aptos / window.suiWallet / window.tronLink (the provider
+        // script itself comes from ProfileEngine.configure's document-start
+        // install). Every call is host-validated against THIS WebView's URL
+        // inside WalletBridge before anything reaches the engine, and the
+        // engine settles each request through the confirmation UI.
+        val walletBridge = com.roombrowser.browser.wallet.dapp.WalletBridge(
+            engineProvider = { graph.walletEngine },
+            activeNetworkProvider = { chain ->
+                graph.walletEngine.activeNetworks.value[chain]
+            },
+            webViewRef = java.lang.ref.WeakReference(webView)
+        )
+        walletBridges[webView] = walletBridge
+        webView.addJavascriptInterface(
+            walletBridge,
+            com.roombrowser.browser.wallet.dapp.WalletBridge.JS_INTERFACE_NAME
         )
         webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
             val name = com.roombrowser.browser.engine.DownloadEngine.guessFileName(url, contentDisposition, mimeType)
@@ -1386,6 +1426,80 @@ class BrowserViewModel(
     /** Save-prompt sheet state (rendered by BrowserScreen → VaultSaveSheet). */
     var vaultSavePrompt by mutableStateOf<VaultSavePrompt?>(null)
         private set
+
+    /**
+     * The process-wide wallet engine (bound to this profile in
+     * [initialize]). Exposed so BrowserScreen can render the dApp
+     * confirmation sheets for [com.roombrowser.browser.wallet.WalletEngineApi.pendingRequests]
+     * — the engine IS the state holder; there is no parallel copy here.
+     */
+    val walletEngine: com.roombrowser.browser.wallet.WalletEngineApi
+        get() = graph.walletEngine
+
+    /**
+     * Push wallet state changes to every live page: chainChanged (EVM hex
+     * chainId) when the active network per chain changes, accountsChanged
+     * when the EVM account set changes. Collectors are cancel-and-replace
+     * (one generation alive — the observeTabCounts lesson) and only emit on
+     * an actual CHANGE, so re-binds never spam pages with synthetic events.
+     */
+    private var walletEventsJob: kotlinx.coroutines.Job? = null
+
+    private fun observeWalletEvents() {
+        walletEventsJob?.cancel()
+        lastWalletChainIds = emptyMap()
+        lastWalletEvmAddresses = emptyList()
+        walletEventsJob = viewModelScope.launch {
+            launch {
+                walletEngine.activeNetworks.collect { active ->
+                    if (active != lastWalletChainIds) {
+                        val previous = lastWalletChainIds
+                        lastWalletChainIds = active
+                        // The FIRST population stays silent — pages ask for
+                        // the current chain themselves via eth_chainId. Any
+                        // LATER change emits chainChanged (EVM: hex chainId).
+                        if (previous.isNotEmpty()) {
+                            active.forEach { (chain, network) ->
+                                if (previous[chain] != network.chainId &&
+                                    chain == com.roombrowser.domain.wallet.model.ChainType.EVM
+                                ) {
+                                    val hex = "0x" + network.chainId.toLongOrNull(10)
+                                        ?.toString(16)?.lowercase() ?: network.chainId
+                                    emitWalletEvent("chainChanged", "\"$hex\"")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            launch {
+                walletEngine.accounts.collect { accounts ->
+                    val evm = accounts
+                        .filter { it.chainType == com.roombrowser.domain.wallet.model.ChainType.EVM }
+                        .map { it.address }
+                    if (evm != lastWalletEvmAddresses) {
+                        val previous = lastWalletEvmAddresses
+                        lastWalletEvmAddresses = evm
+                        // The INITIAL population stays silent — pages ask for
+                        // accounts themselves via eth_accounts. Any LATER
+                        // change (add/remove account) emits to every page.
+                        if (previous.isNotEmpty()) {
+                            val jsonArray = evm.joinToString(
+                                prefix = "[", separator = ",", postfix = "]"
+                            ) { address -> "\"$address\"" }
+                            emitWalletEvent("accountsChanged", jsonArray)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** Relay one EIP-1193 event to every live WebView's wallet bridge. */
+    private fun emitWalletEvent(event: String, payloadJson: String) {
+        val bridges = walletBridges.values.toList()
+        bridges.forEach { it.emitEvent(event, payloadJson) }
+    }
 
     /**
      * Hosts whose offer the user dismissed for the CURRENT page — a
