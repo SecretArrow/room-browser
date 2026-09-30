@@ -42,6 +42,16 @@ static void on_tab_close_clicked(GtkButton *button, gpointer user_data);
 static void on_newtab_clicked(GtkButton *button, gpointer user_data);
 static void rb_downloads_dir_init(App *app);
 static void rb_bookmarks_bar_refresh(App *app);
+/* The User-Agent page's rows are built by a helper that sits above the row
+ * builders themselves, because the device row hands them their state. */
+static GtkWidget *rb_pref_combo_row(GtkWidget *grid, int row, App *app,
+                                    const char *key, const char *const *ids,
+                                    const char *const *labels,
+                                    const char *current, const char *title,
+                                    int is_theme);
+static GtkWidget *rb_pref_entry_row(GtkWidget *grid, int row, App *app,
+                                    const char *key, const char *current,
+                                    const char *title);
 
 /* ------------------------------------------------------------------ */
 /* Chrome CSS, generated from the active profile's theme.
@@ -1846,10 +1856,10 @@ static void on_pref_combo(GtkComboBox *combo, gpointer user_data)
     g_free(active);
 }
 
-static void rb_pref_combo_row(GtkWidget *grid, int row, App *app,
-                              const char *key, const char *const *ids,
-                              const char *const *labels, const char *current,
-                              const char *title, int is_theme)
+static GtkWidget *rb_pref_combo_row(GtkWidget *grid, int row, App *app,
+                                    const char *key, const char *const *ids,
+                                    const char *const *labels, const char *current,
+                                    const char *title, int is_theme)
 {
     GtkWidget *label = gtk_label_new(title);
     GtkWidget *combo = gtk_combo_box_text_new();
@@ -1875,6 +1885,7 @@ static void rb_pref_combo_row(GtkWidget *grid, int row, App *app,
     g_object_set_data_full(G_OBJECT(combo), "rb-pref-choices", ch, g_free);
     g_signal_connect(combo, "changed", G_CALLBACK(on_pref_combo), app);
     gtk_grid_attach(GTK_GRID(grid), combo, 1, row, 1, 1);
+    return combo;
 }
 
 /* A dim paragraph spanning both columns, for a row whose control cannot carry
@@ -1916,7 +1927,7 @@ static void rb_device_choices_free(gpointer p)
  * and the User-Agent settings below decide.  Choosing a device IS choosing
  * the User-Agent, so the two are one control rather than two that can
  * disagree. */
-static void rb_pref_device_row(GtkWidget *grid, int row, App *app)
+static GtkWidget *rb_pref_device_row(GtkWidget *grid, int row, App *app)
 {
     const char *current = rb_pref(app, RB_PREF_DEVICE_ID, "");
     GtkWidget *label = gtk_label_new("Device");
@@ -1959,6 +1970,115 @@ static void rb_pref_device_row(GtkWidget *grid, int row, App *app)
                            rb_device_choices_free);
     g_signal_connect(combo, "changed", G_CALLBACK(on_pref_combo), app);
     gtk_grid_attach(GTK_GRID(grid), combo, 1, row, 1, 1);
+    return combo;
+}
+
+/* The rows that only mean something when NO device is chosen.  A control that
+ * silently does nothing is worse than one that is visibly off: with a machine
+ * selected, these grey out and the note below says why, so the settings screen
+ * never offers an answer the browser is going to ignore. */
+typedef struct {
+    GtkWidget *mode;
+    GtkWidget *preset;
+    GtkWidget *custom;
+    GtkWidget *current;   /* the "Current: ..." note, refreshed with them */
+} rb_ua_followers;
+
+/* What the profile would actually send, and why.  Re-read rather than cached,
+ * because both halves of it change when the device changes. */
+static void ua_current_note_set(GtkWidget *note, App *app)
+{
+    char *ua = rb_ua_current(app);
+    const char *device_id = rb_pref(app, RB_PREF_DEVICE_ID, "");
+    gboolean has_device = (device_id != NULL && device_id[0] != '\0');
+    char *markup = g_markup_printf_escaped(
+        "<small>Current: %s\n%s</small>",
+        (ua != NULL) ? ua : "the engine default",
+        has_device
+            ? "Set by the device above, along with the platform "
+              "characteristics that go with it. Choose \"No device\" to "
+              "set the string on its own."
+            : "On its own, a User-Agent string changes no other platform "
+              "or device characteristic.");
+    gtk_label_set_markup(GTK_LABEL(note), markup);
+    g_free(markup);
+    free(ua);
+}
+
+static void rb_ua_followers_update(GtkComboBox *device_combo, gpointer user_data)
+{
+    rb_ua_followers *f = (rb_ua_followers *)g_object_get_data(
+        G_OBJECT(device_combo), "rb-ua-followers");
+    rb_pref_choices *ch = (rb_pref_choices *)g_object_get_data(
+        G_OBJECT(device_combo), "rb-pref-choices");
+    App *app = (App *)user_data;
+    int i = gtk_combo_box_get_active(device_combo);
+    const char *id;
+    gboolean has_device;
+
+    if (f == NULL) return;
+
+    /* Read the chosen id rather than trusting the row index, so the greying
+     * stays right whatever the combo happens to hold. */
+    id = (ch != NULL && i >= 0 && ch->ids != NULL && ch->ids[i] != NULL)
+             ? ch->ids[i] : "";
+    has_device = (id[0] != '\0');
+
+    if (f->mode != NULL) gtk_widget_set_sensitive(f->mode, !has_device);
+    if (f->preset != NULL) gtk_widget_set_sensitive(f->preset, !has_device);
+    if (f->custom != NULL) gtk_widget_set_sensitive(f->custom, !has_device);
+    if (f->current != NULL && app != NULL) ua_current_note_set(f->current, app);
+}
+
+/* The User-Agent rows themselves.  They come after the device row because the
+ * device decides them, and they hand their widgets back through `f` so that
+ * row can grey them out. */
+static void ua_rows(GtkWidget *grid, int *row, App *app, rb_ua_followers *f)
+{
+    int r = *row;
+
+    {
+        static const char *ids[4] = { "default", "preset", "custom", NULL };
+        static const char *labels[4] = { "Default (WebKit)",
+                                         "Preset", "Custom", NULL };
+        f->mode = rb_pref_combo_row(grid, r++, app, RB_PREF_UA_MODE, ids, labels,
+                                    rb_pref(app, RB_PREF_UA_MODE, "default"),
+                                    "User-Agent mode", 0);
+    }
+    {
+        static const char *ids[64];
+        static const char *labels[64];
+        static char buf[64][128];
+        int n = rb_ua_count();
+        int i;
+        if (n > 63) n = 63;
+        for (i = 0; i < n; i++) {
+            const rb_ua_preset *p = rb_ua_at(i);
+            ids[i] = (p != NULL) ? p->id : "";
+            snprintf(buf[i], sizeof buf[i], "%s%s",
+                     (p != NULL && p->label != NULL) ? p->label : "",
+                     (p != NULL && p->is_desktop) ? "  (desktop)" : "");
+            labels[i] = buf[i];
+        }
+        ids[n] = NULL;
+        labels[n] = NULL;
+        f->preset = rb_pref_combo_row(grid, r++, app, RB_PREF_UA_PRESET_ID,
+                                      ids, labels,
+                                      rb_pref(app, RB_PREF_UA_PRESET_ID, ""),
+                                      "Preset", 0);
+    }
+    f->custom = rb_pref_entry_row(grid, r, app, RB_PREF_CUSTOM_USER_AGENT,
+                                  rb_pref(app, RB_PREF_CUSTOM_USER_AGENT, ""),
+                                  "Custom User-Agent");
+    r += 2;
+
+    f->current = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(f->current), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(f->current), TRUE);
+    ua_current_note_set(f->current, app);
+    gtk_grid_attach(GTK_GRID(grid), f->current, 0, r++, 2, 1);
+
+    *row = r;
 }
 
 /* An entry row with an Apply button: the value is written when Apply is
@@ -1997,9 +2117,9 @@ static void on_pref_entry_apply(GtkButton *btn, gpointer user_data)
     rb_prefs_apply_key(app, key);
 }
 
-static void rb_pref_entry_row(GtkWidget *grid, int row, App *app,
-                              const char *key, const char *current,
-                              const char *title)
+static GtkWidget *rb_pref_entry_row(GtkWidget *grid, int row, App *app,
+                                    const char *key, const char *current,
+                                    const char *title)
 {
     GtkWidget *label = gtk_label_new(title);
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
@@ -2017,6 +2137,7 @@ static void rb_pref_entry_row(GtkWidget *grid, int row, App *app,
     g_object_set_data(G_OBJECT(apply), "rb-pref-entry", entry);
     g_signal_connect(apply, "clicked", G_CALLBACK(on_pref_entry_apply), app);
     gtk_grid_attach(GTK_GRID(grid), box, 0, row + 1, 2, 1);
+    return box;
 }
 
 static GtkWidget *rb_pref_page(void)
@@ -2283,65 +2404,21 @@ static void rb_show_prefs_dialog_impl(App *app)
     {
         /* The device comes first because it decides the User-Agent: with a
          * machine chosen, the three rows below are not consulted at all. */
-        rb_pref_device_row(grid, r++, app);
+        GtkWidget *device_combo = rb_pref_device_row(grid, r++, app);
+        rb_ua_followers *f = g_new0(rb_ua_followers, 1);
         rb_pref_note_row(grid, r++,
                          "A device sets the User-Agent and everything a page can "
                          "ask about the machine — platform, client hints, memory, "
                          "cores, WebGL. Screen size is left alone: the page is "
                          "really laid out on this screen.");
-    }
-    {
-        static const char *ids[4] = { "default", "preset", "custom", NULL };
-        static const char *labels[4] = { "Default (WebKit)",
-                                         "Preset", "Custom", NULL };
-        rb_pref_combo_row(grid, r++, app, RB_PREF_UA_MODE, ids, labels,
-                          rb_pref(app, RB_PREF_UA_MODE, "default"),
-                          "User-Agent mode", 0);
-    }
-    {
-        static const char *ids[64];
-        static const char *labels[64];
-        static char buf[64][128];
-        int n = rb_ua_count();
-        int i;
-        if (n > 63) n = 63;
-        for (i = 0; i < n; i++) {
-            const rb_ua_preset *p = rb_ua_at(i);
-            ids[i] = (p != NULL) ? p->id : "";
-            snprintf(buf[i], sizeof buf[i], "%s%s",
-                     (p != NULL && p->label != NULL) ? p->label : "",
-                     (p != NULL && p->is_desktop) ? "  (desktop)" : "");
-            labels[i] = buf[i];
-        }
-        ids[n] = NULL;
-        labels[n] = NULL;
-        rb_pref_combo_row(grid, r++, app, RB_PREF_UA_PRESET_ID, ids, labels,
-                          rb_pref(app, RB_PREF_UA_PRESET_ID, ""), "Preset", 0);
-    }
-    rb_pref_entry_row(grid, r, app, RB_PREF_CUSTOM_USER_AGENT,
-                      rb_pref(app, RB_PREF_CUSTOM_USER_AGENT, ""),
-                      "Custom User-Agent");
-    r += 2;
-    {
-        char *ua = rb_ua_current(app);
-        const char *device_id = rb_pref(app, RB_PREF_DEVICE_ID, "");
-        gboolean has_device = (device_id != NULL && device_id[0] != '\0');
-        GtkWidget *note = gtk_label_new(NULL);
-        char *markup = g_markup_printf_escaped(
-            "<small>Current: %s\n%s</small>",
-            (ua != NULL) ? ua : "the engine default",
-            has_device
-                ? "Set by the device above, along with the platform "
-                  "characteristics that go with it. Choose \"No device\" to "
-                  "set the string on its own."
-                : "On its own, a User-Agent string changes no other platform "
-                  "or device characteristic.");
-        gtk_label_set_markup(GTK_LABEL(note), markup);
-        gtk_label_set_xalign(GTK_LABEL(note), 0.0f);
-        gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);
-        g_free(markup);
-        free(ua);
-        gtk_grid_attach(GTK_GRID(grid), note, 0, r++, 2, 1);
+        ua_rows(grid, &r, app, f);
+        /* Both the connection and the initial call, so the rows grey out when
+         * the machine changes and are already right when the page is shown. */
+        g_object_set_data_full(G_OBJECT(device_combo), "rb-ua-followers", f,
+                               g_free);
+        g_signal_connect(device_combo, "changed",
+                         G_CALLBACK(rb_ua_followers_update), app);
+        rb_ua_followers_update(GTK_COMBO_BOX(device_combo), app);
     }
     gtk_notebook_append_page(GTK_NOTEBOOK(notebook), rb_pref_scrolled(grid),
                              gtk_label_new("User-Agent"));

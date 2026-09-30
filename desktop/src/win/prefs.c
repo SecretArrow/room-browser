@@ -160,6 +160,20 @@ static void pf_set_note(RbPrefs *pf, HWND note, const wchar_t *text)
     InvalidateRect(note, NULL, TRUE);
 }
 
+/* The window a setting is edited through, or NULL when this page does not show
+ * it.  Used to grey out the rows a device makes irrelevant. */
+static HWND pf_ctl_by_key(RbPrefs *pf, const char *key)
+{
+    int i;
+    if (pf == NULL || key == NULL) return NULL;
+    for (i = 0; i < pf->n_ctl; i++) {
+        if (pf->ctl[i].key != NULL && strcmp(pf->ctl[i].key, key) == 0) {
+            return pf->ctl[i].ctl;
+        }
+    }
+    return NULL;
+}
+
 /* ------------------------------------------------------------------ */
 /* Applying a change
  *
@@ -247,6 +261,24 @@ static void pf_refresh_notes(RbPrefs *pf)
         }
         pf_set_note(pf, pf->ua_note, buf);
         free(ua);
+    }
+
+    /* The three rows that only mean something with NO device chosen.  A
+     * control that silently does nothing is worse than one that is visibly
+     * off, so with a machine selected they grey out and the note above says
+     * why - the settings screen never offers an answer the browser is going
+     * to ignore. */
+    {
+        const char *device_id = rb_pref(app, RB_PREF_DEVICE_ID, "");
+        BOOL on = (device_id == NULL || device_id[0] == '\0');
+        static const char *const ua_keys[3] = { RB_PREF_UA_MODE,
+                                                RB_PREF_UA_PRESET_ID,
+                                                RB_PREF_CUSTOM_USER_AGENT };
+        int k;
+        for (k = 0; k < 3; k++) {
+            HWND h = pf_ctl_by_key(pf, ua_keys[k]);
+            if (h != NULL) EnableWindow(h, on);
+        }
     }
 
     if (pf->dns_note != NULL) {

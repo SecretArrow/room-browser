@@ -2145,15 +2145,31 @@ static void test_rb_profile(void)
     {
         const rb_profile *pa = rb_profile_at(r, a);
         const rb_profile *pb = rb_profile_at(r, b);
+        const char *da = rb_settings_get(pa->settings, RB_PREF_DEVICE_ID, "");
+        const char *db = rb_settings_get(pb->settings, RB_PREF_DEVICE_ID, "");
 
+        /* A fresh profile is handed a real machine, and the machine carries
+         * the identity: two profiles created in a row must not present the
+         * same one, or the catalogue would be pointless. */
+        CHECK(rb_device_by_id(da) != NULL);
+        CHECK(rb_device_by_id(db) != NULL);
+        CHECK(strcmp(da, db) != 0);
+
+        /* The device drives the User-Agent, so the UA keys stay untouched
+         * rather than sitting there as a second, contradicting answer. */
         CHECK(STREQ(rb_settings_get(pa->settings, RB_PREF_UA_MODE, ""),
-                    "preset"));
+                    "default"));
         CHECK(STREQ(rb_settings_get(pb->settings, RB_PREF_UA_MODE, ""),
-                    "preset"));
-        CHECK(rb_ua_by_id(rb_settings_get(pa->settings,
-                                          RB_PREF_UA_PRESET_ID, NULL)) != NULL);
-        CHECK(rb_ua_by_id(rb_settings_get(pb->settings,
-                                          RB_PREF_UA_PRESET_ID, NULL)) != NULL);
+                    "default"));
+        CHECK(STREQ(rb_settings_get(pa->settings, RB_PREF_UA_PRESET_ID, ""),
+                    ""));
+        CHECK(STREQ(rb_settings_get(pa->settings, RB_PREF_CUSTOM_USER_AGENT, ""),
+                    ""));
+
+        /* ...and the two machines really do send different User-Agent
+         * strings, which is the whole point of handing each profile its
+         * own. */
+        CHECK(strcmp(rb_device_by_id(da)->ua, rb_device_by_id(db)->ua) != 0);
     }
 
     /* ... unless the caller says not to (import/restore) */
@@ -2161,6 +2177,8 @@ static void test_rb_profile(void)
     CHECK(c == 2);
     CHECK(STREQ(rb_settings_get(rb_profile_at(r, c)->settings,
                                 RB_PREF_UA_MODE, ""), "default"));
+    CHECK(STREQ(rb_settings_get(rb_profile_at(r, c)->settings,
+                                RB_PREF_DEVICE_ID, ""), ""));
 
     /* names are unique case-insensitively and validated */
     CHECK(rb_profile_create(r, "personal", NULL, 0, 0) == -1);
@@ -2342,7 +2360,7 @@ static void test_rb_profile(void)
     {
         const char *src_id = rb_profile_at(r, 1)->id;
         char src_engine[64];
-        char src_ua[64];
+        char src_device[128];
         int dup;
         const rb_profile *d;
         int i;
@@ -2350,9 +2368,10 @@ static void test_rb_profile(void)
         snprintf(src_engine, sizeof(src_engine), "%s",
                  rb_settings_get(rb_profile_at(r, 1)->settings,
                                  RB_PREF_SEARCH_ENGINE, ""));
-        snprintf(src_ua, sizeof(src_ua), "%s",
+        snprintf(src_device, sizeof(src_device), "%s",
                  rb_settings_get(rb_profile_at(r, 1)->settings,
-                                 RB_PREF_UA_PRESET_ID, ""));
+                                 RB_PREF_DEVICE_ID, ""));
+        CHECK(src_device[0] != '\0'); /* the source does present a machine */
 
         dup = rb_profile_duplicate(r, src_id, NULL);
         CHECK(dup >= 0);
@@ -2363,8 +2382,12 @@ static void test_rb_profile(void)
         CHECK(d->is_locked == 0);
         CHECK(STREQ(rb_settings_get(d->settings, RB_PREF_SEARCH_ENGINE, ""),
                     src_engine));
-        CHECK(STREQ(rb_settings_get(d->settings, RB_PREF_UA_PRESET_ID, ""),
-                    src_ua));
+        /* It inherits the configuration but not the machine: a copy that went
+         * on presenting the source's device would defeat the catalogue. */
+        CHECK(strcmp(rb_settings_get(d->settings, RB_PREF_DEVICE_ID, ""),
+                     src_device) != 0);
+        CHECK(rb_device_by_id(rb_settings_get(d->settings,
+                                              RB_PREF_DEVICE_ID, NULL)) != NULL);
 
         /* the second copy gets a numbered name */
         {

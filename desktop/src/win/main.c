@@ -265,22 +265,45 @@ static int rb_selftest(const wchar_t *out_path)
 
     ST_CHECK(rb_theme_current(app) != NULL);
 
-    /* A profile created by rb_data_init is deliberately NOT in "default" mode,
-     * and asserting that it were is what this check used to get wrong: the
-     * core hands every new profile a randomly picked desktop UA preset so two
-     * profiles are not trivially linkable (rb_profile_create's randomize_ua,
-     * the same defence the Android edition makes).  Both halves of the
-     * contract belong here — an override IS sent, and choosing "default"
-     * sends none — because the second half is the one a regression would
-     * quietly break, and this is the only place that reads it back through the
-     * chrome's own accessor rather than the core's. */
+    /* A profile created by rb_data_init presents a randomly picked real
+     * desktop machine, so two profiles are not trivially linkable
+     * (rb_profile_create's randomize_device, the same defence the Android
+     * edition makes).  The machine carries the User-Agent, so rb_ua_current
+     * reports it first and keeps reporting it whatever the UA mode says -
+     * the device IS the identity, and a UA mode that could override it would
+     * be the second, contradicting answer this design exists to remove.
+     *
+     * Both halves of the contract belong here, because the second half is the
+     * one a regression would quietly break and this is the only place that
+     * reads it back through the chrome's own accessor rather than the
+     * core's: with a machine assigned an override IS sent, and with no
+     * machine and mode "default" nothing is. */
+    ST_CHECK(rb_device_by_id(rb_pref(app, RB_PREF_DEVICE_ID, NULL)) != NULL);
     ua = rb_ua_current(app);
     ST_CHECK(ua != NULL && ua[0] != '\0');
     free(ua);
+
+    /* the UA mode cannot override the machine while one is assigned... */
     rb_pref_set(app, RB_PREF_UA_MODE, "default");
     ua = rb_ua_current(app);
-    ST_CHECK(ua == NULL);
+    ST_CHECK(ua != NULL && ua[0] != '\0');
     free(ua);
+
+    /* ...and with no machine at all, "default" sends nothing.  The id is put
+     * back afterwards: this run leaves the scratch profile on disk, and a
+     * second --selftest against it must start from where the first one did
+     * rather than from a profile this check stripped. */
+    {
+        char *kept = rb_strdup(rb_pref(app, RB_PREF_DEVICE_ID, ""));
+        rb_pref_set(app, RB_PREF_DEVICE_ID, "");
+        ua = rb_ua_current(app);
+        ST_CHECK(ua == NULL);
+        free(ua);
+        if (kept != NULL) {
+            rb_pref_set(app, RB_PREF_DEVICE_ID, kept);
+            free(kept);
+        }
+    }
     rb_pref_set(app, RB_PREF_UA_MODE, "preset");
 
     /* A preference written through the chrome's own setter reads back, and

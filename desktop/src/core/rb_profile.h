@@ -82,12 +82,14 @@ const rb_profile    *rb_profile_default(const rb_profile_registry *r);
  * long, or already taken (case-insensitively, after trimming).
  *
  * `icon` may be NULL/empty for the default person glyph.  When
- * `randomize_ua` is non-zero and the new profile's settings still say
- * ua_mode=default, a random desktop UA preset is installed — the same
- * behaviour, and the same reason, as ProfileManager.create().  Import and
+ * `randomize_device` is non-zero and the new profile's settings still say
+ * ua_mode=default, a real desktop machine that no other profile presents is
+ * assigned to it — the same behaviour, and the same reason, as
+ * ProfileManager.create().  The device carries the User-Agent too, so the UA
+ * keys are cleared with it rather than left as a second answer.  Import and
  * restore callers pass 0 so the payload's settings survive verbatim. */
 int rb_profile_create(rb_profile_registry *r, const char *name, const char *icon,
-                      unsigned int color_argb, int randomize_ua);
+                      unsigned int color_argb, int randomize_device);
 
 /* Renames a profile.  1 on success; 0 when the profile is unknown, the name
  * is empty/too long, or another profile already uses it. */

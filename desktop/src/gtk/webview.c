@@ -902,11 +902,17 @@ static void rb_gw_device_apply_to(App *app, WebKitWebView *wv)
     if (ucm == NULL) return;
 
     /* configure() runs again on every settings change, so the old script is
-     * removed first — otherwise a long session stacks one copy per edit. */
+     * removed first — otherwise a long session stacks one copy per edit.
+     *
+     * The key is stolen rather than cleared, and the reference dropped here:
+     * whether g_object_set_data(x, key, NULL) runs the old destroy notify is
+     * a GLib implementation detail, and this should not leak a script if that
+     * ever changes. */
     previous = g_object_get_data(G_OBJECT(wv), RB_DEVICE_SCRIPT_KEY);
     if (previous != NULL) {
         webkit_user_content_manager_remove_script(ucm, previous);
-        g_object_set_data(G_OBJECT(wv), RB_DEVICE_SCRIPT_KEY, NULL);
+        g_object_steal_data(G_OBJECT(wv), RB_DEVICE_SCRIPT_KEY);
+        g_object_unref(previous);
     }
 
     device = rb_device_by_id(rb_pref(app, RB_PREF_DEVICE_ID, NULL));

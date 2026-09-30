@@ -9,6 +9,7 @@
 
 #include "rb_profile.h"
 
+#include "rb_devices.h"
 #include "rb_json.h"
 #include "rb_paths.h"
 #include "rb_prefs.h"
@@ -329,8 +330,34 @@ static int rb_registry_push(rb_profile_registry *r, const char *name,
     return r->count - 1;
 }
 
+/* The device ids every other profile already presents, so a new profile can
+ * be given a machine nobody else claims.  Returns a malloc'd array of
+ * borrowed pointers (the ids belong to the profiles) plus their count; free
+ * the array, never the strings.  NULL means "none taken". */
+static const char **device_ids_taken(const rb_profile_registry *r, int *out_n)
+{
+    const char **ids;
+    int i, n = 0;
+
+    *out_n = 0;
+    ids = (const char **)malloc(sizeof(*ids) * (size_t)(r->count + 1));
+    if (ids == NULL) {
+        return NULL;
+    }
+    for (i = 0; i < r->count; i++) {
+        const char *id = rb_settings_get(r->items[i].settings,
+                                         RB_PREF_DEVICE_ID, NULL);
+        if (id != NULL && id[0] != '\0') {
+            ids[n++] = id;
+        }
+    }
+    ids[n] = NULL;
+    *out_n = n;
+    return ids;
+}
+
 int rb_profile_create(rb_profile_registry *r, const char *name, const char *icon,
-                      unsigned int color_argb, int randomize_ua)
+                      unsigned int color_argb, int randomize_device)
 {
     char *trimmed;
     int idx;
@@ -348,17 +375,35 @@ int rb_profile_create(rb_profile_registry *r, const char *name, const char *icon
     idx = rb_registry_push(r, trimmed, icon, color_argb);
     free(trimmed);
 
-    /* Newly created profiles identify as a randomly picked desktop UA so two
-     * fresh profiles do not look identical to the sites they visit.  An
-     * explicit UA setting always wins (import/restore pass randomize_ua = 0,
-     * and a caller that set ua_mode itself is respected either way). */
-    if (randomize_ua) {
+    /* Newly created profiles identify as a randomly picked real machine, so
+     * two fresh profiles do not look identical to the sites they visit.  The
+     * device decides the User-Agent as well as everything else a page can ask
+     * about the machine, so the UA keys are cleared rather than left behind
+     * as a second, contradicting answer.  An explicit identity always wins:
+     * callers that set ua_mode themselves are respected, and import/restore
+     * pass 0 so the payload's settings survive verbatim (the same contract,
+     * and the same reason, as ProfileManager.create()). */
+    if (randomize_device) {
         rb_profile *p = &r->items[idx];
         const char *mode = rb_settings_get(p->settings, RB_PREF_UA_MODE, NULL);
         if (mode == NULL || strcmp(mode, "default") == 0) {
-            rb_settings_set(p->settings, RB_PREF_UA_MODE, "preset");
-            rb_settings_set(p->settings, RB_PREF_UA_PRESET_ID,
-                            rb_ua_random_preset_id());
+            int taken_n = 0;
+            const char **taken = device_ids_taken(r, &taken_n);
+            /* The new profile is already in the registry but has no device
+             * yet, so it cannot appear in its own taken list. */
+            const rb_device *d = rb_device_random(taken, taken_n);
+            free((void *)taken); /* the ids are borrowed; only the array is ours */
+            if (d != NULL) {
+                rb_settings_set(p->settings, RB_PREF_DEVICE_ID, d->id);
+                rb_settings_set(p->settings, RB_PREF_UA_PRESET_ID, "");
+                rb_settings_set(p->settings, RB_PREF_CUSTOM_USER_AGENT, "");
+            } else {
+                /* No machine left to hand out: fall back to the UA preset
+                 * rather than leaving the profile with no identity at all. */
+                rb_settings_set(p->settings, RB_PREF_UA_MODE, "preset");
+                rb_settings_set(p->settings, RB_PREF_UA_PRESET_ID,
+                                rb_ua_random_preset_id());
+            }
         }
     }
     return idx;
@@ -704,16 +749,37 @@ int rb_profile_duplicate(rb_profile_registry *r, const char *id,
                            src->icon, src->color_argb);
     rb_str_free(&cand);
 
-    /* The copy inherits the source's configuration, not its identity: no UA
-     * randomization (it is a copy, not a fresh profile), and the new row is
-     * never the default. */
+    /* The copy inherits the source's configuration, not its identity: the new
+     * row is never the default, and it does not go on presenting the source's
+     * machine — two profiles sharing one fingerprint is exactly what the
+     * catalogue exists to prevent (the Android edition's duplicate() makes
+     * the same choice).  Everything else is inherited verbatim. */
     {
         rb_profile *dst = &r->items[idx];
+        const char *src_device;
+
         rb_settings_copy_into(dst->settings, src->settings);
         free(dst->theme_json);
         dst->theme_json = rb_json_strdup(src->theme_json);
         dst->is_default = 0;
         dst->is_locked = 0;
+
+        /* Only a profile that presented a machine gets a new one: a copy of a
+         * profile that presented nothing (imported, or using an explicit UA)
+         * must not silently acquire one. */
+        src_device = rb_settings_get(dst->settings, RB_PREF_DEVICE_ID, NULL);
+        if (src_device != NULL && rb_device_by_id(src_device) != NULL) {
+            int taken_n = 0;
+            const char **taken = device_ids_taken(r, &taken_n);
+            /* The copy is already in the registry carrying the source's
+             * device id, so that machine counts as taken and cannot come
+             * back. */
+            const rb_device *d = rb_device_random(taken, taken_n);
+            free((void *)taken); /* the ids are borrowed; only the array is ours */
+            if (d != NULL) {
+                rb_settings_set(dst->settings, RB_PREF_DEVICE_ID, d->id);
+            }
+        }
     }
     return idx;
 }
