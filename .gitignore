@@ -8,6 +8,10 @@ release-out/
 ci-logs/
 e2e-logcat-*.txt
 
+# Python scratch from the generators in android/tools
+__pycache__/
+*.pyc
+
 # Gradle / Android scratch at repo root (real patterns live in android/.gitignore)
 .gradle/
 local.properties
