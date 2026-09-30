@@ -31,6 +31,7 @@ extern "C" {
 #define RB_TABSTRIP_H   34
 #define RB_TOOLBAR_H    40
 #define RB_BMBAR_H      30   /* the bookmarks bar, when it is shown */
+#define RB_FINDBAR_H    34   /* the find bar, when it is shown */
 
 /* ------------------------------------------------------------------ */
 /* Palette.
@@ -72,6 +73,14 @@ extern "C" {
 #define RB_BM_CTX_REMOVE    3902
 #define RB_BM_SUBID         3
 
+/* The find bar's own controls, below RB_ID_TAB_FIRST for the same reason, and
+ * clear of the bookmarks bar's range (4000 + up to RB_BM_MAX buttons). */
+#define RB_ID_FIND_EDIT  5000
+#define RB_ID_FIND_PREV  5001
+#define RB_ID_FIND_NEXT  5002
+#define RB_ID_FIND_CLOSE 5003
+#define RB_FIND_SUBID    4
+
 #define IDM_NEW_TAB   3001
 #define IDM_BOOKMARK  3002
 #define IDM_ABOUT     3003
@@ -79,6 +88,7 @@ extern "C" {
 #define IDM_DOWNLOADS 3005
 #define IDM_BMBAR     3006
 #define IDM_TRANSLATE 3007
+#define IDM_FIND      3008
 #define IDM_HIST_FIRST 3100
 #define RB_HIST_MENU_MAX 16
 
@@ -110,6 +120,16 @@ typedef struct App {
     int   bm_slots;
     int   bmbar_h;     /* the bar's client height: 0 when it is hidden, which
                         * is what tells the page where it starts */
+
+    /* Find in page.  The controls live in a strip at the bottom of the client
+     * area and start hidden; findbar_h is that strip's height, 0 while it is
+     * hidden, which is what tells the page where it now ends. */
+    HWND find_edit;
+    HWND find_label;
+    HWND find_prev, find_next, find_close;
+    int  findbar_h;
+    long find_id;     /* the tab the count in find_label belongs to: a result
+                       * that lands after a tab switch is not this tab's */
 
     HBRUSH br_chrome, br_toolbar, br_tab_idle, br_omni, br_accent;
     HFONT  fnt_ui, fnt_omni;
@@ -254,6 +274,14 @@ void rb_update_star(App *app);
  * changes, when "Show bookmarks bar" is toggled, on a profile switch and on a
  * text-size change — anything that changes either the rows or their height. */
 void rb_bmbar_refresh(App *app);
+/* Opens the find bar (focusing its field) or closes it.  Closing also ends
+ * the search, so the page keeps no highlight behind it. */
+void rb_findbar_show(App *app);
+void rb_findbar_hide(App *app);
+/* Re-runs the open bar's search against the tab that is now active, or does
+ * nothing when the bar is closed.  The count belongs to a page, so it has to
+ * follow the page when the active tab changes. */
+void rb_findbar_retarget(App *app);
 void rb_update_reloadbtn(App *app);
 /* The one place App::loading changes: updates the reload/stop glyph and
  * starts or stops the toolbar progress strip.  Every path that begins or ends

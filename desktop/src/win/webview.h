@@ -61,6 +61,13 @@ void rb_wv_apply_settings_all(App *app);
  * handed over, not once the data is gone. */
 void rb_wv_clear_browsing_data(App *app, unsigned kinds);
 
+/* Run `js` in the ACTIVE tab's page.  `done` receives the runtime's result as
+ * the JSON text it produced ("12" for a number, "\"x\"" for a string), or NULL
+ * when the call failed; it may be NULL when the caller does not want the
+ * answer.  The callback runs on this thread, and once. */
+typedef void (*RbJsDone)(App *app, const wchar_t *result_json);
+void rb_wv_run_js(App *app, const wchar_t *js, RbJsDone done);
+
 #ifdef __cplusplus
 }
 #endif

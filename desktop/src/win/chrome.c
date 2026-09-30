@@ -744,6 +744,9 @@ void rb_do_activate(App *app, long id)
     rb_tabs_rebuild(app);
     rb_update_all(app);
     rb_wv_activate(app, id);
+    /* After the view is up: the bar's count is the new page's, and the old
+     * one is now wrong.  A no-op while the bar is closed. */
+    rb_findbar_retarget(app);
 }
 
 /* Android's TranslateDialog, minus the dialog: the target language already
@@ -1358,6 +1361,274 @@ void rb_do_reload_or_stop(App *app)
 }
 
 /* ------------------------------------------------------------------ */
+/* Find in page
+ *
+ * Android's FindInPageBar: a field, previous, next and close, with the search
+ * re-running on every keystroke.  There is no engine-side find in the WebView2
+ * surface this edition targets, so the page is asked instead, with the calls
+ * Android itself makes — window.find(query, caseSensitive, backwards,
+ * wrapAround) with caseSensitive false and wrapAround true, and a count taken
+ * by walking the document's text.
+ *
+ * The strip sits at the BOTTOM of the client area, under the page: this
+ * edition puts its toolbar at the top, so the page's near edge is its bottom
+ * one.  It starts hidden, and findbar_h is what tells webview.c where the page
+ * now ends.
+ *
+ * The count is a text count, not WebKit's match count, and the two can differ:
+ * it walks document.body.innerText, so it counts a phrase the way a reader
+ * would see it and not the way the engine's find does.  Android's bar shows no
+ * count at all, so this is already more than parity; the GTK edition shows
+ * WebKit's own number, which is the more precise of the two.
+ */
+
+#define RB_FIND_MAX_JS 8192
+
+/* rb_mk_button is defined with the rest of the chrome construction, below:
+ * the find bar's three buttons are the same owner-drawn chrome buttons as
+ * everything else, so they are made by the same helper. */
+static HWND rb_mk_button(App *app, const wchar_t *text, int id);
+
+/* The query, as the wide text the JS is built from.  Caller frees. */
+static wchar_t *rb_find_query(App *app)
+{
+    wchar_t buf[512];
+    int len;
+
+    if (app->find_edit == NULL) return NULL;
+    len = GetWindowTextW(app->find_edit, buf, 512);
+    if (len <= 0) return NULL;
+    return _wcsdup(buf);
+}
+
+/* The query as a JS string literal's contents, quotes left off.  A real
+ * escaper rather than Android's two replaces: a query containing a newline or
+ * a control character would otherwise end the literal and run as code. */
+static wchar_t *rb_find_quoted(const wchar_t *q)
+{
+    char *u8, *esc;
+    wchar_t *w;
+
+    u8 = rb_wide_to_utf8(q);
+    if (u8 == NULL) return NULL;
+    esc = rb_json_escape(u8);
+    free(u8);
+    if (esc == NULL) return NULL;
+    w = rb_utf8_to_wide(esc);
+    free(esc);
+    return w;
+}
+
+/* window.find() moves the page's selection onto the match, which is the only
+ * highlight this edition gets — the same feedback, and the same call,
+ * Android's own bar has. */
+static void rb_find_step(App *app, int forward)
+{
+    wchar_t js[RB_FIND_MAX_JS];
+    wchar_t *q, *esc;
+
+    q = rb_find_query(app);
+    if (q == NULL) return;
+    esc = rb_find_quoted(q);
+    free(q);
+    if (esc == NULL) return;
+
+    /* Android's argument list, in Android's order: caseSensitive false,
+     * backwards, wrapAround true. */
+    if (swprintf(js, RB_FIND_MAX_JS, L"window.find(\"%ls\", false, %ls, true);",
+                 esc, forward ? L"false" : L"true") <= 0) {
+        free(esc);
+        return;
+    }
+    free(esc);
+    rb_wv_run_js(app, js, NULL);
+}
+
+/* The count comes from the page: WebView2 has no find API in the surface this
+ * edition targets, so the document's own text is walked.  It counts what a
+ * reader would see (innerText skips script and hidden nodes) and does not
+ * overlap matches, which is what a count is expected to mean. */
+static const wchar_t *RB_FIND_COUNT_JS =
+    L"(function(){var q=\"%ls\";if(!q)return 0;"
+    L"var b=document.body?document.body.innerText:'';"
+    L"var L=b.toLowerCase(),Q=q.toLowerCase(),n=0,i=0;"
+    L"while((i=L.indexOf(Q,i))!==-1){n++;i+=Q.length;}return n;})()";
+
+static void rb_find_counted(App *app, const wchar_t *json)
+{
+    wchar_t buf[64];
+    unsigned long n;
+
+    if (app->find_label == NULL) return;
+    if (json == NULL) {   /* the page went away under us */
+        SetWindowTextW(app->find_label, L"");
+        return;
+    }
+    /* A result that lands after the user moved to another tab is that other
+     * tab's count, not this bar's.  The GTK edition drops it the same way, by
+     * asking which view the reporting controller belongs to. */
+    if (app->active_id != app->find_id) return;
+    n = wcstoul(json, NULL, 10);
+    if (n == 0) {
+        wcscpy(buf, L"No matches");
+    } else {
+        swprintf(buf, 64, (n == 1) ? L"%lu match" : L"%lu matches", n);
+    }
+    SetWindowTextW(app->find_label, buf);
+}
+
+/* The search the field's text asks for.  Runs on every keystroke, which is
+ * what Android's bar does with the same text. */
+static void rb_find_run(App *app)
+{
+    wchar_t js[RB_FIND_MAX_JS];
+    wchar_t *q, *esc;
+    int n;
+
+    if (app->find_label != NULL) SetWindowTextW(app->find_label, L"");
+    q = rb_find_query(app);
+    if (q == NULL) return;
+    esc = rb_find_quoted(q);
+    free(q);
+    if (esc == NULL) return;
+
+    n = swprintf(js, RB_FIND_MAX_JS, RB_FIND_COUNT_JS, esc);
+    free(esc);
+    if (n <= 0) return;
+    /* Recorded before the call, so the callback can tell whether the answer
+     * still belongs to the tab that asked. */
+    app->find_id = app->active_id;
+    rb_wv_run_js(app, js, rb_find_counted);
+}
+
+void rb_findbar_retarget(App *app)
+{
+    if (app == NULL || app->findbar_h <= 0) return;
+    rb_find_run(app);
+}
+
+static void rb_findbar_set_visible(App *app, int show)
+{
+    int cmd = show ? SW_SHOW : SW_HIDE;
+
+    if (app->find_edit)  ShowWindow(app->find_edit, cmd);
+    if (app->find_label) ShowWindow(app->find_label, cmd);
+    if (app->find_prev)  ShowWindow(app->find_prev, cmd);
+    if (app->find_next)  ShowWindow(app->find_next, cmd);
+    if (app->find_close) ShowWindow(app->find_close, cmd);
+}
+
+void rb_findbar_show(App *app)
+{
+    if (app == NULL || app->find_edit == NULL) return;
+    app->findbar_h = rb_scaled(app, RB_FINDBAR_H);
+    rb_findbar_set_visible(app, 1);
+    rb_layout(app);
+    rb_wv_resize(app);
+    InvalidateRect(app->hwnd, NULL, TRUE);
+    SetFocus(app->find_edit);
+    SendMessageW(app->find_edit, EM_SETSEL, 0, (LPARAM)-1);
+    /* Text left over from last time is re-run rather than left as a stale
+     * count: the page may have changed while the bar was closed. */
+    rb_find_run(app);
+}
+
+void rb_findbar_hide(App *app)
+{
+    if (app == NULL || app->find_edit == NULL || app->findbar_h == 0) return;
+    /* Dropping the selection is what takes the highlight off the page: unlike
+     * WebKit there is no search to finish, only the selection window.find()
+     * left behind. */
+    rb_wv_run_js(app, L"window.getSelection().removeAllRanges();", NULL);
+    if (app->find_label) SetWindowTextW(app->find_label, L"");
+    app->findbar_h = 0;
+    rb_findbar_set_visible(app, 0);
+    rb_layout(app);
+    rb_wv_resize(app);
+    InvalidateRect(app->hwnd, NULL, TRUE);
+    /* Back to the window: the shortcuts in rb_wndproc are only reached while
+     * the chrome has the focus, and the bar is done with the keyboard. */
+    SetFocus(app->hwnd);
+}
+
+static LRESULT CALLBACK rb_find_subclass(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                         UINT_PTR uSubclass, DWORD_PTR dwData)
+{
+    App *app = (App *)dwData;
+    (void)uSubclass;
+
+    if (app) {
+        if (msg == WM_KEYDOWN && wp == VK_RETURN) {
+            rb_find_step(app, (GetKeyState(VK_SHIFT) & 0x8000) ? 0 : 1);
+            return 0;
+        }
+        if (msg == WM_KEYDOWN && wp == VK_ESCAPE) {
+            rb_findbar_hide(app);
+            return 0;
+        }
+    }
+    return DefSubclassProc(hwnd, msg, wp, lp);
+}
+
+/* Created hidden, like the bookmarks bar's buttons, and shown by
+ * rb_findbar_show — a child created with WS_VISIBLE would appear over the page
+ * before the first Ctrl+F. */
+static void rb_findbar_create(App *app)
+{
+    app->find_edit = CreateWindowExW(0, L"EDIT", L"",
+        WS_CHILD | WS_TABSTOP | ES_LEFT | ES_AUTOHSCROLL,
+        0, 0, 200, 26, app->hwnd, (HMENU)(INT_PTR)RB_ID_FIND_EDIT,
+        app->hinst, NULL);
+    if (app->find_edit) {
+        SendMessageW(app->find_edit, WM_SETFONT, (WPARAM)app->fnt_omni, TRUE);
+        SetWindowSubclass(app->find_edit, rb_find_subclass, RB_FIND_SUBID,
+                          (DWORD_PTR)app);
+    }
+
+    app->find_label = CreateWindowExW(0, L"STATIC", L"",
+        WS_CHILD | SS_LEFT | SS_CENTERIMAGE | SS_ENDELLIPSIS,
+        0, 0, 110, 26, app->hwnd, NULL, app->hinst, NULL);
+    if (app->find_label) {
+        SendMessageW(app->find_label, WM_SETFONT, (WPARAM)app->fnt_ui, TRUE);
+    }
+
+    app->find_prev = rb_mk_button(app, L"\x2191", RB_ID_FIND_PREV);
+    app->find_next = rb_mk_button(app, L"\x2193", RB_ID_FIND_NEXT);
+    app->find_close = rb_mk_button(app, L"\x00D7", RB_ID_FIND_CLOSE);
+    rb_findbar_set_visible(app, 0);
+}
+
+static void rb_findbar_layout(App *app, const RECT *rc)
+{
+    int h, y, bh, bx, right, field_w;
+
+    if (app->findbar_h <= 0 || app->find_edit == NULL) return;
+
+    h  = app->findbar_h;
+    y  = rc->bottom - h + rb_scaled(app, 4);
+    bh = h - rb_scaled(app, 8);
+    bx = rb_scaled(app, 28);
+
+    /* From the right: close, next, previous.  The field takes what is left,
+     * with the count label between them. */
+    right = rc->right - rb_scaled(app, 6) - bx;
+    if (app->find_close) MoveWindow(app->find_close, right, y, bx, bh, TRUE);
+    right -= bx + rb_scaled(app, 2);
+    if (app->find_next) MoveWindow(app->find_next, right, y, bx, bh, TRUE);
+    right -= bx + rb_scaled(app, 2);
+    if (app->find_prev) MoveWindow(app->find_prev, right, y, bx, bh, TRUE);
+
+    right -= rb_scaled(app, 6);
+    field_w = right - rb_scaled(app, 6) - rb_scaled(app, 110);
+    if (field_w < rb_scaled(app, 80)) field_w = rb_scaled(app, 80);
+    MoveWindow(app->find_edit, rb_scaled(app, 6), y, field_w, bh, TRUE);
+    if (app->find_label) {
+        MoveWindow(app->find_label, rb_scaled(app, 6) + field_w + rb_scaled(app, 6),
+                   y, rb_scaled(app, 110), bh, TRUE);
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* Layout */
 
 int rb_scaled(App *app, int design_px)
@@ -1411,6 +1682,19 @@ void rb_apply_font_scale(App *app)
     nav[3] = app->home;     nav[4] = app->star;     nav[5] = app->menu_btn;
     nav[6] = app->newtab;
     for (i = 0; i < 7; i++) {
+        if (nav[i]) SendMessageW(nav[i], WM_SETFONT, (WPARAM)app->fnt_ui, TRUE);
+    }
+
+    /* The find bar's controls carry the same two fonts (its field the omni
+     * one, the rest the UI one), so they are re-handed for the same reason. */
+    if (app->find_edit) {
+        SendMessageW(app->find_edit, WM_SETFONT, (WPARAM)app->fnt_omni, TRUE);
+    }
+    if (app->find_label) {
+        SendMessageW(app->find_label, WM_SETFONT, (WPARAM)app->fnt_ui, TRUE);
+    }
+    nav[0] = app->find_prev; nav[1] = app->find_next; nav[2] = app->find_close;
+    for (i = 0; i < 3; i++) {
         if (nav[i]) SendMessageW(nav[i], WM_SETFONT, (WPARAM)app->fnt_ui, TRUE);
     }
 
@@ -1501,6 +1785,10 @@ void rb_layout(App *app)
             x += bw + rb_scaled(app, 2);
         }
     }
+
+    /* The find bar's strip, at the bottom of the client area — the page's near
+     * edge on this edition, since the toolbar is at the top. */
+    rb_findbar_layout(app, &rc);
 
     rb_wv_resize(app);
 }
@@ -1716,6 +2004,7 @@ static void rb_menu_show(App *app)
                                      ? MF_CHECKED : 0),
                 IDM_BMBAR, L"Show bookmarks bar");
     AppendMenuW(m, MF_STRING, IDM_DOWNLOADS, L"Downloads");
+    AppendMenuW(m, MF_STRING, IDM_FIND, L"Find in page");
     AppendMenuW(m, MF_STRING, IDM_TRANSLATE, L"Translate this page");
     AppendMenuW(m, MF_STRING, IDM_PREFS, L"Profile settings");
     AppendMenuW(m, MF_STRING, IDM_ABOUT, L"About");
@@ -1728,6 +2017,12 @@ static void rb_menu_show(App *app)
 
 static void rb_on_command(App *app, int id, int notify)
 {
+    /* The find field reports every keystroke as EN_CHANGE, which is not a
+     * click and would be dropped by the guard below. */
+    if (id == RB_ID_FIND_EDIT) {
+        if (notify == EN_CHANGE) rb_find_run(app);
+        return;
+    }
     if (notify != BN_CLICKED && notify != 0) return;
 
     if (id == IDC_BACK) {
@@ -1758,6 +2053,14 @@ static void rb_on_command(App *app, int id, int notify)
         rb_show_downloads(app);
     } else if (id == IDM_TRANSLATE) {
         rb_do_translate(app);
+    } else if (id == IDM_FIND) {
+        rb_findbar_show(app);
+    } else if (id == RB_ID_FIND_PREV) {
+        rb_find_step(app, 0);
+    } else if (id == RB_ID_FIND_NEXT) {
+        rb_find_step(app, 1);
+    } else if (id == RB_ID_FIND_CLOSE) {
+        rb_findbar_hide(app);
     } else if (id == IDM_PREFS) {
         rb_show_prefs(app);
     } else if (id == IDM_PROF_ADD) {
@@ -1870,6 +2173,15 @@ static LRESULT CALLBACK rb_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         HDC dc = BeginPaint(hwnd, &ps);
         if (app && dc) {
             FillRect(dc, &ps.rcPaint, app->br_chrome);
+            if (app->findbar_h > 0) {
+                /* The find strip sits below the page, so it is painted after
+                 * the chrome fill and in the toolbar shade, the way the GTK
+                 * edition's .rb-findbar is styled. */
+                RECT fr;
+                GetClientRect(hwnd, &fr);
+                fr.top = fr.bottom - app->findbar_h;
+                FillRect(dc, &fr, app->br_toolbar);
+            }
             if (app->omni && GetFocus() == app->omni) {
                 RECT r;
                 POINT tl, br;
@@ -1895,6 +2207,20 @@ static LRESULT CALLBACK rb_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             SetTextColor((HDC)wp, rb_col(app->pal.text_primary));
             SetBkColor((HDC)wp, rb_col(app->pal.address_bar));
             return (LRESULT)app->br_omni;
+        }
+        if (app && (HWND)lp == app->find_edit) {
+            SetTextColor((HDC)wp, rb_col(app->pal.text_primary));
+            SetBkColor((HDC)wp, rb_col(app->pal.address_bar));
+            return (LRESULT)app->br_omni;
+        }
+        break;
+    case WM_CTLCOLORSTATIC:
+        /* The find bar's match count.  Transparent, so the strip's own fill
+         * shows through behind the text. */
+        if (app && (HWND)lp == app->find_label) {
+            SetTextColor((HDC)wp, rb_col(app->pal.text_secondary));
+            SetBkMode((HDC)wp, TRANSPARENT);
+            return (LRESULT)app->br_toolbar;
         }
         break;
     case WM_CTLCOLORBTN:
@@ -1931,6 +2257,18 @@ static LRESULT CALLBACK rb_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (wp == 'L' && ctrl && app->omni) {
                 SetFocus(app->omni);
                 SendMessageW(app->omni, EM_SETSEL, 0, (LPARAM)-1);
+                return 0;
+            }
+            /* The GTK edition binds these as GApplication accelerators; here
+             * they are read straight off the message.  F3 steps forward and
+             * Shift+F3 backward, the same pair. */
+            if (wp == 'F' && ctrl) {
+                rb_findbar_show(app);
+                return 0;
+            }
+            if ((wp == 'G' && ctrl) || wp == VK_F3) {
+                BOOL shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                rb_find_step(app, shift ? 0 : 1);
                 return 0;
             }
             if (wp == VK_LEFT && alt) {
@@ -2030,6 +2368,7 @@ int rb_chrome_create(App *app)
 
     rb_tabs_rebuild(app);
     rb_bmbar_refresh(app);
+    rb_findbar_create(app);
     rb_update_all(app);
     return 0;
 }

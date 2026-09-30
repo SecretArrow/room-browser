@@ -45,6 +45,16 @@ browser is original C: a portable core plus one thin platform layer per OS.
   same core strings, so they cannot describe one download differently. Clearing
   removes the *records* of that profile only; the files on disk are the user's
   and are never touched. Neither edition opens the file from the list.
+- **Find in page** (*Menu → Find in page*, <kbd>Ctrl</kbd>+<kbd>F</kbd>) — the
+  same bar Android's FindInPageBar is: a field, previous, next and close, with
+  the search re-running on every keystroke, <kbd>Enter</kbd> stepping forward
+  and <kbd>Shift</kbd>+<kbd>Enter</kbd> back, <kbd>Ctrl</kbd>+<kbd>G</kbd> and
+  <kbd>F3</kbd> (<kbd>Shift</kbd> for backward) stepping from anywhere, and
+  <kbd>Esc</kbd> closing it. On Linux the bar sits under the page — this
+  edition's toolbar is at the top — and shows WebKit's own match count; on
+  Windows it sits at the bottom of the client area, and its count is taken
+  from the page's text, because the WebView2 surface this edition targets has
+  no engine-side find. Closing ends the search, so the page keeps no highlight.
 - **Translate this page** (*Menu → Translate this page*) — opens Android's
   Google Translate web wrapper for the current page in a new tab:
   `https://translate.google.com/translate?sl=auto&tl=<target>&u=<page>`. The

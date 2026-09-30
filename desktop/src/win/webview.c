@@ -124,6 +124,9 @@ static const IID rb_iid_clear_done = {
 static const IID rb_iid_script_done = {
     /* ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler */
     0xb99369f3, 0x9b11, 0x47b5, {0xbc, 0x6f, 0x8e, 0x78, 0x95, 0xfc, 0xea, 0x17} };
+static const IID rb_iid_exec_done = {
+    /* ICoreWebView2ExecuteScriptCompletedHandler */
+    0x49511172, 0xcc67, 0x4bca, {0x99, 0x23, 0x13, 0x71, 0x12, 0xf4, 0xc4, 0xcc} };
 
 static int rb_iid_eq(REFIID a, const IID *b)
 {
@@ -1362,6 +1365,10 @@ static void rb_wv_area(App *app, RECT *r)
      * bmbar_h is already scaled (rb_bmbar_refresh sets it), so it is added
      * rather than passed through rb_scaled() again. */
     r->top += app->bmbar_h;
+    /* The find bar is the one chrome row BELOW the page, so it takes from the
+     * bottom instead.  findbar_h is already scaled (rb_findbar_show sets it),
+     * for the same reason bmbar_h is. */
+    r->bottom -= app->findbar_h;
     if (r->bottom < r->top) r->bottom = r->top;
 }
 
@@ -1630,6 +1637,103 @@ void rb_wv_apply_settings_all(App *app)
         TabView *tv = &v->items[i];
         if (tv->wv != NULL) rb_wv_apply_web_settings(app, tv->wv);
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Running script in the active page
+ *
+ * ExecuteScript is the only way this edition reaches inside a page.  The
+ * result comes back as JSON on a handler the runtime calls on this thread,
+ * so the wrapper is per call — like ScriptHandler above, and for the same
+ * reason: it carries the callback, so it cannot be a process-lifetime
+ * singleton.  It is also the same shape of hand-written refcount, because
+ * the macro form floors the count at 1 and would leak one of these per
+ * search. */
+
+typedef struct {
+    ICoreWebView2ExecuteScriptCompletedHandler base;
+    App *app;
+    RbJsDone done;
+    ULONG refs;
+} JsRun;
+
+static HRESULT STDMETHODCALLTYPE JsRun_QueryInterface(
+    ICoreWebView2ExecuteScriptCompletedHandler *self, REFIID riid, void **ppv)
+{
+    JsRun *h = (JsRun *)self;
+    if (!ppv) return E_POINTER;
+    if (rb_iid_eq(riid, &rb_iid_iunknown) || rb_iid_eq(riid, &rb_iid_exec_done)) {
+        *ppv = self;
+        h->refs++;
+        return S_OK;
+    }
+    *ppv = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG STDMETHODCALLTYPE JsRun_AddRef(
+    ICoreWebView2ExecuteScriptCompletedHandler *self)
+{
+    return ++((JsRun *)self)->refs;
+}
+
+static ULONG STDMETHODCALLTYPE JsRun_Release(
+    ICoreWebView2ExecuteScriptCompletedHandler *self)
+{
+    JsRun *h = (JsRun *)self;
+    if (h->refs > 0 && --h->refs == 0) {
+        free(h);
+        return 0;
+    }
+    return h->refs;
+}
+
+static HRESULT STDMETHODCALLTYPE JsRun_Invoke(
+    ICoreWebView2ExecuteScriptCompletedHandler *self,
+    HRESULT errorCode, LPCWSTR resultJson)
+{
+    JsRun *h = (JsRun *)self;
+    RbJsDone done = h->done;
+
+    /* Cleared before the call so a second Invoke — which the contract does not
+     * promise against — cannot run the callback twice over.  resultJson stays
+     * the runtime's: it is only valid for the length of this call. */
+    h->done = NULL;
+    if (done != NULL) {
+        done(h->app, SUCCEEDED(errorCode) ? resultJson : NULL);
+    }
+    return S_OK;
+}
+
+static ICoreWebView2ExecuteScriptCompletedHandlerVtbl g_jsrun_vtbl = {
+    JsRun_QueryInterface, JsRun_AddRef, JsRun_Release, JsRun_Invoke
+};
+
+void rb_wv_run_js(App *app, const wchar_t *js, RbJsDone done)
+{
+    struct RbViews *v;
+    TabView *tv;
+    JsRun *h;
+
+    if (app == NULL || js == NULL) return;
+    v = app->views;
+    if (v == NULL) return;
+    tv = rb_views_find(v, app->active_id);
+    if (tv == NULL || tv->wv == NULL) return;
+
+    h = (JsRun *)calloc(1, sizeof(*h));
+    if (h == NULL) return;
+    h->base.lpVtbl = &g_jsrun_vtbl;
+    h->app = app;
+    h->done = done;
+    h->refs = 1; /* ours; dropped below, the runtime keeps its own */
+
+    if (FAILED(tv->wv->lpVtbl->ExecuteScript(tv->wv, js, &h->base))) {
+        /* Never handed over, so there is no callback coming and nothing to
+         * tell: dropping our reference is the whole cleanup. */
+        h->done = NULL;
+    }
+    h->base.lpVtbl->Release(&h->base);
 }
 
 /* Erases cookies, cache or site storage for the ACTIVE PROFILE.
