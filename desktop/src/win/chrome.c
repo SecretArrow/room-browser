@@ -244,6 +244,11 @@ int rb_data_init(App *app)
     /* The palette is resolved (and its brushes built) by rb_theme_apply()
      * from rb_chrome_create: there is no window to repaint yet. */
 
+    /* A profile file from the build whose theme combo wrote the theme ID into
+     * the MODE setting is repaired once, here, so a choice made with that
+     * picker shows up instead of sitting inert in the wrong key. */
+    rb_profile_repair_theme_setting(app->profiles);
+
     rb_profiles_save(app);
     rb_paths_free(dir);
     return 0;

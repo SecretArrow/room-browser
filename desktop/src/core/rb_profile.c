@@ -13,6 +13,7 @@
 #include "rb_paths.h"
 #include "rb_prefs.h"
 #include "rb_str.h"
+#include "rb_theme.h"
 #include "rb_ua.h"
 
 #include <stdio.h>
@@ -407,6 +408,99 @@ int rb_profile_restyle(rb_profile_registry *r, const char *id,
         r->items[i].color_argb = color_argb;
     }
     return 1;
+}
+
+/* The snapshot a theme ID is stored as: {"id":"<theme>"}, which is the shape
+ * rb_theme_current() reads in both desktop editions and the one the Android
+ * edition's themeJson holds.  Empty for a NULL/empty id, which reads back as
+ * the default theme.  malloc'd, never NULL. */
+static char *theme_snapshot_json(const char *theme_id)
+{
+    char *esc;
+    char *json;
+    size_t need;
+
+    if (theme_id == NULL || theme_id[0] == '\0') {
+        return rb_json_strdup("");
+    }
+    /* Escaped even though a theme id comes from the core's own registry: the
+     * snapshot is a JSON document that rb_profile_registry_save() writes
+     * verbatim, so anything reaching it has to be escaped here or it is a
+     * malformed profile file. */
+    esc = rb_json_escape(theme_id);
+    need = strlen(esc) + sizeof("{\"id\":\"\"}");
+    json = (char *)malloc(need);
+    if (json != NULL) {
+        snprintf(json, need, "{\"id\":\"%s\"}", esc);
+    }
+    free(esc);
+    return (json != NULL) ? json : rb_json_strdup("");
+}
+
+/* The theme ID, into the profile's theme_json snapshot.  See the header for
+ * why this is not a setting: the "theme" setting is the MODE, and the two are
+ * separate choices that a single combo used to overwrite each other with. */
+int rb_profile_set_theme(rb_profile_registry *r, const char *id,
+                         const char *theme_id)
+{
+    int i;
+
+    if (r == NULL || id == NULL) {
+        return 0;
+    }
+    i = rb_profile_index_of(r, id);
+    if (i < 0) {
+        return 0;
+    }
+
+    free(r->items[i].theme_json);
+    r->items[i].theme_json = theme_snapshot_json(theme_id);
+    return 1;
+}
+
+/* One-time repair of a profile file written by the build whose theme combo
+ * stored the theme ID in the MODE setting.
+ *
+ * That build left two marks: the mode key holds a theme name, and theme_json
+ * is still empty, so the profile renders the default theme while its settings
+ * claim a choice nobody can see.  Any profile whose "theme" setting names a
+ * theme is therefore moved back where it belongs — the ID into the snapshot,
+ * the setting reset to "system" — which is what the user picked, restored.
+ *
+ * A value the theme registry does not know is left alone: "light", "dark",
+ * "amoled" and "system" are modes, and anything else is not ours to guess at.
+ * Returns how many profiles were repaired. */
+int rb_profile_repair_theme_setting(rb_profile_registry *r)
+{
+    int i;
+    int fixed = 0;
+
+    if (r == NULL) {
+        return 0;
+    }
+
+    for (i = 0; i < r->count; i++) {
+        rb_profile *p = &r->items[i];
+        const char *v;
+
+        if (p->settings == NULL) {
+            continue;
+        }
+        v = rb_settings_get(p->settings, RB_PREF_THEME, NULL);
+        if (v == NULL || v[0] == '\0') {
+            continue;
+        }
+        if (rb_theme_by_id(v) == NULL) {
+            continue;   /* a mode, or nothing we recognise */
+        }
+        if (p->theme_json == NULL || p->theme_json[0] == '\0') {
+            free(p->theme_json);
+            p->theme_json = theme_snapshot_json(v);
+        }
+        rb_settings_set(p->settings, RB_PREF_THEME, "system");
+        fixed++;
+    }
+    return fixed;
 }
 
 int rb_profile_set_locked(rb_profile_registry *r, const char *id, int locked)

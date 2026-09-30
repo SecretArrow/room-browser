@@ -2126,6 +2126,105 @@ static void test_rb_profile(void)
         CHECK(STREQ(rb_profile_at(r, 1)->icon, "\360\237\232\200"));
     }
 
+    /* the theme ID is a profile snapshot, not a setting: the "theme" setting
+     * is the light/dark/amoled MODE, and the picker that renders one of the
+     * built-in palettes writes here instead */
+    {
+        const char *id = rb_profile_at(r, 1)->id;
+
+        /* nothing has chosen one, so the snapshot is empty and the reader
+         * falls back to the default theme */
+        CHECK(STREQ(rb_profile_at(r, 1)->theme_json, ""));
+
+        CHECK(rb_profile_set_theme(r, id, "arctic") == 1);
+        CHECK(STREQ(rb_profile_at(r, 1)->theme_json, "{\"id\":\"arctic\"}"));
+        /* ...and it is a theme the registry knows, which is what makes
+         * rb_theme_current() resolve it rather than fall back */
+        CHECK(rb_theme_by_id("arctic") != NULL);
+
+        /* the last write wins, and the MODE setting is left alone: the two
+         * are separate controls and picking a theme must not move the mode */
+        CHECK(rb_profile_set_theme(r, id, "ocean") == 1);
+        CHECK(STREQ(rb_profile_at(r, 1)->theme_json, "{\"id\":\"ocean\"}"));
+        CHECK(STREQ(rb_settings_get(rb_profile_at(r, 1)->settings,
+                                    RB_PREF_THEME, "system"), "system"));
+
+        /* NULL and "" both clear it, which reads back as the default */
+        CHECK(rb_profile_set_theme(r, id, NULL) == 1);
+        CHECK(STREQ(rb_profile_at(r, 1)->theme_json, ""));
+        CHECK(rb_profile_set_theme(r, id, "") == 1);
+        CHECK(STREQ(rb_profile_at(r, 1)->theme_json, ""));
+        CHECK(rb_profile_set_theme(r, "no-such-id", "ocean") == 0);
+        CHECK(rb_profile_set_theme(r, NULL, "ocean") == 0);
+
+        /* an id carrying JSON metacharacters is escaped, so the snapshot
+         * stays parseable.  The picker only offers registry ids, but the
+         * function takes any string. */
+        CHECK(rb_profile_set_theme(r, id, "a\"b\\c") == 1);
+        CHECK(STREQ(rb_profile_at(r, 1)->theme_json,
+                    "{\"id\":\"a\\\"b\\\\c\"}"));
+        {
+            const char *json = rb_profile_at(r, 1)->theme_json;
+            size_t pos = 0;
+            char *back = NULL;
+            CHECK(rb_json_find_key(json, "id", &pos));
+            CHECK(rb_json_parse_string(json, &pos, &back));
+            CHECK(STREQ(back, "a\"b\\c"));
+            free(back);
+        }
+        CHECK(rb_profile_set_theme(r, id, "obsidian") == 1);
+    }
+
+    /* a profile file written by the build whose theme combo put the theme ID
+     * in the MODE setting is repaired once, so a choice made with that picker
+     * shows up instead of sitting inert in the wrong key */
+    {
+        rb_profile_registry *rp = rb_profile_registry_new();
+        int a2, b2, c2;
+
+        CHECK(rp != NULL);
+        a2 = rb_profile_create(rp, "Broken", NULL, 0, 0);
+        b2 = rb_profile_create(rp, "Mode", NULL, 0, 0);
+        c2 = rb_profile_create(rp, "Unknown", NULL, 0, 0);
+        CHECK(a2 == 0 && b2 == 1 && c2 == 2);
+
+        rb_settings_set(rb_profile_at(rp, a2)->settings, RB_PREF_THEME, "cyber");
+        /* a mode is not a theme, so it must survive as it is */
+        rb_settings_set(rb_profile_at(rp, b2)->settings, RB_PREF_THEME, "dark");
+        /* nor is a name the registry does not know */
+        rb_settings_set(rb_profile_at(rp, c2)->settings, RB_PREF_THEME,
+                        "no-such-theme");
+
+        CHECK(rb_profile_repair_theme_setting(rp) == 1);
+        CHECK(STREQ(rb_profile_at(rp, a2)->theme_json, "{\"id\":\"cyber\"}"));
+        CHECK(STREQ(rb_settings_get(rb_profile_at(rp, a2)->settings,
+                                    RB_PREF_THEME, ""), "system"));
+        CHECK(STREQ(rb_profile_at(rp, b2)->theme_json, ""));
+        CHECK(STREQ(rb_settings_get(rb_profile_at(rp, b2)->settings,
+                                    RB_PREF_THEME, ""), "dark"));
+        CHECK(STREQ(rb_profile_at(rp, c2)->theme_json, ""));
+        CHECK(STREQ(rb_settings_get(rb_profile_at(rp, c2)->settings,
+                                    RB_PREF_THEME, ""), "no-such-theme"));
+
+        /* running it again finds nothing left to do, which is what makes it
+         * safe to call on every launch */
+        CHECK(rb_profile_repair_theme_setting(rp) == 0);
+
+        /* a snapshot the picker already wrote is kept, not overwritten by the
+         * stale setting underneath it, but the MODE key is still cleared —
+         * a theme name in it means the mode reads as AUTO no matter what */
+        CHECK(rb_profile_set_theme(rp, rb_profile_at(rp, b2)->id,
+                                   "emerald") == 1);
+        rb_settings_set(rb_profile_at(rp, b2)->settings, RB_PREF_THEME, "rose");
+        CHECK(rb_profile_repair_theme_setting(rp) == 1);
+        CHECK(STREQ(rb_profile_at(rp, b2)->theme_json,
+                    "{\"id\":\"emerald\"}"));
+        CHECK(STREQ(rb_settings_get(rb_profile_at(rp, b2)->settings,
+                                    RB_PREF_THEME, ""), "system"));
+
+        rb_profile_registry_free(rp);
+    }
+
     /* set_default moves the flag, never duplicates it */
     {
         int i;
@@ -2285,6 +2384,9 @@ static void test_rb_profile(void)
         CHECK(rb_profile_create(r, "Gamma\"quote\\slash", NULL, 0, 1) == 2);
         CHECK(rb_profile_set_default(r, rb_profile_at(r, 1)->id) == 1);
         CHECK(rb_profile_set_locked(r, rb_profile_at(r, 2)->id, 1) == 1);
+        /* one chosen theme, so the compare loop below has a non-empty
+         * snapshot to carry rather than two empty strings */
+        CHECK(rb_profile_set_theme(r, rb_profile_at(r, 1)->id, "sakura") == 1);
         {
             rb_settings *custom = rb_settings_new();
             rb_settings_set(custom, "some_future_key", "a value with = and \"q\"");

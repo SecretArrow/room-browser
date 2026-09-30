@@ -426,6 +426,12 @@ static void pf_build_appearance(RbPrefs *pf)
 {
     static const char *ids[66];
     static const char *labels[66];
+    static const char *const mode_ids[] = {
+        "system", "light", "dark", "amoled", NULL
+    };
+    static const char *const mode_labels[] = {
+        "Match system", "Light", "Dark", "AMOLED", NULL
+    };
     const rb_theme *cur = rb_theme_current(pf->app);
     int n = rb_theme_count(), i, y = 0;
 
@@ -438,9 +444,19 @@ static void pf_build_appearance(RbPrefs *pf)
     ids[n] = NULL;
     labels[n] = NULL;
     /* The list is the core's theme registry, so the desktop offers the same
-     * presets the Android theme studio is built from. */
-    y += pf_combo(pf, 0, y, RB_PREF_THEME, ids, labels,
+     * presets the Android theme studio is built from.
+     *
+     * A NULL key marks this row as the theme ID, which is stored in the
+     * profile's theme_json snapshot rather than in the settings — see the
+     * RB_PK_COMBO branch of the command handler.  The MODE is the separate row
+     * below; the two used to share this one control, which is why picking a
+     * theme also reset the mode and why no theme was ever applied. */
+    y += pf_combo(pf, 0, y, NULL, ids, labels,
                   (cur != NULL) ? cur->id : NULL, L"Theme");
+    /* rb_prefs.h's spellings for the mode, with "system" standing for
+     * rb_theme.h's AUTO. */
+    y += pf_combo(pf, 0, y, RB_PREF_THEME, mode_ids, mode_labels,
+                  rb_pref(pf->app, RB_PREF_THEME, "system"), L"Appearance");
     y += pf_switch(pf, 0, y, RB_PREF_REDUCED_MOTION, 0, L"Reduce motion",
                    L"Turns off the transitions the chrome animates");
     y += pf_switch(pf, 0, y, RB_PREF_HIGH_CONTRAST, 0, L"High contrast",
@@ -754,8 +770,22 @@ static void pf_on_command(RbPrefs *pf, int id, int code)
         if (code != CBN_SELCHANGE) return;
         sel = SendMessageW(c->ctl, CB_GETCURSEL, 0, 0);
         if (sel == CB_ERR || c->ids == NULL || c->ids[sel] == NULL) return;
-        rb_pref_set(pf->app, c->key, c->ids[sel]);
-        pf_apply(pf->app, pf, c->key);
+        if (c->key == NULL) {
+            /* The theme row, and the only combo with no settings key — because
+             * its ID is not a setting.  It belongs to the profile's theme_json
+             * snapshot, which is where rb_theme_current() reads it; storing it
+             * in RB_PREF_THEME, as this row used to, put a theme name in the
+             * MODE key and left the profile rendering the default theme no
+             * matter what was picked. */
+            rb_profile_set_theme(pf->app->profiles,
+                                 pf->app->active_profile_id, c->ids[sel]);
+            /* RB_PREF_THEME is the key pf_apply() repaints on, which is what
+             * has to happen here: the palette itself changed. */
+            pf_apply(pf->app, pf, RB_PREF_THEME);
+        } else {
+            rb_pref_set(pf->app, c->key, c->ids[sel]);
+            pf_apply(pf->app, pf, c->key);
+        }
         pf_refresh_notes(pf);
     } else if (c->kind == RB_PK_ENTRY) {
         /* The Apply button carries the tuple's id; the edit box that goes

@@ -98,6 +98,28 @@ int rb_profile_rename(rb_profile_registry *r, const char *id, const char *name);
 int rb_profile_restyle(rb_profile_registry *r, const char *id,
                        const char *icon, unsigned int color_argb);
 
+/* Sets the profile's theme ID.
+ *
+ * This is NOT the "theme" setting.  The setting holds the light/dark/amoled
+ * MODE (rb_prefs.h's RB_PREF_THEME); the ID is which of the built-in palettes
+ * to render in that mode, and it lives where the Android edition keeps it:
+ * the profile's own theme_json snapshot, as {"id":"<theme>"}.  Both desktop
+ * editions read it from there with rb_theme_current(), and until this existed
+ * nothing ever wrote it — so every profile rendered the default theme and the
+ * picker in Profile Settings silently did nothing.
+ *
+ * `theme_id` NULL or empty clears the snapshot, which reads back as the
+ * default theme.  Returns 1 when the profile exists, 0 when it does not. */
+int rb_profile_set_theme(rb_profile_registry *r, const char *id,
+                         const char *theme_id);
+
+/* One-time repair of a profile file written by the build whose theme combo
+ * stored the theme ID in the MODE setting: every profile whose "theme"
+ * setting names a theme has that ID moved into its snapshot and the setting
+ * reset to "system".  Call once after loading the registry and save if it
+ * returns non-zero.  Returns how many profiles were repaired. */
+int rb_profile_repair_theme_setting(rb_profile_registry *r);
+
 int rb_profile_set_locked(rb_profile_registry *r, const char *id, int locked);
 
 /* Makes `id` the only default profile.  This is the profile the browser

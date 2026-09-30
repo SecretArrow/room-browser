@@ -384,6 +384,11 @@ int rb_data_init(App *app)
                                       "https://duckduckgo.com"));
     rb_downloads_dir_init(app);
 
+    /* A profile file from the build whose theme combo wrote the theme ID into
+     * the MODE setting is repaired once, here, so a choice made with that
+     * picker shows up instead of sitting inert in the wrong key. */
+    rb_profile_repair_theme_setting(app->profiles);
+
     rb_profiles_save(app);
     rb_paths_free(dir);
     return 0;
@@ -1659,11 +1664,18 @@ static void rb_pref_row(GtkWidget *grid, int row, App *app, const char *key,
 
 /* A combo row whose options are (id, label) pairs terminated by a NULL id.
  * One callback serves all of them; the key and the value list ride on the
- * widget. */
+ * widget.
+ *
+ * `is_theme` marks the one row that is NOT a setting.  The theme ID lives in
+ * the profile's theme_json snapshot (see rb_profile_set_theme), so it cannot
+ * go through rb_pref_set() with the rest — a distinction that has to be made
+ * explicitly, because the two were once the same combo and the theme ID
+ * overwrote the MODE setting every time it was changed. */
 typedef struct {
     const char *key;
     const char *const *ids;    /* ids[i] pairs with labels[i] */
     const char *const *labels;
+    int is_theme;
 } rb_pref_choices;
 
 static void on_pref_combo(GtkComboBox *combo, gpointer user_data)
@@ -1680,8 +1692,17 @@ static void on_pref_combo(GtkComboBox *combo, gpointer user_data)
         int i;
         for (i = 0; ch->labels[i] != NULL; i++) {
             if (strcmp(ch->labels[i], active) == 0) {
-                rb_pref_set(app, ch->key, ch->ids[i]);
-                rb_prefs_apply_key(app, ch->key);
+                if (ch->is_theme) {
+                    /* Into the profile snapshot, then a repaint: the palette
+                     * itself changed, which no setting can express. */
+                    rb_profile_set_theme(app->profiles, app->active_profile_id,
+                                         ch->ids[i]);
+                    rb_profiles_save(app);
+                    rb_css_load(app);
+                } else {
+                    rb_pref_set(app, ch->key, ch->ids[i]);
+                    rb_prefs_apply_key(app, ch->key);
+                }
                 break;
             }
         }
@@ -1692,7 +1713,7 @@ static void on_pref_combo(GtkComboBox *combo, gpointer user_data)
 static void rb_pref_combo_row(GtkWidget *grid, int row, App *app,
                               const char *key, const char *const *ids,
                               const char *const *labels, const char *current,
-                              const char *title)
+                              const char *title, int is_theme)
 {
     GtkWidget *label = gtk_label_new(title);
     GtkWidget *combo = gtk_combo_box_text_new();
@@ -1707,6 +1728,7 @@ static void rb_pref_combo_row(GtkWidget *grid, int row, App *app,
     ch->key = key;
     ch->ids = ids;
     ch->labels = labels;
+    ch->is_theme = is_theme;
     for (i = 0; labels[i] != NULL; i++) {
         gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(combo), labels[i]);
         if (current != NULL && ids[i] != NULL && strcmp(ids[i], current) == 0) {
@@ -1898,7 +1920,11 @@ static void rb_show_prefs_dialog_impl(App *app)
     r = 0;
     {
         /* The theme list is the core's registry, so the desktop offers the
-         * same presets the Android theme studio is built from. */
+         * same presets the Android theme studio is built from.  The ID goes
+         * into the profile's theme_json snapshot (is_theme = 1); the MODE is
+         * the separate row below, and the two used to share one control —
+         * which is why choosing a theme also silently reset the mode, and why
+         * no theme was ever applied at all. */
         static const char *ids[64];
         static const char *labels[64];
         int n = rb_theme_count();
@@ -1912,8 +1938,21 @@ static void rb_show_prefs_dialog_impl(App *app)
         ids[n] = NULL;
         labels[n] = NULL;
         theme = rb_theme_current(app);
-        rb_pref_combo_row(grid, r++, app, RB_PREF_THEME, ids, labels,
-                          (theme != NULL) ? theme->id : NULL, "Theme");
+        rb_pref_combo_row(grid, r++, app, NULL, ids, labels,
+                          (theme != NULL) ? theme->id : NULL, "Theme", 1);
+    }
+    {
+        /* rb_prefs.h's spellings for the mode, with "system" standing for
+         * rb_theme.h's AUTO. */
+        static const char *const mode_ids[] = {
+            "system", "light", "dark", "amoled", NULL
+        };
+        static const char *const mode_labels[] = {
+            "Match system", "Light", "Dark", "AMOLED", NULL
+        };
+        rb_pref_combo_row(grid, r++, app, RB_PREF_THEME, mode_ids, mode_labels,
+                          rb_pref(app, RB_PREF_THEME, "system"),
+                          "Appearance", 0);
     }
     rb_pref_row(grid, r++, app, RB_PREF_REDUCED_MOTION, 0, "Reduce motion",
                 "Turns off the transitions the chrome animates");
@@ -1940,7 +1979,7 @@ static void rb_show_prefs_dialog_impl(App *app)
         labels[n] = NULL;
         rb_pref_combo_row(grid, r++, app, RB_PREF_SEARCH_ENGINE, ids, labels,
                           rb_pref(app, RB_PREF_SEARCH_ENGINE, "duckduckgo"),
-                          "Search engine");
+                          "Search engine", 0);
     }
     rb_pref_row(grid, r++, app, RB_PREF_SEARCH_SUGGESTIONS, 0,
                 "Search suggestions",
@@ -1988,7 +2027,7 @@ static void rb_show_prefs_dialog_impl(App *app)
                                          "Preset", "Custom", NULL };
         rb_pref_combo_row(grid, r++, app, RB_PREF_UA_MODE, ids, labels,
                           rb_pref(app, RB_PREF_UA_MODE, "default"),
-                          "User-Agent mode");
+                          "User-Agent mode", 0);
     }
     {
         static const char *ids[64];
@@ -2008,7 +2047,7 @@ static void rb_show_prefs_dialog_impl(App *app)
         ids[n] = NULL;
         labels[n] = NULL;
         rb_pref_combo_row(grid, r++, app, RB_PREF_UA_PRESET_ID, ids, labels,
-                          rb_pref(app, RB_PREF_UA_PRESET_ID, ""), "Preset");
+                          rb_pref(app, RB_PREF_UA_PRESET_ID, ""), "Preset", 0);
     }
     rb_pref_entry_row(grid, r, app, RB_PREF_CUSTOM_USER_AGENT,
                       rb_pref(app, RB_PREF_CUSTOM_USER_AGENT, ""),
@@ -2041,7 +2080,7 @@ static void rb_show_prefs_dialog_impl(App *app)
                                          "DNS-over-HTTPS",
                                          "DNS-over-TLS", NULL };
         rb_pref_combo_row(grid, r++, app, RB_PREF_DNS_MODE, ids, labels,
-                          rb_pref(app, RB_PREF_DNS_MODE, "system"), "DNS mode");
+                          rb_pref(app, RB_PREF_DNS_MODE, "system"), "DNS mode", 0);
     }
     rb_pref_entry_row(grid, r, app, RB_PREF_DOH_URL,
                       rb_pref(app, RB_PREF_DOH_URL, ""), "DNS-over-HTTPS URL");
