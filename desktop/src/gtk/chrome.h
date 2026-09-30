@@ -48,6 +48,10 @@ typedef struct App {
     GtkWidget *notebook;
     GtkWidget *omnibox;
     GtkWidget *back, *fwd, *reload, *home, *star, *menu_btn;
+    GtkWidget *bmbar;       /* the bookmarks bar under the toolbar; its
+                             * children are rebuilt by rb_bookmarks_bar_refresh
+                             * and it hides itself when there is nothing to
+                             * show.  May stay NULL when the pref is off. */
     GtkWidget *prog_area;   /* the 2px page-load strip under the toolbar */
     GtkWidget *status;      /* floating link-target label (bottom-left) */
     GtkWidget *overlay;     /* the GtkOverlay that floats `status` */

@@ -34,10 +34,14 @@ App g_app;
 /* The JavaScript check menu item (single instance, module-static). */
 static GtkWidget *g_js_item = NULL;
 
+/* The "Show bookmarks bar" check menu item, rebuilt with the menu. */
+static GtkWidget *g_bm_item = NULL;
+
 /* Forward declarations (defined below, referenced by earlier functions). */
 static void on_tab_close_clicked(GtkButton *button, gpointer user_data);
 static void on_newtab_clicked(GtkButton *button, gpointer user_data);
 static void rb_downloads_dir_init(App *app);
+static void rb_bookmarks_bar_refresh(App *app);
 
 /* ------------------------------------------------------------------ */
 /* Chrome CSS, generated from the active profile's theme.
@@ -137,7 +141,7 @@ static char *rb_css_build(const rb_theme_colors *c, int radius)
      * surface), and a pill-shaped omnibox. */
     {
         size_t used = strlen(css);
-        if (used + 600 < cap) {
+        if (used + 1200 < cap) {
             snprintf(css + used, cap - used,
                      "notebook header tabs tab { min-height: 28px;"
                      " margin: 2px 2px 0 0; border-radius: 9px 9px 0 0; }\n"
@@ -145,8 +149,14 @@ static char *rb_css_build(const rb_theme_colors *c, int radius)
                      ".rb-omni { border-radius: 999px; }\n"
                      ".rb-status { background-color: %s; color: %s;"
                      " border: 1px solid %s; border-radius: %dpx;"
-                     " padding: 2px 8px; }\n",
-                     surf, txt, border, radius);
+                     " padding: 2px 8px; }\n"
+                     ".rb-bmbar { background-color: %s; padding: 3px 6px;"
+                     " border-bottom: 1px solid %s; }\n"
+                     ".rb-bmbtn { background-color: transparent; color: %s;"
+                     " border: none; padding: 2px 8px; border-radius: %dpx; }\n"
+                     ".rb-bmbtn:hover { background-color: %s; color: %s; }\n",
+                     surf, txt, border, radius,
+                     surf, border, txt, radius, accent_faint, txt);
         }
     }
     return css;
@@ -956,6 +966,212 @@ void rb_do_navigate(App *app, const char *url)
     free(upgraded);
 }
 
+/* ------------------------------------------------------------------ */
+/* The bookmarks bar
+ *
+ * Brave's bookmarks bar, built from the two shapes the core's ordering
+ * already gives us: a bookmark that NAMES a folder becomes a folder menu
+ * button, and one without a folder becomes a plain button.  rb_bookmarks'
+ * display order groups by folder first (BookmarkDao.observeAll), so folder
+ * rows arrive contiguously and one forward walk builds every group — no
+ * grouping pass here that could disagree with the order the manager screens
+ * show.
+ *
+ * The bar hides itself when it has nothing to draw and when the profile turns
+ * it off, so an empty or disabled bar costs no vertical space.  Buttons mirror
+ * Brave's behaviour: left-click navigates the current tab, middle-click opens
+ * a background tab, right-click offers the two things a bookmark bar is for.
+ */
+
+/* Where a button or menu item keeps its URL.  Object data rather than a
+ * captured closure: GTK3 has no closure for a plain callback, and the URL is
+ * owned by the store, which any bookmark edit can rewrite under us — so each
+ * widget holds its own copy. */
+#define RB_BM_URL_KEY "rb-bm-url"
+
+static void rb_bm_children_free(GtkWidget *box)
+{
+    GList *kids = gtk_container_get_children(GTK_CONTAINER(box));
+    GList *it;
+    for (it = kids; it != NULL; it = it->next) {
+        gtk_widget_destroy(GTK_WIDGET(it->data));
+    }
+    g_list_free(kids);
+}
+
+static const char *rb_bm_url_of(GtkWidget *w)
+{
+    return (const char *)g_object_get_data(G_OBJECT(w), RB_BM_URL_KEY);
+}
+
+static void rb_bm_take_url(GtkWidget *w, const char *url)
+{
+    g_object_set_data_full(G_OBJECT(w), RB_BM_URL_KEY, g_strdup(url), g_free);
+}
+
+static void rb_bm_open(GtkWidget *widget, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    const char *url = rb_bm_url_of(widget);
+    if (url && url[0]) rb_do_navigate(app, url);
+}
+
+/* Middle-click, the way a Brave bookmark button opens a background tab. */
+static gboolean rb_bm_pressed(GtkWidget *widget, GdkEventButton *event,
+                              gpointer user_data)
+{
+    App *app = (App *)user_data;
+    const char *url = rb_bm_url_of(widget);
+    if (event->button == 2 && url && url[0]) {
+        rb_do_add_tab(app, url);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static void rb_bm_open_new(GtkMenuItem *item, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    const char *url = rb_bm_url_of(GTK_WIDGET(item));
+    if (url && url[0]) rb_do_add_tab(app, url);
+}
+
+static void rb_bm_remove(GtkMenuItem *item, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    const char *url = rb_bm_url_of(GTK_WIDGET(item));
+    if (!url || !url[0]) return;
+    rb_bookmarks_delete_url(app->bookmarks, url);
+    if (app->path_bookmarks) {
+        rb_bookmarks_save(app->bookmarks, app->path_bookmarks);
+    }
+    rb_update_star(app);
+    rb_bookmarks_bar_refresh(app);
+}
+
+static gboolean rb_bm_context(GtkWidget *widget, GdkEvent *event,
+                              gpointer user_data)
+{
+    App *app = (App *)user_data;
+    GdkEventButton *be = (GdkEventButton *)event;
+    const char *url = rb_bm_url_of(widget);
+    GtkWidget *menu, *item;
+
+    if (event->type != GDK_BUTTON_PRESS || be->button != 3) return FALSE;
+    if (!url || !url[0]) return FALSE;
+
+    menu = gtk_menu_new();
+
+    item = gtk_menu_item_new_with_label("Open in new tab");
+    rb_bm_take_url(item, url);
+    g_signal_connect(item, "activate", G_CALLBACK(rb_bm_open_new), app);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = gtk_menu_item_new_with_label("Remove bookmark");
+    rb_bm_take_url(item, url);
+    g_signal_connect(item, "activate", G_CALLBACK(rb_bm_remove), app);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    gtk_widget_show_all(menu);
+    /* A popup menu is not owned by anything, so it has to destroy itself once
+     * a choice has been made or dismissed. */
+    g_signal_connect_swapped(menu, "selection-done",
+                             G_CALLBACK(gtk_widget_destroy), menu);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), event);
+    return TRUE;
+}
+
+static GtkWidget *rb_bm_button(App *app, const rb_bookmark *bm)
+{
+    const char *text = (bm->title && bm->title[0]) ? bm->title : bm->url;
+    GtkWidget *btn = gtk_button_new_with_label(text);
+    GtkWidget *lbl = gtk_bin_get_child(GTK_BIN(btn));
+
+    gtk_button_set_relief(GTK_BUTTON(btn), GTK_RELIEF_NONE);
+    rb_add_class(btn, "rb-bmbtn");
+    if (lbl) {
+        gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
+        gtk_label_set_max_width_chars(GTK_LABEL(lbl), 24);
+    }
+    gtk_widget_set_tooltip_text(btn, bm->url);
+    rb_bm_take_url(btn, bm->url);
+    g_signal_connect(btn, "clicked", G_CALLBACK(rb_bm_open), app);
+    g_signal_connect(btn, "button-press-event", G_CALLBACK(rb_bm_pressed), app);
+    g_signal_connect(btn, "button-press-event", G_CALLBACK(rb_bm_context), app);
+    return btn;
+}
+
+static void rb_bookmarks_bar_refresh(App *app)
+{
+    int i, n, shown = 0;
+
+    if (!app || !app->bmbar) return;
+
+    rb_bm_children_free(app->bmbar);
+
+    if (!rb_pref_int(app, RB_PREF_BOOKMARKS_BAR_LOCAL, 1)) {
+        gtk_widget_hide(app->bmbar);
+        return;
+    }
+
+    n = rb_bookmarks_count(app->bookmarks);
+    for (i = 0; i < n; ) {
+        const rb_bookmark *bm = rb_bookmarks_at(app->bookmarks, i);
+        if (!bm || !bm->url || !bm->url[0]) { i++; continue; }
+
+        if (bm->folder && bm->folder[0]) {
+            /* Folder rows are contiguous, so this group runs until the folder
+             * name changes — or until a folder-less row, which sorts last. */
+            const char *folder = bm->folder;
+            GtkWidget *menu = gtk_menu_new();
+            GtkWidget *btn = gtk_menu_button_new();
+
+            while (i < n) {
+                const rb_bookmark *f = rb_bookmarks_at(app->bookmarks, i);
+                GtkWidget *item;
+                if (!f || !f->url || !f->url[0]) { i++; continue; }
+                if (!f->folder || strcmp(f->folder, folder) != 0) break;
+                item = gtk_menu_item_new_with_label(
+                    (f->title && f->title[0]) ? f->title : f->url);
+                rb_bm_take_url(item, f->url);
+                g_signal_connect(item, "activate",
+                                 G_CALLBACK(rb_bm_open), app);
+                gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+                i++;
+            }
+
+            gtk_widget_show_all(menu);
+            gtk_button_set_label(GTK_BUTTON(btn), folder);
+            gtk_button_set_relief(GTK_BUTTON(btn), GTK_RELIEF_NONE);
+            rb_add_class(btn, "rb-bmbtn");
+            gtk_widget_set_tooltip_text(btn, folder);
+            /* Same deprecation as rb_build_menu: the classic GtkMenu is kept
+             * deliberately, and is fully functional on GTK 3.x. */
+            G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+            gtk_menu_button_set_popup(GTK_MENU_BUTTON(btn), menu);
+            G_GNUC_END_IGNORE_DEPRECATIONS
+            /* The button does not own what set_popup() attached, and this bar
+             * throws its buttons away on every refresh — so the menu is tied
+             * to the button's lifetime explicitly rather than left to leak a
+             * widget tree per starred page. */
+            g_signal_connect_swapped(btn, "destroy",
+                                     G_CALLBACK(gtk_widget_destroy), menu);
+            gtk_box_pack_start(GTK_BOX(app->bmbar), btn, FALSE, FALSE, 0);
+        } else {
+            gtk_box_pack_start(GTK_BOX(app->bmbar), rb_bm_button(app, bm),
+                               FALSE, FALSE, 0);
+            i++;
+        }
+        shown++;
+    }
+
+    /* A child packed into an already-shown container starts hidden, so the
+     * refresh shows its own work; and a bar with nothing in it goes away
+     * rather than leaving a bare strip of background. */
+    if (shown) gtk_widget_show_all(app->bmbar);
+    else gtk_widget_hide(app->bmbar);
+}
+
 void rb_do_toggle_bookmark(App *app)
 {
     rb_tab *t = rb_store_tab(app);
@@ -969,6 +1185,8 @@ void rb_do_toggle_bookmark(App *app)
         rb_bookmarks_save(app->bookmarks, app->path_bookmarks);
     }
     rb_update_star(app);
+    /* Starring is how a page reaches the bar, so the bar follows it live. */
+    rb_bookmarks_bar_refresh(app);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1320,6 +1538,16 @@ static void on_js_toggled(GtkCheckMenuItem *item, gpointer user_data)
     rb_gw_apply_js(app);   /* live toggle: applies to the open webviews */
 }
 
+static void on_bm_toggled(GtkCheckMenuItem *item, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    /* A per-profile preference like the JavaScript switch above, so the bar
+     * is shown or hidden for the profile it was chosen in. */
+    rb_pref_set_int(app, RB_PREF_BOOKMARKS_BAR_LOCAL,
+                    gtk_check_menu_item_get_active(item) ? 1 : 0);
+    rb_bookmarks_bar_refresh(app);
+}
+
 static void on_dialog_response(GtkWidget *widget, gint response_id,
                                gpointer user_data)
 {
@@ -1358,6 +1586,14 @@ static void rb_prefs_apply_key(App *app, const char *key)
         rb_set_str(&app->home_url,
                    rb_strdup(rb_pref(app, RB_PREF_HOME_LOCAL,
                                      "https://duckduckgo.com")));
+    } else if (strcmp(key, RB_PREF_BOOKMARKS_BAR_LOCAL) == 0) {
+        /* The bar is per profile, so a profile switch lands here too. */
+        if (g_bm_item != NULL) {
+            gtk_check_menu_item_set_active(
+                GTK_CHECK_MENU_ITEM(g_bm_item),
+                rb_pref_int(app, RB_PREF_BOOKMARKS_BAR_LOCAL, 1) ? TRUE : FALSE);
+        }
+        rb_bookmarks_bar_refresh(app);
     } else if (strcmp(key, RB_PREF_UA_MODE) == 0 ||
                strcmp(key, RB_PREF_UA_PRESET_ID) == 0 ||
                strcmp(key, RB_PREF_CUSTOM_USER_AGENT) == 0) {
@@ -2261,6 +2497,13 @@ static void rb_build_menu(App *app)
     g_signal_connect(item, "activate", G_CALLBACK(on_menu_bookmark), app);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
+    g_bm_item = gtk_check_menu_item_new_with_label("Show bookmarks bar");
+    gtk_check_menu_item_set_active(
+        GTK_CHECK_MENU_ITEM(g_bm_item),
+        rb_pref_int(app, RB_PREF_BOOKMARKS_BAR_LOCAL, 1) ? TRUE : FALSE);
+    g_signal_connect(g_bm_item, "toggled", G_CALLBACK(on_bm_toggled), app);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), g_bm_item);
+
     item = gtk_menu_item_new_with_label("Recent history");
     g_signal_connect(item, "activate", G_CALLBACK(on_menu_history), app);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
@@ -2492,6 +2735,12 @@ void rb_on_activate(GtkApplication *gtk_app, gpointer user_data)
     gtk_box_pack_start(GTK_BOX(toolbar), app->menu_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(root), toolbar, FALSE, FALSE, 0);
 
+    /* The bookmarks bar: one more chrome row, under the toolbar and above the
+     * progress strip.  Built empty here and filled by the refresh below. */
+    app->bmbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+    rb_add_class(app->bmbar, "rb-bmbar");
+    gtk_box_pack_start(GTK_BOX(root), app->bmbar, FALSE, FALSE, 0);
+
     /* The page-load indicator: its own 2px strip between the toolbar and the
      * page.  A drawing area rather than CSS because the segment moves. */
     app->prog_area = gtk_drawing_area_new();
@@ -2518,6 +2767,12 @@ void rb_on_activate(GtkApplication *gtk_app, gpointer user_data)
     gtk_widget_set_margin_start(app->status, 8);
     gtk_widget_set_margin_bottom(app->status, 8);
     gtk_overlay_add_overlay(GTK_OVERLAY(overlay), app->status);
+
+    /* Filled after show_all for the same reason as the bubble above: children
+     * packed into an already-shown box stay hidden until shown, and the
+     * refresh is what shows them — and what hides the whole bar when the
+     * profile has no bookmarks or has the bar switched off. */
+    rb_bookmarks_bar_refresh(app);
 
     /* First tab: navigates to the "home" setting. */
     rb_do_new_tab(app);

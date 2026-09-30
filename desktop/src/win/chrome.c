@@ -1135,7 +1135,13 @@ static LRESULT rb_draw_button(App *app, const DRAWITEMSTRUCT *dis)
     }
 
     SetBkMode(dis->hDC, TRANSPARENT);
-    SetTextColor(dis->hDC, rb_col(app->pal.text_primary));
+    /* A disabled button must not read as enabled.  rb_update_nav greys
+     * back/forward out with EnableWindow, and an owner-drawn button gets no
+     * help from the theme — without this it paints exactly like a live one,
+     * so the only sign the control is dead is that clicking does nothing. */
+    SetTextColor(dis->hDC, (dis->itemState & ODS_DISABLED)
+                               ? rb_col(app->pal.text_secondary)
+                               : rb_col(app->pal.text_primary));
     old = (HFONT)SelectObject(dis->hDC, app->fnt_ui);
     if (is_tab) {
         tr.left += 8;

@@ -53,6 +53,12 @@ extern "C" {
  * shared even though the two GUIs are not. */
 #define RB_PREF_HOME_LOCAL           "home"
 
+/* Whether the bookmarks bar is shown.  A desktop extension like the key
+ * above, and stored in the same profile settings: the bar is a property of
+ * how a profile is browsed, not of the machine, so two profiles can disagree
+ * about it exactly as they disagree about JavaScript. */
+#define RB_PREF_BOOKMARKS_BAR_LOCAL  "bookmarks_bar"
+
 /* User agent */
 #define RB_PREF_UA_MODE              "ua_mode"      /* default|preset|custom   */
 #define RB_PREF_UA_PRESET_ID         "ua_preset_id"
