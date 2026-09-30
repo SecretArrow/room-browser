@@ -42,7 +42,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         WalletActivityEntity::class,
         WalletActiveNetworkEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -324,6 +324,34 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v8 → v9: wallet_networks' primary key was the table-wide `id`
+         * (the NetworkConfig id, e.g. "EVM:1") — one profile silently owned
+         * every row of a network and any other profile's seeding collided
+         * on the PK (caught by the wallet-isolation e2e). Rebuilt with the
+         * composite (profile_id, id) primary key; existing rows copy over
+         * as-is (v8 ids were globally unique, so no conflict is possible).
+         */
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `wallet_networks_v9` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`profile_id` TEXT NOT NULL, " +
+                        "`enabled` INTEGER NOT NULL, " +
+                        "`is_custom` INTEGER NOT NULL, " +
+                        "`payload` TEXT NOT NULL, " +
+                        "PRIMARY KEY(`profile_id`, `id`))"
+                )
+                db.execSQL(
+                    "INSERT INTO `wallet_networks_v9` (`id`, `profile_id`, `enabled`, `is_custom`, `payload`) " +
+                        "SELECT `id`, `profile_id`, `enabled`, `is_custom`, `payload` FROM `wallet_networks`"
+                )
+                db.execSQL("DROP TABLE `wallet_networks`")
+                db.execSQL("ALTER TABLE `wallet_networks_v9` RENAME TO `wallet_networks`")
+            }
+        }
+
         @Volatile
         private var instance: AppDatabase? = null
 
@@ -337,7 +365,8 @@ abstract class AppDatabase : RoomDatabase() {
                 .enableMultiInstanceInvalidation()
                 .addMigrations(
                     MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4,
-                    MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8
+                    MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
+                    MIGRATION_8_9
                 )
                 .build()
     }

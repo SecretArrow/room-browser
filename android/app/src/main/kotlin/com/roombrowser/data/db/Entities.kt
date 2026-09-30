@@ -358,18 +358,18 @@ data class WalletAccountEntity(
  * A network row of a profile: the full [com.roombrowser.domain.wallet.model.NetworkConfig]
  * serialized as JSON in `payload` (schema stays stable when the config
  * gains fields), plus per-profile UI state. `id` IS the NetworkConfig id
- * ("EVM:137", "SOLANA:mainnet-beta", ...); the UNIQUE(profile_id, id)
- * index makes seeding and upserts idempotent per profile.
+ * ("EVM:137", "SOLANA:mainnet-beta", ...). The COMPOSITE primary key
+ * (profile_id, id) makes seeding and upserts idempotent PER PROFILE: a
+ * table-wide `id` primary key (v8's mistake, found by the wallet isolation
+ * e2e) silently gave ONE profile exclusive ownership of every network row —
+ * the second profile's seeding collided on the PK and got nothing.
  */
 @Entity(
     tableName = "wallet_networks",
-    indices = [
-        Index("profile_id"),
-        Index(value = ["profile_id", "id"], unique = true)
-    ]
+    primaryKeys = ["profile_id", "id"]
 )
 data class WalletNetworkEntity(
-    @PrimaryKey @ColumnInfo(name = "id") val id: String,
+    @ColumnInfo(name = "id") val id: String,
     @ColumnInfo(name = "profile_id") val profileId: String,
     @ColumnInfo(name = "enabled") val enabled: Boolean,
     @ColumnInfo(name = "is_custom") val isCustom: Boolean,
