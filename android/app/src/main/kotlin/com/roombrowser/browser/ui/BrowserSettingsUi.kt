@@ -53,6 +53,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.roombrowser.BuildConfig
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.domain.model.BrowserGlobalSettings
@@ -1093,7 +1094,10 @@ fun AboutScreen(onClose: () -> Unit) {
         ) {
             Column(Modifier.padding(12.dp)) {
                 Text(
-                    "Room Browser 1.0.0",
+                    // The real versionName, not a literal: this said "1.0.0"
+                    // for every build ever shipped, so the About screen could
+                    // not tell a user which release they had installed.
+                    "Room Browser ${BuildConfig.VERSION_NAME}",
                     style = MaterialTheme.typography.headlineSmall,
                     color = extras.textPrimary
                 )

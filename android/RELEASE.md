@@ -8,7 +8,9 @@ The repository ships CI/CD in `.github/workflows/ci.yml`:
 2. **quality gate (every push / PR)** — lint + unit tests + debug build.
 3. **e2e gate** — instrumented tests + cross-process E2E flow on an emulator.
 4. **auto-release** — after quality + e2e are green:
-   - **every push to `main`** → pre-release tagged `v1.0.<run_number>`
+   - **every push to `main`** → pre-release tagged `v1.0.<next>`, where
+     `<next>` is one past the highest existing `v1.0.*` tag (the `versionCode`
+     is a separate, much larger number: the CI run number)
    - **every tag `v*`** → stable release with the exact tag name
    - signed **per-ABI APKs + universal APK + AAB** + SHA-256 checksums
    - automatic **GitHub Release** with all artifacts attached
@@ -56,7 +58,13 @@ keystore before public distribution.
 ## Verification
 
 - Verify checksums: `sha256sum -c checksums.sha256`
-- Confirm signature: `apksigner verify --print-certs room-browser-v1.0.0-arm64-v8a-release.apk`
+- Confirm signature: `apksigner verify --print-certs room-browser-v<version>-arm64-v8a-release.apk`
+  where `<version>` is the release tag without its `v` (`v1.0.96` -> `1.0.96`).
+  The release workflow stamps the tag into `versionName` through
+  `RB_VERSION_NAME`, so the filename, the version Android's app info reports
+  and the About screen all name the release the build came from. A local
+  `assembleRelease` has not been told a version and keeps the `1.0.0`
+  fallback.
 - Recommended: install each ABI artifact on an appropriate emulator/device
   and run the profile-isolation procedure from `TESTING.md` before
   distribution (the spec's "verify each ABI" step).

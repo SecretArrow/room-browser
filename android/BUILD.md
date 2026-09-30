@@ -27,6 +27,11 @@ room-browser-v1.0.0-x86_64-debug.apk
 room-browser-v1.0.0-universal-debug.apk
 ```
 
+The version in those names comes from `RB_VERSION_NAME` (see
+[RELEASE.md](RELEASE.md)); a local build has not been told one, so it falls
+back to `1.0.0`. The release workflow passes the tag it is publishing, which is
+why a released APK is named after its own release (`room-browser-v1.0.96-…`).
+
 ## Build types
 
 | Type | Purpose | Notes |

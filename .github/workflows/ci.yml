@@ -482,17 +482,21 @@ jobs:
         id: tag
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "tag=${GITHUB_REF_NAME}"                  >> "$GITHUB_OUTPUT"
+            TAG="${GITHUB_REF_NAME}"
             echo "prerelease=false"                        >> "$GITHUB_OUTPUT"
             echo "name=Room Browser ${GITHUB_REF_NAME}"    >> "$GITHUB_OUTPUT"
           else
             git fetch --tags -f origin
             LATEST=$(git tag --list 'v1.0.*' | sed 's/^v1\.0\.//' | sort -n | tail -1)
             NEXT=$(( ${LATEST:-0} + 1 ))
-            echo "tag=v1.0.$NEXT"                          >> "$GITHUB_OUTPUT"
+            TAG="v1.0.$NEXT"
             echo "prerelease=true"                         >> "$GITHUB_OUTPUT"
-            echo "name=Room Browser v1.0.$NEXT (main)"     >> "$GITHUB_OUTPUT"
+            echo "name=Room Browser $TAG (main)"           >> "$GITHUB_OUTPUT"
           fi
+          echo "tag=$TAG"              >> "$GITHUB_OUTPUT"
+          # The versionName the build stamps into the manifest and into the APK
+          # filename: the tag without its "v" (v1.0.95 -> 1.0.95).
+          echo "version=${TAG#v}"      >> "$GITHUB_OUTPUT"
 
       - name: Decode signing keystore (from repository secrets)
         run: |
@@ -509,9 +513,15 @@ jobs:
           fi
 
       - name: Build signed release APKs (ABI splits + universal)
+        env:
+          # Stamps versionName (and therefore the APK filenames) with the tag
+          # this release is being published under.
+          RB_VERSION_NAME: ${{ steps.tag.outputs.version }}
         run: cd android && ./gradlew assembleRelease --console=plain
 
       - name: Build Android App Bundle
+        env:
+          RB_VERSION_NAME: ${{ steps.tag.outputs.version }}
         run: cd android && ./gradlew bundleRelease --console=plain
 
       - name: Download desktop artifacts (this run, if any)

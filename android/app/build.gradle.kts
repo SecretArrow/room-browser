@@ -8,7 +8,14 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-val baseVersionName = "1.0.0"
+// The release workflow passes the tag it is publishing (v1.0.95) through
+// RB_VERSION_NAME, so an APK's filename, the versionName the phone reports and
+// the About screen all name the release they came from.  Without it every
+// release shipped "1.0.0": the files collided in a downloads folder, and a
+// build could not be told apart from any other in Android's app info.  A local
+// build keeps the fallback.
+val baseVersionName =
+    System.getenv("RB_VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.0.0"
 // CI produces incrementing version codes per pipeline run (spec section 57);
 // local builds fall back to 1.
 val ciBuildNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0
