@@ -134,6 +134,12 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "/META-INF/INDEX.LIST"
+            // web3j (via :core:wallet) drags Apache httpclient/httpcore,
+            // whose jars both ship META-INF/DEPENDENCIES — harmless license
+            // metadata that Android's merger refuses to duplicate.
+            excludes += "/META-INF/DEPENDENCIES"
+            excludes += "/META-INF/NOTICE"
+            excludes += "/META-INF/NOTICE.txt"
         }
     }
     lint {
