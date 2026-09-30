@@ -142,6 +142,30 @@ void rb_prefs_global_defaults(rb_settings *s);
  * touched this renders exactly as it did before. */
 int rb_font_scale_percent(const rb_settings *s);
 
+/* The WebRTC policy a profile's stored value means.  The values are the
+ * Android edition's WebRtcPolicy enum (Profile.kt) lowercased, and the strings
+ * are what RB_PREF_WEBRTC_POLICY holds.
+ *
+ * Parsed here rather than in each GUI because the three editions can express
+ * different amounts of it, and the one thing they must not do is disagree
+ * about which of the three a stored value IS.  Each then renders the nearest
+ * thing its engine can actually do, and says so where the user chose it. */
+typedef enum {
+    RB_WEBRTC_DEFAULT = 0,        /* the engine's own behaviour            */
+    RB_WEBRTC_RESTRICT_LOCAL_IP,  /* no host candidates for anyone listening */
+    RB_WEBRTC_DISABLED            /* no real-time media at all             */
+} rb_webrtc_policy;
+
+/* The policy `s` asks for.  An absent or unrecognised value reads as
+ * RB_WEBRTC_RESTRICT_LOCAL_IP, which is both what a fresh profile gets and the
+ * protective end of the range: a privacy switch whose value cannot be
+ * understood must not fall back to the permissive setting. */
+rb_webrtc_policy rb_webrtc_policy_of(const rb_settings *s);
+
+/* The string to store for a policy: the inverse of rb_webrtc_policy_of(), so
+ * a combo box can be built from the enum without repeating the spellings. */
+const char *rb_webrtc_policy_name(rb_webrtc_policy p);
+
 /* Files the default homepage shortcuts, '\n'-separated (the four the
  * Android home screen ships). */
 #define RB_PREFS_DEFAULT_SHORTCUTS \

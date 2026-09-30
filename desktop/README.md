@@ -29,7 +29,10 @@ browser is original C: a portable core plus one thin platform layer per OS.
 - **History** — most-recent-first, consecutive duplicates collapsed, bounded at
   10 000 entries, persisted as JSON lines; the menu offers the 10 latest.
 - **Settings** — plain `key=value` lines: `home`, `search_engine`,
-  `javascript` (default **1**).
+  `javascript` (default **1**).  The preferences window (menu → Preferences,
+  or <kbd>Ctrl</kbd>+<kbd>,</kbd>) edits the profile's full setting set —
+  theme, text size, search, privacy and blocking, User-Agent, DNS, homepage
+  and the clear-data actions — the same keys the Android edition stores.
 - **Dark chrome everywhere** — tab strip `#202124`, toolbar `#292A2D`,
   omnibox `#3C3D41`, text `#E8EAED`, accent `#A78BFA` (GTK via a
   `GtkCssProvider` stylesheet, Windows via owner-draw + dark title bar).
@@ -163,6 +166,24 @@ Outputs:
 
 ## Limitations (v1, honest)
 
+- **Text size** scales the chrome on both editions, but not identically.
+  Linux sizes a widget from its content, so the scale rides on
+  `gtk-font-name` alone. Windows places every control at an absolute
+  coordinate, so the layout is scaled with the font — otherwise a larger font
+  would spill out of a box that did not move with it. The settings window
+  itself keeps a fixed size on both editions; only the chrome scales.
+- **WebRTC policy** offers the Android edition's three values, and each
+  desktop edition can express a different part of the range. Linux has one
+  on/off switch and no notion of an IP-handling policy, so only *Disabled*
+  changes anything there — it turns WebRTC off, while *Default* and *Restrict
+  local IP exposure* both leave it on. Windows has no WebRTC switch at all,
+  but Chromium has an IP-handling policy, so both non-default values map onto
+  `--force-webrtc-ip-handling-policy=disable_non_proxied_udp`: candidates stay
+  off the machine's own interfaces. That switch is read when the browser
+  process starts, so on Windows a change takes effect at the next launch
+  rather than on the pages already open. Neither edition can remove
+  `RTCPeerConnection` outright, and the preferences screen says which of these
+  applies where the choice is made.
 - **Windows accelerators are inactive while web content has focus** —
   shortcuts are handled in the main window procedure, and the WebView2 child
   consumes keys first. Click the toolbar/tab strip first, or use the

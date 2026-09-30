@@ -1824,6 +1824,19 @@ static void rb_pref_combo_row(GtkWidget *grid, int row, App *app,
     gtk_grid_attach(GTK_GRID(grid), combo, 1, row, 1, 1);
 }
 
+/* A dim paragraph spanning both columns, for a row whose control cannot carry
+ * a description of its own — a combo box has no subtitle slot, and a caveat
+ * that only appears in a tooltip is a caveat nobody reads. */
+static void rb_pref_note_row(GtkWidget *grid, int row, const char *text)
+{
+    GtkWidget *l = gtk_label_new(text);
+    gtk_label_set_xalign(GTK_LABEL(l), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(l), TRUE);
+    gtk_widget_set_hexpand(l, TRUE);
+    gtk_widget_set_opacity(l, 0.72);
+    gtk_grid_attach(GTK_GRID(grid), l, 0, row, 2, 1);
+}
+
 /* An entry row with an Apply button: the value is written when Apply is
  * pressed, not on every keystroke, so a half-typed URL is never saved. */
 static void on_pref_entry_apply(GtkButton *btn, gpointer user_data)
@@ -2113,6 +2126,29 @@ static void rb_show_prefs_dialog_impl(App *app)
                 "it, so it has no effect on this edition");
     rb_pref_row(grid, r++, app, RB_PREF_JAVASCRIPT, 1, "JavaScript enabled",
                 "Never disabled by default");
+    {
+        /* The same three options the Android settings screen offers, with its
+         * own wording.  This edition can only express two of them — see the
+         * note under the row, and rb_gw_web_settings_to(). */
+        static const char *const ids[] = {
+            "default", "restrict_local_ip", "disabled", NULL
+        };
+        static const char *const labels[] = {
+            "WebRTC: Default",
+            "WebRTC: Restrict local IP exposure",
+            "WebRTC: Disabled (may break calls)",
+            NULL
+        };
+        const rb_profile *p = rb_active_profile(app);
+        rb_pref_combo_row(grid, r++, app, RB_PREF_WEBRTC_POLICY, ids, labels,
+                          rb_webrtc_policy_name(
+                              rb_webrtc_policy_of(p ? p->settings : NULL)),
+                          "WebRTC", 0);
+        rb_pref_note_row(grid, r++,
+            "WebKitGTK has one WebRTC switch and no IP-handling policy, so only "
+            "\"Disabled\" changes anything here: it turns WebRTC off, while "
+            "\"Default\" and \"Restrict local IP exposure\" both leave it on.");
+    }
     gtk_notebook_append_page(GTK_NOTEBOOK(notebook), rb_pref_scrolled(grid),
                              gtk_label_new("Privacy"));
 

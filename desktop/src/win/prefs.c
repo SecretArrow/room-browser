@@ -532,6 +532,42 @@ static void pf_build_privacy(RbPrefs *pf)
                    L"for it, so it has no effect on this edition");
     y += pf_switch(pf, 2, y, RB_PREF_JAVASCRIPT, 1, L"JavaScript enabled",
                    L"Never disabled by default");
+    {
+        /* The same three options, in the same words, that the Android settings
+         * screen offers.  This edition can express two of them: WebView2 has
+         * no WebRTC switch, so the policy becomes a Chromium IP-handling
+         * switch — see rb_wv_init() — and "Restrict local IP exposure" and
+         * "Disabled" share it.  Saying so here is the whole point of the note:
+         * a control that silently did less than it promised is the failure
+         * this row exists to avoid. */
+        static const char *const ids[] = {
+            "default", "restrict_local_ip", "disabled", NULL
+        };
+        static const char *const labels[] = {
+            "WebRTC: Default",
+            "WebRTC: Restrict local IP exposure",
+            "WebRTC: Disabled (may break calls)",
+            NULL
+        };
+        const rb_profile *p = rb_active_profile(pf->app);
+
+        y += pf_combo(pf, 2, y, RB_PREF_WEBRTC_POLICY, ids, labels,
+                      rb_webrtc_policy_name(
+                          rb_webrtc_policy_of(p ? p->settings : NULL)),
+                      L"WebRTC");
+        /* Deliberately taller than the lines it holds: the text is
+         * top-aligned, so spare height costs nothing, while a rect that is one
+         * line short would clip the sentence that matters. */
+        (void)pf_mk(pf, pf->pages[2], L"STATIC",
+                    L"WebView2 has no WebRTC switch, so the last two options "
+                    L"share one Chromium IP-handling policy: candidates stay "
+                    L"off this machine's interfaces.  It is read when the "
+                    L"browser starts, so a change takes effect at the next "
+                    L"launch rather than on the pages already open.",
+                    SS_LEFT, 0, y, pf->page_w, 2 * PF_NOTE_H,
+                    0, RB_PF_INK_DIM);
+        y += 2 * PF_NOTE_H + PF_GAP;
+    }
 }
 
 static void pf_build_ua(RbPrefs *pf)

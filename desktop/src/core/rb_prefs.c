@@ -11,6 +11,7 @@
 #include "rb_prefs.h"
 
 #include <stddef.h> /* NULL */
+#include <string.h> /* strcmp */
 
 void rb_prefs_profile_defaults(rb_settings *s)
 {
@@ -117,4 +118,41 @@ int rb_font_scale_percent(const rb_settings *s)
         return RB_FONT_SCALE_MAX;
     }
     return v;
+}
+
+rb_webrtc_policy rb_webrtc_policy_of(const rb_settings *s)
+{
+    const char *v;
+
+    if (s == NULL) {
+        return RB_WEBRTC_RESTRICT_LOCAL_IP;
+    }
+    v = rb_settings_get(s, RB_PREF_WEBRTC_POLICY, NULL);
+    if (v == NULL) {
+        /* The key is absent — a store written before it existed, or one that
+         * has been hand-edited.  "restrict_local_ip" is what a fresh profile
+         * gets, so an absent key reads as what the profile would have had. */
+        return RB_WEBRTC_RESTRICT_LOCAL_IP;
+    }
+    if (strcmp(v, "default") == 0) {
+        return RB_WEBRTC_DEFAULT;
+    }
+    if (strcmp(v, "disabled") == 0) {
+        return RB_WEBRTC_DISABLED;
+    }
+    if (strcmp(v, "restrict_local_ip") == 0) {
+        return RB_WEBRTC_RESTRICT_LOCAL_IP;
+    }
+    /* An unrecognised word is not a licence to open the setting up. */
+    return RB_WEBRTC_RESTRICT_LOCAL_IP;
+}
+
+const char *rb_webrtc_policy_name(rb_webrtc_policy p)
+{
+    switch (p) {
+    case RB_WEBRTC_DEFAULT:       return "default";
+    case RB_WEBRTC_DISABLED:      return "disabled";
+    case RB_WEBRTC_RESTRICT_LOCAL_IP:
+    default:                      return "restrict_local_ip";
+    }
 }

@@ -1729,6 +1729,52 @@ int rb_wv_init(App *app)
         udd[0] = 0;   /* fall back to the default user data folder */
     }
 
+    /* The WebRTC policy.
+     *
+     * ICoreWebView2Settings has no WebRTC switch at all, but the runtime reads
+     * WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS before it starts its browser
+     * process, so the profile's policy rides in as a Chromium switch.
+     * --force-webrtc-ip-handling-policy=disable_non_proxied_udp keeps WebRTC
+     * off the machine's own interfaces: candidates come from a configured
+     * proxy, or over TCP, so a peer cannot learn the local address.  That is
+     * what "restrict_local_ip" asks for, and it is the closest WebView2 comes
+     * to "disabled" — there is no way to remove RTCPeerConnection outright.
+     * The two therefore share one switch here, and the preferences row says
+     * so rather than implying a difference that does not exist.
+     *
+     * It has to be set BEFORE the environment is created, so unlike every
+     * other setting it is read once, at start-up: changing it takes effect at
+     * the next launch rather than on the pages already open.
+     *
+     * An existing value is preserved and appended to.  This variable is also
+     * how a developer attaches a debugger, and overwriting it would break
+     * that silently. */
+    {
+        static const wchar_t arg[] =
+            L"--force-webrtc-ip-handling-policy=disable_non_proxied_udp";
+        const rb_profile *p = rb_active_profile(app);
+        rb_webrtc_policy policy = rb_webrtc_policy_of(p ? p->settings : NULL);
+
+        if (policy != RB_WEBRTC_DEFAULT) {
+            wchar_t buf[1024];
+            const DWORD cap = (DWORD)(sizeof buf / sizeof buf[0]);
+            DWORD n = GetEnvironmentVariableW(
+                L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", buf, cap);
+
+            if (n == 0 || n >= cap) {
+                /* Absent, or longer than anything worth carrying forward. */
+                SetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+                                        arg);
+            } else {
+                wchar_t joined[2048];
+                /* Cannot truncate: n < cap and arg is 58 characters. */
+                swprintf(joined, 2048, L"%ls %ls", buf, arg);
+                SetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+                                        joined);
+            }
+        }
+    }
+
     g_env_handler.base.lpVtbl = &g_env_vtbl;
     g_env_handler.app = app;
     g_env_handler.refs = 1;

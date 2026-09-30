@@ -954,22 +954,25 @@ void rb_gw_apply_js(App *app)
  *     effect here.  Pretending otherwise would be a lie in the UI.
  *   - WebRTC local-IP restrictions.  WebKitSettings has one on/off switch, so
  *     "restrict_local_ip" and "default" both leave WebRTC on; only "disabled"
- *     is expressible.  The Android edition documents the same class of
- *     limitation for WebView. */
+ *     is expressible.  The Win32 edition gets closer, because Chromium has an
+ *     IP-handling policy the profile's value maps onto directly.  The
+ *     Android edition documents the same class of limitation for WebView. */
 
 static void rb_gw_web_settings_to(App *app, WebKitSettings *s)
 {
-    const char *webrtc;
-    gboolean webrtc_on = TRUE;
+    const rb_profile *p = rb_active_profile(app);
+    rb_webrtc_policy webrtc = rb_webrtc_policy_of(p ? p->settings : NULL);
 
     if (s == NULL) return;
-    webrtc = rb_pref(app, RB_PREF_WEBRTC_POLICY, "default");
-    if (webrtc != NULL && strcmp(webrtc, "disabled") == 0) {
-        webrtc_on = FALSE;
-    }
 
     g_object_set(s, "enable-javascript", app->js_enabled ? TRUE : FALSE, NULL);
-    g_object_set(s, "enable-webrtc", webrtc_on, NULL);
+    /* Two states out of three.  WebKitSettings has one on/off switch and no
+     * notion of an IP-handling policy, so "restrict_local_ip" — which is what
+     * a fresh profile gets — renders as WebRTC on, exactly as "default" does.
+     * The preferences row says so where the choice is made rather than
+     * pretending the setting did something. */
+    g_object_set(s, "enable-webrtc",
+                 (webrtc == RB_WEBRTC_DISABLED) ? FALSE : TRUE, NULL);
     /* Android's search-suggestions switch is about whether typed text leaves
      * the device; DNS prefetching is the same class of background request, so
      * it follows the same switch. */

@@ -2063,6 +2063,42 @@ static void test_rb_prefs(void)
         rb_settings_set(f, RB_PREF_FONT_SCALE, "huge");
         CHECK(rb_font_scale_percent(f) == RB_FONT_SCALE_DEFAULT);
 
+        /* the WebRTC policy.  Each GUI can express a different amount of it,
+         * so the parse is the one part they share. */
+        CHECK(rb_webrtc_policy_of(NULL) == RB_WEBRTC_RESTRICT_LOCAL_IP);
+        rb_prefs_profile_defaults(f);
+        CHECK(rb_webrtc_policy_of(f) == RB_WEBRTC_RESTRICT_LOCAL_IP);
+
+        rb_settings_set(f, RB_PREF_WEBRTC_POLICY, "default");
+        CHECK(rb_webrtc_policy_of(f) == RB_WEBRTC_DEFAULT);
+        rb_settings_set(f, RB_PREF_WEBRTC_POLICY, "disabled");
+        CHECK(rb_webrtc_policy_of(f) == RB_WEBRTC_DISABLED);
+        rb_settings_set(f, RB_PREF_WEBRTC_POLICY, "restrict_local_ip");
+        CHECK(rb_webrtc_policy_of(f) == RB_WEBRTC_RESTRICT_LOCAL_IP);
+
+        /* a privacy switch whose value cannot be understood must not fall
+         * back to the permissive setting */
+        rb_settings_set(f, RB_PREF_WEBRTC_POLICY, "Disabled");
+        CHECK(rb_webrtc_policy_of(f) == RB_WEBRTC_RESTRICT_LOCAL_IP);
+        rb_settings_set(f, RB_PREF_WEBRTC_POLICY, "");
+        CHECK(rb_webrtc_policy_of(f) == RB_WEBRTC_RESTRICT_LOCAL_IP);
+        {
+            /* a store that never had the key at all — a settings file written
+             * before this switch existed */
+            rb_settings *bare = rb_settings_new();
+            CHECK(rb_webrtc_policy_of(bare) == RB_WEBRTC_RESTRICT_LOCAL_IP);
+            rb_settings_free(bare);
+        }
+
+        /* the spellings round-trip, which is what lets a combo box be built
+         * from the enum rather than repeating the strings */
+        CHECK(strcmp(rb_webrtc_policy_name(RB_WEBRTC_DEFAULT), "default") == 0);
+        CHECK(strcmp(rb_webrtc_policy_name(RB_WEBRTC_DISABLED), "disabled") == 0);
+        CHECK(strcmp(rb_webrtc_policy_name(RB_WEBRTC_RESTRICT_LOCAL_IP),
+                     "restrict_local_ip") == 0);
+        CHECK(strcmp(rb_webrtc_policy_name((rb_webrtc_policy)99),
+                     "restrict_local_ip") == 0);
+
         rb_settings_free(f);
     }
 }
