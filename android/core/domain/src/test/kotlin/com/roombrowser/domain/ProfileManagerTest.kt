@@ -160,8 +160,14 @@ class ProfileManagerTest {
         randomManager.create("Two", "2", 0)
         randomManager.create("Three", "3", 0)
         // Each new profile sees every device handed out before it, so the
-        // picker can keep them distinct.
-        assertThat(offered).containsExactly(setOf(), setOf("device-0"), setOf("device-0", "device-1"))
+        // picker can keep them distinct. The first set is typed explicitly:
+        // an empty setOf() leaves containsExactly's vararg with nothing to
+        // infer from.
+        assertThat(offered).containsExactly(
+            emptySet<String>(),
+            setOf("device-0"),
+            setOf("device-0", "device-1")
+        )
     }
 
     @Test
