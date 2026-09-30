@@ -1044,6 +1044,121 @@ static const char *rb_dl_basename(const char *path)
     return (slash != NULL) ? slash + 1 : path;
 }
 
+/* ---- the live operation behind a record ----
+ *
+ * The downloads window holds a record's id and needs the WebView2 operation
+ * to pause, resume or cancel it.  The registry owns a reference while the
+ * transfer runs, so the operation cannot be freed under a click, and gives it
+ * up when StateChanged reports the end.  Everything here runs on the UI
+ * thread — WebView2 delivers its callbacks there and the window's clicks
+ * arrive there — so no lock is needed.
+ */
+typedef struct {
+    long long id;
+    ICoreWebView2DownloadOperation *op;   /* owned while the transfer runs */
+} RbDlOp;
+
+static RbDlOp *g_ops = NULL;
+static int g_ops_n = 0;
+static int g_ops_cap = 0;
+
+/* Borrowed: the registry keeps owning it.  NULL when there is no transfer. */
+static ICoreWebView2DownloadOperation *rb_dl_op_get(long long id)
+{
+    int i;
+
+    for (i = 0; i < g_ops_n; i++) {
+        if (g_ops[i].id == id) return g_ops[i].op;
+    }
+    return NULL;
+}
+
+static void rb_dl_op_add(long long id, ICoreWebView2DownloadOperation *op)
+{
+    int i;
+
+    if (op == NULL || id == 0) return;
+    for (i = 0; i < g_ops_n; i++) {
+        if (g_ops[i].id == id) {
+            /* Should not happen — one operation per download — but replacing
+             * the reference is the only honest thing to do if it does. */
+            op->lpVtbl->AddRef(op);
+            g_ops[i].op->lpVtbl->Release(g_ops[i].op);
+            g_ops[i].op = op;
+            return;
+        }
+    }
+    if (g_ops_n == g_ops_cap) {
+        int cap = g_ops_cap ? g_ops_cap * 2 : 8;
+        RbDlOp *grown = (RbDlOp *)realloc(g_ops, (size_t)cap * sizeof *grown);
+        if (grown == NULL) return;
+        g_ops = grown;
+        g_ops_cap = cap;
+    }
+    op->lpVtbl->AddRef(op);
+    g_ops[g_ops_n].id = id;
+    g_ops[g_ops_n].op = op;
+    g_ops_n++;
+}
+
+static void rb_dl_op_drop(long long id)
+{
+    int i;
+
+    for (i = 0; i < g_ops_n; i++) {
+        if (g_ops[i].id == id) {
+            g_ops[i].op->lpVtbl->Release(g_ops[i].op);
+            g_ops[i] = g_ops[g_ops_n - 1];
+            g_ops_n--;
+            return;
+        }
+    }
+}
+
+int rb_wv_download_active(long long id)
+{
+    return (rb_dl_op_get(id) != NULL) ? 1 : 0;
+}
+
+int rb_wv_download_cancel(long long id)
+{
+    ICoreWebView2DownloadOperation *op = rb_dl_op_get(id);
+
+    if (op == NULL) return 0;
+    return SUCCEEDED(op->lpVtbl->Cancel(op)) ? 1 : 0;
+}
+
+int rb_wv_download_pause(long long id)
+{
+    ICoreWebView2DownloadOperation *op = rb_dl_op_get(id);
+
+    if (op == NULL) return 0;
+    return SUCCEEDED(op->lpVtbl->Pause(op)) ? 1 : 0;
+}
+
+int rb_wv_download_resume(long long id)
+{
+    ICoreWebView2DownloadOperation *op = rb_dl_op_get(id);
+
+    if (op == NULL) return 0;
+    return SUCCEEDED(op->lpVtbl->Resume(op)) ? 1 : 0;
+}
+
+/* Every operation the registry still holds is given up.  Called at shutdown,
+ * where nothing will read a record again. */
+static void rb_dl_ops_release_all(void)
+{
+    int i;
+
+    for (i = 0; i < g_ops_n; i++) {
+        g_ops[i].op->lpVtbl->Release(g_ops[i].op);
+    }
+    free(g_ops);
+    g_ops = NULL;
+    g_ops_n = 0;
+    g_ops_cap = 0;
+}
+
 /* Where the file should land: the profile's download directory plus the name
  * the store chose, with the usual " (1)", " (2)" suffix when that path is
  * taken.  Overwriting a file the user downloaded earlier is not a thing a
@@ -1090,9 +1205,11 @@ static char *rb_dl_pick_destination(App *app, long long id)
 }
 
 /* Moves the store's view of a download to match the operation's state.
- * WebView2 reports completion through StateChanged, and a user cancel
- * arrives as INTERRUPTED with USER_CANCELED — which is not a failure to
- * report, the same distinction the GTK layer draws. */
+ * WebView2 reports completion through StateChanged, and three things that are
+ * not completions arrive the same way: a user cancel (INTERRUPTED with
+ * USER_CANCELED), a pause (INTERRUPTED with USER_PAUSED) and a real
+ * interruption.  Only the last is a failure to report, the same distinction
+ * the GTK layer draws. */
 static void rb_dl_state_changed(App *app, long long id,
                                 ICoreWebView2DownloadOperation *op)
 {
@@ -1112,22 +1229,54 @@ static void rb_dl_state_changed(App *app, long long id,
         rb_downloads_complete(app->downloads, id, path ? path : "",
                               (long long)received, rb_profile_now_ms());
         free(path);
+        /* The transfer is over: the operation is given up before the save, so
+         * a window reading the record afterwards cannot offer to pause or
+         * cancel something that no longer exists. */
+        rb_dl_op_drop(id);
         rb_dl_save(app);
         return;
     }
     if (st == COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED) {
         COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason =
             COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;
-        int cancelled;
+        BOOL can_resume = FALSE;
         op->lpVtbl->get_InterruptReason(op, &reason);
-        cancelled = (reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED);
-        rb_downloads_set_status(app->downloads, id,
-                                cancelled ? RB_DL_CANCELLED : RB_DL_FAILED,
-                                cancelled ? NULL : "the transfer was interrupted");
+        op->lpVtbl->get_CanResume(op, &can_resume);
+
+        /* WebView2 reports a pause as an interruption carrying the USER_PAUSED
+         * reason, so it is a state the user asked for rather than a failure to
+         * report.  The operation is KEPT: Resume() is reached through it. */
+        if (reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED) {
+            rb_downloads_set_status(app->downloads, id, RB_DL_PAUSED, NULL);
+            rb_dl_save(app);
+            return;
+        }
+        /* The user stopping a download is not a failure to report, the same
+         * distinction the GTK layer draws.  Nothing is left to resume. */
+        if (reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED) {
+            rb_downloads_set_status(app->downloads, id, RB_DL_CANCELLED, NULL);
+            rb_dl_op_drop(id);
+            rb_dl_save(app);
+            return;
+        }
+        /* A real interruption.  WebView2 picks some of these up where they
+         * left off and CanResume is what says which: when it can, the
+         * operation is kept so the window's "Resume" has something to call
+         * (Android's failed-but-retryable row, reached through the same
+         * engine).  When it cannot, the operation goes. */
+        rb_downloads_set_status(app->downloads, id, RB_DL_FAILED,
+                                "the transfer was interrupted");
+        if (!can_resume) {
+            rb_dl_op_drop(id);
+        }
         rb_dl_save(app);
         return;
     }
     rb_downloads_set_status(app->downloads, id, RB_DL_RUNNING, NULL);
+    /* Saved because a resume passes through here: without it a download that
+     * was paused, resumed and then cut short by the app closing would still
+     * read PAUSED on the next start, offering a resume whose engine is gone. */
+    rb_dl_save(app);
 }
 
 RB_HANDLER_QI(ICoreWebView2StateChangedEventHandler, DlStateEvt, rb_iid_dlstate_evt)
@@ -1302,6 +1451,9 @@ static HRESULT STDMETHODCALLTYPE DlStartEvt_Invoke(
     }
 
     rb_dl_save(app);
+    /* Held from here until StateChanged reports the end, which is what lets
+     * the downloads window pause, resume or cancel this transfer. */
+    rb_dl_op_add(id, op);
     op->lpVtbl->Release(op);
     free(url);
     free(mime);
@@ -2196,6 +2348,9 @@ void rb_wv_shutdown(App *app)
     }
     free(v);
     app->views = NULL;
+    /* Whatever the registry still holds belongs to transfers whose browser
+     * process is going away with it. */
+    rb_dl_ops_release_all();
     if (g_loader) {
         FreeLibrary(g_loader);
         g_loader = NULL;

@@ -239,6 +239,94 @@ static long long rb_dl_get_id(WebKitDownload *dl)
     return slot ? *slot : 0;
 }
 
+/* ---- the live transfer behind a record ----
+ *
+ * The object data above finds the record from the transfer; this finds the
+ * transfer from the record, which is what a "Cancel" click in the downloads
+ * window needs.  A weak pointer rather than a plain one, so the map cannot
+ * outlive what it points at: WebKit drops the object when the transfer ends,
+ * the slot reads NULL, and the window stops offering what is no longer there.
+ *
+ * Each slot is allocated on its own instead of living inside one growable
+ * array, because the weak pointer writes THROUGH THE SLOT'S OWN ADDRESS — a
+ * realloc that moved the array would leave it writing into freed memory.
+ */
+typedef struct {
+    long long id;
+    WebKitDownload *dl;   /* NULL once the transfer is over */
+} RbDlLive;
+
+static RbDlLive **g_live = NULL;
+static int g_live_n = 0;
+static int g_live_cap = 0;
+
+static RbDlLive *rb_dl_live_find(long long id)
+{
+    int i;
+
+    for (i = 0; i < g_live_n; i++) {
+        if (g_live[i]->id == id) return g_live[i];
+    }
+    return NULL;
+}
+
+static void rb_dl_live_add(WebKitDownload *dl, long long id)
+{
+    RbDlLive *slot = rb_dl_live_find(id);
+
+    if (slot == NULL) {
+        if (g_live_n == g_live_cap) {
+            int cap = g_live_cap ? g_live_cap * 2 : 8;
+            RbDlLive **grown =
+                (RbDlLive **)realloc(g_live, (size_t)cap * sizeof *grown);
+            if (grown == NULL) return;
+            g_live = grown;
+            g_live_cap = cap;
+        }
+        slot = g_new0(RbDlLive, 1);
+        slot->id = id;
+        g_live[g_live_n++] = slot;
+    }
+    slot->dl = dl;
+    g_object_add_weak_pointer(G_OBJECT(dl), (gpointer *)&slot->dl);
+}
+
+/* Called from the finished and failed handlers: the transfer is over, so the
+ * slot goes with it.  The weak pointer is taken OFF first, because otherwise
+ * it would write into the slot after the slot is freed. */
+static void rb_dl_live_drop(WebKitDownload *dl, long long id)
+{
+    RbDlLive *slot = rb_dl_live_find(id);
+    int i;
+
+    if (slot == NULL) return;
+    g_object_remove_weak_pointer(G_OBJECT(dl), (gpointer *)&slot->dl);
+    for (i = 0; i < g_live_n; i++) {
+        if (g_live[i] == slot) {
+            g_live[i] = g_live[g_live_n - 1];
+            g_live_n--;
+            break;
+        }
+    }
+    g_free(slot);
+}
+
+int rb_gw_download_active(long long id)
+{
+    RbDlLive *slot = rb_dl_live_find(id);
+
+    return (slot != NULL && slot->dl != NULL) ? 1 : 0;
+}
+
+int rb_gw_download_cancel(long long id)
+{
+    RbDlLive *slot = rb_dl_live_find(id);
+
+    if (slot == NULL || slot->dl == NULL) return 0;
+    webkit_download_cancel(slot->dl);
+    return 1;
+}
+
 /* decide-destination fires once WebKit knows the response, so the suggested
  * filename already accounts for Content-Disposition.  We name the file with
  * the core's sanitizer (which is also what de-duplicates it against the
@@ -324,6 +412,7 @@ static void on_dl_finished(WebKitDownload *dl, gpointer user_data)
     rb_downloads_complete(app->downloads, id, dest ? dest : "",
         (long long)webkit_download_get_received_data_length(dl),
         rb_profile_now_ms());
+    rb_dl_live_drop(dl, id);
     rb_dl_save(app);
 }
 
@@ -342,6 +431,7 @@ static void on_dl_failed(WebKitDownload *dl, GError *error, gpointer user_data)
     rb_downloads_set_status(app->downloads, id,
         cancelled ? RB_DL_CANCELLED : RB_DL_FAILED,
         (error != NULL) ? error->message : NULL);
+    rb_dl_live_drop(dl, id);
     rb_dl_save(app);
 }
 
@@ -384,6 +474,9 @@ static void on_download_started(WebKitWebContext *context,
     /* WebKit falls back to its own temporary location unless we take over. */
     webkit_download_set_allow_overwrite(dl, FALSE);
     rb_dl_set_id(dl, id);
+    /* Recorded before the signals below, so a download that ends instantly
+     * still has a slot for its own finished/failed handler to drop. */
+    rb_dl_live_add(dl, id);
     g_signal_connect(dl, "decide-destination",
                      G_CALLBACK(on_dl_decide_destination), app);
     g_signal_connect(dl, "received-data",

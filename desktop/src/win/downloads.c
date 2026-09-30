@@ -13,6 +13,7 @@
  * into a store that moves.
  */
 #include "downloads.h"
+#include "webview.h"
 
 #include <shellapi.h>
 #include <stdio.h>
@@ -24,8 +25,8 @@
 /* ------------------------------------------------------------------ */
 /* Window metrics (mirror rb_show_downloads_dialog in the GTK chrome) */
 
-#define RB_DL_WIN_W   620
-#define RB_DL_WIN_H   430
+#define RB_DL_WIN_W   780
+#define RB_DL_WIN_H   470
 #define RB_DL_MARGIN  12
 #define RB_DL_BTNH    26
 #define RB_DL_BTNW    96
@@ -40,7 +41,9 @@
 #define RB_DL_FOLDER  4005
 #define RB_DL_COPY    4006
 #define RB_DL_DETAILS 4007
-#define RB_DL_REMOVE  4008
+#define RB_DL_PAUSE   4008
+#define RB_DL_CANCEL  4009
+#define RB_DL_REMOVE  4010
 #define RB_DL_CLOSE   IDCANCEL
 
 /* One painted row: the file name, then the status line under it, and the
@@ -66,11 +69,14 @@ typedef struct {
 
     /* The per-row actions, kept so their sensitivity can follow the selection:
      * "Open" on a download that has not finished has nothing to open.  Same
-     * five buttons, and the same rules, as the GTK window. */
+     * as the GTK window, plus pause/resume, which WebKitGTK has no call
+     * for — see the README's note on the difference. */
     HWND b_open;
     HWND b_folder;
     HWND b_copy;
     HWND b_details;
+    HWND b_pause;
+    HWND b_cancel;
     HWND b_remove;
 } RbDownloads;
 
@@ -190,6 +196,12 @@ static void rb_dl_sync_actions(RbDownloads *d)
     const rb_download *dl = rb_dl_selected(d);
     int saved = (dl != NULL && dl->destination != NULL &&
                  dl->destination[0] != '\0');
+    /* Pause, resume and cancel follow the ENGINE, not the record: a record
+     * left RUNNING by an earlier run has no operation behind it, and there is
+     * nothing there to stop. */
+    int live = (dl != NULL) && rb_wv_download_active(dl->id);
+    int can_pause = live && rb_download_can_pause(dl);
+    int can_resume = live && rb_download_can_resume(dl);
 
     if (d->b_open != NULL) EnableWindow(d->b_open, saved);
     if (d->b_folder != NULL) EnableWindow(d->b_folder, saved);
@@ -198,6 +210,13 @@ static void rb_dl_sync_actions(RbDownloads *d)
                      dl != NULL && dl->url != NULL && dl->url[0] != '\0');
     }
     if (d->b_details != NULL) EnableWindow(d->b_details, dl != NULL);
+    /* One button with two meanings, as Android's download row has: a row is
+     * never both pausable and resumable. */
+    if (d->b_pause != NULL) {
+        SetWindowTextW(d->b_pause, can_resume ? L"Resume" : L"Pause");
+        EnableWindow(d->b_pause, can_pause || can_resume);
+    }
+    if (d->b_cancel != NULL) EnableWindow(d->b_cancel, live);
     if (d->b_remove != NULL) EnableWindow(d->b_remove, dl != NULL);
 }
 
@@ -325,9 +344,10 @@ static void rb_dl_clear(RbDownloads *d)
 }
 
 /* ------------------------------------------------------------------ */
-/* The per-row actions.  Same five as the GTK window, with the same limits:
- * nothing here can touch a file the user owns except by handing it to the
- * shell, and "Remove from list" forgets the record only. */
+/* The per-row actions.  The five the GTK window also has, with the same
+ * limits — nothing here can touch a file the user owns except by handing it
+ * to the shell, and "Remove from list" forgets the record only — plus the two
+ * only this edition can offer, because only WebView2 can suspend a transfer. */
 
 /* A created_at / completed_at (ms since the epoch) as a local date and time.
  * Local, not UTC: a download happened when the user's own clock said so. */
@@ -498,6 +518,42 @@ static void rb_dl_copy_link(RbDownloads *d)
     free(url);
 }
 
+/* Pauses a running transfer or resumes a paused one.  Which of the two is not
+ * decided here: the record already says which it is (DownloadEngine.pause()
+ * and resume() act on disjoint states), and the button's label is set from the
+ * same test when the selection changes. */
+static void rb_dl_pause_resume(RbDownloads *d)
+{
+    const rb_download *dl = rb_dl_selected(d);
+    int ok;
+
+    if (dl == NULL) return;
+    ok = rb_download_can_resume(dl) ? rb_wv_download_resume(dl->id)
+                                    : rb_wv_download_pause(dl->id);
+    if (!ok) {
+        MessageBoxW(d->dlg,
+                    L"This transfer has already finished or stopped.",
+                    L"Nothing to do", MB_OK | MB_ICONINFORMATION);
+    }
+    /* The record moves when WebView2 reports the new state; until then the
+     * button would still be offering the action just taken. */
+    rb_dl_sync_actions(d);
+    InvalidateRect(d->list, NULL, TRUE);
+}
+
+static void rb_dl_cancel(RbDownloads *d)
+{
+    const rb_download *dl = rb_dl_selected(d);
+
+    if (dl == NULL) return;
+    if (!rb_wv_download_cancel(dl->id)) {
+        MessageBoxW(d->dlg,
+                    L"This transfer has already finished or stopped.",
+                    L"Nothing left to cancel", MB_OK | MB_ICONINFORMATION);
+    }
+    rb_dl_sync_actions(d);
+}
+
 /* Forgets the RECORD.  The file on disk belongs to the user and is never
  * touched — the same rule "Clear list" follows, and the reason the button says
  * "from list" rather than "Delete". */
@@ -577,6 +633,8 @@ static LRESULT CALLBACK rb_dl_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 return 0;
             }
             if (id == RB_DL_REMOVE) { rb_dl_remove(d); return 0; }
+            if (id == RB_DL_PAUSE) { rb_dl_pause_resume(d); return 0; }
+            if (id == RB_DL_CANCEL) { rb_dl_cancel(d); return 0; }
             /* The list itself: LBS_NOTIFY is set, so a click arrives here as
              * this notification.  It is what makes the action buttons follow
              * the row the user picked. */
@@ -689,28 +747,36 @@ void rb_show_downloads(App *app)
                         d->fnt);
     if (d->list == NULL) { rb_dl_close(d); return; }
 
-    /* The five per-row actions, created BEFORE the first fill: filling sets
+    /* The per-row actions, created BEFORE the first fill: filling sets
      * their sensitivity from whatever ends up selected, and there is nothing
      * selected yet, so they start disabled.  Widths are per label — a single
      * width would either clip "Remove from list" or leave "Open" adrift. */
     x = RB_DL_MARGIN;
     d->b_open = rb_dl_ctl(d, L"BUTTON", L"Open", WS_TABSTOP | BS_PUSHBUTTON,
-                          x, y_actions, 70, RB_DL_BTNH, RB_DL_OPEN, d->fnt);
-    x += 70 + RB_DL_GAP;
+                          x, y_actions, 64, RB_DL_BTNH, RB_DL_OPEN, d->fnt);
+    x += 64 + RB_DL_GAP;
     d->b_folder = rb_dl_ctl(d, L"BUTTON", L"Show in folder",
-                            WS_TABSTOP | BS_PUSHBUTTON, x, y_actions, 132,
+                            WS_TABSTOP | BS_PUSHBUTTON, x, y_actions, 124,
                             RB_DL_BTNH, RB_DL_FOLDER, d->fnt);
-    x += 132 + RB_DL_GAP;
+    x += 124 + RB_DL_GAP;
     d->b_copy = rb_dl_ctl(d, L"BUTTON", L"Copy link",
-                          WS_TABSTOP | BS_PUSHBUTTON, x, y_actions, 100,
+                          WS_TABSTOP | BS_PUSHBUTTON, x, y_actions, 92,
                           RB_DL_BTNH, RB_DL_COPY, d->fnt);
-    x += 100 + RB_DL_GAP;
-    d->b_details = rb_dl_ctl(d, L"BUTTON", L"Details",
-                             WS_TABSTOP | BS_PUSHBUTTON, x, y_actions, 92,
-                             RB_DL_BTNH, RB_DL_DETAILS, d->fnt);
     x += 92 + RB_DL_GAP;
+    d->b_details = rb_dl_ctl(d, L"BUTTON", L"Details",
+                             WS_TABSTOP | BS_PUSHBUTTON, x, y_actions, 80,
+                             RB_DL_BTNH, RB_DL_DETAILS, d->fnt);
+    x += 80 + RB_DL_GAP;
+    /* Label set by rb_dl_sync_actions: Pause or Resume, never both. */
+    d->b_pause = rb_dl_ctl(d, L"BUTTON", L"Pause", WS_TABSTOP | BS_PUSHBUTTON,
+                           x, y_actions, 76, RB_DL_BTNH, RB_DL_PAUSE, d->fnt);
+    x += 76 + RB_DL_GAP;
+    d->b_cancel = rb_dl_ctl(d, L"BUTTON", L"Cancel",
+                            WS_TABSTOP | BS_PUSHBUTTON, x, y_actions, 76,
+                            RB_DL_BTNH, RB_DL_CANCEL, d->fnt);
+    x += 76 + RB_DL_GAP;
     d->b_remove = rb_dl_ctl(d, L"BUTTON", L"Remove from list",
-                            WS_TABSTOP | BS_PUSHBUTTON, x, y_actions, 140,
+                            WS_TABSTOP | BS_PUSHBUTTON, x, y_actions, 136,
                             RB_DL_BTNH, RB_DL_REMOVE, d->fnt);
 
     rb_dl_rows_apply(d);

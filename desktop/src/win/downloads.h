@@ -5,8 +5,10 @@
  * recorded every download and had nowhere to show it, which is a difference
  * a user notices.  This is that window, built to the same shape: the ACTIVE
  * profile's records, newest first, each row a file name over a status line,
- * a row of per-row actions (Open, Show in folder, Copy link, Details, Remove
- * from list) that follow the selection, and "Clear list" / "Close".
+ * a row of per-row actions that follow the selection (Open, Show in folder,
+ * Copy link, Details, Pause/Resume, Cancel, Remove from list), and
+ * "Clear list" / "Close".  The GTK window has the same row without
+ * Pause/Resume, which WebKitGTK has no call for.
  *
  * It is a plain window rather than a DLGTEMPLATE one, exactly like the
  * preferences window, and it is modal the same way: by disabling its owner

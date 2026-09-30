@@ -3603,6 +3603,7 @@ typedef struct {
     GtkWidget *btn_folder;
     GtkWidget *btn_copy;
     GtkWidget *btn_details;
+    GtkWidget *btn_cancel;
     GtkWidget *btn_remove;
 } RbDlDialog;
 
@@ -3665,6 +3666,11 @@ static void rb_dl_sync_actions(RbDlDialog *st)
     gtk_widget_set_sensitive(st->btn_copy,
                              dl != NULL && dl->url != NULL && dl->url[0] != '\0');
     gtk_widget_set_sensitive(st->btn_details, dl != NULL);
+    /* Cancel follows the ENGINE, not the record: a RUNNING row left over from
+     * a previous run has nothing behind it to stop (rb_downloads_reconcile
+     * demotes those at startup, but a stale row can exist until then). */
+    gtk_widget_set_sensitive(st->btn_cancel,
+                             dl != NULL && rb_gw_download_active(dl->id));
     gtk_widget_set_sensitive(st->btn_remove, dl != NULL);
 }
 
@@ -3833,6 +3839,24 @@ static void on_dl_details(GtkButton *button, gpointer user_data)
               body);
 }
 
+/* Stops the transfer.  The record is NOT written here: WebKit reports the stop
+ * through its own "failed" signal, and that is what moves the row to
+ * CANCELLED.  Writing it optimistically would let the window say CANCELLED
+ * while WebKit was still writing the file. */
+static void on_dl_cancel(GtkButton *button, gpointer user_data)
+{
+    RbDlDialog *st = (RbDlDialog *)user_data;
+    const rb_download *dl = rb_dl_selected(st);
+    (void)button;
+
+    if (dl == NULL) return;
+    if (!rb_gw_download_cancel(dl->id)) {
+        rb_dl_msg(st, GTK_MESSAGE_INFO, "Nothing left to cancel",
+                  "This transfer has already finished or stopped.");
+    }
+    rb_dl_sync_actions(st);
+}
+
 /* Forgets the RECORD.  The file on disk belongs to the user and is never
  * touched — the same rule "Clear list" follows, and the reason the button says
  * "from list" rather than "Delete". */
@@ -3904,13 +3928,13 @@ static void on_dl_dialog_destroy(GtkWidget *widget, gpointer user_data)
 static void rb_show_downloads_dialog(App *app)
 {
     GtkWidget *dlg, *scroll, *list, *clear, *actions, *box;
-    GtkWidget *open, *folder, *copy, *details, *remove;
+    GtkWidget *open, *folder, *copy, *details, *cancel, *remove;
     RbDlDialog *st;
 
     dlg = gtk_dialog_new_with_buttons("Downloads", GTK_WINDOW(app->win),
             GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
             "_Close", GTK_RESPONSE_CLOSE, NULL);
-    gtk_window_set_default_size(GTK_WINDOW(dlg), 620, 430);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 720, 460);
 
     scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
@@ -3934,29 +3958,34 @@ static void rb_show_downloads_dialog(App *app)
     folder = gtk_button_new_with_label("Show in folder");
     copy = gtk_button_new_with_label("Copy link");
     details = gtk_button_new_with_label("Details");
+    cancel = gtk_button_new_with_label("Cancel");
     remove = gtk_button_new_with_label("Remove from list");
     gtk_widget_set_tooltip_text(open, "Open the downloaded file");
     gtk_widget_set_tooltip_text(folder, "Show the file in the file manager");
     gtk_widget_set_tooltip_text(copy, "Copy the download's source link");
     gtk_widget_set_tooltip_text(details, "Show every recorded detail");
+    gtk_widget_set_tooltip_text(cancel, "Stop the transfer");
     gtk_widget_set_tooltip_text(remove,
                                 "Forget this record. The file on disk stays.");
     st->btn_open = open;
     st->btn_folder = folder;
     st->btn_copy = copy;
     st->btn_details = details;
+    st->btn_cancel = cancel;
     st->btn_remove = remove;
 
     g_signal_connect(open, "clicked", G_CALLBACK(on_dl_open), st);
     g_signal_connect(folder, "clicked", G_CALLBACK(on_dl_show_folder), st);
     g_signal_connect(copy, "clicked", G_CALLBACK(on_dl_copy_link), st);
     g_signal_connect(details, "clicked", G_CALLBACK(on_dl_details), st);
+    g_signal_connect(cancel, "clicked", G_CALLBACK(on_dl_cancel), st);
     g_signal_connect(remove, "clicked", G_CALLBACK(on_dl_remove), st);
 
     gtk_box_pack_start(GTK_BOX(actions), open, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(actions), folder, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(actions), copy, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(actions), details, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(actions), cancel, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(actions), remove, FALSE, FALSE, 0);
 
     /* The buttons exist before the first fill, because filling sets their

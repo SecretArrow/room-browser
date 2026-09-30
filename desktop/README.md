@@ -43,14 +43,16 @@ browser is original C: a portable core plus one thin platform layer per OS.
   name over a status line: the state, the percentage and both sizes ("1.4 MB /
   3.1 MB"), or the error when one failed, or "3.2 MB so far" when the server
   never sent a length. Selecting a row enables the actions on it — **Open**,
-  **Show in folder**, **Copy link**, **Details** and **Remove from list** —
-  with Open and Show in folder offered only once the download has actually
-  finished, so a partial file is never handed to the shell as if it were whole.
-  Details shows every recorded field (source, MIME type, destination, both
-  sizes, timestamps, error). Remove from list forgets the *record*; the file
-  stays where it is, which is also what "Clear list" does for the whole
-  profile. The window is live — both editions re-read the store once a second,
-  so a transfer that is still arriving keeps counting up while it is on screen.
+  **Show in folder**, **Copy link**, **Details**, **Remove from list**, plus
+  **Cancel** and (on Windows) **Pause**/**Resume** — with Open and Show in
+  folder offered only once the download has actually finished, so a partial
+  file is never handed to the shell as if it were whole, and Cancel only while
+  the engine is still transferring it. Details shows every recorded field
+  (source, MIME type, destination, both sizes, timestamps, error). Remove from
+  list forgets the *record*; the file stays where it is, which is also what
+  "Clear list" does for the whole profile. The window is live — both editions
+  re-read the store once a second, so a transfer that is still arriving keeps
+  counting up while it is on screen.
   Sizes go through one core formatter, so the same download cannot read "1.4 MB"
   on one edition and "1468006 bytes" on the other, and both editions show the
   *same profile's* rows, which is what the "Clear list" button has always
@@ -292,8 +294,7 @@ Outputs:
   the "Brave-inspired" part is strictly the chrome design. Content blocking is
   real on both editions (the bundled host list, filtered by each profile's
   switches), and both editions show the active profile's downloads — the record
-  of what was fetched, newest first, with "Clear list". Neither window opens the
-  file: the list is a record, and the file belongs to the user.
+  of what was fetched, newest first, with "Clear list" and the actions below.
 - A download that was still running when the browser closed, or when the profile
   was switched, is recorded as FAILED with the reason ("Interrupted", "Profile
   switched") rather than resumed. The transfer belongs to the platform engine —
@@ -302,6 +303,15 @@ Outputs:
   HTTP request itself and can resume with a Range header, there is nothing left
   here to resume. Marking the row failed is the honest outcome; a row that
   claimed to be running forever would be the lie.
+- **Pause and resume exist on Windows only.** `WebKitDownload` has no suspend
+  call, so on Linux a running transfer can be cancelled but not held; the
+  Windows window offers Pause/Resume (one button, since a row is never both)
+  through `ICoreWebView2DownloadOperation`. A button that could not work is not
+  drawn at all, which is why the Linux window has five actions and the Windows
+  one seven. Both offer Cancel on a transfer that is actually still running,
+  which is read from the engine rather than from the record — a row left
+  RUNNING by an earlier run has nothing behind it to stop.
+
 - History is capped at 10 000 entries; bookmarks are a flat list in insertion
   order.
 - The omnibox heuristic treats any input with interior whitespace or

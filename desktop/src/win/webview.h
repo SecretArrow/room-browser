@@ -68,6 +68,24 @@ void rb_wv_clear_browsing_data(App *app, unsigned kinds);
 typedef void (*RbJsDone)(App *app, const wchar_t *result_json);
 void rb_wv_run_js(App *app, const wchar_t *js, RbJsDone done);
 
+/* ---- controlling a download WebView2 is running ----
+ *
+ * The downloads window shows a record; these reach the transfer behind it.
+ * Each returns 1 when the call was made, 0 when the transfer is already over
+ * or was never this run's (a record left by an earlier run has no operation
+ * behind it).
+ *
+ * None of them writes the record: WebView2 reports every one of these through
+ * StateChanged, and that is where the record moves — CANCELLED for a cancel,
+ * PAUSED for a pause (WebView2 calls a pause an INTERRUPTED transfer with the
+ * USER_PAUSED reason), RUNNING again for a resume.  Writing optimistically
+ * here would let the window say PAUSED while the transfer was still arriving.
+ */
+int rb_wv_download_active(long long id);
+int rb_wv_download_cancel(long long id);
+int rb_wv_download_pause(long long id);
+int rb_wv_download_resume(long long id);
+
 #ifdef __cplusplus
 }
 #endif
