@@ -35,7 +35,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         AgentSessionEntity::class,
         AgentMessageEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -137,6 +137,20 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Adds the per-provider tool mode. Existing rows get the AUTO default,
+         * which is what they were already doing implicitly — send `tools` and
+         * read `tool_calls` back — so an upgrade changes no provider's
+         * behaviour until the user picks a different mode.
+         */
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `agent_providers` ADD COLUMN `tool_mode` TEXT NOT NULL DEFAULT 'AUTO'"
+                )
+            }
+        }
+
         @Volatile
         private var instance: AppDatabase? = null
 
@@ -148,7 +162,7 @@ abstract class AppDatabase : RoomDatabase() {
         private fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, NAME)
                 .enableMultiInstanceInvalidation()
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build()
     }
 }

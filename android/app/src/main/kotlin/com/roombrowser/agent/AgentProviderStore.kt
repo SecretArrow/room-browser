@@ -2,6 +2,7 @@ package com.roombrowser.agent
 
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.repo.AgentRepository
+import com.roombrowser.domain.agent.ToolMode
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
@@ -27,6 +28,13 @@ object AgentProviderStore {
      * coroutine was cancelled before it entered the NonCancellable block in
      * the editor, and the provider vanished with no error shown.
      */
+    /**
+     * [toolMode] is a [ToolMode] name, or null for "not mentioned by this
+     * caller" — which KEEPS an edited provider's stored mode rather than
+     * resetting it. Only the provider editor offers the choice; the other
+     * call sites (Local AI's "use in chat", the browser's own save path) must
+     * not silently undo it.
+     */
     suspend fun save(
         repo: AgentRepository,
         id: Long?,
@@ -34,9 +42,10 @@ object AgentProviderStore {
         baseUrl: String,
         apiKey: String,
         defaultModel: String,
-        protocol: String = AgentProviderEntity.PROTOCOL_OPENAI
+        protocol: String = AgentProviderEntity.PROTOCOL_OPENAI,
+        toolMode: String? = null
     ): Result<AgentProviderEntity> = withContext(NonCancellable) {
-        saveNow(repo, id, name, baseUrl, apiKey, defaultModel, protocol)
+        saveNow(repo, id, name, baseUrl, apiKey, defaultModel, protocol, toolMode)
     }
 
     private suspend fun saveNow(
@@ -46,7 +55,8 @@ object AgentProviderStore {
         baseUrl: String,
         apiKey: String,
         defaultModel: String,
-        protocol: String
+        protocol: String,
+        toolMode: String?
     ): Result<AgentProviderEntity> {
         val trimmedName = name.trim()
         val trimmedUrl = OkHttpAgentGateway.normalizeBaseUrl(baseUrl)
@@ -73,6 +83,15 @@ object AgentProviderStore {
         if (defaultModel.isBlank()) return Result.failure(IllegalArgumentException("model is required"))
         return try {
             val existing = id?.let { repo.provider(it) }
+            // The on-device engine has no `tools` channel, so its turns are
+            // ALWAYS rewritten into the text contract. Storing TEXT is what
+            // that provider actually does; a stored "AUTO" would be a label
+            // the runtime quietly contradicts.
+            val mode = when {
+                proto == AgentProviderEntity.PROTOCOL_LOCAL -> ToolMode.TEXT.name
+                toolMode != null -> ToolMode.fromStored(toolMode).name
+                else -> existing?.toolMode ?: AgentProviderEntity.TOOL_MODE_DEFAULT
+            }
             val encKey = when {
                 apiKey.isBlank() -> existing?.apiKeyEnc ?: ""
                 else -> KeyStoreCrypto.encrypt(apiKey)
@@ -85,6 +104,7 @@ object AgentProviderStore {
                 apiKeyEnc = encKey,
                 defaultModel = defaultModel.trim(),
                 protocol = proto,
+                toolMode = mode,
                 createdAt = existing?.createdAt ?: System.currentTimeMillis()
             )
             val savedId = repo.saveProvider(entity)

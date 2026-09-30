@@ -3,6 +3,8 @@ package com.roombrowser.agent
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.LocalAiTuning
+import com.roombrowser.domain.agent.PromptToolGateway
+import com.roombrowser.domain.agent.ToolMode
 import okhttp3.OkHttpClient
 
 /**
@@ -39,14 +41,19 @@ object AgentGateways {
         apiKey: String,
         protocol: String,
         tuning: LocalAiTuning? = null,
-        appContext: android.content.Context? = null
-    ): AgentGateway = when (protocol) {
-        AgentProviderEntity.PROTOCOL_OPENCODE -> OpenCodeAgentGateway(callFactory, baseUrl, apiKey)
-        AgentProviderEntity.PROTOCOL_OLLAMA -> OllamaAgentGateway(callFactory, baseUrl, apiKey, tuning)
-        AgentProviderEntity.PROTOCOL_LOCAL -> localGateway(appContext)
-        AgentProviderEntity.PROTOCOL_ANTHROPIC -> AnthropicAgentGateway(callFactory, baseUrl, apiKey)
-        else -> OkHttpAgentGateway(callFactory, baseUrl, apiKey)
-    }
+        appContext: android.content.Context? = null,
+        toolMode: ToolMode = ToolMode.DEFAULT
+    ): AgentGateway = withToolMode(
+        gateway = when (protocol) {
+            AgentProviderEntity.PROTOCOL_OPENCODE -> OpenCodeAgentGateway(callFactory, baseUrl, apiKey)
+            AgentProviderEntity.PROTOCOL_OLLAMA -> OllamaAgentGateway(callFactory, baseUrl, apiKey, tuning)
+            AgentProviderEntity.PROTOCOL_LOCAL -> localGateway(appContext)
+            AgentProviderEntity.PROTOCOL_ANTHROPIC -> AnthropicAgentGateway(callFactory, baseUrl, apiKey)
+            else -> OkHttpAgentGateway(callFactory, baseUrl, apiKey)
+        },
+        protocol = protocol,
+        toolMode = toolMode
+    )
 
     fun forProvider(
         callFactory: OkHttpClient,
@@ -54,7 +61,37 @@ object AgentGateways {
         apiKey: String,
         tuning: LocalAiTuning? = null,
         appContext: android.content.Context? = null
-    ): AgentGateway = forProvider(callFactory, provider.baseUrl, apiKey, provider.protocol, tuning, appContext)
+    ): AgentGateway = forProvider(
+        callFactory = callFactory,
+        baseUrl = provider.baseUrl,
+        apiKey = apiKey,
+        protocol = provider.protocol,
+        tuning = tuning,
+        appContext = appContext,
+        toolMode = ToolMode.fromStored(provider.toolMode)
+    )
+
+    /**
+     * Applies the provider's tool mode, leaving the two cases that need
+     * nothing alone:
+     *
+     *  - NATIVE is what every gateway already does, so wrapping would only add
+     *    a layer between the loop and the wire;
+     *  - LOCAL already speaks the text contract inside [LocalLlamaGateway],
+     *    because the embedded engine has no `tools` channel at all. Wrapping it
+     *    would parse the same reply twice — the inner gateway would turn the
+     *    call into a `toolCalls` message, the outer would then read its empty
+     *    content as an answer, and the action would be silently lost.
+     *
+     * Every other protocol takes the decorator, which is what makes tool
+     * calling available to a provider that refuses the `tools` array.
+     */
+    private fun withToolMode(gateway: AgentGateway, protocol: String, toolMode: ToolMode): AgentGateway =
+        when {
+            protocol == AgentProviderEntity.PROTOCOL_LOCAL -> gateway
+            toolMode == ToolMode.NATIVE -> gateway
+            else -> PromptToolGateway(gateway, toolMode)
+        }
 
     /**
      * Builds the on-device gateway with its models directory attached.

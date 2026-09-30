@@ -199,6 +199,12 @@ data class AgentProviderEntity(
     @ColumnInfo(name = "api_key_enc") val apiKeyEnc: String, // "" = no key (local servers)
     @ColumnInfo(name = "default_model") val defaultModel: String,
     @ColumnInfo(name = "protocol", defaultValue = "OPENAI") val protocol: String = PROTOCOL_OPENAI,
+    /**
+     * How this provider is asked to call tools — a [com.roombrowser.domain.agent.ToolMode]
+     * name, "AUTO" when unset. Stored as a name so a new mode needs no
+     * migration; legacy rows read as AUTO (see `ToolMode.fromStored`).
+     */
+    @ColumnInfo(name = "tool_mode", defaultValue = "AUTO") val toolMode: String = TOOL_MODE_DEFAULT,
     @ColumnInfo(name = "created_at") val createdAt: Long
 ) {
     companion object {
@@ -207,6 +213,9 @@ data class AgentProviderEntity(
         const val PROTOCOL_OLLAMA = "OLLAMA"
         const val PROTOCOL_LOCAL = "LOCAL"
         const val PROTOCOL_ANTHROPIC = "ANTHROPIC"
+
+        /** Mirrors `ToolMode.DEFAULT.name` without a domain import here. */
+        const val TOOL_MODE_DEFAULT = "AUTO"
     }
 }
 

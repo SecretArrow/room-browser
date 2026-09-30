@@ -66,6 +66,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.agent.AgentSettingsController
 import com.roombrowser.data.db.AgentProviderEntity
+import com.roombrowser.domain.agent.ToolMode
 import com.roombrowser.localai.store.OnDeviceModelStore
 import com.roombrowser.ui.common.RoomBrowserTheme
 import kotlinx.coroutines.Dispatchers
@@ -208,6 +209,7 @@ private fun ProviderEditorRoot(
     }
     var apiKey by remember(editing) { mutableStateOf("") }
     var keyVisible by remember { mutableStateOf(false) }
+    var toolMode by remember(editing) { mutableStateOf(ToolMode.fromStored(editing?.toolMode)) }
     var models by remember(editing) { mutableStateOf<List<String>>(emptyList()) }
     var modelQuery by remember(editing) { mutableStateOf("") }
     var fetching by remember { mutableStateOf(false) }
@@ -297,7 +299,8 @@ private fun ProviderEditorRoot(
                                     baseUrl = baseUrl,
                                     apiKey = apiKey,
                                     defaultModel = model,
-                                    protocol = protocol
+                                    protocol = protocol,
+                                    toolMode = toolMode.name
                                 )
                                 result.fold(
                                     onSuccess = { provider ->
@@ -382,6 +385,48 @@ private fun ProviderEditorRoot(
                     },
                     label = { Text("On-device") },
                     modifier = Modifier.semantics { contentDescription = "provider_protocol_local" }
+                )
+            }
+            // Tool calling is available on EVERY provider — natively, or over
+            // the text contract when the provider will not take a tools array.
+            // The on-device engine has no wire channel at all, so it is always
+            // text and is not offered a choice (AgentProviderStore stores TEXT
+            // for it, whichever chip was last tapped).
+            if (protocol != AgentProviderEntity.PROTOCOL_LOCAL) {
+                Spacer(Modifier.height(10.dp))
+                Text("Tool calling", style = MaterialTheme.typography.labelLarge)
+                Spacer(Modifier.height(4.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    ToolMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = toolMode == mode,
+                            onClick = { toolMode = mode },
+                            label = { Text(mode.label) },
+                            modifier = Modifier.semantics {
+                                contentDescription = "provider_tool_mode_${mode.name.lowercase()}"
+                            }
+                        )
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    when (toolMode) {
+                        ToolMode.AUTO ->
+                            "Use the provider's own tool calling, and switch to the text protocol " +
+                                "if it rejects a tools array. The safe default."
+                        ToolMode.NATIVE ->
+                            "Always send a tools array. Best quality and streams as it writes — " +
+                                "but a provider that does not support it will fail."
+                        ToolMode.TEXT ->
+                            "Send no tools array: the catalogue travels in the prompt and the " +
+                                "reply is read back as a call. Works on providers that reject or " +
+                                "ignore tools; the answer appears when the turn ends."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             if (protocol == AgentProviderEntity.PROTOCOL_OPENCODE) {

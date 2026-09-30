@@ -76,29 +76,60 @@ To answer without acting, reply with plain text only.
 Never mix the two. One tool per reply."""
 
     /**
-     * The message list the engine is given: [messages] with the tool contract
-     * and catalogue appended to the leading system message (or a new system
-     * message when the conversation has none).
+     * The conversation re-expressed for a provider that is given NO `tools`
+     * array: the contract and catalogue are appended to the leading system
+     * message (or a new system message when there is none), and the two
+     * turns that only make sense alongside a wire protocol are rewritten.
      *
-     * When [tools] is null/empty the messages are passed through unchanged —
-     * the loop drops the catalogue on its last step to force a plain answer,
-     * and that answer must not be read as a call.
+     * When [tools] is null/empty only the rewriting happens — the loop drops
+     * the catalogue on its last step to force a plain answer, and that answer
+     * must not be read as a call.
      */
-    fun conversationFor(
-        messages: List<ChatMessage>,
-        tools: List<ToolDef>?
-    ): List<Pair<String, String>> {
-        val rendered = renderConversation(messages).toMutableList()
+    fun messagesFor(messages: List<ChatMessage>, tools: List<ToolDef>?): List<ChatMessage> {
+        val rendered = messages.mapNotNull { message ->
+            when (message.role) {
+                "assistant" -> {
+                    val calls = message.toolCalls.orEmpty()
+                    val body = if (calls.isNotEmpty()) {
+                        calls.joinToString("\n") { call ->
+                            """{"tool":"${call.function.name}","args":${call.function.arguments}}"""
+                        }
+                    } else {
+                        message.content
+                    }
+                    body?.takeIf { it.isNotBlank() }?.let { ChatMessage(role = "assistant", content = it) }
+                }
+
+                "tool" -> message.content?.takeIf { it.isNotBlank() }
+                    ?.let { ChatMessage(role = "user", content = "RESULT: $it") }
+
+                else -> message.content?.takeIf { it.isNotBlank() }
+                    ?.let { ChatMessage(role = message.role, content = it) }
+            }
+        }.toMutableList()
+
         if (tools.isNullOrEmpty()) return rendered
         val contract = contractFor(tools)
-        val system = rendered.indexOfFirst { it.first == SYSTEM }
+        val system = rendered.indexOfFirst { it.role == SYSTEM }
         if (system >= 0) {
-            rendered[system] = SYSTEM to (rendered[system].second + "\n\n" + contract)
+            rendered[system] = ChatMessage(
+                role = SYSTEM,
+                content = (rendered[system].content ?: "") + "\n\n" + contract
+            )
         } else {
-            rendered.add(0, SYSTEM to contract)
+            rendered.add(0, ChatMessage(role = SYSTEM, content = contract))
         }
         return rendered
     }
+
+    /** [messagesFor] flattened for the on-device engine's `role to content` API. */
+    fun conversationFor(
+        messages: List<ChatMessage>,
+        tools: List<ToolDef>?
+    ): List<Pair<String, String>> = pairs(messagesFor(messages, tools))
+
+    private fun pairs(messages: List<ChatMessage>): List<Pair<String, String>> =
+        messages.mapNotNull { message -> message.content?.let { message.role to it } }
 
     /** The contract plus one line per tool. */
     fun contractFor(tools: List<ToolDef>): String = buildString {
@@ -150,27 +181,7 @@ Never mix the two. One tool per reply."""
      *    model able to tell an outcome from a fresh instruction.
      */
     fun renderConversation(messages: List<ChatMessage>): List<Pair<String, String>> =
-        messages.mapNotNull { message ->
-            when (message.role) {
-                "assistant" -> {
-                    val calls = message.toolCalls.orEmpty()
-                    val body = if (calls.isNotEmpty()) {
-                        calls.joinToString("\n") { call ->
-                            """{"tool":"${call.function.name}","args":${call.function.arguments}}"""
-                        }
-                    } else {
-                        message.content
-                    }
-                    body?.takeIf { it.isNotBlank() }?.let { "assistant" to it }
-                }
-
-                "tool" -> message.content?.takeIf { it.isNotBlank() }
-                    ?.let { "user" to "RESULT: $it" }
-
-                else -> message.content?.takeIf { it.isNotBlank() }
-                    ?.let { message.role to it }
-            }
-        }
+        pairs(messagesFor(messages, null))
 
     // ------------------------------------------------------------- the reply
 

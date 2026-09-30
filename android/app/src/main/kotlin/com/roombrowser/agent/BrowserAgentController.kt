@@ -259,16 +259,21 @@ class BrowserAgentController(
         return key
     }
 
-    /** Persists a provider (encrypting the API key); blank key keeps the old one on edit. */
+    /**
+     * Persists a provider (encrypting the API key); blank key keeps the old one
+     * on edit. [toolMode] is a `ToolMode` name, or null to keep whatever an
+     * edited provider already has (see [AgentProviderStore.save]).
+     */
     suspend fun saveProvider(
         id: Long?,
         name: String,
         baseUrl: String,
         apiKey: String,
         defaultModel: String,
-        protocol: String = AgentProviderEntity.PROTOCOL_OPENAI
+        protocol: String = AgentProviderEntity.PROTOCOL_OPENAI,
+        toolMode: String? = null
     ): Result<AgentProviderEntity> {
-        val result = AgentProviderStore.save(repo, id, name, baseUrl, apiKey, defaultModel, protocol)
+        val result = AgentProviderStore.save(repo, id, name, baseUrl, apiKey, defaultModel, protocol, toolMode)
         if (result.isSuccess && id != null) apiKeyCache.remove(id)
         return result
     }
