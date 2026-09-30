@@ -132,6 +132,62 @@ class ProfileModelTest {
     }
 
     @Test
+    fun `a screen size is claimed only when one was asked for`() {
+        assertThat(ProfileSettings().screenSizeMode).isEqualTo(ScreenSizeMode.REAL)
+        assertThat(ProfileSettings().claimedScreen()).isNull()
+        assertThat(
+            ProfileSettings(
+                screenSizeMode = ScreenSizeMode.MANUAL,
+                screenWidthPx = 393,
+                screenHeightPx = 852
+            ).claimedScreen()
+        ).isEqualTo(ClaimedScreen(393, 852))
+        // Half a size is no size: a profile mid-edit reports the truth rather
+        // than a screen the user has not finished describing.
+        assertThat(
+            ProfileSettings(
+                screenSizeMode = ScreenSizeMode.MANUAL,
+                screenWidthPx = 393,
+                screenHeightPx = 0
+            ).claimedScreen()
+        ).isNull()
+        // And so is an impossible one — a corrupt entry falls back to the truth
+        // rather than telling a page about a display that cannot exist.
+        assertThat(
+            ProfileSettings(
+                screenSizeMode = ScreenSizeMode.MANUAL,
+                screenWidthPx = ClaimedScreen.MAX_PX + 1,
+                screenHeightPx = 852
+            ).claimedScreen()
+        ).isNull()
+        assertThat(
+            ProfileSettings(
+                screenSizeMode = ScreenSizeMode.MANUAL,
+                screenWidthPx = 393,
+                screenHeightPx = ClaimedScreen.MIN_PX - 1
+            ).claimedScreen()
+        ).isNull()
+        // Left on REAL the stored numbers are inert, so switching the setting
+        // off and on again cannot resurrect a size the user has left behind.
+        assertThat(
+            ProfileSettings(
+                screenSizeMode = ScreenSizeMode.REAL,
+                screenWidthPx = 393,
+                screenHeightPx = 852
+            ).claimedScreen()
+        ).isNull()
+    }
+
+    @Test
+    fun `a claimed screen agrees with the orientation it implies`() {
+        assertThat(ClaimedScreen(393, 852).isLandscape).isFalse()
+        assertThat(ClaimedScreen(852, 393).isLandscape).isTrue()
+        // A square claim is not landscape; the only shape that is, is one wider
+        // than it is tall.
+        assertThat(ClaimedScreen(600, 600).isLandscape).isFalse()
+    }
+
+    @Test
     fun `every preset has a distinct id and a non-blank value but webview`() {
         assertThat(UserAgents.all.map { it.id }.toSet()).hasSize(UserAgents.all.size)
         for (p in UserAgents.all) {

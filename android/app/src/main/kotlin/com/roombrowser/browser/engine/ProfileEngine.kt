@@ -10,6 +10,7 @@ import android.webkit.WebViewDatabase
 import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import com.roombrowser.domain.model.ClaimedScreen
 import com.roombrowser.domain.model.Device
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
@@ -17,6 +18,7 @@ import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.model.UaMode
 import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.domain.model.WebRtcPolicy
+import com.roombrowser.domain.model.claimedScreen
 import java.io.File
 
 /**
@@ -169,7 +171,7 @@ object ProfileEngine {
         UserAgents.effectiveUserAgent(settings)?.let { s.userAgentString = it }
         s.textZoom = (settings.fontScale * 100f).toInt().coerceIn(50, 200)
 
-        applyDeviceShim(webView, UserAgents.device(settings))
+        applyDeviceShim(webView, UserAgents.device(settings), settings.claimedScreen())
 
         // Cookies
         val cookieManager = CookieManager.getInstance()
@@ -185,7 +187,13 @@ object ProfileEngine {
     }
 
     /**
-     * Install (or clear) the device shim for one WebView.
+     * Install (or clear) the shim for one WebView.
+     *
+     * Both halves are profile state, so both are passed in: [device] is the
+     * identity the profile presents and [screen] the size it claims, and either
+     * may be absent. Desktop mode clears the device but keeps the screen claim
+     * — a browser window on a screen of a stated size is not a contradiction,
+     * while an Android client-hint set under a desktop UA is.
      *
      * `configure` runs again every time settings change, so the previous
      * script is removed first — otherwise a long session would stack one copy
@@ -193,16 +201,16 @@ object ProfileEngine {
      * still a leak. Removal goes through the handler the add returned;
      * WebViewCompat has no free-standing remove call.
      */
-    private fun applyDeviceShim(webView: WebView, device: Device?) {
+    private fun applyDeviceShim(webView: WebView, device: Device?, screen: ClaimedScreen?) {
         deviceShims.remove(webView)?.let { previous ->
             // The view may already be gone; a failed removal costs nothing.
             runCatching { previous.remove() }
         }
-        if (device == null) return
+        if (device == null && screen == null) return
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
         runCatching {
             deviceShims[webView] = WebViewCompat.addDocumentStartJavaScript(
-                webView, DeviceShim.scriptFor(device), setOf("*")
+                webView, DeviceShim.scriptFor(device, screen), setOf("*")
             )
         }
     }
@@ -212,14 +220,17 @@ object ProfileEngine {
      */
     fun applyDesktopMode(webView: WebView, profile: Profile, desktop: Boolean) {
         val s = webView.settings
+        val screen = profile.settings.claimedScreen()
         if (desktop) {
             s.userAgentString = UserAgents.all.first { it.id == "chrome_windows" }.value
             s.useWideViewPort = true
             s.loadWithOverviewMode = false
             // A desktop UA with an Android client-hint set underneath it is a
             // contradiction, so the device shim comes off while desktop mode
-            // is on and goes back when it is turned off.
-            applyDeviceShim(webView, null)
+            // is on and goes back when it is turned off. The screen claim is
+            // not an Android client hint and stays: a desktop browser window on
+            // a screen of a stated size is an ordinary thing.
+            applyDeviceShim(webView, null, screen)
         } else {
             s.useWideViewPort = true
             s.loadWithOverviewMode = true
@@ -227,7 +238,7 @@ object ProfileEngine {
                 UaMode.DEFAULT -> s.userAgentString = null
                 else -> UserAgents.effectiveUserAgent(profile.settings)?.let { s.userAgentString = it }
             }
-            applyDeviceShim(webView, UserAgents.device(profile.settings))
+            applyDeviceShim(webView, UserAgents.device(profile.settings), screen)
         }
     }
 

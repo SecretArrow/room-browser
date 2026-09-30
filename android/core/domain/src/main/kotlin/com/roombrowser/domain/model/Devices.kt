@@ -12,11 +12,12 @@ package com.roombrowser.domain.model
  * [ua] is the User-Agent that handset's Chrome actually sends. The
  * remaining fields are the non-geometric fingerprint surface: they
  * describe the device, and NONE of them is a screen measurement. Screen
- * size, viewport size and devicePixelRatio are deliberately absent —
- * the real values must always be reported, because a page laid out for
- * a viewport the device does not have renders wrong, and a mismatch
- * between the claimed screen and the real viewport is the cheapest
- * spoofing signal there is. See SECURITY.md.
+ * size and devicePixelRatio are deliberately absent, because this
+ * record does not know them: what a page is told the screen is belongs
+ * to the profile, not the handset, and "Screen size" in that profile's
+ * settings decides it — real by default, and stated where the cost of
+ * claiming a different one is visible. A device here therefore never
+ * carries a screen nobody chose. See SECURITY.md.
  */
 data class Device(
     val id: String,

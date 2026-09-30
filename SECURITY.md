@@ -62,13 +62,23 @@ point of this section. What changes:
 - `navigator.platform`, `navigator.deviceMemory`, `navigator.hardwareConcurrency`
 - the WebGL `UNMASKED_VENDOR_WEBGL` / `UNMASKED_RENDERER_WEBGL` strings
 
+What changes only when the profile asks for it, through the **Screen size** row
+in its own settings:
+
+- **The reported screen.** Off by default, and off means nothing here changes:
+  a profile reports this phone's own `screen.width`, `screen.height`,
+  `screen.availWidth`, `screen.availHeight` and `screen.orientation`, because
+  the page really is laid out on this phone's screen. A profile may instead
+  claim a size — see *Claiming a screen size* below, which is the one place in
+  this document where the app deliberately introduces a disagreement.
+
 What deliberately does **not** change, because it would be both a lie and a
 detectable one:
 
-- **Screen geometry.** `screen.width/height`, `innerWidth/innerHeight`,
-  `devicePixelRatio`, `screen.orientation`, and the layout that follows from
-  them. A page is really laid out on this phone's screen; a claimed viewport
-  would render it wrongly *and* be contradicted by the viewport itself.
+- **The layout viewport and the pixel ratio.** `innerWidth`, `innerHeight` and
+  `devicePixelRatio` are the page's real width and height on this display, and
+  the ratio the compositor actually renders at. No script can move them without
+  re-laying the page out at a size the screen does not have.
 - **Real capabilities.** Camera, microphone, sensors, codecs, battery, and
   every permission stay the hardware's own.
 
@@ -79,6 +89,28 @@ undetectable, and the app does not claim it does: a page that inspects
 call, or correlates dozens of unrelated signals can still tell. Profiles are
 for keeping separate identities separate, not for evading a determined
 fingerprinter.
+
+#### Claiming a screen size
+
+The Screen size row is per profile and off by default. Turning it on replaces
+`screen.*` and derives `screen.orientation` from the shape claimed, so a profile
+claiming a landscape screen does not also answer `portrait-primary` — that
+pairing is the contradiction the shim exists to remove.
+
+It cannot move the viewport, for the reason above. A claimed size that differs
+from this phone's screen therefore leaves `screen.width` and `innerWidth`
+disagreeing, and that disagreement is exactly the sort of thing a fingerprinting
+script looks for. The settings row says so where the choice is made, and the
+fields open on this phone's real size so that the first thing the user sees is
+the truth.
+
+It exists because leaving it out is not neutrality. A profile presenting a
+Galaxy S24 Ultra already reports a screen that handset never had; the setting is
+how that becomes a choice the user made and can see, rather than an accident the
+app never mentioned, and it is the only way to make the claim match the device.
+Set it to the size the presented handset actually has. If you do not know that
+size, leave it on the real screen: claiming nothing is safer than claiming a
+guess.
 
 #### The desktop editions
 
@@ -107,7 +139,9 @@ same fingerprint, and a curated machine that could not be told apart from
 one already listed was left out rather than shipped as a second name for the
 same identity. Two profiles assigned such a pair would present the same
 machine, which is the thing the catalogue exists to prevent. Screen geometry
-and real capabilities are excluded here for the same reasons as on Android.
+and real capabilities are excluded here for the same reasons as on Android —
+and, unlike Android, neither desktop edition offers a way to claim a screen
+size, so a desktop profile always reports the real display.
 
 - Safe Browsing status follows the system WebView component.
 

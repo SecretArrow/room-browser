@@ -1,5 +1,7 @@
 package com.roombrowser.browser.ui
 
+import android.content.Context
+import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
@@ -54,11 +56,13 @@ import androidx.compose.ui.unit.dp
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.domain.model.BrowserGlobalSettings
+import com.roombrowser.domain.model.ClaimedScreen
 import com.roombrowser.domain.model.Device
 import com.roombrowser.domain.model.Devices
 import com.roombrowser.domain.model.DnsMode
 import com.roombrowser.domain.model.NetworkRetention
 import com.roombrowser.domain.model.ProfileSettings
+import com.roombrowser.domain.model.ScreenSizeMode
 import com.roombrowser.domain.model.SearchEngines
 import com.roombrowser.domain.model.UaMode
 import com.roombrowser.domain.model.UserAgents
@@ -75,6 +79,7 @@ import com.roombrowser.ui.common.SettingActionRow
 import com.roombrowser.ui.common.SettingSwitchRow
 import com.roombrowser.ui.common.SettingsGroup
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /**
  * Settings screens (global browser settings, per-profile settings, About) —
@@ -373,6 +378,12 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
         if (showDevicePicker) inUse = viewModel.devicesInUse()
     }
 
+    // This phone's own screen, in the CSS pixels a page reads. It is what the
+    // screen-size row offers as "this phone", and where a manual size starts:
+    // a user who does not know the presented handset's screen should be able to
+    // see, and keep, the truth rather than guess at a number.
+    val realScreen = remember(context) { realScreenCssPx(context) }
+
     Column(
         Modifier
             .fillMaxSize()
@@ -509,6 +520,65 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                     scope.launch { viewModel.setDevice(device?.id) }
                 }
             )
+        }
+
+        SectionHeader("Screen size")
+        SettingsGroup {
+            DropdownRow(
+                label = "Reported size",
+                options = ScreenSizeMode.entries.map { mode ->
+                    mode.name to when (mode) {
+                        ScreenSizeMode.REAL ->
+                            "This phone's screen (${realScreen.first}x${realScreen.second})"
+                        ScreenSizeMode.MANUAL -> "Set manually"
+                    }
+                },
+                selected = settings.screenSizeMode.name,
+                onSelect = { value ->
+                    val mode = ScreenSizeMode.entries.first { it.name == value }
+                    update(
+                        if (mode == ScreenSizeMode.MANUAL && settings.screenWidthPx == 0) {
+                            // Manual opens on the truth: the fields start at
+                            // this phone's own size, so what the user sees first
+                            // is what the profile reports today, and the edit is
+                            // a departure from it rather than a blank guess.
+                            settings.copy(
+                                screenSizeMode = mode,
+                                screenWidthPx = realScreen.first,
+                                screenHeightPx = realScreen.second
+                            )
+                        } else {
+                            settings.copy(screenSizeMode = mode)
+                        }
+                    )
+                }
+            )
+            if (settings.screenSizeMode == ScreenSizeMode.MANUAL) {
+                InfoNote(
+                    "The page is told the size below. The layout does not follow it: " +
+                        "window.innerWidth/innerHeight stay this phone's real size and " +
+                        "devicePixelRatio stays the display's, because the page really is " +
+                        "drawn here. A manual size that differs from this phone's screen is " +
+                        "therefore a disagreement a script can find — so set it to the size " +
+                        "the handset you are presenting actually has, and leave it on the " +
+                        "real screen if you do not know that size."
+                )
+                ScreenSizeFields(
+                    width = settings.screenWidthPx,
+                    height = settings.screenHeightPx,
+                    real = realScreen,
+                    onCommit = { w, h ->
+                        update(settings.copy(screenWidthPx = w, screenHeightPx = h))
+                    }
+                )
+            } else {
+                InfoNote(
+                    "This profile reports this phone's own screen, untouched. A profile " +
+                        "presenting a device sends that handset's User-Agent while reporting " +
+                        "a screen the handset may never have had; setting the size here is " +
+                        "how that becomes a choice instead of an accident."
+                )
+            }
         }
 
         SectionHeader("User-Agent")
@@ -900,6 +970,70 @@ private fun DevicePickerDialog(
     )
 }
 
+/**
+ * The width/height pair for a manual screen size, plus the one-tap way back to
+ * the truth.
+ *
+ * Input is digits only and four characters at most, and a commit clamps into
+ * [ClaimedScreen]'s stored range, so a typed 9999 is stored as 4320 rather than
+ * as a screen no device has — which the page would then be told, because the
+ * shim only declines sizes that are outside the range in the *stored* setting.
+ * The fields reset to whatever was stored, so what they show is always what the
+ * profile is actually claiming.
+ */
+@Composable
+private fun ScreenSizeFields(
+    width: Int,
+    height: Int,
+    real: Pair<Int, Int>,
+    onCommit: (Int, Int) -> Unit
+) {
+    val extras = LocalRoomExtras.current
+    var w by remember(width) { mutableStateOf(width.toString()) }
+    var h by remember(height) { mutableStateOf(height.toString()) }
+    fun commit() {
+        val nw = (w.toIntOrNull() ?: 0).coerceIn(ClaimedScreen.MIN_PX, ClaimedScreen.MAX_PX)
+        val nh = (h.toIntOrNull() ?: 0).coerceIn(ClaimedScreen.MIN_PX, ClaimedScreen.MAX_PX)
+        onCommit(nw, nh)
+    }
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = w,
+                onValueChange = { w = it.filter(Char::isDigit).take(4) },
+                label = { Text("Width (CSS px)") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(8.dp))
+            OutlinedTextField(
+                value = h,
+                onValueChange = { h = it.filter(Char::isDigit).take(4) },
+                label = { Text("Height (CSS px)") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(
+                onClick = {
+                    w = real.first.toString()
+                    h = real.second.toString()
+                    onCommit(real.first, real.second)
+                }
+            ) { Text("Use this phone's screen (${real.first}x${real.second})") }
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = { commit() }) { Text("Apply") }
+        }
+        Text(
+            "On Android one CSS pixel is one dp, so a 393x852 claim is a 393x852 dp screen.",
+            style = MaterialTheme.typography.bodySmall,
+            color = extras.textSecondary,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+    }
+}
+
 @Composable
 private fun DnsUrlField(initial: String, onCommit: (String) -> Unit) {
     val extras = LocalRoomExtras.current
@@ -997,4 +1131,33 @@ fun AboutScreen(onClose: () -> Unit) {
         }
         Spacer(Modifier.height(24.dp))
     }
+}
+
+/**
+ * This display's size in CSS pixels — the numbers `screen.width` and
+ * `screen.height` report inside a WebView on this phone.
+ *
+ * On Android one CSS pixel is one dp, and a dp is a physical pixel divided by
+ * the display density, so this is the same arithmetic WebView does before it
+ * lays a page out. That is what makes it the honest answer for "this phone's
+ * screen": it is not an approximation of the viewport, it is the number the
+ * page would have read anyway.
+ *
+ * Window metrics are preferred over the resource metrics because from Android
+ * 12 the resources can reflect the app's window rather than the display, and a
+ * size the user is about to claim should be the display's own.
+ */
+private fun realScreenCssPx(context: Context): Pair<Int, Int> {
+    val dm = context.resources.displayMetrics
+    val density = if (dm.density > 0f) dm.density else 1f
+    val bounds = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        context.getSystemService(android.view.WindowManager::class.java)
+            ?.currentWindowMetrics?.bounds
+    } else {
+        null
+    }
+    val wPx = bounds?.width() ?: dm.widthPixels
+    val hPx = bounds?.height() ?: dm.heightPixels
+    return (wPx / density).roundToInt().coerceAtLeast(1) to
+        (hPx / density).roundToInt().coerceAtLeast(1)
 }

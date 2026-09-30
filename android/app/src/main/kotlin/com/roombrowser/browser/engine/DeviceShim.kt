@@ -1,28 +1,38 @@
 package com.roombrowser.browser.engine
 
+import com.roombrowser.domain.model.ClaimedScreen
 import com.roombrowser.domain.model.Device
 
 /**
  * The JavaScript a profile runs before any page script, so the properties a
- * page reads agree with the device the profile claims to be.
+ * page reads agree with what the profile claims to be.
  *
- * Scope, deliberately: this covers the *non-geometric* surface — the things a
- * handset determines and that the real hardware therefore cannot contradict.
- * Screen size, viewport size, `devicePixelRatio`, `screen.orientation` and the
- * layout that follows from them are NOT touched, because the page is really
- * laid out on this phone's screen and a claim that disagreed with the viewport
- * would render the page wrong *and* be the cheapest spoofing signal there is.
- * See SECURITY.md.
+ * Two independent parts, and each is installed only when the profile has
+ * actually asked for it:
  *
- * What is presented:
- *  - `navigator.userAgent` (the device's real Chrome string)
- *  - `navigator.userAgentData` — brands, mobile, platform, and the
- *    high-entropy values (`model`, `platformVersion`, `uaFullVersion`,
- *    `fullVersionList`, `formFactor`), which are the client hints that would
- *    otherwise name the actual handset
- *  - `navigator.deviceMemory`, `navigator.hardwareConcurrency`,
- *    `navigator.platform`
- *  - the WebGL `UNMASKED_VENDOR_WEBGL` / `UNMASKED_RENDERER_WEBGL` strings
+ *  - the **identity** shim, for a profile presenting a device: the UA, the
+ *    client hints, `platform`, `deviceMemory`, `hardwareConcurrency` and the
+ *    WebGL vendor/renderer strings. These are the things a handset determines
+ *    and that the real hardware therefore cannot contradict.
+ *
+ *  - the **screen** shim, for a profile whose screen size is set by hand:
+ *    `screen.width/height/availWidth/availHeight` and `screen.orientation`.
+ *
+ * Screen geometry is left alone unless the profile asks for it. The default is
+ * the phone's own screen, because the page really is laid out here. A profile
+ * that sets a size by hand is making a choice the settings row states plainly,
+ * and the cost is in what this deliberately does *not* do: the layout viewport
+ * cannot follow the claim, so `innerWidth`, `innerHeight` and
+ * `devicePixelRatio` stay the display's own — they are what the compositor
+ * actually renders at, and moving them means re-laying the page out, which is
+ * the breakage this file exists to avoid. A claimed screen that differs from
+ * the phone's is therefore a disagreement a script can find.
+ *
+ * It is offered anyway because the alternative is worse. Without it, a profile
+ * presenting a Galaxy S24 Ultra reports a screen that handset never had — the
+ * same contradiction, except that nobody chose it and the settings screen said
+ * nothing about it. This way the mismatch is explicit, bounded to the screen
+ * family, and stated where the choice is made. See SECURITY.md.
  *
  * Honest limits: a page that inspects `Function.prototype.toString` on the
  * patched accessors, compares dozens of unrelated signals, or fingerprints
@@ -31,11 +41,21 @@ import com.roombrowser.domain.model.Device
  */
 object DeviceShim {
 
-    /** The document-start script for [device]. */
-    fun scriptFor(device: Device): String {
+    /**
+     * The document-start script for a profile. Blank when the profile claims
+     * neither a device nor a screen size, which is the default state and the
+     * one every profile starts in.
+     */
+    fun scriptFor(device: Device?, screen: ClaimedScreen? = null): String = buildString {
+        if (device != null) append(identityScript(device))
+        if (screen != null) append(screenScript(screen))
+    }
+
+    /** The identity shim: what the profile presents itself as. */
+    private fun identityScript(device: Device): String {
         val chromeMajor = device.chromeVersion.substringBefore('.')
         val mobile = device.formFactor != "tablet"
-        return TEMPLATE
+        return IDENTITY
             .replace("__UA__", jsString(device.userAgent))
             .replace("__CHROME__", jsString(device.chromeVersion))
             .replace("__CHROME_MAJOR__", jsString(chromeMajor))
@@ -48,6 +68,17 @@ object DeviceShim {
             .replace("__GPU_VENDOR__", jsString(device.gpuVendor))
             .replace("__GPU_RENDERER__", jsString(device.gpuRenderer))
     }
+
+    /** The screen shim: what a page is told the display is. */
+    private fun screenScript(screen: ClaimedScreen): String = SCREEN
+        .replace("__SCREEN_W__", screen.widthPx.toString())
+        .replace("__SCREEN_H__", screen.heightPx.toString())
+        .replace("__SCREEN_LANDSCAPE__", screen.isLandscape.toString())
+        .replace(
+            "__SCREEN_TYPE__",
+            jsString(if (screen.isLandscape) "landscape-primary" else "portrait-primary")
+        )
+        .replace("__SCREEN_ANGLE__", if (screen.isLandscape) "90" else "0")
 
     /** A JS string literal, so a model code can never break out of the script. */
     private fun jsString(value: String): String {
@@ -63,7 +94,7 @@ object DeviceShim {
 
     // No template literals and no "$" anywhere: the script is spliced into a
     // Kotlin string, and a stray dollar would be read as interpolation.
-    private val TEMPLATE = """
+    private val IDENTITY = """
 (function () {
   'use strict';
   try {
@@ -164,6 +195,74 @@ object DeviceShim {
     }
     if (typeof WebGLRenderingContext !== 'undefined') patchGL(WebGLRenderingContext);
     if (typeof WebGL2RenderingContext !== 'undefined') patchGL(WebGL2RenderingContext);
+  } catch (e) {
+    // A page must still load even if the platform refuses one of these.
+  }
+})();
+"""
+
+    // Installed only for a profile that set a screen size by hand, so the
+    // numbers below are always the claimed ones and never a "real" default.
+    private val SCREEN = """
+(function () {
+  'use strict';
+  try {
+    var SCREEN_W = __SCREEN_W__;
+    var SCREEN_H = __SCREEN_H__;
+    var LANDSCAPE = __SCREEN_LANDSCAPE__;
+    var TYPE = __SCREEN_TYPE__;
+    var ANGLE = __SCREEN_ANGLE__;
+
+    function define(target, prop, value) {
+      try {
+        Object.defineProperty(target, prop, {
+          get: function () { return value; },
+          configurable: true,
+          enumerable: true
+        });
+      } catch (e) {}
+    }
+
+    // What the page is told the screen is. Chrome on Android reports the whole
+    // display as the available rectangle too — there is no persistent chrome to
+    // subtract — so both pairs carry the same numbers rather than inventing a
+    // difference a real handset does not have.
+    define(Screen.prototype, 'width', SCREEN_W);
+    define(Screen.prototype, 'height', SCREEN_H);
+    define(Screen.prototype, 'availWidth', SCREEN_W);
+    define(Screen.prototype, 'availHeight', SCREEN_H);
+
+    // The layout viewport and the pixel ratio are NOT touched here, on purpose.
+    // The viewport is the page's real width and height on this display and the
+    // ratio is what the compositor actually renders at; overriding either would
+    // re-lay the page out at a size the screen does not have, which is the
+    // breakage this file exists to avoid. The consequence is real and is stated
+    // in settings and in SECURITY.md: a claimed screen that differs from the
+    // phone's is a disagreement with the viewport, and a script can find it.
+    // The unit test pins those names out of this script so the trade cannot be
+    // undone by a later edit without the test saying so.
+
+    // Orientation follows the shape that was claimed, not the hinge. A profile
+    // claiming a landscape screen must not also answer "portrait-primary" —
+    // that pairing is the contradiction this shim exists to remove.
+    try {
+      if (typeof ScreenOrientation !== 'undefined' && ScreenOrientation.prototype) {
+        define(ScreenOrientation.prototype, 'type', TYPE);
+        define(ScreenOrientation.prototype, 'angle', ANGLE);
+      }
+    } catch (e) {}
+    try {
+      // The pre-standard spelling, still present in Chromium. Guarded because
+      // it is on its way out and a missing property is not an error: 0 is
+      // portrait, 90 is landscape, which is what the legacy value always was.
+      if ('orientation' in window) {
+        Object.defineProperty(window, 'orientation', {
+          get: function () { return ANGLE; },
+          configurable: true,
+          enumerable: true
+        });
+      }
+    } catch (e) {}
   } catch (e) {
     // A page must still load even if the platform refuses one of these.
   }

@@ -57,6 +57,40 @@ enum class DnsMode { SYSTEM, AUTO, DOH, DOT }
 @Serializable
 enum class UaMode { DEFAULT, PRESET, CUSTOM }
 
+/**
+ * What a profile reports for the size of the screen.
+ *
+ * [REAL] is the default and the only mode in which nothing is claimed: the
+ * page is told this phone's own screen. [MANUAL] is a deliberate statement
+ * that the screen is something else, and the settings screen spells out what
+ * that costs, because a page can compare the claim against the viewport it is
+ * actually laid out in.
+ */
+@Serializable
+enum class ScreenSizeMode { REAL, MANUAL }
+
+/**
+ * A screen size in CSS pixels, as one profile claims it.
+ *
+ * CSS pixels are what a page reads from `screen.width`; on Android one CSS
+ * pixel is one dp, so a 1080-px-wide, 420-dpi handset reports about 411.
+ *
+ * The bounds are the range the value can be *stored* in, not a claim that any
+ * device ships one: 240 is narrower than any phone Chrome runs on and 4320 is
+ * wider than any tablet it runs on. A stored size outside them is treated as a
+ * corrupt entry and ignored — see [claimedScreen].
+ */
+@Serializable
+data class ClaimedScreen(val widthPx: Int, val heightPx: Int) {
+    /** Which way round the claim says the device is held. */
+    val isLandscape: Boolean get() = widthPx > heightPx
+
+    companion object {
+        const val MIN_PX = 240
+        const val MAX_PX = 4320
+    }
+}
+
 @Serializable
 enum class WarningBehavior { ASK_EVERY_TIME, ONCE_PER_NETWORK, ONCE_PER_SESSION, DONT_WARN }
 
@@ -107,6 +141,23 @@ data class ProfileSettings(
     val uaMode: UaMode = UaMode.DEFAULT,
     val uaPresetId: String? = null,
     val customUserAgent: String? = null,
+    // Screen size
+    //
+    // The device decides *what the profile is*; this decides what a page is
+    // told about the screen it is drawn on. Real by default, which means
+    // nothing is claimed and nothing is overridden.
+    //
+    // MANUAL is the one setting in this file that deliberately introduces a
+    // disagreement: the layout viewport is the page's real width on this
+    // display and cannot be moved without re-laying the page out, so a claimed
+    // screen that differs from the phone's is a mismatch a script can find.
+    // That is the trade the settings row states where the choice is made; the
+    // point of the option is that the user gets to choose it on purpose rather
+    // than carry the accidental one, where a profile claims a Galaxy S24 Ultra
+    // and reports a screen that handset never had. See SECURITY.md.
+    val screenSizeMode: ScreenSizeMode = ScreenSizeMode.REAL,
+    val screenWidthPx: Int = 0,
+    val screenHeightPx: Int = 0,
     // DNS
     val dnsMode: DnsMode = DnsMode.SYSTEM,
     val dohUrl: String? = null,
@@ -177,6 +228,22 @@ fun ProfileSettings.withUserAgentPreset(presetId: String?): ProfileSettings =
 
 fun ProfileSettings.withCustomUserAgent(value: String?): ProfileSettings =
     copy(deviceId = null, uaMode = UaMode.CUSTOM, customUserAgent = value)
+
+/**
+ * The screen size this profile claims, or null to report the phone's own.
+ *
+ * Null is the answer for every profile that has not asked for an override, and
+ * it is also the answer for a profile whose stored numbers are outside
+ * [ClaimedScreen.MIN_PX] .. [ClaimedScreen.MAX_PX]. A size no screen has is a
+ * corrupt entry, and the truthful reading of a corrupt entry is the phone's
+ * real screen rather than a page laid out for a display that cannot exist.
+ */
+fun ProfileSettings.claimedScreen(): ClaimedScreen? {
+    if (screenSizeMode != ScreenSizeMode.MANUAL) return null
+    if (screenWidthPx !in ClaimedScreen.MIN_PX..ClaimedScreen.MAX_PX) return null
+    if (screenHeightPx !in ClaimedScreen.MIN_PX..ClaimedScreen.MAX_PX) return null
+    return ClaimedScreen(screenWidthPx, screenHeightPx)
+}
 
 /** Global (browser-wide) settings, independent of any profile. */
 @Serializable

@@ -1,6 +1,7 @@
 package com.roombrowser.browser.engine
 
 import com.google.common.truth.Truth.assertThat
+import com.roombrowser.domain.model.ClaimedScreen
 import com.roombrowser.domain.model.Device
 import com.roombrowser.domain.model.Devices
 import org.junit.Test
@@ -42,17 +43,68 @@ class DeviceShimTest {
     }
 
     @Test
-    fun `the script never touches the screen`() {
-        // The policy in one assertion: the page really is laid out on this
-        // phone's screen, so a claimed viewport would render it wrong *and*
-        // be the cheapest spoofing signal there is. See SECURITY.md.
+    fun `a profile that sets no screen size runs no screen script`() {
+        // The default state, and the one every policy statement in SECURITY.md
+        // is about: the page is told this phone's screen because the page
+        // really is laid out on it.
         val js = DeviceShim.scriptFor(device)
+        assertThat(js).doesNotContain("Screen.prototype")
+        assertThat(js).doesNotContain("ScreenOrientation")
         assertThat(js).doesNotContain("innerWidth")
         assertThat(js).doesNotContain("innerHeight")
         assertThat(js).doesNotContain("devicePixelRatio")
-        assertThat(js).doesNotContain("screen.width")
-        assertThat(js).doesNotContain("screen.height")
-        assertThat(js).doesNotContain("availWidth")
+        assertThat(js).doesNotContain("__")
+    }
+
+    @Test
+    fun `a claimed screen replaces the screen family and nothing else`() {
+        val js = DeviceShim.scriptFor(device, ClaimedScreen(393, 852))
+        assertThat(js).contains("var SCREEN_W = 393;")
+        assertThat(js).contains("var SCREEN_H = 852;")
+        assertThat(js).contains("'width'")
+        assertThat(js).contains("'height'")
+        assertThat(js).contains("'availWidth'")
+        assertThat(js).contains("'availHeight'")
+        assertThat(js).doesNotContain("__")
+        // The trade, asserted rather than described: the viewport and the pixel
+        // ratio are the display's own, because they are what the page is really
+        // laid out and rendered at. See SECURITY.md.
+        assertThat(js).doesNotContain("innerWidth")
+        assertThat(js).doesNotContain("innerHeight")
+        assertThat(js).doesNotContain("devicePixelRatio")
+        // The device half is untouched by the screen half.
+        assertThat(js).contains(device.userAgent)
+        assertThat(js).contains("var MEMORY = ${device.deviceMemoryGb};")
+    }
+
+    @Test
+    fun `a claimed screen agrees with the shape it claims`() {
+        // A 393x852 claim is portrait; a 852x393 claim is the same screen held
+        // the other way, and it must not answer "portrait-primary". Getting
+        // this wrong is self-evident from the numbers, which is why it is a
+        // check rather than a comment.
+        val portrait = DeviceShim.scriptFor(device, ClaimedScreen(393, 852))
+        assertThat(portrait).contains("var SCREEN_LANDSCAPE = false;")
+        assertThat(portrait).contains("var TYPE = 'portrait-primary';")
+        assertThat(portrait).contains("var ANGLE = 0;")
+
+        val landscape = DeviceShim.scriptFor(device, ClaimedScreen(852, 393))
+        assertThat(landscape).contains("var SCREEN_LANDSCAPE = true;")
+        assertThat(landscape).contains("var TYPE = 'landscape-primary';")
+        assertThat(landscape).contains("var ANGLE = 90;")
+    }
+
+    @Test
+    fun `a screen can be claimed without presenting a device`() {
+        // A profile on a UA preset can still state a screen size; the two
+        // choices are independent, so the script must not carry an identity the
+        // profile never asked for.
+        val js = DeviceShim.scriptFor(null, ClaimedScreen(393, 852))
+        assertThat(js).contains("var SCREEN_W = 393;")
+        assertThat(js).doesNotContain("userAgentData")
+        assertThat(js).doesNotContain("WebGLRenderingContext")
+        // A profile that claims neither installs nothing at all.
+        assertThat(DeviceShim.scriptFor(null, null)).isEmpty()
     }
 
     @Test
