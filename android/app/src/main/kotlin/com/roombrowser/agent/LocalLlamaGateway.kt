@@ -4,10 +4,14 @@ import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.ChatMessage
 import com.roombrowser.domain.agent.ChatRequest
+import com.roombrowser.domain.agent.FunctionCall
+import com.roombrowser.domain.agent.LocalToolProtocol
 import com.roombrowser.domain.agent.StreamEvent
+import com.roombrowser.domain.agent.ToolCall
 import com.roombrowser.localai.engine.LlamaEngine
 import com.roombrowser.localai.engine.LlamaEngineApi
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Gateway that runs the agent turn fully ON-DEVICE through the embedded
@@ -37,7 +41,15 @@ import java.io.File
  *
  * Events: the whole answer arrives as ONE [StreamEvent.Text] — there is no
  * token streaming from the native loop into the gateway (honest: the chat
- * bubble shows the full answer at once, unlike the SSE gateways).
+ * bubble shows the full answer at once, unlike the SSE gateways). A turn that
+ * CALLS A TOOL emits no text at all: the raw call JSON is not an answer, and
+ * the loop would show it as one.
+ *
+ * TOOL CALLING: the engine takes a prompt and returns prose — there is no
+ * `tools` array on the wire and no `tool_calls` in the reply — so both travel
+ * as text under [LocalToolProtocol]'s contract. That translation is what lets
+ * the on-device model actually DRIVE the browser instead of describing what it
+ * would do; see that file for the shape and its parsing rules.
  */
 class LocalLlamaGateway(
     private val engine: LlamaEngineApi = LlamaEngine
@@ -49,6 +61,9 @@ class LocalLlamaGateway(
      * unless injected — with null, nothing is resolvable.
      */
     var modelsDirectory: File? = null
+
+    /** Source of the tool-call ids handed to the agent loop (see [nextCallId]). */
+    private val callIds = AtomicInteger(0)
 
     // ------------------------------------------------------------------ chat
 
@@ -81,15 +96,45 @@ class LocalLlamaGateway(
             }
         }
 
-        val answer = engine.chat(request.messages.map { it.role to (it.content ?: "") })
-        if (answer.isNotEmpty()) events(StreamEvent.Text(answer))
-        // Same final-message shape the HTTP gateways return (null content
-        // when the model produced nothing).
-        return ChatMessage(
-            role = "assistant",
-            content = answer.takeIf { it.isNotEmpty() }
-        )
+        // The engine has no `tools` channel — it takes a prompt and returns
+        // prose — so the catalogue goes out and the call comes back as TEXT
+        // under LocalToolProtocol's contract. Without this the model could
+        // describe an action but never take one: the reply carried no
+        // toolCalls, and the agent loop stopped at "no calls → final answer"
+        // on every step.
+        val answer = engine.chat(LocalToolProtocol.conversationFor(request.messages, request.tools))
+        return when (val reply = LocalToolProtocol.parseReply(answer)) {
+            is LocalToolProtocol.Reply.Call -> ChatMessage(
+                role = "assistant",
+                content = null,
+                toolCalls = listOf(
+                    ToolCall(
+                        id = nextCallId(),
+                        function = FunctionCall(reply.name, reply.argumentsJson)
+                    )
+                )
+            )
+
+            is LocalToolProtocol.Reply.Text -> {
+                // A call is NOT streamed as text: the loop reads streamed text
+                // as the answer to show, and the raw JSON is not that.
+                if (reply.content.isNotEmpty()) events(StreamEvent.Text(reply.content))
+                // Same final-message shape the HTTP gateways return (null
+                // content when the model produced nothing).
+                ChatMessage(
+                    role = "assistant",
+                    content = reply.content.takeIf { it.isNotEmpty() }
+                )
+            }
+        }
     }
+
+    /**
+     * The engine invents no ids, so this does. The agent loop echoes it back
+     * on the tool result (`tool_call_id`), and the tools of one reply must not
+     * collide — the model can ask for the same tool twice in a turn.
+     */
+    private fun nextCallId(): String = "local-${callIds.incrementAndGet()}"
 
     // ---------------------------------------------------------------- models
 
