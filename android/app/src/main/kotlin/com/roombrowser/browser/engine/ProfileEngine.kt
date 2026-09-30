@@ -190,12 +190,13 @@ object ProfileEngine {
      * `configure` runs again every time settings change, so the previous
      * script is removed first — otherwise a long session would stack one copy
      * of the shim per edit. The script is idempotent, but leaking handlers is
-     * still a leak.
+     * still a leak. Removal goes through the handler the add returned;
+     * WebViewCompat has no free-standing remove call.
      */
     private fun applyDeviceShim(webView: WebView, device: Device?) {
-        val previous = deviceShims.remove(webView)
-        if (previous != null && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-            runCatching { WebViewCompat.removeDocumentStartJavaScript(webView, previous) }
+        deviceShims.remove(webView)?.let { previous ->
+            // The view may already be gone; a failed removal costs nothing.
+            runCatching { previous.remove() }
         }
         if (device == null) return
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return

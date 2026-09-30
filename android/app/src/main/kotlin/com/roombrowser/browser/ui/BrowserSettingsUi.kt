@@ -66,6 +66,8 @@ import com.roombrowser.domain.model.WarningBehavior
 import com.roombrowser.domain.model.ConflictSeverity
 import com.roombrowser.domain.model.TabLayout
 import com.roombrowser.domain.model.WebRtcPolicy
+import com.roombrowser.domain.model.withCustomUserAgent
+import com.roombrowser.domain.model.withUserAgentPreset
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomCard
 import com.roombrowser.ui.common.SectionHeader
