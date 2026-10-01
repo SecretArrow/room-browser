@@ -225,6 +225,20 @@ private fun WalletRoot(
     var onboardingPinned by remember {
         mutableStateOf(engine.lockState.value == WalletLockState.NO_WALLET)
     }
+    // True once THIS surface's own onboarding flow left the choice screen
+    // (create/import started here) — the ONLY legitimate holder of the pin
+    // below. A pin acquired from a STALE lockState (the ':browser' process's
+    // Room instance had not yet seen a wallet that another process just
+    // created — CI 36842626140, the pipeline e2e's repo-level wallet
+    // creation) must RELEASE the moment the engine reports a wallet exists,
+    // or the entry gate (locked pane) can never render and a "Create a new
+    // wallet" tap would race a second wallet into existence.
+    var onboardingFlowStartedHere by remember { mutableStateOf(false) }
+    LaunchedEffect(lockState) {
+        if (lockState != WalletLockState.NO_WALLET && !onboardingFlowStartedHere) {
+            onboardingPinned = false
+        }
+    }
 
     // Gate on entry (LOCKED only) — exactly once per composition; every
     // later prompt is a user-driven retry from the locked pane's Unlock
@@ -330,6 +344,7 @@ private fun WalletRoot(
                 onboardingPinned || lockState == WalletLockState.NO_WALLET -> WalletOnboarding(
                     engine = engine,
                     onMessage = { onMessage(it) },
+                    onFlowStarted = { onboardingFlowStartedHere = true },
                     onWalletReady = {
                         onboardingPinned = false
                         onUnlockRequest()

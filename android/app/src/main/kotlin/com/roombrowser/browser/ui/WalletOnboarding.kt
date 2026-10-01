@@ -72,6 +72,7 @@ private enum class WalletOnboardingStep { CHOICE, CREATE_INTRO, REVEAL, CONFIRM_
 internal fun WalletOnboarding(
     engine: WalletEngineApi,
     onMessage: (String) -> Unit,
+    onFlowStarted: () -> Unit = {},
     onWalletReady: () -> Unit
 ) {
     var step by remember { mutableStateOf(WalletOnboardingStep.CHOICE) }
@@ -80,8 +81,14 @@ internal fun WalletOnboarding(
 
     when (step) {
         WalletOnboardingStep.CHOICE -> WalletOnboardingChoice(
-            onCreate = { step = WalletOnboardingStep.CREATE_INTRO },
-            onImport = { step = WalletOnboardingStep.IMPORT_FORM }
+            onCreate = {
+                onFlowStarted()
+                step = WalletOnboardingStep.CREATE_INTRO
+            },
+            onImport = {
+                onFlowStarted()
+                step = WalletOnboardingStep.IMPORT_FORM
+            }
         )
         WalletOnboardingStep.CREATE_INTRO -> WalletCreateIntro(
             engine = engine,

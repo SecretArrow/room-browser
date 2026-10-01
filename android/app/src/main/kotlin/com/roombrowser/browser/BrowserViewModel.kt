@@ -2,10 +2,11 @@ package com.roombrowser.browser
 
 import android.app.Application
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.net.Uri
 import android.net.http.SslError
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.View
@@ -1029,10 +1030,34 @@ class BrowserViewModel(
         val view = activeWebView ?: return
         val id = activeTabId ?: return
         if (view.width == 0 || view.height == 0) return
-        runCatching {
-            val bmp = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.RGB_565)
-            view.draw(Canvas(bmp))
-            tabManager.captureThumbnail(id, bmp)
+        // NEVER draw a WebView synchronously on the main thread. The
+        // software-draw path (view.draw(Canvas)) forces a synchronous
+        // rasterization round-trip through the renderer, and on
+        // WebView-83-class stacks it DEADLOCKS when the compositor has not
+        // produced a frame for the view yet — CI 36842626140 proved the
+        // whole sequence: onPageFinished -> captureThumbnail ->
+        // view.draw() -> the ':browser' process froze forever (no further
+        // logcat from app or renderer, queued input events never
+        // processed, the a11y tree frozen on the last dispatched frame,
+        // the tab-persist coroutine never ran, the DB row never updated).
+        // PixelCopy (API 26+, minSdk 28) is the asynchronous surface copy:
+        // it delivers the frame — or an error — through the callback, and
+        // the main thread is NEVER blocked. A failed thumbnail is purely
+        // cosmetic: never worth a crash or a hang.
+        try {
+            val bmp = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+            android.view.PixelCopy.request(
+                view,
+                bmp,
+                { result ->
+                    if (result == android.view.PixelCopy.SUCCESS) {
+                        tabManager.captureThumbnail(id, bmp)
+                    }
+                },
+                Handler(Looper.getMainLooper())
+            )
+        } catch (_: Exception) {
+            // Not attached to a window yet / surface unavailable — skip.
         }
     }
 
