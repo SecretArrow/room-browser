@@ -987,7 +987,14 @@ class WalletE2eTest {
             loadInOmnibox(urlConnect, "WC1-$tag", acceptInstead = listOf("Connect site"))
         )
         assertTrue("The Connect sheet must appear over the page", hasText("Connect site", 20_000))
-        assertTrue("The sheet must name the WebView-verified host", hasText("127.0.0.1", 3_000))
+        // CONTAINS, not equals: HostBadge renders a "Connected site" label and
+        // the host as two Texts in one Column, and Compose exposes that pair
+        // as a single merged accessibility node, so the node's text is the
+        // two joined — By.text (exact) never matches the host alone. The
+        // assertion's point survives: the string it looks for comes from
+        // request.host, which the bridge derives from the WebView's own URL,
+        // never from the page's claimed origin.
+        assertTrue("The sheet must name the WebView-verified host", hasTextContains("127.0.0.1", 10_000))
         assertTrue("Approve must be clickable", clickText("Approve", 5_000))
         assertTrue("The sheet must leave after Approve", waitGone("Connect site", 8_000))
         val connectResult = pageResultText("RESULT:", 15_000)
@@ -1018,7 +1025,7 @@ class WalletE2eTest {
             loadInOmnibox(urlReject, "WR3-$tag", acceptInstead = listOf("Connect site"))
         )
         assertTrue("The Connect sheet must appear for the new host", hasText("Connect site", 20_000))
-        assertTrue("The sheet must name the localhost host", hasText("localhost", 3_000))
+        assertTrue("The sheet must name the localhost host", hasTextContains("localhost", 10_000))
         assertTrue("Reject must be clickable", clickText("Reject", 5_000))
         val rejectResult = pageResultText("ERR:", 15_000)
         assertTrue(
