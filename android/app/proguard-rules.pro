@@ -52,6 +52,12 @@
 # databind serializers, web3j ABI value tuples) are kept whole.
 -dontwarn org.web3j.**
 -dontwarn org.slf4j.**
+# tuweni-bytes' pom drags in org.connid:framework(-internal) (a provisioning
+# framework nothing at runtime ever calls; R8 prunes it). Its script adapter
+# references groovy.lang.GroovyShell/Script, which are NOT on the Android
+# classpath — CI 22f601d quality job caught exactly this one missing class.
+-dontwarn groovy.lang.**
+-dontwarn org.identityconnectors.**
 -dontwarn io.reactivex.**
 -dontwarn com.fasterxml.jackson.**
 -dontwarn org.apache.tuweni.**
