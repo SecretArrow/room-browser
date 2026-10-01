@@ -124,16 +124,19 @@ class NetworkWarningActivityE2eTest {
         device.wait(Until.hasObject(By.desc(desc)), timeoutMs)
 
     private fun dragUpQuarter() {
+        // Half-screen drag (3/4 → 1/4): the CI emulator's default profile is
+        // 320x640 mdpi — deep content lives far below the fold there; the
+        // old quarter-screen drag (160 px) could not reach it.
         device.swipe(
-            device.displayWidth / 2, device.displayHeight * 5 / 8,
-            device.displayWidth / 2, device.displayHeight * 3 / 8, 100
+            device.displayWidth / 2, device.displayHeight * 3 / 4,
+            device.displayWidth / 2, device.displayHeight / 4, 100
         )
         device.waitForIdle(600)
     }
 
     /** Scroll-aware presence check (off-screen sheet rows are not in the
      *  a11y tree — same lesson as the other e2e suites). */
-    private fun hasTextWithScroll(text: String, attempts: Int = 12): Boolean {
+    private fun hasTextWithScroll(text: String, attempts: Int = 24): Boolean {
         for (i in 1..attempts) {
             if (hasText(text, 1_500)) return true
             dragUpQuarter()
@@ -205,12 +208,12 @@ class NetworkWarningActivityE2eTest {
 
     /** The create affordance sits below existing profile cards — scroll to it. */
     private fun clickScrollAwareCreate(): Boolean {
-        for (i in 1..12) {
+        for (i in 1..24) {
             val node = device.wait(Until.findObject(By.text("Create Profile")), 1_500)
             if (node != null && clickSmart(node)) return true
             device.swipe(
-                device.displayWidth / 2, device.displayHeight * 5 / 8,
-                device.displayWidth / 2, device.displayHeight * 3 / 8, 100
+                device.displayWidth / 2, device.displayHeight * 3 / 4,
+                device.displayWidth / 2, device.displayHeight / 4, 100
             )
             device.waitForIdle(600)
         }

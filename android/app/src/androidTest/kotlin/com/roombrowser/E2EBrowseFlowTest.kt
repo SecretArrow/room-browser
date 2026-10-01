@@ -74,6 +74,39 @@ class E2EBrowseFlowTest {
         return clickCenter(node)
     }
 
+    /**
+     * Slow half-screen drag (3/4 → 1/4). The CI emulator's default profile
+     * is 320x640 mdpi — anything below ~570px is off-screen, and off-screen
+     * nodes are NOT exposed to the a11y tree (proven in CI run 9399640:
+     * "Create Profile" sat ~30px under the fold and was unreachable for
+     * 8 minutes of polling). Slow steps = controlled scroll, no fling.
+     */
+    private fun dragUpHalf() {
+        device.swipe(
+            device.displayWidth / 2, device.displayHeight * 3 / 4,
+            device.displayWidth / 2, device.displayHeight / 4, 100
+        )
+        device.waitForIdle(600)
+    }
+
+    /** Scroll-aware presence check (deep list content lives below the fold). */
+    private fun hasTextScrollable(text: String, attempts: Int = 24): Boolean {
+        for (i in 1..attempts) {
+            if (hasText(text, 1_500)) return true
+            dragUpHalf()
+        }
+        return false
+    }
+
+    /** Scroll-aware click. */
+    private fun clickTextScrollable(text: String, attempts: Int = 24): Boolean {
+        for (i in 1..attempts) {
+            if (clickText(text, 1_500)) return true
+            dragUpHalf()
+        }
+        return false
+    }
+
     private fun clickCenter(node: UiObject2): Boolean = try {
         val b = node.visibleBounds
         device.click(b.centerX(), b.centerY())
@@ -100,7 +133,11 @@ class E2EBrowseFlowTest {
         device.waitForIdle(2_000)
         assertTrue(
             "First-run welcome (or profile list) should appear",
-            hasText("Create Profile", 90_000) || hasText("OPEN", 10_000)
+            hasText("Create Profile", 90_000) ||
+                hasText("OPEN", 10_000) ||
+                // Cards can push the create affordance below the fold on the
+                // small CI screen — scroll before giving up.
+                hasTextScrollable("Create Profile")
         )
 
         val alreadyHasProfile = device.findObjects(By.text("OPEN")).isNotEmpty()
@@ -109,8 +146,11 @@ class E2EBrowseFlowTest {
             // ---- 2a. Create the first profile through the real dialog ---
             // 'Cancel' only exists inside the dialog: reliable open-signal.
             var dialogOpen = false
-            for (attempt in 1..2) {
-                assertTrue("Welcome 'Create Profile' button must be visible", clickText("Create Profile", 5_000))
+            for (attempt in 1..3) {
+                assertTrue(
+                    "Welcome 'Create Profile' button must be visible",
+                    clickTextScrollable("Create Profile", attempts = 4)
+                )
                 dialogOpen = hasText("Cancel", 6_000)
                 if (dialogOpen) break
             }

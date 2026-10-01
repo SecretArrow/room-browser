@@ -168,15 +168,20 @@ class TabsE2eTest {
     }
 
     private fun dragUpQuarter() {
+        // Half-screen drag (3/4 → 1/4): the CI emulator's default profile is
+        // 320x640 mdpi — deep settings screens run ~4000px there, and the old
+        // quarter-screen drag (160 px) x 12 attempts could not reach the
+        // rows the suites assert on. Slow steps (no fling) keep it a
+        // controlled scroll.
         device.swipe(
-            device.displayWidth / 2, device.displayHeight * 5 / 8,
-            device.displayWidth / 2, device.displayHeight * 3 / 8, 100
+            device.displayWidth / 2, device.displayHeight * 3 / 4,
+            device.displayWidth / 2, device.displayHeight / 4, 100
         )
         device.waitForIdle(600)
     }
 
     /** Scroll-aware click (off-screen grid rows are not in the a11y tree). */
-    private fun clickTextWithScroll(text: String, attempts: Int = 12): Boolean {
+    private fun clickTextWithScroll(text: String, attempts: Int = 24): Boolean {
         for (i in 1..attempts) {
             if (clickText(text, 1_500)) return true
             dragUpQuarter()
@@ -185,7 +190,7 @@ class TabsE2eTest {
     }
 
     /** Scroll-aware presence check. */
-    private fun hasTextWithScroll(text: String, attempts: Int = 12): Boolean {
+    private fun hasTextWithScroll(text: String, attempts: Int = 24): Boolean {
         for (i in 1..attempts) {
             if (hasText(text, 1_500)) return true
             dragUpQuarter()
@@ -198,6 +203,16 @@ class TabsE2eTest {
             .contains("mInputShown=true")
     } catch (_: Exception) {
         false
+    }
+
+    /** Polls dumpsys until the IME is actually shown (focus really landed). */
+    private fun waitImeShown(timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (imeShown()) return true
+            try { Thread.sleep(200) } catch (_: InterruptedException) { }
+        }
+        return imeShown()
     }
 
     private fun hideImeIfNeeded() {
@@ -287,28 +302,73 @@ class TabsE2eTest {
     /**
      * Loads [url] in the CURRENT tab through the real omnibox (omni_field is
      * the stable a11y hook) and waits for [contentMarker] in the page.
-     * Verification-driven with full re-clear-and-retype rounds — the pattern
-     * that survives the CI runner's flaky input pipeline.
+     *
+     * CI forensics (run 9399640): typing raced the engine's first frames —
+     * key events were dropped ("no window focus") and the InputConnection
+     * died mid-typing while the Homepage composable was still being
+     * JIT-compiled. Three hardening layers here:
+     *  1. the IME must be SHOWN after focusing (dumpsys proof the
+     *     connection is live) before anything is typed;
+     *  2. the URL goes in via the accessibility ACTION_SET_TEXT (no key
+     *     events at all — cannot be dropped by focus races) with the shell
+     *     `input text` path as fallback;
+     *  3. best-effort read-back of the field before pressing Go — when the
+     *     node exposes no readable text the marker check after Go remains
+     *     the real gate.
      */
     private fun loadInOmnibox(url: String, contentMarker: String): Boolean {
-        for (round in 1..3) {
+        val hostMarker = url.substringAfter("//").substringBefore("/")
+        for (round in 1..4) {
             if (hasText(contentMarker, 500)) return true
+            // Settle: the first seconds after engine boot churn the tree.
+            device.waitForIdle(1_500)
             hideImeIfNeeded()
             val field = device.wait(Until.findObject(By.desc("omni_field")), 4_000) ?: continue
-            clickSmart(field)
-            device.waitForIdle(500)
-            device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
-            device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
-            device.waitForIdle(300)
-            device.executeShellCommand("input text $url")
-            device.waitForIdle(600)
+            var imeUp = false
+            for (focus in 1..3) {
+                clickSmart(field)
+                imeUp = waitImeShown(5_000)
+                if (imeUp) break
+            }
+            if (!imeUp) continue
+
+            var typed = false
+            try {
+                field.setText(url)
+                device.waitForIdle(500)
+                typed = omniboxTextLanded(field, hostMarker)
+            } catch (_: Exception) {
+                typed = false
+            }
+            if (!typed) {
+                // Fallback: the shell key-event path (with a full re-clear).
+                device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
+                device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
+                device.waitForIdle(300)
+                device.executeShellCommand("input text $url")
+                device.waitForIdle(600)
+                typed = omniboxTextLanded(field, hostMarker)
+            }
+            if (!typed) continue
+
             // IME Go action -> onOmniBoxInput -> loadUrl (same tab).
             device.executeShellCommand("input keyevent 66")
-            if (hasText(contentMarker, 12_000)) return true
+            if (hasText(contentMarker, 15_000)) return true
             device.pressEnter()
-            if (hasText(contentMarker, 12_000)) return true
+            if (hasText(contentMarker, 15_000)) return true
         }
         return false
+    }
+
+    /**
+     * Best-effort read-back of the omnibox content. Compose editable nodes
+     * expose their text through the a11y bridge, but if the bridge ever
+     * returns null the typing is ASSUMED (the post-Go marker check is the
+     * authoritative verification either way).
+     */
+    private fun omniboxTextLanded(field: UiObject2, hostMarker: String): Boolean {
+        val content = runCatching { field.text }.getOrNull() ?: return true
+        return content.contains(hostMarker)
     }
 
     /** Opens a page-actions sheet entry by desc and VERIFIES the effect. */

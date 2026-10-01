@@ -113,14 +113,18 @@ class SettingsPersistenceE2eTest {
     }
 
     private fun dragUpQuarter() {
+        // Half-screen drag (3/4 → 1/4): the CI emulator's default profile is
+        // 320x640 mdpi — the Screen size / DNS / Language sections sit
+        // 2000–4000px down the profile settings screen there; the old
+        // quarter-screen drag (160 px) x 12 attempts could not reach them.
         device.swipe(
-            device.displayWidth / 2, device.displayHeight * 5 / 8,
-            device.displayWidth / 2, device.displayHeight * 3 / 8, 100
+            device.displayWidth / 2, device.displayHeight * 3 / 4,
+            device.displayWidth / 2, device.displayHeight / 4, 100
         )
         device.waitForIdle(600)
     }
 
-    private fun clickTextWithScroll(text: String, attempts: Int = 12): Boolean {
+    private fun clickTextWithScroll(text: String, attempts: Int = 24): Boolean {
         for (i in 1..attempts) {
             if (clickText(text, 1_500)) return true
             dragUpQuarter()
@@ -128,7 +132,7 @@ class SettingsPersistenceE2eTest {
         return false
     }
 
-    private fun hasTextWithScroll(text: String, attempts: Int = 12): Boolean {
+    private fun hasTextWithScroll(text: String, attempts: Int = 24): Boolean {
         for (i in 1..attempts) {
             if (hasText(text, 1_500)) return true
             dragUpQuarter()
@@ -405,7 +409,7 @@ class SettingsPersistenceE2eTest {
         )
     }
 
-    private fun clickDescWithScroll(desc: String, attempts: Int = 12): Boolean {
+    private fun clickDescWithScroll(desc: String, attempts: Int = 24): Boolean {
         for (i in 1..attempts) {
             if (clickDesc(desc, 1_500)) return true
             dragUpQuarter()

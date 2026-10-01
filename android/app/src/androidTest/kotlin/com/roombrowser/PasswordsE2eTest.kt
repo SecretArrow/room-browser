@@ -111,14 +111,18 @@ class PasswordsE2eTest {
     }
 
     private fun dragUpQuarter() {
+        // Half-screen drag (3/4 → 1/4): the CI emulator's default profile is
+        // 320x640 mdpi — the Passwords row (Autofill section) sits ~3400px
+        // down the profile settings screen there; the old quarter-screen
+        // drag (160 px) x 14 attempts could not reach it.
         device.swipe(
-            device.displayWidth / 2, device.displayHeight * 5 / 8,
-            device.displayWidth / 2, device.displayHeight * 3 / 8, 100
+            device.displayWidth / 2, device.displayHeight * 3 / 4,
+            device.displayWidth / 2, device.displayHeight / 4, 100
         )
         device.waitForIdle(600)
     }
 
-    private fun clickTextWithScroll(text: String, attempts: Int = 14): Boolean {
+    private fun clickTextWithScroll(text: String, attempts: Int = 24): Boolean {
         for (i in 1..attempts) {
             if (clickText(text, 1_500)) return true
             dragUpQuarter()

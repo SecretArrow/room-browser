@@ -57,12 +57,9 @@ class A00WarmupTest {
         // ---- 2. Create a throwaway profile and boot the engine -----------
         // (Also warms the deferred wallet bind's crypto classes ~2.5 s in.)
         assertTrue(
-            "Warm-up: Create Profile affordance must be tappable",
-            device.wait(Until.hasObject(By.text("Create Profile")), 5_000)
+            "Warm-up: Create Profile affordance must be reachable",
+            clickScrollAwareCreate()
         )
-        val button = device.findObject(By.text("Create Profile"))
-        assertTrue("Warm-up: create button must exist", button != null)
-        button!!.click()
         assertTrue(
             "Warm-up: create dialog must open",
             device.wait(Until.hasObject(By.text("Cancel")), 15_000)
@@ -130,5 +127,32 @@ class A00WarmupTest {
             }
         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK)
         targetContext.startActivity(intent)
+    }
+
+    /**
+     * The create affordance must be REACHED before it can be tapped: on the
+     * CI emulator's 320x640 mdpi screen an affordance below the fold is NOT
+     * in the a11y tree (CI run 9399640: 8 minutes of blind polling found
+     * "Your profiles" but never the button). Poll, slow-drag a half screen,
+     * tap, and VERIFY the dialog actually opened before declaring success.
+     */
+    private fun clickScrollAwareCreate(): Boolean {
+        for (i in 1..16) {
+            val node = device.wait(Until.findObject(By.text("Create Profile")), 1_500)
+            if (node != null) {
+                val b = node.visibleBounds
+                device.click(b.centerX(), b.centerY())
+                device.waitForIdle(1_000)
+                if (device.wait(Until.hasObject(By.text("Cancel")), 4_000)) return true
+                // The tap missed (the node moved mid-frame) — fall through
+                // to another scroll round and retry.
+            }
+            device.swipe(
+                device.displayWidth / 2, device.displayHeight * 3 / 4,
+                device.displayWidth / 2, device.displayHeight / 4, 100
+            )
+            device.waitForIdle(600)
+        }
+        return false
     }
 }

@@ -2,6 +2,7 @@ package com.roombrowser.browser
 
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.ActivityResultLauncher
@@ -100,6 +101,7 @@ class BrowserActivity : FragmentActivity() {
         networkWarningLauncher = registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
         ) { result ->
+            Log.d(TAG, "warning result: code=${result.resultCode}")
             networkWarningRunning = false
             when (result.resultCode) {
                 NetworkWarningActivity.RESULT_CONTINUE ->
@@ -152,23 +154,64 @@ class BrowserActivity : FragmentActivity() {
     }
 
     /**
+     * SELF-HEALING re-engagement point for the network-warning gate.
+     *
+     * CI forensics (run 9399640, NetworkWarning cycle 2) caught a state where
+     * the warning was dismissed with system Back and NEVER relaunched: no
+     * NetworkWarningActivity start was logged, meaning every attempt inside
+     * [launchNetworkWarningIfNeeded] was rejected — and the only guard that
+     * can stay stuck across the whole resume path is a stale
+     * [networkWarningRunning] left behind by a result callback that never
+     * dispatched. Window focus is the provably-late signal: focus can only
+     * return to THIS activity after the warning's window is gone, so at that
+     * moment a running-flag that is still set is stale BY CONSTRUCTION
+     * (the warning cannot be on top and not own the focus). Reset it and
+     * give the gate one more launch attempt — the gate can no longer be
+     * bypassed by a lost result delivery.
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) return
+        if (networkWarningRunning) {
+            Log.w(TAG, "stale networkWarningRunning reset on focus gain (result callback lost?)")
+            networkWarningRunning = false
+        }
+        launchNetworkWarningIfNeeded()
+    }
+
+    /**
      * Launches the network warning activity while a decision is pending —
      * state-driven, called from the result callback, the gate collector and
      * onResume (never from composition). Privacy toggles shape the extras:
      * the previous profile's NAME is only included when the user allows it.
      */
     private fun launchNetworkWarningIfNeeded() {
-        val viewModel = browserViewModel ?: return
-        if (!viewModel.networkGateState.value || networkWarningRunning) return
-        if (lifecycle.currentState < Lifecycle.State.RESUMED) return
+        val viewModel = browserViewModel ?: run {
+            Log.d(TAG, "gate: no view model yet")
+            return
+        }
+        if (!viewModel.networkGateState.value || networkWarningRunning) {
+            Log.d(
+                TAG,
+                "gate: skip (gated=${viewModel.networkGateState.value} " +
+                    "running=$networkWarningRunning)"
+            )
+            return
+        }
+        if (lifecycle.currentState < Lifecycle.State.RESUMED) {
+            Log.d(TAG, "gate: skip (state=${lifecycle.currentState})")
+            return
+        }
         val payload = viewModel.pendingNetWarning
         if (payload == null) {
             // Pending flag without a decodable payload: the decision cannot
             // be presented, and holding the gate would brick the profile.
             // Clear the stale state (documented corruption valve).
+            Log.w(TAG, "gate: unreadable payload — discarding")
             viewModel.discardUnreadableNetworkWarning()
             return
         }
+        Log.d(TAG, "gate: launching warning (ip=${payload.ip})")
         networkWarningRunning = true
         val showName = viewModel.globalSettings.showPreviousProfileName
         val showLastSeen = viewModel.globalSettings.showLastSeenTime
@@ -282,6 +325,7 @@ class BrowserActivity : FragmentActivity() {
         }
 
     companion object {
+        private const val TAG = "RoomGate"
         const val EXTRA_PROFILE_ID = "com.roombrowser.extra.PROFILE_ID"
         const val EXTRA_INITIAL_URL = "com.roombrowser.extra.INITIAL_URL"
     }

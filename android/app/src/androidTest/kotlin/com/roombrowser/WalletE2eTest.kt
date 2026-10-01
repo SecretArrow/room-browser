@@ -330,15 +330,19 @@ class WalletE2eTest {
     }
 
     private fun dragUpQuarter() {
+        // Half-screen drag (3/4 → 1/4): the CI emulator's default profile is
+        // 320x640 mdpi — the wallet row sits ~3500px down the profile
+        // settings screen there, far beyond the old quarter-screen drag's
+        // reach. Slow steps (no fling) keep it a controlled scroll.
         device.swipe(
-            device.displayWidth / 2, device.displayHeight * 5 / 8,
-            device.displayWidth / 2, device.displayHeight * 3 / 8, 100
+            device.displayWidth / 2, device.displayHeight * 3 / 4,
+            device.displayWidth / 2, device.displayHeight / 4, 100
         )
         device.waitForIdle(600)
     }
 
     /** Scroll-aware click (off-screen rows are not in the a11y tree). */
-    private fun clickTextWithScroll(text: String, attempts: Int = 14): Boolean {
+    private fun clickTextWithScroll(text: String, attempts: Int = 24): Boolean {
         for (i in 1..attempts) {
             if (clickText(text, 1_500)) return true
             dragUpQuarter()
@@ -351,6 +355,16 @@ class WalletE2eTest {
             .contains("mInputShown=true")
     } catch (_: Exception) {
         false
+    }
+
+    /** Polls dumpsys until the IME is actually shown (focus really landed). */
+    private fun waitImeShown(timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (imeShown()) return true
+            try { Thread.sleep(200) } catch (_: InterruptedException) { }
+        }
+        return imeShown()
     }
 
     private fun hideImeIfNeeded() {
@@ -456,27 +470,58 @@ class WalletE2eTest {
 
     /**
      * Loads [url] in the CURRENT tab through the real omnibox and waits for
-     * [contentMarker] in the page (TabsE2eTest retype rounds).
+     * [contentMarker] in the page. Hardened like TabsE2eTest.loadInOmnibox
+     * (CI run 9399640: key events dropped while the engine's first frames
+     * were still composing — IME-shown gate + accessibility ACTION_SET_TEXT
+     * instead of key events, shell `input text` as fallback).
      */
     private fun loadInOmnibox(url: String, contentMarker: String): Boolean {
-        for (round in 1..3) {
+        val hostMarker = url.substringAfter("//").substringBefore("/")
+        for (round in 1..4) {
             if (hasText(contentMarker, 500)) return true
+            device.waitForIdle(1_500)
             hideImeIfNeeded()
             val field = device.wait(Until.findObject(By.desc("omni_field")), 4_000) ?: continue
-            clickSmart(field)
-            device.waitForIdle(500)
-            device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
-            device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
-            device.waitForIdle(300)
-            device.executeShellCommand("input text $url")
-            device.waitForIdle(600)
+            var imeUp = false
+            for (focus in 1..3) {
+                clickSmart(field)
+                imeUp = waitImeShown(5_000)
+                if (imeUp) break
+            }
+            if (!imeUp) continue
+
+            var typed = false
+            try {
+                field.setText(url)
+                device.waitForIdle(500)
+                typed = omniboxTextLanded(field, hostMarker)
+            } catch (_: Exception) {
+                typed = false
+            }
+            if (!typed) {
+                device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
+                device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
+                device.waitForIdle(300)
+                device.executeShellCommand("input text $url")
+                device.waitForIdle(600)
+                typed = omniboxTextLanded(field, hostMarker)
+            }
+            if (!typed) continue
+
             // IME Go action -> onOmniBoxInput -> loadUrl (same tab).
             device.executeShellCommand("input keyevent 66")
-            if (hasText(contentMarker, 12_000)) return true
+            if (hasText(contentMarker, 15_000)) return true
             device.pressEnter()
-            if (hasText(contentMarker, 12_000)) return true
+            if (hasText(contentMarker, 15_000)) return true
         }
         return false
+    }
+
+    /** Best-effort omnibox read-back (null = bridge opaque; the post-Go
+     *  marker check stays the authoritative verification). */
+    private fun omniboxTextLanded(field: UiObject2, hostMarker: String): Boolean {
+        val content = runCatching { field.text }.getOrNull() ?: return true
+        return content.contains(hostMarker)
     }
 
     /** Backs out of WalletActivity and the settings routes to the surface. */

@@ -212,66 +212,67 @@ fun MainScreen(
                 )
                 .verticalScroll(rememberScrollState())
         ) {
-            // Welcome copy only for the very first run on an EMPTY list.
-            // It carries no create button of its own — the single create
-            // affordance is composed exactly once per state further down.
-            // (Once a profile exists the section is omitted entirely: the
-            // skip-then-import case must not resurrect a welcome CTA.)
-            if (!firstRunDone && profiles.isEmpty()) {
+            if (profiles.isEmpty() && !firstRunDone) {
+                // TRUE first run: the welcome block carries the copy AND the
+                // single create affordance directly beneath it. The profile-
+                // list chrome (header + description + empty state) is
+                // deliberately omitted here: stacked under the welcome copy
+                // it pushed the primary CTA below the fold on small screens
+                // (320x640dp — e.g. the CI emulator's default profile), and
+                // first-run onboarding whose only action needs scrolling is
+                // poor UX. Exactly ONE create affordance per state, as ever:
+                // the CreateProfileDialog confirm is the only other place
+                // the label exists.
                 WelcomeSection(onSkip = { viewModel.setFirstRunDone() })
-            }
-
-            Text(
-                "Your profiles",
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-            )
-            Text(
-                "Each profile is a fully isolated browsing environment — separate cookies, storage, history and settings.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = extras.textSecondary,
-                modifier = Modifier.padding(horizontal = 16.dp)
-            )
-
-            if (profiles.isEmpty()) {
-                Column(
-                    Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    EmptyState(title = "No profiles yet", subtitle = "Create one to start isolated browsing")
-                    Spacer(Modifier.height(12.dp))
-                    // Primary CTA of the single empty-state block — the only
-                    // create button composed while no profile exists.
-                    CreateProfileButton(addAnother = false, onCreate = { showCreate = true })
-                }
+                Spacer(Modifier.height(4.dp))
+                CreateProfileButton(addAnother = false, onCreate = { showCreate = true })
             } else {
-                profiles.forEach { profile ->
-                    ProfileCard(
-                        profile = profile,
-                        tabCount = viewModel.tabCounts[profile.id.value] ?: 0,
-                        onOpen = {
-                            if (profile.isLocked) {
-                                activity.gateProfile(profile.name) {
+                if (profiles.isEmpty()) {
+                    // Welcome skipped on an empty list (the "Later" path, or
+                    // the last profile was deleted): the list chrome and the
+                    // empty state take the welcome's place.
+                    ProfileListHeader(extras = extras)
+                    Column(
+                        Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        EmptyState(title = "No profiles yet", subtitle = "Create one to start isolated browsing")
+                        Spacer(Modifier.height(12.dp))
+                        // Primary CTA of the single empty-state block — the only
+                        // create button composed while no profile exists.
+                        CreateProfileButton(addAnother = false, onCreate = { showCreate = true })
+                    }
+                } else {
+                    ProfileListHeader(extras = extras)
+
+                    profiles.forEach { profile ->
+                        ProfileCard(
+                            profile = profile,
+                            tabCount = viewModel.tabCounts[profile.id.value] ?: 0,
+                            onOpen = {
+                                if (profile.isLocked) {
+                                    activity.gateProfile(profile.name) {
+                                        onOpenProfile(profile.id.value, pendingUrl)
+                                    }
+                                } else {
                                     onOpenProfile(profile.id.value, pendingUrl)
                                 }
-                            } else {
-                                onOpenProfile(profile.id.value, pendingUrl)
-                            }
-                        },
-                        onEdit = { editTarget = profile },
-                        onDuplicate = { duplicateTarget = profile },
-                        onReset = { resetTarget = profile },
-                        onDelete = { deleteTarget = profile },
-                        onExport = { exportTarget = profile },
-                        onSetDefault = { viewModel.setDefault(profile.id) },
-                        onToggleLock = { viewModel.setLocked(profile.id, !profile.isLocked) }
-                    )
-                }
+                            },
+                            onEdit = { editTarget = profile },
+                            onDuplicate = { duplicateTarget = profile },
+                            onReset = { resetTarget = profile },
+                            onDelete = { deleteTarget = profile },
+                            onExport = { exportTarget = profile },
+                            onSetDefault = { viewModel.setDefault(profile.id) },
+                            onToggleLock = { viewModel.setLocked(profile.id, !profile.isLocked) }
+                        )
+                    }
 
-                // "Add another" affordance below the cards — the SAME
-                // single create entry point, in outlined chrome. It lives in
-                // this branch so it can never stack with the empty-state CTA.
-                CreateProfileButton(addAnother = true, onCreate = { showCreate = true })
+                    // "Add another" affordance below the cards — the SAME
+                    // single create entry point, in outlined chrome. It lives in
+                    // this branch so it can never stack with the empty-state CTA.
+                    CreateProfileButton(addAnother = true, onCreate = { showCreate = true })
+                }
             }
         }
     }
@@ -463,6 +464,27 @@ private fun WelcomeSection(onSkip: () -> Unit) {
         Spacer(Modifier.height(18.dp))
         OutlinedButton(onClick = onSkip) { Text("Later") }
     }
+}
+
+/**
+ * The profile-list chrome: section title + one-line explainer. Shared by the
+ * non-empty list and the skipped-welcome empty state so the two stay
+ * typographically identical (the true-first-run branch intentionally shows
+ * neither — the welcome copy speaks there).
+ */
+@Composable
+private fun ProfileListHeader(extras: com.roombrowser.ui.common.RoomExtras) {
+    Text(
+        "Your profiles",
+        style = MaterialTheme.typography.titleLarge,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+    )
+    Text(
+        "Each profile is a fully isolated browsing environment — separate cookies, storage, history and settings.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = extras.textSecondary,
+        modifier = Modifier.padding(horizontal = 16.dp)
+    )
 }
 
 /**

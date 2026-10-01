@@ -326,9 +326,12 @@ class AgentSettingsE2eTest {
      * never became visible after 4 fling attempts). A slow drag
      * also fully expands a half-expanded ModalBottomSheet. */
     private fun dragUpQuarter() {
+        // Half-screen drag (3/4 → 1/4): the CI emulator's default profile is
+        // 320x640 mdpi — deep settings screens run ~4000px there; the old
+        // quarter-screen drag (160 px) x 12 attempts could not reach them.
         device.swipe(
-            device.displayWidth / 2, device.displayHeight * 5 / 8,
-            device.displayWidth / 2, device.displayHeight * 3 / 8, 100
+            device.displayWidth / 2, device.displayHeight * 3 / 4,
+            device.displayWidth / 2, device.displayHeight / 4, 100
         )
         device.waitForIdle(600)
     }
@@ -336,7 +339,7 @@ class AgentSettingsE2eTest {
     /** Off-screen rows of a scrollable container are not exposed to the
      *  accessibility tree — advance the viewport with SMALL deterministic
      *  drags between find attempts (no fling overshoot). */
-    private fun clickTextWithScroll(text: String, attempts: Int = 12): Boolean {
+    private fun clickTextWithScroll(text: String, attempts: Int = 24): Boolean {
         for (i in 1..attempts) {
             if (clickText(text, 1_500)) return true
             dragUpQuarter()
@@ -444,12 +447,16 @@ class AgentSettingsE2eTest {
         if (device.findObjects(By.text("OPEN")).isNotEmpty()) {
             assertTrue("OPEN must be clickable", clickText("OPEN", 8_000))
         } else {
+            // First-run state: the single create affordance sits under the
+            // welcome copy — visible without scrolling on every screen the
+            // CI emulator boots, but scroll-aware anyway (profile cards can
+            // push an "add another" variant below the fold).
             assertTrue(
                 "First-run welcome should appear",
-                hasText("Create Profile", 90_000)
+                hasText("Create Profile", 90_000) || clickTextWithScroll("Create Profile")
             )
             var dialogOpen = false
-            for (attempt in 1..2) {
+            for (attempt in 1..3) {
                 assertTrue("Create Profile button must be visible", clickText("Create Profile", 5_000))
                 dialogOpen = hasText("Cancel", 6_000)
                 if (dialogOpen) break
