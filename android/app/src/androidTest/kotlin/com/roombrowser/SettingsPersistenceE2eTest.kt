@@ -404,6 +404,12 @@ class SettingsPersistenceE2eTest {
         assertTrue("Height must be typeable", typeIntoLabeledField("Height (CSS px)", "800"))
         // Debounce: the commit fires ~600 ms after the last keystroke.
         device.waitForIdle(2_000)
+        // The typing left the IME up — and with the keyboard covering the
+        // bottom ~40% of the 320x640 screen, clickTextWithScroll's drags
+        // (start at 3/4 height) land ON the IME and never scroll the app
+        // (CI 75822ed: 24 futile attempts at the Cloudflare row). Dismiss
+        // it before descending to the DNS section.
+        hideImeIfNeeded()
 
         // ---- 3. DNS preset: one tap = DOH + the preset's DoH URL ----------
         assertTrue(

@@ -376,7 +376,13 @@ class TabsE2eTest {
             // Settle: the first seconds after engine boot churn the tree.
             device.waitForIdle(1_500)
             hideImeIfNeeded()
-            val field = device.wait(Until.findObject(By.desc("omni_field")), 4_000) ?: continue
+            // CI 75822ed: after a failed round the IME can keep the a11y
+            // ACTIVE window even while hidden-looking — findObject (active
+            // window) went blind for 12 s while findObjects (all windows)
+            // still saw the omnibox. Fall through to the all-windows sweep.
+            val field = device.wait(Until.findObject(By.desc("omni_field")), 4_000)
+                ?: device.findObjects(By.desc("omni_field")).firstOrNull()
+                ?: continue
             var imeUp = false
             for (focus in 1..3) {
                 clickSmart(field)
@@ -561,7 +567,11 @@ class TabsE2eTest {
 
         // ---- 1. Tab A = the initial start-page tab, loaded with page A ----
         assertTrue(
-            "Page A must load through the omnibox\n${uiTree()}",
+            "Page A must load through the omnibox\n${uiTree()}\n" +
+                "DB TABS (persisted rows): ${openTabsGroundTruth()}\n" +
+                "(urlA=$urlA — a row still saying about:home means the load " +
+                "never finished; a row with urlA means the finish landed and " +
+                "the UI state was clobbered afterwards)",
             loadInOmnibox(urlA, contentA)
         )
 

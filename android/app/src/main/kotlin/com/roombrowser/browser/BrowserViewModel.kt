@@ -285,6 +285,24 @@ class BrowserViewModel(
             invalidateVaultOfferOnNavigation()
         }
         override fun onPageFinished(url: String, title: String) {
+            // A freshly created WebView can fire a LATE finish for its
+            // INITIAL about:blank commit at first attach — AFTER a real
+            // navigation already started. (CI 75822ed, both omnibox loads:
+            // the commit created the engine, onPageStarted(real) flipped
+            // the tab to the web state, the first attach then delivered the
+            // artifact finish which flagged the tab as a homepage — the
+            // page content swapped away mid-load and the real navigation
+            // never completed on screen.) A blank about:blank finish is
+            // only meaningful while the tab still belongs to the start
+            // page or to an explicit about:blank navigation (that path
+            // arrives with pageState.url == "about:blank" from
+            // onPageStarted). Otherwise it is a stale artifact: drop it and
+            // let the real page's finish land.
+            if (url == "about:blank" && title.isBlank() &&
+                pageState.url != "about:home" && pageState.url != "about:blank"
+            ) {
+                return
+            }
             lastPageEvent = PageEvent.Finished(url, title, SystemClock.elapsedRealtime())
             pageState = pageState.copy(
                 url = url,

@@ -546,9 +546,15 @@ class WalletE2eTest {
     private fun loadInOmnibox(url: String, contentMarker: String): Boolean {
         for (round in 1..4) {
             if (hasText(contentMarker, 500)) return true
+            // Settle: the first seconds after engine boot churn the tree.
             device.waitForIdle(1_500)
             hideImeIfNeeded()
-            val field = device.wait(Until.findObject(By.desc("omni_field")), 4_000) ?: continue
+            // CI 75822ed: findObject (active window) can go blind while the
+            // IME holds a11y focus — fall through to the all-windows sweep
+            // (findObjects), which still sees the omnibox.
+            val field = device.wait(Until.findObject(By.desc("omni_field")), 4_000)
+                ?: device.findObjects(By.desc("omni_field")).firstOrNull()
+                ?: continue
             var imeUp = false
             for (focus in 1..3) {
                 clickSmart(field)
