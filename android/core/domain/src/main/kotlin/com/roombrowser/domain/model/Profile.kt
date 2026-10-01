@@ -198,7 +198,6 @@ data class ProfileSettings(
     // Desktop mode default
     val desktopModeDefault: Boolean = false,
     // Language
-    val languageTag: String? = null,
     val translateTargetLanguage: String = "id",
     val neverTranslateSites: List<String> = emptyList(),
     // Network protection (profile IP conflict warning)
