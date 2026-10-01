@@ -172,13 +172,17 @@ jobs:
           RB_RELEASE_ABIS: "arm64-v8a,armeabi-v7a"
         run: |
           ./gradlew assembleRelease --console=plain
+          # NOTE: this step runs with working-directory=android — paths
+          # below are relative to android/ (CI 7858b99: the first version of
+          # this check ls'd android/app/build/... from INSIDE android/ and
+          # failed to find files that the build HAD produced).
           for abi in arm64-v8a armeabi-v7a; do
-            ls android/app/build/outputs/apk/release/room-browser-*-${abi}-release*.apk >/dev/null 2>&1 \
-              || { echo "::error::expected release APK for ${abi} not produced"; exit 1; }
+            ls app/build/outputs/apk/release/room-browser-*-${abi}-release*.apk >/dev/null 2>&1 \
+              || { echo "::error::expected release APK for ${abi} not produced"; ls -l app/build/outputs/apk/release/ || true; exit 1; }
           done
           # No universal / x86 APKs may appear in the focused release set.
-          if ls android/app/build/outputs/apk/release/*universal*.apk android/app/build/outputs/apk/release/*x86*.apk >/dev/null 2>&1; then
-            echo "::error::unfocused ABI leaked into the release build"; ls -l android/app/build/outputs/apk/release/; exit 1
+          if ls app/build/outputs/apk/release/*universal*.apk app/build/outputs/apk/release/*x86*.apk >/dev/null 2>&1; then
+            echo "::error::unfocused ABI leaked into the release build"; ls -l app/build/outputs/apk/release/; exit 1
           fi
 
       - name: Upload lint report
