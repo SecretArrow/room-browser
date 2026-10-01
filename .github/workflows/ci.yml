@@ -576,8 +576,14 @@ jobs:
           [ ${#apks[@]} -gt 0 ] || { echo "::error::no release APKs were produced"; exit 1; }
           BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           for apk in "${apks[@]}"; do
-            "$BUILD_TOOLS/apksigner" verify --print-certs "$apk" > /tmp/apk-certs.txt
-            DN=$(grep -m1 'Signer #1 certificate DN:' /tmp/apk-certs.txt || true)
+            "$BUILD_TOOLS/apksigner" verify --print-certs "$apk" > /tmp/apk-certs.txt 2>&1 || true
+            cat /tmp/apk-certs.txt
+            # The label depends on the build-tools version: older ones print
+            # "Signer #1 certificate DN:", current ones print
+            # "V2 Signer: certificate DN:". Match the tail both share, so a
+            # routine SDK bump cannot turn a correctly signed APK into a
+            # failed release.
+            DN=$(grep -m1 -E 'certificate DN:' /tmp/apk-certs.txt || true)
             [ -n "$DN" ] || { echo "::error::$apk is not signed"; exit 1; }
             # The debug key here means the release signing config was never
             # created — a missing or mistyped signing secret. Never publish it.
