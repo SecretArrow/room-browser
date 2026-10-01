@@ -129,7 +129,7 @@ class NetworkIdentity(
             history = history,
             global = global,
             profileNetworkProtectionEnabled = enabledForProfile,
-            suppressedIps = appState.suppressedIps(),
+            suppressedIps = appState.suppressedIps(profile.id.value),
             suppressedIpsThisSession = suppressedIpsThisSession,
             alreadyWarnedNetworks = appState.warnedNetworks()
         )
@@ -178,12 +178,18 @@ class NetworkIdentity(
         )
     }
 
-    /** "Don't warn again for this IP". */
-    suspend fun suppressCurrentIp() {
+    /**
+     * "Don't warn again for this IP", scoped to [profileId].
+     *
+     * The profile is passed explicitly rather than remembered from
+     * [checkOnOpen]: the suppression must land on the profile that is being
+     * opened, and each profile's set is isolated from every other's.
+     */
+    suspend fun suppressCurrentIp(profileId: String) {
         val ip = (netState.value as? NetState.Known)?.ip
             ?: (netState.value as? NetState.Conflict)?.currentIp
         if (ip != null) {
-            appState.suppressIp(ip)
+            appState.suppressIp(profileId, ip)
             suppressedIpsThisSession += ip
             _netState.value = NetState.Known(ip)
         }

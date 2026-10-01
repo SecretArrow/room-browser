@@ -17,7 +17,24 @@ object AppStateKeys {
     const val ACTIVE_PROFILE_ID = "active_profile_id"
     const val FIRST_RUN_DONE = "first_run_done"
     const val WARNED_NETWORKS = "warned_networks"
+
+    /**
+     * LEGACY app-global "don't warn again for this IP" set, from before the
+     * suppression was scoped per profile. It is NO LONGER written: see
+     * [SUPPRESSED_IPS_PREFIX] and [AppStateRepository.suppressedIps]. One
+     * last read of this key seeds the active profile's scoped key, then the
+     * row is deleted, so a pre-upgrade suppression is honoured exactly once
+     * instead of silencing every profile forever.
+     */
     const val SUPPRESSED_IPS = "suppressed_ips"
+
+    /**
+     * Per-profile suppression key prefix: `suppressed_ips:<profileId>`.
+     * Suppressions are privacy-isolated like everything else — one profile
+     * must never silence another profile's network warning.
+     */
+    const val SUPPRESSED_IPS_PREFIX = "suppressed_ips:"
+
     const val IP_CACHE = "network_ip_cache"
     const val EXTERNAL_URL = "external_url"
     const val SESSION_ID = "browser_session_id"
@@ -145,12 +162,58 @@ class AppStateRepository(private val dao: AppStateDao) {
         dao.put(AppStateEntity(AppStateKeys.WARNED_NETWORKS, serializeSet(warnedNetworks() + ip)))
     }
 
-    suspend fun suppressedIps(): Set<String> =
-        deserializeSet(dao.get(AppStateKeys.SUPPRESSED_IPS))
-
-    suspend fun suppressIp(ip: String) {
-        dao.put(AppStateEntity(AppStateKeys.SUPPRESSED_IPS, serializeSet(suppressedIps() + ip)))
+    /**
+     * IPs [profileId] never warns about again, stored under
+     * `suppressed_ips:<profileId>` ([AppStateKeys.SUPPRESSED_IPS_PREFIX]).
+     *
+     * PROFILE-SCOPED: profiles are privacy-isolated everywhere else in this
+     * app, so "don't warn again for this IP" must not cut across them — a
+     * suppression clicked in profile A used to silence profile B.
+     *
+     * MIGRATION (backward compatibility): an installation that predates this
+     * scoping holds ONE app-global set under the legacy key
+     * [AppStateKeys.SUPPRESSED_IPS]. On the first read for a profile whose
+     * scoped row does not exist yet:
+     *  - if the legacy row is still there and this profile is the ACTIVE one
+     *    (the profile the user was actually on when they suppressed), the
+     *    legacy set is seeded into the scoped key and the legacy row is
+     *    DELETED — so an existing suppression is still honoured and the user
+     *    does not start being warned again, while it is inherited exactly once
+     *    instead of leaking into every profile forever;
+     *  - any other profile simply reads an empty set (nothing is written, so
+     *    the read path stays write-free for a profile that never suppressed);
+     *  - with no active profile recorded yet, the profile being read takes the
+     *    legacy set: dropping a user's suppression on the floor would be worse
+     *    than attributing it to the profile that is being opened.
+     *
+     * Reading a profile's own row deliberately never consults the legacy key
+     * again: once a scoped row exists it is the only source of truth.
+     */
+    suspend fun suppressedIps(profileId: String): Set<String> {
+        dao.get(suppressedIpsKey(profileId))?.let { return deserializeSet(it) }
+        val legacy = deserializeSet(dao.get(AppStateKeys.SUPPRESSED_IPS))
+        if (legacy.isEmpty()) return emptySet()
+        val activeProfileId = dao.get(AppStateKeys.ACTIVE_PROFILE_ID)
+        if (activeProfileId != null && activeProfileId != profileId) return emptySet()
+        // This profile is the legacy set's heir: adopt it, then retire the
+        // app-global row so no other profile can ever inherit it.
+        dao.put(AppStateEntity(suppressedIpsKey(profileId), serializeSet(legacy)))
+        dao.remove(AppStateKeys.SUPPRESSED_IPS)
+        return legacy
     }
+
+    /** Persists "don't warn again for this IP" for [profileId] only. */
+    suspend fun suppressIp(profileId: String, ip: String) {
+        dao.put(
+            AppStateEntity(
+                suppressedIpsKey(profileId),
+                serializeSet(suppressedIps(profileId) + ip)
+            )
+        )
+    }
+
+    private fun suppressedIpsKey(profileId: String): String =
+        AppStateKeys.SUPPRESSED_IPS_PREFIX + profileId
 
     suspend fun ipCache(): IpCache? = dao.get(AppStateKeys.IP_CACHE)?.let {
         runCatching { json.decodeFromString(IpCache.serializer(), it) }.getOrNull()

@@ -1608,9 +1608,10 @@ class BrowserViewModel(
     fun resolveNetworkWarning(decision: NetworkWarningDecision) {
         viewModelScope.launch {
             when (decision) {
-                // Persisted suppression: this IP never warns again
-                // (IpConflictDetector honors suppressed IPs).
-                NetworkWarningDecision.SUPPRESS -> networkIdentity.suppressCurrentIp()
+                // Persisted suppression, scoped to THIS profile: this IP
+                // never warns again here (IpConflictDetector honors the
+                // profile's suppressed IPs) — other profiles keep warning.
+                NetworkWarningDecision.SUPPRESS -> networkIdentity.suppressCurrentIp(profileId.value)
                 // Session-level acknowledgement (same semantics the old
                 // dialog's Continue had).
                 else -> networkIdentity.dismissWarning()
