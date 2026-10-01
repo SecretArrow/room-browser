@@ -148,13 +148,21 @@ class WalletE2eTest {
             }
         }
         server.start()
-        val base = server.url("/").toString().trimEnd('/')
+        val port = server.port
         // 127.0.0.1 and localhost are DIFFERENT hosts to the bridge
         // (UrlIntelligence.hostOf() strips ports) but the same loopback
         // interface — one server, two host identities.
-        urlConnect = "$base/connect-$tag"
-        urlSilent = "$base/silent-$tag"
-        urlReject = "http://localhost:${server.url("/").port}/reject-$tag"
+        //
+        // The host is spelled out, never taken from server.url(): that URL
+        // carries the listening socket's canonicalHostName, which is the
+        // machine's name for the wildcard address and not the literal this
+        // test is about. Taking it from there made urlConnect and urlReject
+        // the SAME host — so there was no "different host" to re-prompt for,
+        // and the sheet (which reports the host the bridge derived) could
+        // never match the literals asserted below and in the DB rows.
+        urlConnect = "http://127.0.0.1:$port/connect-$tag"
+        urlSilent = "http://127.0.0.1:$port/silent-$tag"
+        urlReject = "http://localhost:$port/reject-$tag"
     }
 
     @After

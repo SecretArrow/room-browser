@@ -521,12 +521,18 @@ interface WalletAccountDao {
      * Accounts of a profile's wallet, newest-created last. JOIN through
      * wallets because accounts are keyed by wallet id, not profile id —
      * profile isolation lives in the WHERE clause.
+     *
+     * The tiebreak is rowid, not id: created_at has millisecond resolution
+     * and creating a wallet derives its chain accounts back to back, so ties
+     * are the normal case, and ordering those by a random UUID id made the
+     * list order arbitrary per install. rowid is insertion order, and this is
+     * a rowid table (the TEXT primary key is not an alias for it).
      */
     @Query(
         "SELECT wallet_accounts.* FROM wallet_accounts INNER JOIN wallets " +
             "ON wallet_accounts.wallet_id = wallets.id " +
             "WHERE wallets.profile_id = :profileId " +
-            "ORDER BY wallet_accounts.created_at ASC, wallet_accounts.id ASC"
+            "ORDER BY wallet_accounts.created_at ASC, wallet_accounts.rowid ASC"
     )
     fun observeForProfile(profileId: String): Flow<List<WalletAccountEntity>>
 
@@ -535,7 +541,7 @@ interface WalletAccountDao {
         "SELECT wallet_accounts.* FROM wallet_accounts INNER JOIN wallets " +
             "ON wallet_accounts.wallet_id = wallets.id " +
             "WHERE wallets.profile_id = :profileId " +
-            "ORDER BY wallet_accounts.created_at ASC, wallet_accounts.id ASC"
+            "ORDER BY wallet_accounts.created_at ASC, wallet_accounts.rowid ASC"
     )
     suspend fun forProfile(profileId: String): List<WalletAccountEntity>
 

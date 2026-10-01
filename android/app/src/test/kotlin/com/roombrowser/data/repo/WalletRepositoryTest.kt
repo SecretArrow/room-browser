@@ -82,8 +82,15 @@ class WalletRepositoryTest {
         /** The observeForProfile/forProfile JOIN: accounts via the profile's wallet. */
         private fun accountsForProfile(pid: String): List<WalletAccountEntity> {
             val walletIds = wallets.values.filter { it.profileId == pid }.map { it.id }.toSet()
+            // ORDER BY created_at, rowid. sortedBy is STABLE and the map is
+            // insertion-ordered, so ties keep insertion order exactly as the
+            // rowid tiebreak does on the device. (A compareBy(..., id)
+            // tiebreak would mirror the random UUID instead, and two accounts
+            // created in the same millisecond — which this test does, and
+            // which createWallet's per-chain derivation does too — would come
+            // back in an arbitrary order.)
             return accounts.values.filter { it.walletId in walletIds }
-                .sortedWith(compareBy({ it.createdAt }, { it.id }))
+                .sortedBy { it.createdAt }
         }
 
         private fun networksForProfile(pid: String): List<WalletNetworkEntity> =
