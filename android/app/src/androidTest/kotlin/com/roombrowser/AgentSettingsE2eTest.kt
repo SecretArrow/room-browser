@@ -280,7 +280,7 @@ class AgentSettingsE2eTest {
             // ALWAYS clear: the field may hold text from a failed earlier
             // round (or this may be a retype after a fetch error).
             device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
-            device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
+            device.clearFocusedField()
             device.waitForIdle(400)
             // NB: executeShellCommand does not interpret shell quoting — a quoted
             // argument would type the quotes into the field. Values here contain

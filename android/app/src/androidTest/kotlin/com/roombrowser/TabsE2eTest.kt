@@ -450,7 +450,7 @@ class TabsE2eTest {
             // BasicTextField + semantics structure), with the dumpsys IME
             // gate above ruling out dropped keystrokes.
             device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
-            device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
+            device.clearFocusedField()
             device.waitForIdle(300)
             device.executeShellCommand("input text $url")
             device.waitForIdle(800)

@@ -594,6 +594,33 @@ class WalletE2eTest {
         return hasText(marker, 500) || acceptInstead.any { hasText(it, 500) }
     }
 
+    /** The omnibox's text, or null while the field is not in the tree. */
+    private fun omniboxText(): String? =
+        device.findObjects(By.desc("omni_field")).firstOrNull()?.text
+
+    /** True once the omnibox holds EXACTLY [url] — no leftover prefix. */
+    private fun omniboxHoldsExactly(url: String): Boolean =
+        waitUntil(5_000) { omniboxText()?.trim() == url }
+
+    /**
+     * Empties the omnibox and READS IT BACK, rather than trusting the burst.
+     * The tap that focuses the field starts an IME connection and keys sent
+     * before it completes go nowhere, so clearing is retried against the
+     * field's own text. False means it could not be emptied, which is worth
+     * failing the round over: typing into a field that still holds the
+     * previous URL sends the browser a URL nothing typed (see
+     * [clearFocusedField]).
+     */
+    private fun clearOmnibox(): Boolean {
+        val deadline = System.currentTimeMillis() + 15_000
+        while (System.currentTimeMillis() < deadline) {
+            if (omniboxText().isNullOrEmpty()) return true
+            device.clearFocusedField()
+            device.waitForIdle(250)
+        }
+        return omniboxText().isNullOrEmpty()
+    }
+
     /**
      * Loads [url] in the CURRENT tab through the real omnibox and waits for
      * [contentMarker] in the page. Hardened like TabsE2eTest.loadInOmnibox
@@ -629,29 +656,29 @@ class WalletE2eTest {
             }
             if (!imeUp) continue
 
-            var typed = false
-            // PRIMARY: the shell key-event path, IME-gated. CI 033cb23
-            // DISPROVED the a11y ACTION_SET_TEXT on this field (same
-            // structure as the Tabs omnibox): the contentDescription
-            // modifier's OUTER semantics node does not support the action —
-            // performAction returns false SILENTLY and the URL never lands.
-            // The shell path is what every CI-green dialog field uses.
+            var typed: Boolean
+            // The shell key-event path, IME-gated. (CI 033cb23 DISPROVED the
+            // a11y ACTION_SET_TEXT on this field — same structure as the
+            // Tabs omnibox: the contentDescription modifier's OUTER
+            // semantics node does not support the action, performAction
+            // returns false SILENTLY and the URL never lands. There is no
+            // fallback to it because there is nothing it could do.)
             device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
-            device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
-            device.waitForIdle(300)
+            if (!clearOmnibox()) continue
             device.executeShellCommand("input text $url")
             device.waitForIdle(800)
-            // GLOBAL text search: the inner editable node renders the
-            // content as text wherever it lives in the tree.
-            typed = device.wait(Until.hasObject(By.textContains(url)), 5_000)
-            if (!typed) {
-                try {
-                    field.setText(url)
-                    device.waitForIdle(600)
-                    typed = device.wait(Until.hasObject(By.textContains(url)), 5_000)
-                } catch (_: Exception) {
-                    typed = false
-                }
+            // EXACT, not contains. The omnibox keeps the text it was given,
+            // so on a second navigation in the same tab it still holds the
+            // previous URL, and a clear that does not land turns `input text`
+            // into an append (CI 2c9f63d — the browser was sent
+            // "…/connect-45508http://…/silent-45508"). `contains` cannot see
+            // that: the concatenation holds the new URL as a suffix. The
+            // container merges the field, so omniboxText() is the typed text.
+            typed = omniboxHoldsExactly(url)
+            if (!typed && clearOmnibox()) {
+                device.executeShellCommand("input text $url")
+                device.waitForIdle(800)
+                typed = omniboxHoldsExactly(url)
             }
             if (!typed) continue
 
@@ -692,7 +719,7 @@ class WalletE2eTest {
             ?: return false
         clickCenter(field)
         device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
-        device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
+        device.clearFocusedField()
         device.waitForIdle(300)
         device.executeShellCommand("input text $profileName2")
         device.waitForIdle(1_000)
@@ -1014,7 +1041,10 @@ class WalletE2eTest {
 
         // (2) The SAME host again: with the permission granted the bridge
         //     answers SILENTLY — the address renders with NO sheet.
-        assertTrue("The silent re-connect page must load", loadInOmnibox(urlSilent, "WS2-$tag"))
+        assertTrue(
+            "The silent re-connect page must load\n${uiTree()}",
+            loadInOmnibox(urlSilent, "WS2-$tag")
+        )
         val silentResult = pageResultText("SILENT:", 15_000)
         assertTrue(
             "The permitted re-connect must resolve with the address (found ${silentResult ?: "nothing"})\n${uiTree()}",

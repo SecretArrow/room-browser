@@ -335,7 +335,7 @@ class SettingsPersistenceE2eTest {
             if (!typed) {
                 // Fallback: the shell key-event path (with a full re-clear).
                 device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
-                device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
+                device.clearFocusedField()
                 device.waitForIdle(300)
                 device.executeShellCommand("input text $value")
                 device.waitForIdle(800)
