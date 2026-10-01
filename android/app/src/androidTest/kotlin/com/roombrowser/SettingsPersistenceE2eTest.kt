@@ -270,7 +270,16 @@ class SettingsPersistenceE2eTest {
     private fun typeIntoLabeledField(label: String, value: String): Boolean {
         for (round in 1..3) {
             hideImeIfNeeded()
-            val labelNode = device.wait(Until.findObject(By.text(label)), 3_000) ?: continue
+            // Scroll-aware label lookup: the previous field's search may have
+            // scrolled THIS label out of the viewport (off-screen nodes are
+            // not in the a11y tree).
+            var labelNode = device.wait(Until.findObject(By.text(label)), 3_000)
+            for (i in 1..8) {
+                if (labelNode != null) break
+                dragUpQuarter()
+                labelNode = device.wait(Until.findObject(By.text(label)), 1_000)
+            }
+            if (labelNode == null) continue
             val labelBounds = labelNode.visibleBounds
             val labelCenterX = labelBounds.centerX()
             val field = runCatching {
@@ -424,14 +433,20 @@ class SettingsPersistenceE2eTest {
 
     /**
      * Picks 'Set manually' in the reported-size dropdown, VERIFIED on the
-     * manual width/height fields appearing. The menu item tap and the
+     * manual width/height fields appearing. CI run 798d73c proved the pick
+     * itself WORKS — the fields then render BELOW THE FOLD on the 320x640
+     * screen, and off-screen nodes are not in the a11y tree, so a flat
+     * presence check misread success as failure and re-picked forever. The
+     * verification is therefore SCROLL-AWARE. The menu item tap and the
      * dropdown-opening tap are both re-attempted with FRESH node resolves —
      * stale-bounds taps after scroll flings or popup layout shifts land on
-     * nothing (CI 227ebc3: the item was never picked).
+     * nothing.
      */
     private fun pickReportedSizeManually(): Boolean {
         for (attempt in 1..6) {
-            if (device.findObjects(By.text("Width (CSS px)")).isNotEmpty()) return true
+            // The fields may already be expanded (below the fold) — scroll
+            // to them before concluding anything.
+            if (hasTextWithScroll("Width (CSS px)")) return true
             // The dropdown may have closed (or never opened): (re)open it.
             if (device.findObjects(By.text("Set manually")).isEmpty()) {
                 clickDesc("Reported size dropdown", 3_000)
@@ -441,9 +456,12 @@ class SettingsPersistenceE2eTest {
             if (item != null) {
                 clickSmart(item)
                 device.waitForIdle(1_000)
-                if (device.findObjects(By.text("Width (CSS px)")).isNotEmpty()) return true
+                // The expanded fields land below the fold when the section
+                // sits low on the small CI screen — their absence from the
+                // CURRENT viewport is not evidence the pick failed.
+                if (hasTextWithScroll("Width (CSS px)")) return true
             }
         }
-        return device.findObjects(By.text("Width (CSS px)")).isNotEmpty()
+        return hasTextWithScroll("Width (CSS px)")
     }
 }

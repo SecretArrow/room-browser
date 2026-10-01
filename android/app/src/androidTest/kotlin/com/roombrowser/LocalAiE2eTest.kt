@@ -492,13 +492,17 @@ class LocalAiE2eTest {
         tapDescWithScroll(part, attempts, ::dragUpQuarter)
 
     /** SLOW drag (100 steps ≈ no fling momentum) that scrolls ~1/4 of the
-     *  screen — deterministic. */
+     *  screen — deterministic. The settle AFTER the drag lets residual
+     *  momentum finish before the caller reads node bounds (a tap on bounds
+     * captured mid-fling lands on nothing — CI 798d73c: three Install taps
+     * all "succeeded" and 0 registry requests were ever made). */
     private fun dragUpQuarter() {
         device.swipe(
             device.displayWidth / 2, device.displayHeight * 5 / 8,
             device.displayWidth / 2, device.displayHeight * 3 / 8, 100
         )
-        device.waitForIdle(600)
+        device.waitForIdle(800)
+        try { Thread.sleep(300) } catch (_: InterruptedException) { }
     }
 
     /** Reverse of [dragUpQuarter] — scrolls the viewport toward the START of
@@ -508,7 +512,8 @@ class LocalAiE2eTest {
             device.displayWidth / 2, device.displayHeight * 3 / 8,
             device.displayWidth / 2, device.displayHeight * 5 / 8, 100
         )
-        device.waitForIdle(600)
+        device.waitForIdle(800)
+        try { Thread.sleep(200) } catch (_: InterruptedException) { }
     }
 
     /** Reset to the top of the scrollable screen. Generous on purpose: the
@@ -572,7 +577,11 @@ class LocalAiE2eTest {
                 drag()
                 continue
             }
-            device.executeShellCommand("input tap ${bounds.centerX()} ${bounds.centerY()}")
+            // Direct injection, NOT the shell `input tap`: the shell
+            // command takes 50-150 ms to spawn its app_process, during which
+            // residual scroll motion makes the captured bounds STALE — the
+            // tap then lands where the button USED to be (CI 798d73c).
+            device.click(bounds.centerX(), bounds.centerY())
             device.waitForIdle(800)
             return true
         }

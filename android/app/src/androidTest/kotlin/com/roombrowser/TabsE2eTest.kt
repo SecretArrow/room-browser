@@ -339,21 +339,21 @@ class TabsE2eTest {
      * Loads [url] in the CURRENT tab through the real omnibox (omni_field is
      * the stable a11y hook) and waits for [contentMarker] in the page.
      *
-     * CI forensics (run 9399640): typing raced the engine's first frames —
-     * key events were dropped ("no window focus") and the InputConnection
-     * died mid-typing while the Homepage composable was still being
-     * JIT-compiled. Three hardening layers here:
+     * CI forensics (runs 227ebc3 / 798d73c): typing raced the engine's first
+     * frames — key events were dropped ("no window focus") and the
+     * InputConnection died mid-typing while the Homepage composable was
+     * still being JIT-compiled. Hardening layers:
      *  1. the IME must be SHOWN after focusing (dumpsys proof the
      *     connection is live) before anything is typed;
      *  2. the URL goes in via the accessibility ACTION_SET_TEXT (no key
-     *     events at all — cannot be dropped by focus races) with the shell
-     *     `input text` path as fallback;
-     *  3. best-effort read-back of the field before pressing Go — when the
-     *     node exposes no readable text the marker check after Go remains
-     *     the real gate.
+     *     events at all — cannot be dropped by focus races; CI log-proven
+     *     "UiObject2: Setting text to ..."). Only a THROWN exception falls
+     *     back to the shell `input text` path — a read-back is deliberately
+     *     NOT used (the cached a11y node cannot see the fresh text, and the
+     *     destructive fallback mangled the URL: cursor 53 on 30 chars);
+     *  3. the post-Go marker check is the authoritative verification.
      */
     private fun loadInOmnibox(url: String, contentMarker: String): Boolean {
-        val hostMarker = url.substringAfter("//").substringBefore("/")
         for (round in 1..4) {
             if (hasText(contentMarker, 500)) return true
             // Settle: the first seconds after engine boot churn the tree.
@@ -370,9 +370,17 @@ class TabsE2eTest {
 
             var typed = false
             try {
+                // ACTION_SET_TEXT goes through the semantics pipeline —
+                // deterministic, no key events (CI log proof: "UiObject2:
+                // Setting text to 'http://...'" succeeded). A THROWN exception
+                // is the only failure signal worth reacting to: the previous
+                // read-back check could not see the fresh text through the
+                // cached a11y node, fell into the shell fallback and the
+                // DEL-reclear + retype produced a MANGLED url (cursor 53 on a
+                // 30-char URL) that loaded nothing.
                 field.setText(url)
-                device.waitForIdle(500)
-                typed = omniboxTextLanded(field, hostMarker)
+                device.waitForIdle(600)
+                typed = true
             } catch (_: Exception) {
                 typed = false
             }
@@ -383,7 +391,6 @@ class TabsE2eTest {
                 device.waitForIdle(300)
                 device.executeShellCommand("input text $url")
                 device.waitForIdle(600)
-                typed = omniboxTextLanded(field, hostMarker)
             }
             if (!typed) continue
 
@@ -401,17 +408,6 @@ class TabsE2eTest {
             }
         }
         return false
-    }
-
-    /**
-     * Best-effort read-back of the omnibox content. Compose editable nodes
-     * expose their text through the a11y bridge, but if the bridge ever
-     * returns null the typing is ASSUMED (the post-Go marker check is the
-     * authoritative verification either way).
-     */
-    private fun omniboxTextLanded(field: UiObject2, hostMarker: String): Boolean {
-        val content = runCatching { field.text }.getOrNull() ?: return true
-        return content.contains(hostMarker)
     }
 
     /** Opens a page-actions sheet entry by desc and VERIFIES the effect. */

@@ -537,7 +537,6 @@ class WalletE2eTest {
      * instead of key events, shell `input text` as fallback).
      */
     private fun loadInOmnibox(url: String, contentMarker: String): Boolean {
-        val hostMarker = url.substringAfter("//").substringBefore("/")
         for (round in 1..4) {
             if (hasText(contentMarker, 500)) return true
             device.waitForIdle(1_500)
@@ -553,9 +552,13 @@ class WalletE2eTest {
 
             var typed = false
             try {
+                // ACTION_SET_TEXT is deterministic (CI log proof it works on
+                // this field); a thrown exception is the only real failure —
+                // the old read-back saw stale a11y text and triggered a
+                // destructive fallback that MANGLED the URL.
                 field.setText(url)
-                device.waitForIdle(500)
-                typed = omniboxTextLanded(field, hostMarker)
+                device.waitForIdle(600)
+                typed = true
             } catch (_: Exception) {
                 typed = false
             }
@@ -565,7 +568,6 @@ class WalletE2eTest {
                 device.waitForIdle(300)
                 device.executeShellCommand("input text $url")
                 device.waitForIdle(600)
-                typed = omniboxTextLanded(field, hostMarker)
             }
             if (!typed) continue
 
@@ -580,13 +582,6 @@ class WalletE2eTest {
             }
         }
         return false
-    }
-
-    /** Best-effort omnibox read-back (null = bridge opaque; the post-Go
-     *  marker check stays the authoritative verification). */
-    private fun omniboxTextLanded(field: UiObject2, hostMarker: String): Boolean {
-        val content = runCatching { field.text }.getOrNull() ?: return true
-        return content.contains(hostMarker)
     }
 
     /** Backs out of WalletActivity and the settings routes to the surface. */
@@ -619,8 +614,12 @@ class WalletE2eTest {
         device.waitForIdle(1_000)
         if (!clickText("Create", 5_000)) return false
         // The switch kills the ':browser' process and restarts it bound to
-        // the new profile — the same engine-up the bootstrap waits for.
-        return engineUiUp(40_000)
+        // the new profile — the same engine-up the bootstrap waits for, and
+        // the same restart race: STABILITY-gated (8 s continuous surface)
+        // so the caller never types on a doomed engine.
+        if (!engineUiStable(120_000)) return false
+        device.waitForIdle(2_000)
+        return true
     }
 
     // ---------- Onboarding helpers (create-flow spec test) ----------------
@@ -1106,7 +1105,9 @@ class WalletE2eTest {
         assertTrue("The reveal screen must render", hasText("Your recovery phrase", 20_000))
 
         // Reveal, then READ the 24 numbered cells (kept in memory only).
-        assertTrue("Reveal must be tappable", clickText("Reveal", 5_000))
+        // Scroll-aware: on the 320x640 CI screen the Reveal button can sit
+        // below the fold under the one-time-phrase copy.
+        assertTrue("Reveal must be tappable", clickTextWithScroll("Reveal"))
         assertTrue("Hide phrase must show once revealed", hasText("Hide phrase", 5_000))
         val words = HashMap<Int, String>()
         assertTrue(
