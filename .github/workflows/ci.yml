@@ -16,7 +16,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.console=plain
+  # The daemon is left on: it is started once per job and reused by every
+  # later ./gradlew in that job (there are up to five in `quality` alone),
+  # instead of paying JVM start plus cold JIT on each one. It exits with the
+  # runner. --console=plain is already passed on every gradle command.
+  GRADLE_OPTS: -Dorg.gradle.console=plain
 
 jobs:
   # ---------------------------------------------------------------------
@@ -37,6 +41,19 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+
+      - name: Cache the pinned Android SDK components
+        uses: actions/cache@v4
+        with:
+          # The runner image ships NDK 27.3/28.2/29.0 and CMake 3.31/4.1; this
+          # build pins 27.0.12077973 and 3.22.1, so the step below takes its
+          # install branch on EVERY job — five times per pipeline, on the
+          # serialized path autofix -> quality -> e2e -> release. The guard
+          # still runs, so a partial restore simply reinstalls.
+          path: |
+            /usr/local/lib/android/sdk/ndk/27.0.12077973
+            /usr/local/lib/android/sdk/cmake/3.22.1
+          key: android-sdk-ndk-27.0.12077973-cmake-3.22.1-${{ runner.os }}
 
       - name: Install NDK + CMake (on-device llama.cpp engine)
         run: |
@@ -109,6 +126,7 @@ jobs:
     needs: autofix
     if: needs.autofix.outputs.pushed_with_pat != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -118,6 +136,19 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+
+      - name: Cache the pinned Android SDK components
+        uses: actions/cache@v4
+        with:
+          # The runner image ships NDK 27.3/28.2/29.0 and CMake 3.31/4.1; this
+          # build pins 27.0.12077973 and 3.22.1, so the step below takes its
+          # install branch on EVERY job — five times per pipeline, on the
+          # serialized path autofix -> quality -> e2e -> release. The guard
+          # still runs, so a partial restore simply reinstalls.
+          path: |
+            /usr/local/lib/android/sdk/ndk/27.0.12077973
+            /usr/local/lib/android/sdk/cmake/3.22.1
+          key: android-sdk-ndk-27.0.12077973-cmake-3.22.1-${{ runner.os }}
 
       - name: Install NDK + CMake (on-device llama.cpp engine)
         run: |
@@ -209,8 +240,19 @@ jobs:
   # ---------------------------------------------------------------------
   e2e:
     name: E2E instrumented tests (emulator)
-    needs: quality
+    # Runs ALONGSIDE quality, not after it. e2e checks out and builds on its
+    # own and consumes nothing quality produces, so `needs: quality` bought
+    # no correctness — it only put the 50-minute emulator run behind a
+    # 17-minute wait, and the emulator is the whole critical path to a
+    # release. `release` still requires BOTH results, so a red quality still
+    # blocks publishing; it just no longer delays finding out. The cost, on
+    # purpose: when quality fails this run, the emulator has already run.
+    needs: autofix
+    if: needs.autofix.outputs.pushed_with_pat != 'true'
     runs-on: ubuntu-latest
+    # A hung emulator boot or a stalled SDK download would otherwise hold a
+    # runner for the 360-minute default.
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -220,6 +262,19 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+
+      - name: Cache the pinned Android SDK components
+        uses: actions/cache@v4
+        with:
+          # The runner image ships NDK 27.3/28.2/29.0 and CMake 3.31/4.1; this
+          # build pins 27.0.12077973 and 3.22.1, so the step below takes its
+          # install branch on EVERY job — five times per pipeline, on the
+          # serialized path autofix -> quality -> e2e -> release. The guard
+          # still runs, so a partial restore simply reinstalls.
+          path: |
+            /usr/local/lib/android/sdk/ndk/27.0.12077973
+            /usr/local/lib/android/sdk/cmake/3.22.1
+          key: android-sdk-ndk-27.0.12077973-cmake-3.22.1-${{ runner.os }}
 
       - name: Install NDK + CMake (on-device llama.cpp engine)
         run: |
@@ -241,6 +296,16 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+
+      - name: Build the app + test APKs before the emulator boots
+        # The emulator step's script builds these too, but it does so AFTER
+        # booting a software-GPU emulator on the same 4 vCPUs, so the build
+        # spends its whole run competing for CPU with the thing it is about to
+        # be tested on — a plausible contributor to the CPU-starvation flakes.
+        # Building first means the in-script gradle call is an up-to-date
+        # no-op, and a compile error costs seconds instead of a full boot.
+        working-directory: android
+        run: ./gradlew assembleDebug assembleDebugAndroidTest --console=plain
 
       - name: Run instrumented tests on emulator (API 30, x86_64)
         uses: reactivecircus/android-emulator-runner@v2
@@ -488,6 +553,7 @@ jobs:
       needs.e2e.result == 'success' &&
       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -497,6 +563,19 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+
+      - name: Cache the pinned Android SDK components
+        uses: actions/cache@v4
+        with:
+          # The runner image ships NDK 27.3/28.2/29.0 and CMake 3.31/4.1; this
+          # build pins 27.0.12077973 and 3.22.1, so the step below takes its
+          # install branch on EVERY job — five times per pipeline, on the
+          # serialized path autofix -> quality -> e2e -> release. The guard
+          # still runs, so a partial restore simply reinstalls.
+          path: |
+            /usr/local/lib/android/sdk/ndk/27.0.12077973
+            /usr/local/lib/android/sdk/cmake/3.22.1
+          key: android-sdk-ndk-27.0.12077973-cmake-3.22.1-${{ runner.os }}
 
       - name: Install NDK + CMake (on-device llama.cpp engine)
         run: |
