@@ -451,7 +451,7 @@ object WalletBridgeProtocol {
             }
         }
 
-        if (method == METHOD_SIGN_MESSAGE || method == METHOD_SIGN_ARBITRARY ||
+        if (method == METHOD_SIGN_MESSAGE || method == METHOD_COSMOS_SIGN_ARBITRARY ||
             method == METHOD_SIGN_PERSONAL_MESSAGE
         ) {
             val isSuiAlias = method == METHOD_SIGN_PERSONAL_MESSAGE
@@ -459,7 +459,7 @@ object WalletBridgeProtocol {
             if (isSuiAlias && call.chainType != ChainType.SUI) {
                 return invalidParams("signPersonalMessage is Sui-only")
             }
-            if (method == METHOD_SIGN_ARBITRARY && call.chainType != ChainType.COSMOS) {
+            if (method == METHOD_COSMOS_SIGN_ARBITRARY && call.chainType != ChainType.COSMOS) {
                 return invalidParams("signArbitrary is Cosmos-only")
             }
             val obj = params as? JsonObject ?: return invalidParams("signMessage expects a params object")
@@ -683,18 +683,20 @@ object WalletBridgeProtocol {
      * conversion; the array form is accepted for a page calling the
      * interface directly.
      */
-    private fun base64Param(element: JsonElement?): String? = when (element) {
-        is JsonPrimitive -> if (element.isString) element.content.takeIf { it.isNotBlank() } else null
-        is JsonArray -> {
-            val bytes = ByteArray(element.size)
-            for ((index, item) in element.withIndex()) {
-                val value = (item as? JsonPrimitive)?.contentOrNull?.toIntOrNull() ?: return null
-                if (value < 0 || value > 255) return null
-                bytes[index] = value.toByte()
+    private fun base64Param(element: JsonElement?): String? {
+        return when (element) {
+            is JsonPrimitive -> if (element.isString) element.content.takeIf { it.isNotBlank() } else null
+            is JsonArray -> {
+                val bytes = ByteArray(element.size)
+                for ((index, item) in element.withIndex()) {
+                    val value = (item as? JsonPrimitive)?.contentOrNull?.toIntOrNull() ?: return null
+                    if (value < 0 || value > 255) return null
+                    bytes[index] = value.toByte()
+                }
+                Base64.getEncoder().encodeToString(bytes)
             }
-            Base64.getEncoder().encodeToString(bytes)
+            else -> null
         }
-        else -> null
     }
 
     /** personal_sign params: `[data, address]` or `{message, address}` (extra keys tolerated). */
