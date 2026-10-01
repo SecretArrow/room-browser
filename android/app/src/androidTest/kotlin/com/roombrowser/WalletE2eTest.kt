@@ -364,8 +364,8 @@ class WalletE2eTest {
      */
     private fun clickTextVerifiedScrollable(
         text: String,
-        verify: () -> Boolean,
-        timeoutMs: Long
+        timeoutMs: Long,
+        verify: () -> Boolean
     ): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
@@ -738,7 +738,7 @@ class WalletE2eTest {
         // nothing (CI 227ebc3).
         assertTrue(
             "The Wallet settings row must be tappable (verified: activity opens)\n${uiTree()}",
-            clickTextVerifiedScrollable("Multi-chain wallet, accounts and dApp connections") {
+            clickTextVerifiedScrollable("Multi-chain wallet, accounts and dApp connections", 60_000) {
                 device.findObjects(By.text("Set up your wallet")).isNotEmpty() ||
                     device.findObjects(By.textContains("Vault locked")).isNotEmpty() ||
                     device.findObjects(By.textContains("Total balance")).isNotEmpty()
@@ -773,7 +773,7 @@ class WalletE2eTest {
         // entry gate fails with no device credentials — the CI state).
         assertTrue(
             "The Wallet settings row must re-open the wallet surface (verified)\n${uiTree()}",
-            clickTextVerifiedScrollable("Multi-chain wallet, accounts and dApp connections") {
+            clickTextVerifiedScrollable("Multi-chain wallet, accounts and dApp connections", 60_000) {
                 device.findObjects(By.textContains("Wallet locked")).isNotEmpty() ||
                     device.findObjects(By.text("Set up your wallet")).isNotEmpty()
             }
@@ -1085,7 +1085,7 @@ class WalletE2eTest {
         )
         assertTrue(
             "The Wallet settings row must be tappable (verified: activity opens)\n${uiTree()}",
-            clickTextVerifiedScrollable("Multi-chain wallet, accounts and dApp connections") {
+            clickTextVerifiedScrollable("Multi-chain wallet, accounts and dApp connections", 60_000) {
                 device.findObjects(By.text("Set up your wallet")).isNotEmpty() ||
                     device.findObjects(By.textContains("Wallet locked")).isNotEmpty() ||
                     device.findObjects(By.textContains("Total balance")).isNotEmpty()

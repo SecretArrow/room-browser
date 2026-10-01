@@ -133,8 +133,8 @@ class PasswordsE2eTest {
      */
     private fun clickTextVerifiedScrollable(
         text: String,
-        verify: () -> Boolean,
-        timeoutMs: Long
+        timeoutMs: Long,
+        verify: () -> Boolean
     ): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
@@ -269,7 +269,7 @@ class PasswordsE2eTest {
             )
             assertTrue(
                 "The Passwords row (Autofill section) must be tappable (verified: activity opens)\n${uiTree()}",
-                clickTextVerifiedScrollable("Passwords") {
+                clickTextVerifiedScrollable("Passwords", 60_000) {
                     device.findObjects(By.textContains("Vault locked")).isNotEmpty() ||
                         device.findObjects(By.textContains("Saved passwords")).isNotEmpty()
                 }
