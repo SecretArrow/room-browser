@@ -264,7 +264,7 @@ jobs:
             # e2e-reports artifact answers WHY from any point of the run —
             # a 2000-line tail missed the actual failure window once — then
             # exit non-zero.
-            cd android && ./gradlew connectedDebugAndroidTest --console=plain || (adb exec-out logcat -d -b crash > /home/runner/work/room-browser/e2e-logcat-crash.txt; adb exec-out logcat -d > /home/runner/work/room-browser/e2e-logcat-full.txt; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml /home/runner/work/room-browser/ >/dev/null 2>&1; exit 1)
+            cd android && ./gradlew connectedDebugAndroidTest --console=plain || (adb exec-out logcat -d -b crash > /home/runner/work/room-browser/e2e-logcat-crash.txt; adb exec-out logcat -d > /home/runner/work/room-browser/e2e-logcat-full.txt; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml /home/runner/work/room-browser/ >/dev/null 2>&1; adb pull /sdcard/e2e-shots /home/runner/work/room-browser/ >/dev/null 2>&1; exit 1)
 
       - name: Upload instrumented test reports
         if: always()
@@ -276,6 +276,7 @@ jobs:
             /home/runner/work/room-browser/e2e-logcat-crash.txt
             /home/runner/work/room-browser/e2e-logcat-full.txt
             /home/runner/work/room-browser/e2e-ui.xml
+            /home/runner/work/room-browser/e2e-shots
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------

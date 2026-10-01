@@ -135,8 +135,26 @@ class BrowserViewModel(
 
     private var httpClient: OkHttpClient = OkHttpClient()
 
-    var pageState by mutableStateOf(PageState())
-        private set
+    /**
+     * TEMPORARY DIAGNOSTIC (omnibox e2e forensics): every transition of the
+     * two fields that decide WHICH surface composes — url and isHomepage —
+     * is logged together with the caller's stack, so a start-page reset that
+     * no call site admits to can be attributed to an exact line.
+     */
+    private val pageStateValue = mutableStateOf(PageState())
+    var pageState: PageState
+        get() = pageStateValue.value
+        private set(value) {
+            val before = pageStateValue.value
+            if (before.url != value.url || before.isHomepage != value.isHomepage) {
+                Log.d(
+                    NAV_TAG,
+                    "pageState <- url=${value.url} home=${value.isHomepage} loading=${value.loading}",
+                    Throwable("pageState setter")
+                )
+            }
+            pageStateValue.value = value
+        }
     var pageError by mutableStateOf<PageError?>(null)
         private set
     var shieldsState by mutableStateOf(ShieldsState())
@@ -1202,7 +1220,9 @@ class BrowserViewModel(
         // suspend and resume on another.
         tabManager.setPageUrl(id, url)
         viewModelScope.launch {
-            val tab = browserRepo.tab(id) ?: return@launch
+            val tab = browserRepo.tab(id)
+            Log.d(NAV_TAG, "persistTab id=$id url=$url touch=$touch row=${tab != null}")
+            if (tab == null) return@launch
             browserRepo.updateTab(
                 if (touch) {
                     tab.copy(url = url, title = title ?: tab.title, lastViewedAt = System.currentTimeMillis())

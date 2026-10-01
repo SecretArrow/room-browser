@@ -214,6 +214,19 @@ class TabsE2eTest {
         false
     }
 
+    /**
+     * TEMPORARY DIAGNOSTIC: a real screenshot of the device at a named moment.
+     * The CI failure fallback pulls /sdcard/e2e-shots into the e2e-reports
+     * artifact, so "the page loaded but the screen still shows the start
+     * page" can be settled by looking rather than by inference.
+     */
+    private fun snap(name: String) {
+        runCatching {
+            device.executeShellCommand("mkdir -p /sdcard/e2e-shots")
+            device.executeShellCommand("screencap -p /sdcard/e2e-shots/$name.png")
+        }
+    }
+
     /** Polls dumpsys until the IME is actually shown (focus really landed). */
     private fun waitImeShown(timeoutMs: Long): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
@@ -255,7 +268,15 @@ class TabsE2eTest {
             device.findObjects(By.descContains("")).mapNotNull { it.contentDescription }
                 .distinct().take(30)
         }.getOrDefault(emptyList())
-        "TEXTS: $texts\nDESCS: $descs"
+        // Forensics: whether the engine is foreground at all, and whether a
+        // rendered WebView exists in the hierarchy (a page that loaded but
+        // never attached shows no such node).
+        val pkg = runCatching { device.currentPackageName }.getOrDefault("?")
+        val webViews = runCatching { device.findObjects(By.clazz("android.webkit.WebView")).size }
+            .getOrDefault(-1)
+        val pills = runCatching { device.findObjects(By.descContains("Address bar")).size }
+            .getOrDefault(-1)
+        "PKG=$pkg WEBVIEWS=$webViews PILLS=$pills\nTEXTS: $texts\nDESCS: $descs"
     } catch (t: Throwable) {
         "probe dump failed: $t"
     }
@@ -376,6 +397,7 @@ class TabsE2eTest {
             // Settle: the first seconds after engine boot churn the tree.
             device.waitForIdle(1_500)
             hideImeIfNeeded()
+            snap("tabs-r$round-pre")
             // CI 75822ed: after a failed round the IME can keep the a11y
             // ACTIVE window even while hidden-looking — findObject (active
             // window) went blind for 12 s while findObjects (all windows)
@@ -428,6 +450,7 @@ class TabsE2eTest {
             // IME Go action -> onOmniBoxInput -> loadUrl (same tab).
             device.executeShellCommand("input keyevent 66")
             if (hasText(contentMarker, 15_000)) return true
+            snap("tabs-r$round-postgo")
             // A second Enter only makes sense while the IME still owns the
             // field — a bare Enter with no IME went to the APP and on the
             // homepage it backgrounds the engine (CI 227ebc3: that stray key

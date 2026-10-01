@@ -1,5 +1,6 @@
 package com.roombrowser.browser.ui
 
+import android.util.Log
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.compose.animation.AnimatedVisibility
@@ -45,6 +46,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -84,6 +86,17 @@ fun BrowserContent(
     onOpenPrivacyDashboard: () -> Unit
 ) {
     val page = viewModel.pageState
+    // TEMPORARY DIAGNOSTIC (omnibox e2e forensics): which surface the UI
+    // actually composes, and the engine/tab bookkeeping behind it.
+    LaunchedEffect(page.isHomepage, page.url, viewModel.pageError, viewModel.activeWebView) {
+        Log.d(
+            "RoomNav",
+            "surface home=${page.isHomepage} url=${page.url} " +
+                "err=${viewModel.pageError != null} " +
+                "engine=${System.identityHashCode(viewModel.activeWebView)} " +
+                "tabs=${viewModel.tabs.size} active=${viewModel.activeTabId}"
+        )
+    }
     val extras = LocalRoomExtras.current
     var omniInput by remember(page.url) { mutableStateOf(if (page.isHomepage) "" else UrlIntelligence.displayUrl(page.url)) }
     val context = LocalContext.current
@@ -283,6 +296,13 @@ private fun WebViewHost(viewModel: BrowserViewModel) {
         },
         update = { frame ->
             val webView = viewModel.activeWebView
+            Log.d(
+                "RoomNav",
+                "WebViewHost update engine=${System.identityHashCode(webView)} " +
+                    "parented=${webView != null && webView.parent == frame} " +
+                    "frame=${System.identityHashCode(frame)} children=${frame.childCount} " +
+                    "frameAttached=${frame.isAttachedToWindow}"
+            )
             // Swap-in semantics for the ACTIVE tab's engine: detach it from
             // any previous parent first (a view that still has a parent can
             // never be addView'd — the "child already has a parent" crash),
