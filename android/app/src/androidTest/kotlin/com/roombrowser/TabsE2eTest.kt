@@ -668,9 +668,14 @@ class TabsE2eTest {
         )
 
         // ---- 6. Create C from the grid "+": A and B unchanged -------------
+        // Step 5's selectCardByTitle() CLOSES the grid, and the "+" lives in
+        // the grid: without re-opening it first the desc poll runs against
+        // the browsing surface and never matches (CI 36893513963 — "New tab"
+        // polled for 6 s, "Node not found", while the surface was up).
+        assertTrue("Tab grid must re-open (for C)", openTabGrid())
         assertTrue("Grid '+' (New tab) must be clickable", clickDesc("New tab", 6_000))
         assertTrue("Tab C must land on the start page", homepageUp(10_000))
-        assertTrue("Tab grid must re-open (for C)", openTabGrid())
+        assertTrue("Tab grid must re-open after C", openTabGrid())
         assertTrue(
             "Grid must show exactly three tabs (found ${tabCountTitle()})",
             waitUntil(6_000) { tabCountTitle() == "Tabs (3)" }

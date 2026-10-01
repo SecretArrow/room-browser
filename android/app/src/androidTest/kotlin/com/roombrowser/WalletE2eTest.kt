@@ -561,13 +561,46 @@ class WalletE2eTest {
     }
 
     /**
+     * Waits for proof the page loaded: the content marker renders, or an
+     * [acceptInstead] surface that ONLY a running page can raise is up.
+     *
+     * The second half is not a shortcut — it is the only signal that exists
+     * once a wallet sheet is up. A Compose ModalBottomSheet is its own
+     * window, and while it stands the WebView stops serving its
+     * accessibility subtree; CI 36893513963 shows the page finishing
+     * (`RoomNav onPageFinished title=WC1-56494`) while every `By.text` probe
+     * over the page — and even the all-windows sweep for the omnibox —
+     * returned nothing for the remaining 33 s of the test. Polling page text
+     * there is not just useless, it is what burns the rounds.
+     */
+    private fun waitLoaded(
+        marker: String,
+        acceptInstead: List<String>,
+        timeoutMs: Long
+    ): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (hasText(marker, 400)) return true
+            if (acceptInstead.any { hasText(it, 400) }) return true
+        }
+        return hasText(marker, 500) || acceptInstead.any { hasText(it, 500) }
+    }
+
+    /**
      * Loads [url] in the CURRENT tab through the real omnibox and waits for
      * [contentMarker] in the page. Hardened like TabsE2eTest.loadInOmnibox
      * (CI run 9399640: key events dropped while the engine's first frames
      * were still composing — IME-shown gate + accessibility ACTION_SET_TEXT
      * instead of key events, shell `input text` as fallback).
+     *
+     * [acceptInstead] names surfaces that count as "loaded" without the page
+     * text being readable — see [waitLoaded].
      */
-    private fun loadInOmnibox(url: String, contentMarker: String): Boolean {
+    private fun loadInOmnibox(
+        url: String,
+        contentMarker: String,
+        acceptInstead: List<String> = emptyList()
+    ): Boolean {
         for (round in 1..4) {
             if (hasText(contentMarker, 500)) return true
             // Settle: the first seconds after engine boot churn the tree.
@@ -616,12 +649,12 @@ class WalletE2eTest {
 
             // IME Go action -> onOmniBoxInput -> loadUrl (same tab).
             device.executeShellCommand("input keyevent 66")
-            if (hasText(contentMarker, 15_000)) return true
+            if (waitLoaded(contentMarker, acceptInstead, 15_000)) return true
             // A bare Enter with no IME went to the APP and could background
             // the engine on the homepage — only retry while the IME is up.
             if (imeShown()) {
                 device.pressEnter()
-                if (hasText(contentMarker, 15_000)) return true
+                if (waitLoaded(contentMarker, acceptInstead, 15_000)) return true
             }
         }
         return false
@@ -949,7 +982,10 @@ class WalletE2eTest {
         // (1) First connect: the sheet MUST appear and Approve hands the
         //     page the account address (checksummed or not — dApps may get
         //     either form, so the compare is case-insensitive).
-        assertTrue("The connect page must load", loadInOmnibox(urlConnect, "WC1-$tag"))
+        assertTrue(
+            "The connect page must load",
+            loadInOmnibox(urlConnect, "WC1-$tag", acceptInstead = listOf("Connect site"))
+        )
         assertTrue("The Connect sheet must appear over the page", hasText("Connect site", 20_000))
         assertTrue("The sheet must name the WebView-verified host", hasText("127.0.0.1", 3_000))
         assertTrue("Approve must be clickable", clickText("Approve", 5_000))
@@ -977,7 +1013,10 @@ class WalletE2eTest {
 
         // (3) A DIFFERENT host: the sheet appears again and Reject settles
         //     EIP-1193 4001 (the JS rejects with the bridge's error code).
-        assertTrue("The reject page must load", loadInOmnibox(urlReject, "WR3-$tag"))
+        assertTrue(
+            "The reject page must load",
+            loadInOmnibox(urlReject, "WR3-$tag", acceptInstead = listOf("Connect site"))
+        )
         assertTrue("The Connect sheet must appear for the new host", hasText("Connect site", 20_000))
         assertTrue("The sheet must name the localhost host", hasText("localhost", 3_000))
         assertTrue("Reject must be clickable", clickText("Reject", 5_000))
