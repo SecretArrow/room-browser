@@ -159,14 +159,12 @@ jobs:
 
       - name: Release build validation (unsigned, ARM-focused)
         working-directory: android
-        # The release job ships UNSIGNED R8-minified APKs for the real-device
-        # ARM ABIs (manual signing policy). R8 was never exercised while the
-        # release job shipped debug builds — validating the SAME configuration
-        # here (same env: RB_UNSIGNED_RELEASE + RB_RELEASE_ABIS) surfaces
-        # shrinker/minification breakage in THIS job instead of only after
-        # the ~50 min e2e gate, and hard-verifies that exactly the two
-        # focused APKs come out. Pure validation: the shippable APKs are
-        # still built in the release job (which stamps the release version).
+        # R8-minified release builds for the real-device ARM ABIs, UNSIGNED
+        # here on purpose: this job holds no secrets, so it exercises the
+        # shrinker and the ABI focus before the ~50 min e2e gate and
+        # hard-verifies that exactly the two focused APKs come out. The
+        # shippable APKs are built AND signed in the release job, which
+        # stamps the release version and proves the signature with apksigner.
         env:
           RB_UNSIGNED_RELEASE: "true"
           RB_RELEASE_ABIS: "arm64-v8a,armeabi-v7a"
@@ -467,13 +465,13 @@ jobs:
 
   # ---------------------------------------------------------------------
   # AUTO-RELEASE: on every green main push AND on v* tags.
-  # Android: UNSIGNED per-ABI RELEASE APKs, ARM-focused (arm64-v8a +
-  # armeabi-v7a) for manual signing with the production keystore (user
-  # policy: the signed release is produced manually — CI never holds the
-  # key). R8-minified. Desktop: windows zip + linux deb/tar.gz (downloaded
-  # from the desktop matrix jobs of this same run). Version numbering
-  # continues from the highest existing v1.0.x tag (the repo moved, run
-  # numbers restarted).
+  # Android: SIGNED per-ABI RELEASE APKs, ARM-focused (arm64-v8a +
+  # armeabi-v7a), R8-minified. CI decodes the production keystore from the
+  # ROOMBROWSER_KEYSTORE_B64 secret, builds, and refuses to publish unless
+  # apksigner confirms a non-debug signature on every APK. Desktop: windows
+  # zip + linux deb/tar.gz (downloaded from the desktop matrix jobs of this
+  # same run). Version numbering continues from the highest existing v1.0.x
+  # tag (the repo moved, run numbers restarted).
   # ---------------------------------------------------------------------
   release:
     name: Auto-release (Android + Desktop)
@@ -535,16 +533,59 @@ jobs:
           # filename: the tag without its "v" (v1.0.95 -> 1.0.95).
           echo "version=${TAG#v}"      >> "$GITHUB_OUTPUT"
 
-      - name: Build unsigned release APKs (ARM-focused, manual-sign policy)
+      - name: Decode the release keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ROOMBROWSER_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.ROOMBROWSER_STORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$KEYSTORE_B64" ] || { echo "::error::ROOMBROWSER_KEYSTORE_B64 is not set"; exit 1; }
+          [ -n "$STORE_PASSWORD" ] || { echo "::error::ROOMBROWSER_STORE_PASSWORD is not set"; exit 1; }
+          KS="$RUNNER_TEMP/room-browser-release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$KS"
+          chmod 600 "$KS"
+          # A keystore that cannot be opened is worse than no keystore at all:
+          # app/build.gradle.kts only creates its `releaseFromEnv` signing
+          # config when the file AND the three credentials are all present, so
+          # a mistyped secret would silently fall back to the DEBUG key and
+          # publish an APK that can never be upgraded over a real one. Fail
+          # here instead, while the message still names the cause.
+          keytool -list -keystore "$KS" -storepass "$STORE_PASSWORD" > /dev/null
+          echo "ROOMBROWSER_KEYSTORE=$KS" >> "$GITHUB_ENV"
+          echo "Keystore decoded and verified."
+
+      - name: Build signed release APKs (ARM-focused)
         env:
           # Stamps versionName (and therefore the APK filenames) with the tag
           # this release is being published under.
           RB_VERSION_NAME: ${{ steps.tag.outputs.version }}
-          # No signing config → UNSIGNED APKs for manual signing.
-          RB_UNSIGNED_RELEASE: "true"
           # Real-device ARM ABIs only (user focus: arm64-v8a + armeabi-v7a).
           RB_RELEASE_ABIS: "arm64-v8a,armeabi-v7a"
+          # ROOMBROWSER_KEYSTORE comes from the decode step via GITHUB_ENV;
+          # these three are the other half of the `releaseFromEnv` config.
+          ROOMBROWSER_STORE_PASSWORD: ${{ secrets.ROOMBROWSER_STORE_PASSWORD }}
+          ROOMBROWSER_KEY_ALIAS: ${{ secrets.ROOMBROWSER_KEY_ALIAS }}
+          ROOMBROWSER_KEY_PASSWORD: ${{ secrets.ROOMBROWSER_KEY_PASSWORD }}
         run: cd android && ./gradlew assembleRelease --console=plain
+
+      - name: Verify the APKs carry the release signature
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apks=(android/app/build/outputs/apk/release/*.apk)
+          [ ${#apks[@]} -gt 0 ] || { echo "::error::no release APKs were produced"; exit 1; }
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          for apk in "${apks[@]}"; do
+            "$BUILD_TOOLS/apksigner" verify --print-certs "$apk" > /tmp/apk-certs.txt
+            DN=$(grep -m1 'Signer #1 certificate DN:' /tmp/apk-certs.txt || true)
+            [ -n "$DN" ] || { echo "::error::$apk is not signed"; exit 1; }
+            # The debug key here means the release signing config was never
+            # created — a missing or mistyped signing secret. Never publish it.
+            case "$DN" in
+              *"CN=Android Debug"*) echo "::error::$apk is signed with the DEBUG key"; exit 1 ;;
+            esac
+            echo "$(basename "$apk"): $DN"
+          done
 
       - name: Download desktop artifacts (this run, if any)
         uses: actions/download-artifact@v4
@@ -561,9 +602,10 @@ jobs:
         run: |
           mkdir -p release-out
           # Deterministic artifact names: gradle may emit "-release.apk" or
-          # "-release-unsigned.apk" (AGP appends -unsigned for unsigned
-          # outputs on some versions) — glob BOTH and copy under the fixed
-          # "-release-unsigned" name so the manual-signing status is explicit.
+          # "-release-unsigned.apk" (AGP appends -unsigned only for genuinely
+          # unsigned outputs) — glob BOTH and copy under the fixed signed
+          # "-release" name. The step above already proved the signature, so
+          # whatever matched here is signed with the release keystore.
           for abi in arm64-v8a armeabi-v7a; do
             src=$(ls android/app/build/outputs/apk/release/room-browser-*-${abi}-release*.apk 2>/dev/null | head -1 || true)
             if [ -z "$src" ]; then
@@ -571,7 +613,7 @@ jobs:
               ls -l android/app/build/outputs/apk/release/ || true
               exit 1
             fi
-            cp "$src" "release-out/room-browser-v${VERSION}-${abi}-release-unsigned.apk"
+            cp "$src" "release-out/room-browser-v${VERSION}-${abi}-release.apk"
           done
           # Desktop artifacts are OPTIONAL — attached only when the desktop
           # jobs succeeded (Android-first release policy). Never block on them.
@@ -614,23 +656,23 @@ jobs:
           body: |
             ## Room Browser ${{ steps.tag.outputs.tag }}
 
-            **Android: UNSIGNED release APKs (R8-minified), ARM-focused — ready for manual signing with your production keystore. Desktop: Windows portable zip + Ubuntu deb/tar.gz (pure-C browser).**
+            **Android: SIGNED release APKs (R8-minified, release keystore), ARM-focused — install directly, no manual signing step. Desktop: Windows portable zip + Ubuntu deb/tar.gz (pure-C browser).**
 
             | Artifact | Target |
             |---|---|
-            | `room-browser-v*-arm64-v8a-release-unsigned.apk` | modern 64-bit ARM devices (recommended) |
-            | `room-browser-v*-armeabi-v7a-release-unsigned.apk` | older 32-bit ARM devices |
+            | `room-browser-v*-arm64-v8a-release.apk` | modern 64-bit ARM devices (recommended) |
+            | `room-browser-v*-armeabi-v7a-release.apk` | older 32-bit ARM devices |
             | `*-windows-x64.zip` | Windows 10/11 — portable zip (exe + WebView2Loader.dll) |
             | `*_amd64.deb` | Ubuntu/Debian — `apt` package (pulls GTK3 + WebKitGTK deps) |
             | `*-linux-x64.tar.gz` | any modern Linux with GTK3 + WebKitGTK |
 
-            ### Signing the Android APKs (manual)
+            The APKs are signed by CI with the project's release keystore and
+            verified with `apksigner` before publishing, so they upgrade in
+            place over any earlier release from this repository. Confirm the
+            signature yourself with:
 
             ```bash
-            # zipalign then sign with your keystore (build-tools + apksigner):
-            zipalign -p -f 4 room-browser-v*-arm64-v8a-release-unsigned.apk room-browser-arm64-v8a.apk
-            apksigner sign --ks your-release.keystore --out room-browser-arm64-v8a-signed.apk room-browser-arm64-v8a.apk
-            apksigner verify --print-certs room-browser-arm64-v8a-signed.apk
+            apksigner verify --print-certs room-browser-v*-arm64-v8a-release.apk
             ```
 
             Verify integrity with `sha256sum -c checksums.sha256`.
