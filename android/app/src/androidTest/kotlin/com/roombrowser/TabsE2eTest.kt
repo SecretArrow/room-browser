@@ -313,6 +313,16 @@ class TabsE2eTest {
         if (!engineUiStable(120_000)) return false
         // First-composition settle (Homepage JIT) before anyone types.
         device.waitForIdle(2_000)
+        // RESTORE-COMPLETE gate (CI 88ec8fe forensics): the chrome AND the
+        // default-homepage content compose BEFORE the ViewModel's tab
+        // restore finishes on the 2-core runner — and the loadUrl coroutine
+        // serializes behind `restored.first { it }`, so a URL committed
+        // during the restore window can be lost to the restore's own
+        // pageState writes. The tab-count badge ("1") only composes once
+        // `viewModel.tabs` is non-empty — the restore's observable
+        // completion signal. Best-effort: engineUiStable already proved the
+        // surface itself is healthy.
+        waitUntil(15_000) { device.findObjects(By.text("1")).isNotEmpty() }
         return true
     }
 
@@ -386,7 +396,6 @@ class TabsE2eTest {
                 // DEL-reclear + retype produced a MANGLED url (cursor 53 on a
                 // 30-char URL) that loaded nothing.
                 field.setText(url)
-                device.waitForIdle(600)
                 typed = true
             } catch (_: Exception) {
                 typed = false
@@ -400,6 +409,17 @@ class TabsE2eTest {
                 device.waitForIdle(600)
             }
             if (!typed) continue
+            // ORDERING GATE (CI 88ec8fe): the a11y ACTION_SET_TEXT is
+            // processed asynchronously on the APP's main thread — waitForIdle
+            // returned in 2 ms there and the Enter was injected BEFORE the
+            // text reached the field state, committing nothing. Before any
+            // Enter, poll a FRESH node lookup (never the cached one — that
+            // reads stale properties) until the omnibox verifiably holds the
+            // URL.
+            if (!waitUntil(5_000) {
+                    device.findObject(By.desc("omni_field"))?.text == url
+                }
+            ) continue
 
             // IME Go action -> onOmniBoxInput -> loadUrl (same tab).
             device.executeShellCommand("input keyevent 66")

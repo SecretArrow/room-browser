@@ -225,6 +225,16 @@ class SettingsPersistenceE2eTest {
         return false
     }
 
+    /** Polls dumpsys until the IME is actually shown (focus really landed). */
+    private fun waitImeShown(timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (imeShown()) return true
+            try { Thread.sleep(200) } catch (_: InterruptedException) { }
+        }
+        return imeShown()
+    }
+
     // ---------- Navigation helpers ----------------------------------------
 
     /** Opens a page-actions sheet entry by desc and VERIFIES the effect. */
@@ -271,8 +281,18 @@ class SettingsPersistenceE2eTest {
      * a11y node directly below the label whose horizontal span contains the
      * label's center (read-only dropdown fields render as EditText too, and
      * the width/height siblings sit side by side — hence the geometric pick).
-     * Full clear-and-retype rounds with verification — the proven CI-safe
-     * pattern.
+     *
+     * CI 88ec8fe forensics: the old shell key-event burst (MOVE_END + DELs +
+     * `input text`) was dropped ENTIRELY — the editor's InputConnection only
+     * attached ~160 ms AFTER the burst (logcat "LatinIME: Starting input.
+     * Cursor position = 4,4" — the field still held its original 4-char
+     * value), so nothing was typed and the verification never saw the value.
+     * The proven Tabs/Wallet pattern replaces it: gate on the IME being
+     * SHOWN (dumpsys proof the connection is live) before touching the
+     * field, then set the text through the accessibility ACTION_SET_TEXT
+     * (no key events at all — cannot be dropped by focus races) and verify
+     * with FRESH node lookups; only a THROWN exception falls back to the
+     * shell path.
      */
     private fun typeIntoLabeledField(label: String, value: String): Boolean {
         for (round in 1..3) {
@@ -299,13 +319,38 @@ class SettingsPersistenceE2eTest {
                     .minByOrNull { it.visibleBounds.top }
             }.getOrNull() ?: continue
             clickCenter(field)
-            device.waitForIdle(500)
-            device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
-            device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
-            device.waitForIdle(300)
-            device.executeShellCommand("input text $value")
-            device.waitForIdle(800)
-            if (hasText(value, 2_000)) return true
+            // The IME must be SHOWN before anything is typed — the click's
+            // focus handoff is asynchronous and the CI runner takes ~1 s
+            // (the dropped-burst root cause above).
+            if (!waitImeShown(5_000)) continue
+            var typed = false
+            try {
+                // ACTION_SET_TEXT goes through the semantics pipeline — no
+                // key events, immune to InputConnection races.
+                field.setText(value)
+                typed = true
+            } catch (_: Exception) {
+                typed = false
+            }
+            if (!typed) {
+                // Fallback: the shell key-event path (with a full re-clear).
+                device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
+                device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
+                device.waitForIdle(300)
+                device.executeShellCommand("input text $value")
+                device.waitForIdle(800)
+            }
+            // FRESH lookups re-read the nodes' current text — the cached
+            // `field` reference sees stale properties. The value must be
+            // verifiably IN the field before this round can succeed (the
+            // debounced commit fires off the field state, not the a11y
+            // action).
+            if (waitUntil(5_000) {
+                    device.findObjects(By.clazz("android.widget.EditText"))
+                        .mapNotNull { it.text }
+                        .any { it.contains(value) }
+                }
+            ) return true
         }
         return false
     }

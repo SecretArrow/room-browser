@@ -638,22 +638,48 @@ class WalletE2eTest {
      * Reads the revealed word cells (index -> word). The words stay in
      * memory ONLY — they are never logged, asserted into a message or
      * written anywhere.
+     *
+     * CI 88ec8fe: the 24-cell grid does NOT fit the 320x640 runner screen
+     * and off-screen nodes are not exposed to the a11y tree — a single
+     * viewport read sees only the last ~6 cells (the viewport rests at the
+     * Reveal button, below the grid). The reader therefore COLLECTS while
+     * scrolling: read the visible band, drag toward the TOP of the column
+     * (finger 1/4 → 3/4), read the next band, merge — until all 24 indices
+     * are collected or the attempt budget runs out.
      */
-    private fun readWordCells(): Map<Int, String> {
-        val cells = device.findObjects(By.textContains(""))
-            .mapNotNull { it.text }
-            .mapNotNull { text ->
-                val dot = text.indexOf(". ")
-                val index = text.substringBefore(".").toIntOrNull()
-                if (dot > 0 && index != null && text.length > dot + 2) {
-                    index to text.substring(dot + 2)
-                } else {
-                    null
+    private fun readWordCells(expected: Int = 24): Map<Int, String> {
+        val collected = HashMap<Int, String>()
+        fun collectVisible() {
+            device.findObjects(By.textContains(""))
+                .mapNotNull { it.text }
+                .mapNotNull { text ->
+                    val dot = text.indexOf(". ")
+                    val index = text.substringBefore(".").toIntOrNull()
+                    if (dot > 0 && index != null && text.length > dot + 2) {
+                        index to text.substring(dot + 2)
+                    } else {
+                        null
+                    }
                 }
-            }
-            .filter { it.first in 1..24 && it.second.none { c -> c == '•' } }
-            .toMap()
-        return cells
+                .filter { it.first in 1..expected && it.second.none { c -> c == '•' } }
+                .forEach { collected.putIfAbsent(it.first, it.second) }
+        }
+        collectVisible()
+        for (attempt in 1..16) {
+            if (collected.size >= expected) break
+            // Drag DOWN (finger 1/4 → 3/4) = walk the viewport toward the
+            // TOP of the column: the grid sits ABOVE the Reveal button the
+            // test just tapped. Slow steps, no fling — same discipline as
+            // dragUpQuarter.
+            device.swipe(
+                device.displayWidth / 2, device.displayHeight / 4,
+                device.displayWidth / 2, device.displayHeight * 3 / 4, 100
+            )
+            device.waitForIdle(800)
+            try { Thread.sleep(300) } catch (_: InterruptedException) { }
+            collectVisible()
+        }
+        return collected
     }
 
     /**
@@ -1116,11 +1142,16 @@ class WalletE2eTest {
         // below the fold under the one-time-phrase copy.
         assertTrue("Reveal must be tappable", clickTextWithScroll("Reveal"))
         assertTrue("Hide phrase must show once revealed", hasText("Hide phrase", 5_000))
+        // The scroll-collecting reader walks the grid toward the top in one
+        // bounded pass; a second pass covers reveal-recomposition lag on the
+        // 2-core runner. (No outer waitUntil — each pass already carries its
+        // own attempt budget; nesting both would be unbounded.)
         val words = HashMap<Int, String>()
         assertTrue(
             "The 24 word cells must be readable after Reveal",
-            waitUntil(8_000) {
-                val cells = readWordCells()
+            run {
+                var cells = readWordCells()
+                if (cells.size < 24) cells = readWordCells()
                 if (cells.size == 24 && cells.keys.sorted() == (1..24).toList()) {
                     words.putAll(cells)
                     true

@@ -96,6 +96,25 @@ class ProfileSwitchExecutor(
             putExtra(EXTRA_PROFILE_ID, to.value)
             extras()
         }
+        // PRIMARY relaunch path (root-cause fix for the API 29+ background
+        // activity launch block): THIS process is the foreground app at the
+        // moment of the switch (the browser surface is visible), so a direct
+        // startActivity is NOT a background start and is always permitted.
+        // The launch stays in flight while the process terminates below;
+        // the system then re-launches the activity in a FRESH ':browser'
+        // process bound to the new profile — the exact mechanism every
+        // MainActivity-driven profile create already uses (CI-proven
+        // "Displayed +~1.3s cold" on every engine boot). The alarm-only
+        // variant this replaces was BAL-DENIED on the CI emulator once the
+        // task died with the process (logcat: "Background activity start ..."
+        // with no Displayed line ever following), leaving the switcher
+        // create-then-switch flow with a dead screen forever.
+        runCatching { context.startActivity(intent) }
+        // BACKSTOP only: if the in-flight launch above is somehow lost
+        // before the system registers it, the alarm relaunches. The
+        // successfully-restarted activity CANCELS this alarm on bind
+        // (BrowserActivity.cancelPendingRestartAlarm) so it can never fire
+        // as a redundant CLEAR_TASK relaunch on top of a live engine.
         val pending = PendingIntent.getActivity(
             context,
             RESTART_REQUEST_CODE,
@@ -105,10 +124,15 @@ class ProfileSwitchExecutor(
         val alarm = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val triggerAt = SystemClock.elapsedRealtime() + RESTART_DELAY_MS
         runCatching {
-            alarm.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME, triggerAt, pending)
+            // WAKEUP (matching BrowserActivity.scheduleSelfRestart): the
+            // process dies immediately after this call — only the alarm can
+            // relaunch the engine, so it must fire even if the device dozes
+            // mid-switch (the CI emulator deferred the non-wakeup variant
+            // by ~5 s while idle).
+            alarm.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pending)
         }.onFailure {
             // Fallback for devices that restrict exact alarms
-            alarm.set(AlarmManager.ELAPSED_REALTIME, triggerAt, pending)
+            alarm.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pending)
         }
     }
 

@@ -82,6 +82,14 @@ class BrowserActivity : FragmentActivity() {
             return
         }
         boundProfileId = profileId
+        // THIS instance is the restart — any backstop alarm scheduled by the
+        // previous instance (scheduleSelfRestart / ProfileSwitchExecutor,
+        // same request code + intent identity) has done its job and MUST be
+        // cancelled: on the CI emulator the deferred alarm fired ~5 s AFTER
+        // this activity was already up, as a redundant CLEAR_TASK relaunch
+        // that destroyed the freshly-started engine mid-initialization (the
+        // second ViewModel's tab restore raced every early interaction).
+        cancelPendingRestartAlarm()
 
         val factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
@@ -317,6 +325,28 @@ class BrowserActivity : FragmentActivity() {
             )
         }
         android.os.Process.killProcess(android.os.Process.myPid())
+    }
+
+    /**
+     * Cancels any pending self-restart backstop alarm. PendingIntent
+     * equivalence uses Intent.filterEquals (component/flags — extras are NOT
+     * compared) plus the request code, so this token matches BOTH the
+     * [scheduleSelfRestart] and the ProfileSwitchExecutor backstops (both
+     * 4242 + BrowserActivity + NEW_TASK|CLEAR_TASK). Creating the token here
+     * is side-effect free; cancelling it when no alarm was set is a no-op.
+     */
+    private fun cancelPendingRestartAlarm() {
+        runCatching {
+            val intent = Intent(this, BrowserActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            }
+            val pending = android.app.PendingIntent.getActivity(
+                this, 4242, intent,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+                    android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+            (getSystemService(ALARM_SERVICE) as android.app.AlarmManager).cancel(pending)
+        }
     }
 
     /** Biometric gate for locked profiles (called from the UI). */
