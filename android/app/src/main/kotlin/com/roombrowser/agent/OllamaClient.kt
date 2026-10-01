@@ -1,5 +1,6 @@
 package com.roombrowser.agent
 
+import com.roombrowser.domain.agent.AgentClientIdentity
 import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.AgentJson
 import com.roombrowser.domain.agent.OllamaModelInfo
@@ -126,7 +127,7 @@ class OllamaClient(
             .url("$base/api/pull")
             .post(AgentJson.encodeToString(JsonObject.serializer(), body).toRequestBody(JSON))
             .header("Accept", "application/x-ndjson")
-            .header("User-Agent", "RoomBrowser-Agent/1.0")
+            .header("User-Agent", AgentClientIdentity.userAgent(base))
         if (apiKey.isNotBlank()) request.header("Authorization", "Bearer $apiKey")
 
         val call = callFactory.newCall(request.build())
@@ -211,7 +212,7 @@ class OllamaClient(
             .url("$base/api/delete")
             .delete(AgentJson.encodeToString(JsonObject.serializer(), body).toRequestBody(JSON))
             .header("Accept", "application/json")
-            .header("User-Agent", "RoomBrowser-Agent/1.0")
+            .header("User-Agent", AgentClientIdentity.userAgent(base))
         if (apiKey.isNotBlank()) request.header("Authorization", "Bearer $apiKey")
 
         val response = execute(request.build())
@@ -229,7 +230,7 @@ class OllamaClient(
             .url("$base$path")
             .get()
             .header("Accept", "application/json")
-            .header("User-Agent", "RoomBrowser-Agent/1.0")
+            .header("User-Agent", AgentClientIdentity.userAgent(base))
         if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
         return builder.build()
     }

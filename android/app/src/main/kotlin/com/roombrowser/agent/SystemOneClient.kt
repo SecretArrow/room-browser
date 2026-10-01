@@ -1,6 +1,7 @@
 package com.roombrowser.agent
 
 import com.roombrowser.domain.agent.ActionGate
+import com.roombrowser.domain.agent.AgentClientIdentity
 import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.SystemOneParser
 import com.roombrowser.domain.agent.SystemOneQuestion
@@ -85,7 +86,7 @@ class SystemOneClient(
             .url("$base/v1/systemone")
             .post(body.toRequestBody(JSON))
             .header("Accept", "application/json")
-            .header("User-Agent", "RoomBrowser-Agent/1.0")
+            .header("User-Agent", AgentClientIdentity.userAgent(base))
         if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
 
         val response = execute(builder.build())

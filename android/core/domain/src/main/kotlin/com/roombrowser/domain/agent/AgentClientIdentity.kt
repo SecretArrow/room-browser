@@ -42,8 +42,22 @@ package com.roombrowser.domain.agent
  */
 object AgentClientIdentity {
 
-    /** What a provider that does not care about clients is told. */
-    const val DEFAULT: String = "RoomBrowser-Agent/1.0"
+    /**
+     * What a provider that does not care about clients is told.
+     *
+     * Chrome for Android, deliberately, and never the app's own name: a
+     * provider's edge — or an ordinary WAF in front of it — is entitled to
+     * refuse a client it does not recognise, and `RoomBrowser-Agent/1.0`
+     * announces a client nobody has ever heard of. The identity here is the
+     * same one [com.roombrowser.domain.model.UserAgents] hands a page, so the
+     * app does not present one name to a web server and a different one to an
+     * API. It stays a fixed literal rather than a settings lookup: this is the
+     * transport's identity, not a per-profile browsing preference, and a user
+     * choosing a UA preset must not silently re-point it at their AI provider.
+     */
+    const val DEFAULT: String =
+        "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) " +
+            "Chrome/131.0.6778.135 Mobile Safari/537.36"
 
     /** The Claude Code CLI identity, in the canonical accepted spelling. */
     const val CLAUDE_CLI: String = "claude-cli/1.0.60 (external, cli)"

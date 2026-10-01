@@ -1,5 +1,6 @@
 package com.roombrowser.agent
 
+import com.roombrowser.domain.agent.AgentClientIdentity
 import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.AgentJson
@@ -110,7 +111,8 @@ class OpenCodeAgentGateway(
             .url("$base/session/$sid/message")
             .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
             .header("Accept", "application/json")
-            .header("User-Agent", "RoomBrowser-Agent/1.0")
+            // A CLI-gated host refuses the app's own name: see AgentClientIdentity.
+            .header("User-Agent", AgentClientIdentity.userAgent(base))
         if (apiKey.isNotBlank()) post.header("Authorization", "Bearer $apiKey")
 
         val response = execute(post.build())

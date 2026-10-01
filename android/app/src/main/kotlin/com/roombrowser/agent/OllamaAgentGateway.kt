@@ -1,5 +1,6 @@
 package com.roombrowser.agent
 
+import com.roombrowser.domain.agent.AgentClientIdentity
 import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.AgentJson
@@ -140,7 +141,7 @@ class OllamaAgentGateway(
             .url("$base/api/chat")
             .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
             .header("Accept", "application/x-ndjson")
-            .header("User-Agent", "RoomBrowser-Agent/1.0")
+            .header("User-Agent", AgentClientIdentity.userAgent(base))
         if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
 
         val response = execute(builder.build())
