@@ -7,6 +7,7 @@ import android.net.Uri
 import android.net.http.SslError
 import android.os.Bundle
 import android.os.SystemClock
+import android.util.Log
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
@@ -275,6 +276,7 @@ class BrowserViewModel(
             emitMessage("Caution: ${signals.joinToString()}")
         }
         override fun onPageStarted(url: String) {
+            Log.d(NAV_TAG, "onPageStarted url=$url")
             lastPageEvent = PageEvent.Started(url, SystemClock.elapsedRealtime())
             pageError = null
             pageState = pageState.copy(url = url, loading = true, progress = 5, isHomepage = false)
@@ -287,23 +289,25 @@ class BrowserViewModel(
         override fun onPageFinished(url: String, title: String) {
             // A freshly created WebView can fire a LATE finish for its
             // INITIAL about:blank commit at first attach — AFTER a real
-            // navigation already started. (CI 75822ed, both omnibox loads:
-            // the commit created the engine, onPageStarted(real) flipped
-            // the tab to the web state, the first attach then delivered the
-            // artifact finish which flagged the tab as a homepage — the
-            // page content swapped away mid-load and the real navigation
-            // never completed on screen.) A blank about:blank finish is
-            // only meaningful while the tab still belongs to the start
-            // page or to an explicit about:blank navigation (that path
-            // arrives with pageState.url == "about:blank" from
-            // onPageStarted). Otherwise it is a stale artifact: drop it and
-            // let the real page's finish land.
-            if (url == "about:blank" && title.isBlank() &&
+            // navigation already started. (CI 75822ed: the artifact finish
+            // flagged the tab as a homepage mid-load and the page content
+            // swapped away; the real navigation never completed on screen.)
+            // The artifact is ONLY meaningful while the tab still belongs
+            // to the start page or to an EXPLICIT about:blank navigation
+            // (that path arrives with pageState.url == "about:blank" from
+            // onPageStarted). The check is deliberately TITLE-AGNOSTIC:
+            // WebClients passes `view.title ?: url`, so the artifact can
+            // carry "about:blank" as its title and a title-based test
+            // would never fire. Otherwise it is a stale artifact: drop it
+            // and let the real page's finish land.
+            if (url == "about:blank" &&
                 pageState.url != "about:home" && pageState.url != "about:blank"
             ) {
+                Log.d(NAV_TAG, "dropped stale about:blank finish (committed=${pageState.url})")
                 return
             }
             lastPageEvent = PageEvent.Finished(url, title, SystemClock.elapsedRealtime())
+            Log.d(NAV_TAG, "onPageFinished url=$url title=$title")
             pageState = pageState.copy(
                 url = url,
                 title = title,
@@ -327,6 +331,7 @@ class BrowserViewModel(
             }
         }
         override fun onReceivedError(url: String, errorCode: Int, description: String?) {
+            Log.d(NAV_TAG, "onReceivedError url=$url code=$errorCode")
             pageError = when (errorCode) {
                 android.webkit.WebViewClient.ERROR_HOST_LOOKUP -> PageError.DnsFailure(url)
                 android.webkit.WebViewClient.ERROR_CONNECT,
@@ -587,7 +592,31 @@ class BrowserViewModel(
                     tabs.firstOrNull { it.id == targetId }?.let { tabManager.ensureSession(it) }
                     tabManager.attachWebView(targetId, engine)
                 }
-                webView.loadUrl(url)
+                // CI 36833914913 (Tabs + Wallet, both omnibox loads on a
+                // start-page tab): the navigation used to start on an engine
+                // that was NOT yet attached to the window — pageState stayed
+                // on the homepage until onPageStarted arrived (~400 ms
+                // later, AFTER the navigation had already begun on the
+                // parentless view), so WebViewHost was not composed at all.
+                // On the WebView 83 stack such a navigation wedges
+                // permanently when the view attaches mid-flight: renderer
+                // spawned, onPageStarted fired, then total silence — no
+                // commit, no finish, no error, the page never rendered. The
+                // openNewTab path never hits this because it flips pageState
+                // BEFORE the engine exists (CI-green via
+                // BrowserNavigationE2eTest). Mirror that proven ordering
+                // here, and start the load through [runWhenAttached] so the
+                // navigation ALWAYS begins on an attached, laid-out view.
+                pageState = pageState.copy(
+                    url = url,
+                    title = "",
+                    loading = true,
+                    progress = 5,
+                    isHomepage = false
+                )
+                pageError = null
+                Log.d(NAV_TAG, "loadUrl same-tab url=$url attached=${webView.parent != null}")
+                runWhenAttached(webView) { webView.loadUrl(url) }
             }
         }
     }
@@ -604,6 +633,7 @@ class BrowserViewModel(
      * history instead of secretly back-stepping into the abandoned page.
      */
     fun goHome() {
+        Log.d(NAV_TAG, "goHome")
         destroyActiveWebView()
         pageState = PageState(isPrivate = pageState.isPrivate)
         pageError = null
@@ -659,7 +689,8 @@ class BrowserViewModel(
             // Nothing may load while a network decision is pending; the
             // load fires the moment the user decides.
             networkGate.first { !it }
-            webView.loadUrl(url)
+            Log.d(NAV_TAG, "openNewTab url=$url attached=${webView.parent != null}")
+            runWhenAttached(webView) { webView.loadUrl(url) }
         } else {
             // The previous tab keeps its engine alive in its OWN session;
             // the new homepage tab simply has no engine of its own.
@@ -670,6 +701,7 @@ class BrowserViewModel(
 
     fun selectTab(id: String) {
         if (id == activeTabId && activeWebView != null) return
+        Log.d(NAV_TAG, "selectTab id=$id same=${id == activeTabId}")
         activeTabId = id
         val tab = tabs.firstOrNull { it.id == id } ?: return
         pageState = pageState.copy(
@@ -727,12 +759,18 @@ class BrowserViewModel(
         tabManager.ensureSession(tab)
         tabManager.attachWebView(tab.id, webView)
         val saved = tabManager.engineState(tab.id)
-        var restored = false
-        if (saved != null) {
-            runCatching { webView.restoreState(saved) }
-            restored = webView.copyBackForwardList().size > 0
+        Log.d(NAV_TAG, "engineFor tab=${tab.id} url=${tab.url} hasSaved=${saved != null}")
+        // The restore/fallback navigation must also start on an attached
+        // view (see runWhenAttached — same WebView-83 detached-load wedge
+        // as the omnibox path).
+        runWhenAttached(webView) {
+            var restored = false
+            if (saved != null) {
+                runCatching { webView.restoreState(saved) }
+                restored = webView.copyBackForwardList().size > 0
+            }
+            if (!restored) webView.loadUrl(tab.url)
         }
-        if (!restored) webView.loadUrl(tab.url)
         return webView
     }
 
@@ -878,9 +916,59 @@ class BrowserViewModel(
         destroyWebViewQuiet(webView)
     }
 
+    // ---------- Deferred engine actions (attach-ordered navigation) --------
+
+    /**
+     * Actions (navigation starts, session restores) queued for engines not
+     * yet attached to the window, keyed by the engine itself. Consumed by
+     * [consumePendingActionFor] the moment WebViewHost attaches the engine;
+     * dropped by [destroyWebViewQuiet] when the engine dies.
+     */
+    private val pendingEngineActions = mutableMapOf<WebView, () -> Unit>()
+
+    /**
+     * Runs [action] on [webView] now when the view is already attached to
+     * the window hierarchy, and DEFERS it until the first attach otherwise.
+     *
+     * WHY THIS EXISTS (CI 36833914913, Tabs + Wallet e2e): a navigation
+     * started on a WebView that has no parent — the omnibox path for a
+     * start-page tab created the engine and called loadUrl while
+     * pageState.isHomepage was still true, so WebViewHost was not composed
+     * and the engine stayed parentless — wedges permanently on the WebView
+     * 83 stack once the view attaches mid-flight: the renderer spawns,
+     * onPageStarted fires, and then the navigation never commits — no
+     * finish, no error, an empty surface forever. Every engine-creating
+     * path therefore queues its navigation here, and WebViewHost's update
+     * block consumes it right after frame.addView: the navigation always
+     * begins on an attached, laid-out view. The consume runs through
+     * webView.post, so the attach traversal (measure/layout/
+     * onAttachedToWindow) completes before the load starts.
+     */
+    private fun runWhenAttached(webView: WebView, action: () -> Unit) {
+        if (webView.parent != null) {
+            action()
+        } else {
+            pendingEngineActions[webView] = action
+        }
+    }
+
+    /**
+     * Called by WebViewHost right after it attached [webView]: fires the
+     * navigation/restore queued for this engine, if any.
+     */
+    fun consumePendingActionFor(webView: WebView) {
+        pendingEngineActions.remove(webView)?.let { action ->
+            Log.d(NAV_TAG, "deferred engine action fired (attached)")
+            webView.post(action)
+        }
+    }
+
     /** Detaches [webView] from its session, view tree and the renderer —
      *  never throws, safe for already-released engines. */
     private fun destroyWebViewQuiet(webView: WebView) {
+        // A load deferred for this engine can never fire anymore — drop it
+        // so a destroyed view is never asked to navigate.
+        pendingEngineActions.remove(webView)
         tabManager.detachWebView(webView)
         runCatching { webView.stopLoading() }
         runCatching { (webView.parent as? android.view.ViewGroup)?.removeView(webView) }
@@ -1789,6 +1877,7 @@ class BrowserViewModel(
     }
 
     override fun onCleared() {
+        Log.d(NAV_TAG, "onCleared")
         runCatching { agent.shutdown() }
         // Per-tab engines must not outlive the ViewModel's scope.
         runCatching { destroyAllWebViews() }
@@ -1798,6 +1887,11 @@ class BrowserViewModel(
 
     companion object {
         const val DAY_MS = 24L * 60 * 60 * 1000
+
+        /** Navigation state-machine log tag — the CI per-test logcat greps
+         *  these to reconstruct the exact callback order (see the Tabs/Wallet
+         *  e2e forensics). */
+        private const val NAV_TAG = "RoomNav"
 
         /** Live per-tab engine budget — beyond this, oldest background
          *  tabs lose their engine (rebuilt lazily on re-selection). */

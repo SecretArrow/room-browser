@@ -301,6 +301,13 @@ private fun WebViewHost(viewModel: BrowserViewModel) {
                 )
                 webView.requestLayout()
             }
+            // A navigation/restore queued while this engine had no parent
+            // (see BrowserViewModel.runWhenAttached) starts NOW — every
+            // load begins on an attached, laid-out view. No-op when nothing
+            // is pending.
+            if (webView != null) {
+                viewModel.consumePendingActionFor(webView)
+            }
         },
         onRelease = { frame -> frame.removeAllViews() },
         modifier = Modifier.fillMaxSize()
