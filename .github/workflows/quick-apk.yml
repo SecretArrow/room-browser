@@ -94,6 +94,21 @@ jobs:
           echo "ROOMBROWSER_KEYSTORE=$KS" >> "$GITHUB_ENV"
           echo "Keystore decoded and verified."
 
+      - name: Report the signing configuration
+        env:
+          RB_RELEASE_ABIS: "arm64-v8a,armeabi-v7a"
+          ROOMBROWSER_STORE_PASSWORD: ${{ secrets.ROOMBROWSER_STORE_PASSWORD }}
+          ROOMBROWSER_KEY_ALIAS: ${{ secrets.ROOMBROWSER_KEY_ALIAS }}
+          ROOMBROWSER_KEY_PASSWORD: ${{ secrets.ROOMBROWSER_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "RB_UNSIGNED_RELEASE=[${RB_UNSIGNED_RELEASE:-<unset>}]"
+          echo "ROOMBROWSER_KEYSTORE=[${ROOMBROWSER_KEYSTORE:-<unset>}]"
+          echo "store password present: $([ -n "${ROOMBROWSER_STORE_PASSWORD:-}" ] && echo yes || echo NO)"
+          echo "key alias present:      $([ -n "${ROOMBROWSER_KEY_ALIAS:-}" ] && echo yes || echo NO)"
+          echo "key password present:   $([ -n "${ROOMBROWSER_KEY_PASSWORD:-}" ] && echo yes || echo NO)"
+          cd android && ./gradlew :app:signingReport --console=plain
+
       - name: Build signed release APKs (ARM-focused)
         env:
           RB_VERSION_NAME: ${{ steps.ver.outputs.name }}
@@ -115,8 +130,12 @@ jobs:
           apks=(android/app/build/outputs/apk/release/*.apk)
           [ ${#apks[@]} -gt 0 ] || { echo "::error::no release APKs were produced"; exit 1; }
           BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          ls -l android/app/build/outputs/apk/release/
           for apk in "${apks[@]}"; do
-            "$BUILD_TOOLS/apksigner" verify --print-certs "$apk" > /tmp/apk-certs.txt
+            echo "--- $apk"
+            unzip -l "$apk" | grep -iE 'META-INF/.*\.(RSA|DSA|EC)|META-INF/MANIFEST' || echo "(no JAR signature entries)"
+            "$BUILD_TOOLS/apksigner" verify --print-certs "$apk" > /tmp/apk-certs.txt 2>&1 || true
+            cat /tmp/apk-certs.txt
             DN=$(grep -m1 'Signer #1 certificate DN:' /tmp/apk-certs.txt || true)
             [ -n "$DN" ] || { echo "::error::$apk is not signed"; exit 1; }
             case "$DN" in

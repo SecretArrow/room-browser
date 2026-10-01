@@ -116,9 +116,24 @@ android {
             // production keystore (the interim policy until the passphrase
             // is provided). Local dev builds keep the debug-key fallback so
             // they remain installable.
-            if (System.getenv("RB_UNSIGNED_RELEASE") != "true") {
-                signingConfig = signingConfigs.findByName("releaseFromEnv")
-                    ?: signingConfigs.getByName("debug") // dev fallback only
+            //
+            // WHY THIS IS PRINTED: an APK that comes out unsigned, or signed
+            // with the debug key, is indistinguishable from a correct build
+            // until someone checks the certificate — so the decision this
+            // block makes is stated in the log, every build, rather than left
+            // to be inferred from the artifact.
+            val fromEnv = signingConfigs.findByName("releaseFromEnv")
+            val unsignedRelease = System.getenv("RB_UNSIGNED_RELEASE") == "true"
+            logger.lifecycle(
+                "release signing: unsignedRelease=$unsignedRelease " +
+                    "keystore=${envKeystore ?: "<unset>"} " +
+                    "alias=${if (envKeyAlias.isNullOrBlank()) "<unset>" else envKeyAlias} " +
+                    "storePassword=${if (envStorePassword.isNullOrBlank()) "<unset>" else "set"} " +
+                    "keyPassword=${if (envKeyPassword.isNullOrBlank()) "<unset>" else "set"} " +
+                    "-> ${if (unsignedRelease) "UNSIGNED" else (fromEnv?.name ?: "debug")}"
+            )
+            if (!unsignedRelease) {
+                signingConfig = fromEnv ?: signingConfigs.getByName("debug") // dev fallback only
             }
         }
         create("benchmark") {
