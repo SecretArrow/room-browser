@@ -594,39 +594,29 @@ class WalletE2eTest {
         return hasText(marker, 500) || acceptInstead.any { hasText(it, 500) }
     }
 
-    /** The omnibox's text, or null while the field is not in the tree. */
-    private fun omniboxText(): String? =
-        device.findObjects(By.desc("omni_field")).firstOrNull()?.text
-
-    /** True once the omnibox holds EXACTLY [url] — no leftover prefix. */
-    private fun omniboxHoldsExactly(url: String): Boolean =
-        waitUntil(5_000) { omniboxText()?.trim() == url }
-
     /**
-     * Empties the omnibox and READS IT BACK, rather than trusting the burst.
-     * The tap that focuses the field starts an IME connection and keys sent
-     * before it completes go nowhere, so clearing is retried against the
-     * field's own text. False means it could not be emptied, which is worth
-     * failing the round over: typing into a field that still holds the
-     * previous URL sends the browser a URL nothing typed (see
-     * [clearFocusedField]).
+     * True when some node's text is EXACTLY [url].
+     *
+     * Deliberately a global text search rather than the node carrying the
+     * "omni_field" description: that one is the container Box, and its text
+     * is NOT the field's content (empty on the homepage it reads the
+     * "Search or type URL" placeholder), so it cannot distinguish a full
+     * field from an empty one. A "contains" probe on the field text cannot
+     * either — that is how the browser came to be sent a URL nobody typed
+     * (CI 2c9f63d), since the concatenation holds the new URL as a suffix.
      */
-    private fun clearOmnibox(): Boolean {
-        val deadline = System.currentTimeMillis() + 15_000
-        while (System.currentTimeMillis() < deadline) {
-            if (omniboxText().isNullOrEmpty()) return true
-            device.clearFocusedField()
-            device.waitForIdle(250)
+    private fun omniboxHoldsExactly(url: String): Boolean =
+        waitUntil(3_000) {
+            device.findObjects(By.textContains(url)).any { it.text?.trim() == url }
         }
-        return omniboxText().isNullOrEmpty()
-    }
 
     /**
      * Loads [url] in the CURRENT tab through the real omnibox and waits for
      * [contentMarker] in the page. Hardened like TabsE2eTest.loadInOmnibox
      * (CI run 9399640: key events dropped while the engine's first frames
-     * were still composing — IME-shown gate + accessibility ACTION_SET_TEXT
-     * instead of key events, shell `input text` as fallback).
+     * were still composing, so typing waits for the IME to be shown). The
+     * accessibility ACTION_SET_TEXT this once fell back to is gone: 033cb23
+     * showed it returns false silently on this field.
      *
      * [acceptInstead] names surfaces that count as "loaded" without the page
      * text being readable — see [waitLoaded].
@@ -656,33 +646,44 @@ class WalletE2eTest {
             }
             if (!imeUp) continue
 
-            var typed: Boolean
             // The shell key-event path, IME-gated. (CI 033cb23 DISPROVED the
             // a11y ACTION_SET_TEXT on this field — same structure as the
             // Tabs omnibox: the contentDescription modifier's OUTER
             // semantics node does not support the action, performAction
             // returns false SILENTLY and the URL never lands. There is no
             // fallback to it because there is nothing it could do.)
+            //
+            // Clearing is UNCONDITIONAL and generous. It cannot be gated on
+            // reading the field back: the node carrying the "omni_field"
+            // description is the container Box and its text is not the
+            // field's, so on the homepage — where the omnibox is empty — a
+            // read-back is non-empty (the placeholder) and a
+            // "clear, verify, retry" loop never terminates (CI 36932653641,
+            // 15s a round, then "The connect page must load"). Backspaces on
+            // an already-empty field are inert, so the only cost of not
+            // asking is a few keys. 80 > the longest URL this suite types.
             device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
-            if (!clearOmnibox()) continue
+            device.clearFocusedField(80)
+            device.waitForIdle(400)
             device.executeShellCommand("input text $url")
             device.waitForIdle(800)
-            // EXACT, not contains. The omnibox keeps the text it was given,
-            // so on a second navigation in the same tab it still holds the
-            // previous URL, and a clear that does not land turns `input text`
-            // into an append (CI 2c9f63d — the browser was sent
-            // "…/connect-45508http://…/silent-45508"). `contains` cannot see
-            // that: the concatenation holds the new URL as a suffix. The
-            // container merges the field, so omniboxText() is the typed text.
-            typed = omniboxHoldsExactly(url)
-            if (!typed && clearOmnibox()) {
+            // Best effort, and deliberately NOT a gate: a URL left over from
+            // the previous navigation turns `input text` into an append
+            // (CI 2c9f63d sent the browser "…/connect-45508http://…/silent-45508"),
+            // and a `contains` probe cannot see that — the concatenation
+            // holds the new URL as a suffix — so this asks for EXACT.
+            val typed = omniboxHoldsExactly(url)
+            if (!typed) {
+                device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
+                device.clearFocusedField(80)
+                device.waitForIdle(400)
                 device.executeShellCommand("input text $url")
                 device.waitForIdle(800)
-                typed = omniboxHoldsExactly(url)
             }
-            if (!typed) continue
-
-            // IME Go action -> onOmniBoxInput -> loadUrl (same tab).
+            // Enter + the page marker below is the real check, so an
+            // unconfirmed field is retyped once and then tried anyway:
+            // aborting the round here is what turned a read-back this node
+            // cannot answer into a failed navigation.
             device.executeShellCommand("input keyevent 66")
             if (waitLoaded(contentMarker, acceptInstead, 15_000)) return true
             // A bare Enter with no IME went to the APP and could background

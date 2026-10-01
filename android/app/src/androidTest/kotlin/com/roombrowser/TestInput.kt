@@ -20,8 +20,14 @@ import androidx.test.uiautomator.UiDevice
  * APPENDED — so the browser was handed
  * `…/connect-45508http://…/silent-45508`, a URL nothing had typed.
  *
- * This only sends the keys; the caller still has to check the result. Where
- * the field's contents matter, clear and then READ IT BACK.
+ * This only sends the keys. Whether the field is now empty is NOT answerable
+ * in general: it depends on some node exposing the field's text. Where one
+ * does, clear and read it back; where none does (the omnibox — the node
+ * carrying its contentDescription is the container Box, whose text is the
+ * placeholder on an empty field) do not gate on a read-back at all, send a
+ * count larger than any value the field can hold, and let the caller's real
+ * assertion decide. CI 36932653641 is the second shape taken too far: a
+ * "clear, verify, retry" loop around a field that can never read empty.
  */
 fun UiDevice.clearFocusedField(backspaces: Int = 40) {
     executeShellCommand("input keyevent " + "KEYCODE_DEL ".repeat(backspaces).trimEnd())
