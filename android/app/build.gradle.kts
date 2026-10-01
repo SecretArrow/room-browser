@@ -38,13 +38,23 @@ android {
         vectorDrawables { useSupportLibrary = true }
     }
 
-    // ABI-split release builds (spec section 57)
+    // ABI-split release builds (spec section 57).
+    // RB_RELEASE_ABIS (comma-separated, e.g. "arm64-v8a,armeabi-v7a")
+    // narrows the split set — the CI release job uses it to focus the
+    // shippable artifacts on real-device ARM ABIs. Unset (local + all other
+    // CI jobs): the full split set + universal, exactly as before.
     splits {
         abi {
             isEnable = true
             reset()
-            include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
-            isUniversalApk = true
+            val focusAbis = System.getenv("RB_RELEASE_ABIS")
+                ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }
+            if (focusAbis.isNullOrEmpty()) {
+                include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+            } else {
+                include(*focusAbis.toTypedArray())
+            }
+            isUniversalApk = focusAbis.isNullOrEmpty()
         }
     }
 
@@ -101,8 +111,15 @@ android {
             )
             // Signing configuration comes from environment variables —
             // no secrets are ever committed to Git (spec section 58).
-            signingConfig = signingConfigs.findByName("releaseFromEnv")
-                ?: signingConfigs.getByName("debug") // dev fallback only
+            // RB_UNSIGNED_RELEASE=true (CI release job) attaches NO signing
+            // config: the APKs come out UNSIGNED for manual signing with the
+            // production keystore (the interim policy until the passphrase
+            // is provided). Local dev builds keep the debug-key fallback so
+            // they remain installable.
+            if (System.getenv("RB_UNSIGNED_RELEASE") != "true") {
+                signingConfig = signingConfigs.findByName("releaseFromEnv")
+                    ?: signingConfigs.getByName("debug") // dev fallback only
+            }
         }
         create("benchmark") {
             isDebuggable = false

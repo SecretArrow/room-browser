@@ -495,15 +495,13 @@ class SettingsPersistenceE2eTest {
      * nothing.
      */
     private fun pickReportedSizeManually(): Boolean {
+        // The caller VERIFIED the dropdown is open — consume that state
+        // FIRST: any drag dismisses the ExposedDropdownMenu popup AND
+        // scrolls away from the section. (CI 033cb23: the old field-first
+        // search dragged 24x for fields that could not exist yet, closed
+        // the menu, and the NON-scroll-aware reopen never found the
+        // off-screen desc node — ten minutes of futile drags.)
         for (attempt in 1..6) {
-            // The fields may already be expanded (below the fold) — scroll
-            // to them before concluding anything.
-            if (hasTextWithScroll("Width (CSS px)")) return true
-            // The dropdown may have closed (or never opened): (re)open it.
-            if (device.findObjects(By.text("Set manually")).isEmpty()) {
-                clickDesc("Reported size dropdown", 3_000)
-                device.waitForIdle(800)
-            }
             val item = device.wait(Until.findObject(By.text("Set manually")), 2_000)
             if (item != null) {
                 clickSmart(item)
@@ -511,9 +509,35 @@ class SettingsPersistenceE2eTest {
                 // The expanded fields land below the fold when the section
                 // sits low on the small CI screen — their absence from the
                 // CURRENT viewport is not evidence the pick failed.
-                if (hasTextWithScroll("Width (CSS px)")) return true
+                if (hasTextWithScroll("Width (CSS px)", attempts = 10)) return true
             }
+            // Menu closed (or the tap missed): reopen it. Walk the viewport
+            // back UP to the Screen size section first — the one-directional
+            // scroll-aware helpers can only descend, and the failed pick
+            // attempts may have dragged far down.
+            scrollBackToScreenSizeSection()
+            if (!clickDescWithScroll("Reported size dropdown", attempts = 10)) continue
+            device.waitForIdle(800)
         }
-        return hasTextWithScroll("Width (CSS px)")
+        return hasTextWithScroll("Width (CSS px)", attempts = 6)
+    }
+
+    /**
+     * Drags the settings screen back toward its TOP until the "Reported
+     * size" row re-enters the viewport (finger 1/4 -> 3/4 = viewport moves
+     * UP). The pick/search helpers only ever scroll DOWN; after a long
+     * descend they must be reset before anything above can be found again.
+     */
+    private fun scrollBackToScreenSizeSection(): Boolean {
+        for (i in 1..18) {
+            if (device.findObjects(By.text("Reported size")).isNotEmpty()) return true
+            device.swipe(
+                device.displayWidth / 2, device.displayHeight / 4,
+                device.displayWidth / 2, device.displayHeight * 3 / 4, 100
+            )
+            device.waitForIdle(600)
+            try { Thread.sleep(200) } catch (_: InterruptedException) { }
+        }
+        return device.findObjects(By.text("Reported size")).isNotEmpty()
     }
 }

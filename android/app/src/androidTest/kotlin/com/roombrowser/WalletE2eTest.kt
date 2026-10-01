@@ -558,23 +558,28 @@ class WalletE2eTest {
             if (!imeUp) continue
 
             var typed = false
-            try {
-                // ACTION_SET_TEXT is deterministic (CI log proof it works on
-                // this field); a thrown exception is the only real failure —
-                // the old read-back saw stale a11y text and triggered a
-                // destructive fallback that MANGLED the URL.
-                field.setText(url)
-                device.waitForIdle(600)
-                typed = true
-            } catch (_: Exception) {
-                typed = false
-            }
+            // PRIMARY: the shell key-event path, IME-gated. CI 033cb23
+            // DISPROVED the a11y ACTION_SET_TEXT on this field (same
+            // structure as the Tabs omnibox): the contentDescription
+            // modifier's OUTER semantics node does not support the action —
+            // performAction returns false SILENTLY and the URL never lands.
+            // The shell path is what every CI-green dialog field uses.
+            device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
+            device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
+            device.waitForIdle(300)
+            device.executeShellCommand("input text $url")
+            device.waitForIdle(800)
+            // GLOBAL text search: the inner editable node renders the
+            // content as text wherever it lives in the tree.
+            typed = device.wait(Until.hasObject(By.textContains(url)), 5_000)
             if (!typed) {
-                device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
-                device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
-                device.waitForIdle(300)
-                device.executeShellCommand("input text $url")
-                device.waitForIdle(600)
+                try {
+                    field.setText(url)
+                    device.waitForIdle(600)
+                    typed = device.wait(Until.hasObject(By.textContains(url)), 5_000)
+                } catch (_: Exception) {
+                    typed = false
+                }
             }
             if (!typed) continue
 
@@ -683,6 +688,37 @@ class WalletE2eTest {
     }
 
     /**
+     * Finds the current "Tap word #N" quiz prompt wherever the column was
+     * left parked: fast path with no drag (a fresh quiz screen starts at
+     * the top), then walks the viewport UP (finger 1/4 -> 3/4 — the
+     * readWordCells direction, for a bottom-parked offset), then DOWN.
+     */
+    private fun findPromptWithScroll(): UiObject2? {
+        // Fast path, no drag: a fresh quiz screen starts at the top.
+        val initial = device.wait(Until.findObject(By.textStartsWith("Tap word #")), 1_500)
+        if (initial != null) return initial
+        // Walk the viewport UP (finger 1/4 -> 3/4 — the readWordCells
+        // direction) in case the reveal screen left the column parked LOW.
+        for (i in 1..8) {
+            device.swipe(
+                device.displayWidth / 2, device.displayHeight / 4,
+                device.displayWidth / 2, device.displayHeight * 3 / 4, 100
+            )
+            device.waitForIdle(600)
+            try { Thread.sleep(200) } catch (_: InterruptedException) { }
+            val up = device.wait(Until.findObject(By.textStartsWith("Tap word #")), 800)
+            if (up != null) return up
+        }
+        // Then DOWN, in case the prompt sits below the fold.
+        for (i in 1..8) {
+            dragUpQuarter()
+            val down = device.wait(Until.findObject(By.textStartsWith("Tap word #")), 800)
+            if (down != null) return down
+        }
+        return null
+    }
+
+    /**
      * Answers the 3-word confirmation quiz by READING each "Tap word #N"
      * prompt and tapping the remembered word for that index. Each round is
      * verification-driven: the answered prompt must disappear before the
@@ -691,12 +727,16 @@ class WalletE2eTest {
     private fun answerQuiz(words: Map<Int, String>): Boolean {
         for (attempt in 1..12) {
             if (hasTextContains("All three words correct.", 1_000)) return true
-            val prompt = device.wait(Until.findObject(By.textStartsWith("Tap word #")), 3_000)
-                ?: continue
+            // Scroll-AWARE: CI 033cb23 — readWordCells parks the viewport at
+            // the TOP of the reveal column, "I wrote it down" lives at the
+            // BOTTOM, and the quiz screen inherits that scroll offset. The
+            // prompt (and its word chips) can sit ABOVE the fold on the
+            // 320x640 CI screen; drag toward the TOP until it exposes.
+            val prompt = findPromptWithScroll() ?: continue
             val promptText = prompt.text ?: continue
             val number = promptText.removePrefix("Tap word #").trim().toIntOrNull() ?: continue
             val wanted = words[number] ?: return false
-            if (!clickText(wanted, 5_000)) continue
+            if (!clickTextWithScroll(wanted, attempts = 8)) continue
             // Verification-driven: the answered prompt disappears when the
             // tap registers (the next prompt asks a different index).
             waitGone(promptText, 6_000)
@@ -1163,11 +1203,14 @@ class WalletE2eTest {
         val phrase = (1..24).joinToString(" ") { words.getValue(it) }
 
         // REVEAL -> the confirmation quiz: read each "Tap word #N" prompt
-        // and tap the remembered word for that index.
-        assertTrue("I wrote it down must be tappable", clickText("I wrote it down", 5_000))
+        // and tap the remembered word for that index. CI 033cb23: the word
+        // reader parks the viewport at the TOP of the reveal column, so the
+        // button below the grid is OFF-SCREEN — the click must be
+        // scroll-aware (dragUpQuarter walks the viewport back DOWN).
+        assertTrue("I wrote it down must be tappable", clickTextWithScroll("I wrote it down"))
         assertTrue("The quiz must render", hasText("Confirm your phrase", 10_000))
         assertTrue("The quiz must be answerable", answerQuiz(words))
-        assertTrue("Done must be tappable", clickText("Done", 5_000))
+        assertTrue("Done must be tappable", clickTextWithScroll("Done"))
 
         // The gate fires after the quiz; with no device credentials it
         // fails and the LOCKED pane takes over — gracefully.

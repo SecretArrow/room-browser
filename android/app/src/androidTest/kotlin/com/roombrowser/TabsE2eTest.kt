@@ -386,40 +386,38 @@ class TabsE2eTest {
             if (!imeUp) continue
 
             var typed = false
-            try {
-                // ACTION_SET_TEXT goes through the semantics pipeline —
-                // deterministic, no key events (CI log proof: "UiObject2:
-                // Setting text to 'http://...'" succeeded). A THROWN exception
-                // is the only failure signal worth reacting to: the previous
-                // read-back check could not see the fresh text through the
-                // cached a11y node, fell into the shell fallback and the
-                // DEL-reclear + retype produced a MANGLED url (cursor 53 on a
-                // 30-char URL) that loaded nothing.
-                field.setText(url)
-                typed = true
-            } catch (_: Exception) {
-                typed = false
-            }
+            // PRIMARY: the shell key-event path, IME-gated. CI 033cb23
+            // DISPROVED the a11y ACTION_SET_TEXT on this field: the
+            // contentDescription modifier creates an OUTER semantics node
+            // (omni_field) whose INNER child holds the editable semantics —
+            // performAction(ACTION_SET_TEXT) on the outer node returns false
+            // SILENTLY, and 3 rounds x 5 s of fresh-lookup polls never saw
+            // the URL land. The shell path is the one every CI-green field
+            // uses (profile-name dialogs, agent composer — the same
+            // BasicTextField + semantics structure), with the dumpsys IME
+            // gate above ruling out dropped keystrokes.
+            device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
+            device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
+            device.waitForIdle(300)
+            device.executeShellCommand("input text $url")
+            device.waitForIdle(800)
+            // Verify with a GLOBAL text search: the inner editable node
+            // renders its content as text, so By.textContains finds it
+            // wherever it lives in the tree (reading .text off the cached
+            // omni_field node sees stale/empty properties).
+            typed = device.wait(Until.hasObject(By.textContains(url)), 5_000)
             if (!typed) {
-                // Fallback: the shell key-event path (with a full re-clear).
-                device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
-                device.executeShellCommand("input keyevent KEYCODE_DEL; ".repeat(40).trimEnd())
-                device.waitForIdle(300)
-                device.executeShellCommand("input text $url")
-                device.waitForIdle(600)
+                // Fallback: the a11y set-text action (occasionally a
+                // truncated keyboard is the only failure mode left).
+                try {
+                    field.setText(url)
+                    device.waitForIdle(600)
+                    typed = device.wait(Until.hasObject(By.textContains(url)), 5_000)
+                } catch (_: Exception) {
+                    typed = false
+                }
             }
             if (!typed) continue
-            // ORDERING GATE (CI 88ec8fe): the a11y ACTION_SET_TEXT is
-            // processed asynchronously on the APP's main thread — waitForIdle
-            // returned in 2 ms there and the Enter was injected BEFORE the
-            // text reached the field state, committing nothing. Before any
-            // Enter, poll a FRESH node lookup (never the cached one — that
-            // reads stale properties) until the omnibox verifiably holds the
-            // URL.
-            if (!waitUntil(5_000) {
-                    device.findObject(By.desc("omni_field"))?.text == url
-                }
-            ) continue
 
             // IME Go action -> onOmniBoxInput -> loadUrl (same tab).
             device.executeShellCommand("input keyevent 66")
