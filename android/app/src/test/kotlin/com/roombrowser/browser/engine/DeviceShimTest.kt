@@ -353,7 +353,7 @@ class DeviceShimTest {
             DeviceShim.scriptFor(device, ClaimedScreen(393, 852), WebRtcPolicy.RESTRICT_LOCAL_IP)
         )
         for (js in blocks) {
-            assertThat(js).doesNotContain('$')
+            assertThat(js).doesNotContain("\$")
         }
     }
 }

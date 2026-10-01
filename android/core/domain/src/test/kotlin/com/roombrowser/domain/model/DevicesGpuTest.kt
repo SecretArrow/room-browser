@@ -35,7 +35,7 @@ class DevicesGpuTest {
         for (device in Devices.all) {
             assertThat(device.gpuVendor).isNotEmpty()
             assertThat(device.gpuRenderer).isNotEmpty()
-            assertThat(device.gpuRenderer).matches(rendererFormat)
+            assertThat(device.gpuRenderer).matches(rendererFormat.pattern)
             val family = vendorForRenderer.single { device.gpuRenderer.startsWith(it.first) }
             assertThat(device.gpuVendor).isEqualTo(family.second)
         }

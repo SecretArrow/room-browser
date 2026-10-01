@@ -21,11 +21,12 @@ class FilterEngineTest {
     private fun decide(
         host: String,
         pageHost: String? = "site.com",
+        path: String = "/",
         blockAds: Boolean = true,
         blockTrackers: Boolean = true,
         blockCrossSite: Boolean = true,
         blockMalicious: Boolean = true
-    ) = engine.decide(host, pageHost, "/", blockAds, blockTrackers, blockCrossSite, blockMalicious)
+    ) = engine.decide(host, pageHost, path, blockAds, blockTrackers, blockCrossSite, blockMalicious)
 
     @Test
     fun `blocks exact ad host`() {
