@@ -113,13 +113,41 @@ class PasswordsE2eTest {
     private fun dragUpQuarter() {
         // Half-screen drag (3/4 → 1/4): the CI emulator's default profile is
         // 320x640 mdpi — the Passwords row (Autofill section) sits ~3400px
-        // down the profile settings screen there; the old quarter-screen
-        // drag (160 px) x 14 attempts could not reach it.
+        // down the profile settings screen there. Slow steps (no fling) keep
+        // it a controlled scroll; the settle AFTER the drag lets residual
+        // momentum finish before the caller reads node bounds (a tap on
+        // bounds captured mid-fling lands on nothing — CI 227ebc3: the
+        // Passwords row tap "succeeded" yet no activity started).
         device.swipe(
             device.displayWidth / 2, device.displayHeight * 3 / 4,
             device.displayWidth / 2, device.displayHeight / 4, 100
         )
-        device.waitForIdle(600)
+        device.waitForIdle(800)
+        try { Thread.sleep(300) } catch (_: InterruptedException) { }
+    }
+
+    /**
+     * Clicks the node showing [text] (scrolling to it when needed) and
+     * VERIFIES the effect — each attempt re-resolves the node FRESH so a
+     * stale-bounds tap can never silently miss.
+     */
+    private fun clickTextVerifiedScrollable(
+        text: String,
+        verify: () -> Boolean,
+        timeoutMs: Long
+    ): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (verify()) return true
+            val node = device.wait(Until.findObject(By.text(text)), 1_500)
+            if (node != null) {
+                clickSmart(node)
+                device.waitForIdle(1_000)
+                if (verify()) return true
+            }
+            dragUpQuarter()
+        }
+        return verify()
     }
 
     private fun clickTextWithScroll(text: String, attempts: Int = 24): Boolean {
@@ -240,8 +268,11 @@ class PasswordsE2eTest {
                 }
             )
             assertTrue(
-                "The Passwords row (Autofill section) must be tappable",
-                clickTextWithScroll("Passwords")
+                "The Passwords row (Autofill section) must be tappable (verified: activity opens)\n${uiTree()}",
+                clickTextVerifiedScrollable("Passwords") {
+                    device.findObjects(By.textContains("Vault locked")).isNotEmpty() ||
+                        device.findObjects(By.textContains("Saved passwords")).isNotEmpty()
+                }
             )
             assertTrue(
                 "PasswordsActivity must open on its LOCKED pane — no crash\n${uiTree()}",

@@ -300,13 +300,21 @@ class BrowserActivity : FragmentActivity() {
         )
         val alarm = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
         runCatching {
+            // WAKEUP: the process dies the line below — only the alarm can
+            // relaunch the engine, so it must fire even if the screen sleeps
+            // mid-switch (CI showed the non-wakeup variant deferring ~5 s
+            // while idle, leaving a dead surface up that long).
             alarm.setExactAndAllowWhileIdle(
-                android.app.AlarmManager.ELAPSED_REALTIME,
+                android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP,
                 android.os.SystemClock.elapsedRealtime() + 350,
                 pending
             )
         }.onFailure {
-            alarm.set(android.app.AlarmManager.ELAPSED_REALTIME, android.os.SystemClock.elapsedRealtime() + 350, pending)
+            alarm.set(
+                android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                android.os.SystemClock.elapsedRealtime() + 350,
+                pending
+            )
         }
         android.os.Process.killProcess(android.os.Process.myPid())
     }

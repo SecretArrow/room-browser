@@ -115,13 +115,15 @@ class SettingsPersistenceE2eTest {
     private fun dragUpQuarter() {
         // Half-screen drag (3/4 → 1/4): the CI emulator's default profile is
         // 320x640 mdpi — the Screen size / DNS / Language sections sit
-        // 2000–4000px down the profile settings screen there; the old
-        // quarter-screen drag (160 px) x 12 attempts could not reach them.
+        // 2000–4000px down the profile settings screen there. Slow steps (no
+        // fling) keep it a controlled scroll; the settle AFTER the drag lets
+        // residual momentum finish before the caller reads node bounds.
         device.swipe(
             device.displayWidth / 2, device.displayHeight * 3 / 4,
             device.displayWidth / 2, device.displayHeight / 4, 100
         )
-        device.waitForIdle(600)
+        device.waitForIdle(800)
+        try { Thread.sleep(300) } catch (_: InterruptedException) { }
     }
 
     private fun clickTextWithScroll(text: String, attempts: Int = 24): Boolean {
@@ -326,10 +328,13 @@ class SettingsPersistenceE2eTest {
 
         // ---- 2. Manual screen size (debounced auto-save) --------------------
         assertTrue(
-            "The reported-size dropdown must open (desc on its trailing icon)",
+            "The reported-size dropdown must open (desc on its trailing icon)\n${uiTree()}",
             clickDescWithScroll("Reported size dropdown")
         )
-        assertTrue("'Set manually' must be pickable", clickText("Set manually", 6_000))
+        assertTrue(
+            "'Set manually' must be pickable (verified: the manual fields appear)\n${uiTree()}",
+            pickReportedSizeManually()
+        )
         assertTrue(
             "The width/height fields must appear",
             hasTextWithScroll("Width (CSS px)") && hasTextWithScroll("Height (CSS px)")
@@ -415,5 +420,30 @@ class SettingsPersistenceE2eTest {
             dragUpQuarter()
         }
         return false
+    }
+
+    /**
+     * Picks 'Set manually' in the reported-size dropdown, VERIFIED on the
+     * manual width/height fields appearing. The menu item tap and the
+     * dropdown-opening tap are both re-attempted with FRESH node resolves —
+     * stale-bounds taps after scroll flings or popup layout shifts land on
+     * nothing (CI 227ebc3: the item was never picked).
+     */
+    private fun pickReportedSizeManually(): Boolean {
+        for (attempt in 1..6) {
+            if (device.findObjects(By.text("Width (CSS px)")).isNotEmpty()) return true
+            // The dropdown may have closed (or never opened): (re)open it.
+            if (device.findObjects(By.text("Set manually")).isEmpty()) {
+                clickDesc("Reported size dropdown", 3_000)
+                device.waitForIdle(800)
+            }
+            val item = device.wait(Until.findObject(By.text("Set manually")), 2_000)
+            if (item != null) {
+                clickSmart(item)
+                device.waitForIdle(1_000)
+                if (device.findObjects(By.text("Width (CSS px)")).isNotEmpty()) return true
+            }
+        }
+        return device.findObjects(By.text("Width (CSS px)")).isNotEmpty()
     }
 }

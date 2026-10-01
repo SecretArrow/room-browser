@@ -169,15 +169,17 @@ class TabsE2eTest {
 
     private fun dragUpQuarter() {
         // Half-screen drag (3/4 → 1/4): the CI emulator's default profile is
-        // 320x640 mdpi — deep settings screens run ~4000px there, and the old
-        // quarter-screen drag (160 px) x 12 attempts could not reach the
-        // rows the suites assert on. Slow steps (no fling) keep it a
-        // controlled scroll.
+        // 320x640 mdpi — deep settings screens run ~4000px there. Slow steps
+        // (no fling) keep it a controlled scroll; the settle AFTER the drag
+        // lets any residual momentum finish before the caller reads node
+        // bounds (a tap on bounds captured mid-fling hits the void — CI
+        // proven: Passwords/Wallet row taps landed on nothing).
         device.swipe(
             device.displayWidth / 2, device.displayHeight * 3 / 4,
             device.displayWidth / 2, device.displayHeight / 4, 100
         )
-        device.waitForIdle(600)
+        device.waitForIdle(800)
+        try { Thread.sleep(300) } catch (_: InterruptedException) { }
     }
 
     /** Scroll-aware click (off-screen grid rows are not in the a11y tree). */
@@ -293,8 +295,42 @@ class TabsE2eTest {
         clickCenter(confirm!!)
         assertTrue("Create dialog should close after confirm", waitGone("Cancel", 10_000))
         // The create callback opens the engine (a first profile directly; a
-        // later one through the process-restart switch path).
-        return engineUiUp(40_000)
+        // later one through the process-restart switch path). CI run 227ebc3
+        // caught the restart racing the omnibox typing: the ':browser'
+        // process was still bound to the PREVIOUS suite's profile, so the
+        // first engine activity self-restarts (bind fail → kill + alarm) —
+        // and on the CI emulator the restart alarm was deferred ~5 s, so the
+        // doomed surface lived long enough for the typing to begin. The
+        // STABILITY gate below rides that out: the surface must stay up
+        // CONTINUOUSLY for 8 s — the doomed one never does.
+        if (!engineUiStable(120_000)) return false
+        // First-composition settle (Homepage JIT) before anyone types.
+        device.waitForIdle(2_000)
+        return true
+    }
+
+    /**
+     * The engine surface must be up CONTINUOUSLY for [stableMs] before the
+     * bootstrap returns — a surface that dies (process self-restart) resets
+     * the window. 150 ms polls catch sub-half-second gaps between the doomed
+     * and final surfaces.
+     */
+    private fun engineUiStable(totalMs: Long, stableMs: Long = 8_000): Boolean {
+        val deadline = System.currentTimeMillis() + totalMs
+        var firstSeen = 0L
+        while (System.currentTimeMillis() < deadline) {
+            val up = device.findObjects(By.descContains("Address bar")).isNotEmpty() ||
+                device.findObjects(By.text("Privacy Dashboard")).isNotEmpty()
+            val now = System.currentTimeMillis()
+            if (up) {
+                if (firstSeen == 0L) firstSeen = now
+                if (now - firstSeen >= stableMs) return true
+            } else {
+                firstSeen = 0L
+            }
+            try { Thread.sleep(150) } catch (_: InterruptedException) { }
+        }
+        return false
     }
 
     // ---------- The tab helpers -------------------------------------------
@@ -354,8 +390,15 @@ class TabsE2eTest {
             // IME Go action -> onOmniBoxInput -> loadUrl (same tab).
             device.executeShellCommand("input keyevent 66")
             if (hasText(contentMarker, 15_000)) return true
-            device.pressEnter()
-            if (hasText(contentMarker, 15_000)) return true
+            // A second Enter only makes sense while the IME still owns the
+            // field — a bare Enter with no IME went to the APP and on the
+            // homepage it backgrounds the engine (CI 227ebc3: that stray key
+            // left the app backgrounded and every later round found no
+            // omni_field in the ACTIVE window).
+            if (imeShown()) {
+                device.pressEnter()
+                if (hasText(contentMarker, 15_000)) return true
+            }
         }
         return false
     }

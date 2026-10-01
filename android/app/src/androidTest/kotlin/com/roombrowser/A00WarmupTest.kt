@@ -90,13 +90,28 @@ class A00WarmupTest {
         )
 
         // ---- 3. ':browser' process: wait for the engine UI (patient) ------
+        // STABILITY-gated: the ':browser' process may still be bound to a
+        // profile from an earlier suite — the first engine activity for the
+        // warm-up profile then SELF-RESTARTS (bind fail → kill + alarm; the
+        // CI emulator deferred that alarm ~5 s, run 227ebc3). Waiting for a
+        // surface that stays up CONTINUOUSLY for 8 s rides the restart out,
+        // so the warm-up leaves a settled engine AND the crypto classes
+        // loaded before any real suite runs.
         val engineUp = run {
             val deadline = System.currentTimeMillis() + 480_000
+            var stableSince = 0L
             var up = false
             while (System.currentTimeMillis() < deadline && !up) {
-                up = device.wait(Until.hasObject(By.descContains("Address bar")), 400) ||
+                val surface = device.wait(Until.hasObject(By.descContains("Address bar")), 400) ||
                     device.wait(Until.hasObject(By.text("Privacy Dashboard")), 400)
-                if (!up) Thread.sleep(250)
+                val now = System.currentTimeMillis()
+                if (surface) {
+                    if (stableSince == 0L) stableSince = now
+                    if (now - stableSince >= 8_000) up = true
+                } else {
+                    stableSince = 0L
+                }
+                if (!up) Thread.sleep(200)
             }
             up
         }

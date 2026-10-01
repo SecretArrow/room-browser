@@ -300,6 +300,26 @@ class AgentSettingsE2eTest {
      *  a quiet moment makes them a11y-visible. */
     private enum class FetchOutcome { CHIPS, ERROR, NOTHING }
 
+    /**
+     * VERIFIED send: taps the send button with FRESH bounds each attempt and
+     * only returns once the user bubble's copy affordance exists. The send
+     * button moves when the IME dismisses (composer resize) — a tap on
+     * pre-shift bounds lands on nothing (CI 227ebc3). Each send attempt is
+     * given its own grace window before re-tapping, so a slow first send is
+     * never duplicated.
+     */
+    private fun sendAgentPrompt(): Boolean {
+        for (attempt in 1..5) {
+            if (device.findObjects(By.descContains("agent_copy_user")).isNotEmpty()) return true
+            val send = device.wait(Until.findObject(By.desc("agent_send")), 2_000) ?: continue
+            clickSmart(send)
+            if (device.wait(Until.hasObject(By.descContains("agent_copy_user")), 4_000)) {
+                return true
+            }
+        }
+        return device.findObjects(By.descContains("agent_copy_user")).isNotEmpty()
+    }
+
     private fun fetchOutcome(): FetchOutcome {
         val deadline = System.currentTimeMillis() + 9_000
         var dragged = false
@@ -327,13 +347,39 @@ class AgentSettingsE2eTest {
      * also fully expands a half-expanded ModalBottomSheet. */
     private fun dragUpQuarter() {
         // Half-screen drag (3/4 → 1/4): the CI emulator's default profile is
-        // 320x640 mdpi — deep settings screens run ~4000px there; the old
-        // quarter-screen drag (160 px) x 12 attempts could not reach them.
+        // 320x640 mdpi — deep settings screens run ~4000px there. Slow steps
+        // (no fling) keep it a controlled scroll; the settle AFTER the drag
+        // lets residual momentum finish before the caller reads node bounds.
         device.swipe(
             device.displayWidth / 2, device.displayHeight * 3 / 4,
             device.displayWidth / 2, device.displayHeight / 4, 100
         )
-        device.waitForIdle(600)
+        device.waitForIdle(800)
+        try { Thread.sleep(300) } catch (_: InterruptedException) { }
+    }
+
+    /**
+     * The engine surface must be up CONTINUOUSLY for [stableMs] — a surface
+     * that dies (':browser' process self-restart while rebinding to this
+     * suite's fresh profile) resets the window; 150 ms polls catch the gap
+     * between the doomed and the final surface.
+     */
+    private fun engineUiStable(totalMs: Long, stableMs: Long = 8_000): Boolean {
+        val deadline = System.currentTimeMillis() + totalMs
+        var firstSeen = 0L
+        while (System.currentTimeMillis() < deadline) {
+            val up = device.findObjects(By.descContains("Address bar")).isNotEmpty() ||
+                device.findObjects(By.text("Privacy Dashboard")).isNotEmpty()
+            val now = System.currentTimeMillis()
+            if (up) {
+                if (firstSeen == 0L) firstSeen = now
+                if (now - firstSeen >= stableMs) return true
+            } else {
+                firstSeen = 0L
+            }
+            try { Thread.sleep(150) } catch (_: InterruptedException) { }
+        }
+        return false
     }
 
     /** Off-screen rows of a scrollable container are not exposed to the
@@ -477,7 +523,14 @@ class AgentSettingsE2eTest {
                 assertTrue("OPEN must be clickable", clickText("OPEN", 5_000))
             }
         }
-        assertTrue("Browser engine must be up", engineUiUp(30_000))
+        // STABILITY-gated engine wait: the ':browser' process may still be
+        // bound to the PREVIOUS suite's profile — the first engine activity
+        // then self-restarts (bind fail → kill + alarm; the CI emulator
+        // deferred the restart alarm ~5 s). Interacting with the doomed
+        // surface races that restart; 8 s of CONTINUOUS surface rides it out
+        // (same CI lesson as TabsE2eTest, run 227ebc3).
+        assertTrue("Browser engine must be up (and stable)", engineUiStable(120_000))
+        device.waitForIdle(2_000)
 
         // ---- 2. The floating pill is HIDDEN by default ---------------------
         // (Show-AI-Agent-button is off out of the box; the panel is reached
@@ -678,9 +731,17 @@ class AgentSettingsE2eTest {
             typeIntoField("agent_composer_field", "e2e_copy_prompt")
         )
         hideImeIfNeeded()
-        if (!clickDesc("agent_send", 5_000)) {
-            throw AssertionError("send button must be clickable; UI:\n" + uiTree())
-        }
+        // The IME dismissal RESIZES the composer panel — the send button
+        // moves. A tap on pre-shift bounds lands on nothing (CI 227ebc3:
+        // the send "succeeded", no prompt was ever sent). Settle, then a
+        // VERIFIED send: fresh re-find per attempt, retried until the user
+        // bubble (agent_copy_user) actually appears.
+        device.waitForIdle(1_000)
+        try { Thread.sleep(400) } catch (_: InterruptedException) { }
+        assertTrue(
+            "the composed prompt must be sent (user bubble appears); UI:\n" + uiTree(),
+            sendAgentPrompt()
+        )
         assertTrue(
             "user bubble with the sent text must appear",
             hasText("e2e_copy_prompt", 10_000)

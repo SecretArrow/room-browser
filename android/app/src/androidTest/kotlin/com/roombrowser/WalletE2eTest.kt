@@ -332,13 +332,17 @@ class WalletE2eTest {
     private fun dragUpQuarter() {
         // Half-screen drag (3/4 → 1/4): the CI emulator's default profile is
         // 320x640 mdpi — the wallet row sits ~3500px down the profile
-        // settings screen there, far beyond the old quarter-screen drag's
-        // reach. Slow steps (no fling) keep it a controlled scroll.
+        // settings screen there. Slow steps (no fling) keep it a controlled
+        // scroll; the settle AFTER the drag lets residual momentum finish
+        // before the caller reads node bounds (a tap on bounds captured
+        // mid-fling hits the void — CI proven: the wallet row tap landed on
+        // nothing and no activity started).
         device.swipe(
             device.displayWidth / 2, device.displayHeight * 3 / 4,
             device.displayWidth / 2, device.displayHeight / 4, 100
         )
-        device.waitForIdle(600)
+        device.waitForIdle(800)
+        try { Thread.sleep(300) } catch (_: InterruptedException) { }
     }
 
     /** Scroll-aware click (off-screen rows are not in the a11y tree). */
@@ -348,6 +352,33 @@ class WalletE2eTest {
             dragUpQuarter()
         }
         return false
+    }
+
+    /**
+     * Clicks the node showing [text] (scrolling to it when needed) and
+     * VERIFIES the effect — a tap on bounds captured mid-fling or across a
+     * layout shift lands on nothing (CI 227ebc3: the wallet row tap
+     * "succeeded" yet WalletActivity never started). Every attempt re-resolves
+     * the node FRESH; the loop keeps going until the effect shows or the
+     * budget runs out.
+     */
+    private fun clickTextVerifiedScrollable(
+        text: String,
+        verify: () -> Boolean,
+        timeoutMs: Long
+    ): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (verify()) return true
+            val node = device.wait(Until.findObject(By.text(text)), 1_500)
+            if (node != null) {
+                clickSmart(node)
+                device.waitForIdle(1_000)
+                if (verify()) return true
+            }
+            dragUpQuarter()
+        }
+        return verify()
     }
 
     private fun imeShown(): Boolean = try {
@@ -443,7 +474,37 @@ class WalletE2eTest {
         assertTrue("Dialog confirm button must be found", confirm != null)
         clickCenter(confirm!!)
         assertTrue("Create dialog should close after confirm", waitGone("Cancel", 10_000))
-        return engineUiUp(40_000)
+        // STABILITY-gated engine wait: the ':browser' process may still be
+        // bound to the PREVIOUS suite's profile — the first engine activity
+        // then self-restarts (bind fail → kill + alarm; the CI emulator
+        // deferred the restart alarm ~5 s). Typing/clicking on the doomed
+        // surface races that restart; 8 s of CONTINUOUS surface rides it out.
+        if (!engineUiStable(120_000)) return false
+        device.waitForIdle(2_000)
+        return true
+    }
+
+    /**
+     * The engine surface must be up CONTINUOUSLY for [stableMs] before the
+     * bootstrap returns — a surface that dies (process self-restart) resets
+     * the window (same CI lesson as TabsE2eTest, run 227ebc3).
+     */
+    private fun engineUiStable(totalMs: Long, stableMs: Long = 8_000): Boolean {
+        val deadline = System.currentTimeMillis() + totalMs
+        var firstSeen = 0L
+        while (System.currentTimeMillis() < deadline) {
+            val up = device.findObjects(By.descContains("Address bar")).isNotEmpty() ||
+                device.findObjects(By.text("Privacy Dashboard")).isNotEmpty()
+            val now = System.currentTimeMillis()
+            if (up) {
+                if (firstSeen == 0L) firstSeen = now
+                if (now - firstSeen >= stableMs) return true
+            } else {
+                firstSeen = 0L
+            }
+            try { Thread.sleep(150) } catch (_: InterruptedException) { }
+        }
+        return false
     }
 
     /** Opens a page-actions sheet entry by desc and VERIFIES the effect. */
@@ -511,8 +572,12 @@ class WalletE2eTest {
             // IME Go action -> onOmniBoxInput -> loadUrl (same tab).
             device.executeShellCommand("input keyevent 66")
             if (hasText(contentMarker, 15_000)) return true
-            device.pressEnter()
-            if (hasText(contentMarker, 15_000)) return true
+            // A bare Enter with no IME went to the APP and could background
+            // the engine on the homepage — only retry while the IME is up.
+            if (imeShown()) {
+                device.pressEnter()
+                if (hasText(contentMarker, 15_000)) return true
+            }
         }
         return false
     }
@@ -667,10 +732,17 @@ class WalletE2eTest {
             }
         )
         // The row is targeted by its SUBTITLE: the section header and the
-        // row title are both the bare text "Wallet" on this screen.
+        // row title are both the bare text "Wallet" on this screen. The
+        // click is VERIFIED on WalletActivity actually opening — the row sits
+        // ~3500px down a scrollable list and unverified taps have landed on
+        // nothing (CI 227ebc3).
         assertTrue(
-            "The Wallet settings row must be tappable",
-            clickTextWithScroll("Multi-chain wallet, accounts and dApp connections")
+            "The Wallet settings row must be tappable (verified: activity opens)\n${uiTree()}",
+            clickTextVerifiedScrollable("Multi-chain wallet, accounts and dApp connections") {
+                device.findObjects(By.text("Set up your wallet")).isNotEmpty() ||
+                    device.findObjects(By.textContains("Vault locked")).isNotEmpty() ||
+                    device.findObjects(By.textContains("Total balance")).isNotEmpty()
+            }
         )
         assertTrue(
             "WalletActivity must open on the onboarding choice screen\n${uiTree()}",
@@ -700,8 +772,11 @@ class WalletE2eTest {
         // Reopen: the wallet exists -> the LOCKED pane (WalletActivity's
         // entry gate fails with no device credentials — the CI state).
         assertTrue(
-            "The Wallet settings row must re-open the wallet surface",
-            clickTextWithScroll("Multi-chain wallet, accounts and dApp connections")
+            "The Wallet settings row must re-open the wallet surface (verified)\n${uiTree()}",
+            clickTextVerifiedScrollable("Multi-chain wallet, accounts and dApp connections") {
+                device.findObjects(By.textContains("Wallet locked")).isNotEmpty() ||
+                    device.findObjects(By.text("Set up your wallet")).isNotEmpty()
+            }
         )
         if (!canAuthenticate) {
             assertTrue(
@@ -1009,8 +1084,12 @@ class WalletE2eTest {
             }
         )
         assertTrue(
-            "The Wallet settings row must be tappable",
-            clickTextWithScroll("Multi-chain wallet, accounts and dApp connections")
+            "The Wallet settings row must be tappable (verified: activity opens)\n${uiTree()}",
+            clickTextVerifiedScrollable("Multi-chain wallet, accounts and dApp connections") {
+                device.findObjects(By.text("Set up your wallet")).isNotEmpty() ||
+                    device.findObjects(By.textContains("Wallet locked")).isNotEmpty() ||
+                    device.findObjects(By.textContains("Total balance")).isNotEmpty()
+            }
         )
         assertTrue(
             "WalletActivity must open on the onboarding choice screen",
