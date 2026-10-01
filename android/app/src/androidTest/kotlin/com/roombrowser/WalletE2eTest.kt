@@ -301,16 +301,23 @@ class WalletE2eTest {
     }
 
     private fun clickSmart(node: UiObject2): Boolean {
+        // The tap is injected via the SHELL `input tap`, never
+        // UiObject2.click()/device.click(): those go through
+        // UiAutomator's InteractionController, which waits for an
+        // accessibility-idle window around the events and TIMES OUT on
+        // busy screens (CI ec43763: 'Timed out waiting 1000ms for
+        // command and events' — the app received nothing; the shell tap
+        // is fire-and-forget and has never lost a tap).
         var current: UiObject2? = node
         var hops = 0
         while (current != null && hops < 8) {
             val clickable = try { current.isClickable } catch (_: Exception) { false }
             if (clickable) {
-                try {
-                    current.click()
+                val b = runCatching { current.visibleBounds }.getOrNull()
+                if (b != null && b.width() > 0) {
+                    device.executeShellCommand("input tap ${b.centerX()} ${b.centerY()}")
                     device.waitForIdle(1_000)
                     return true
-                } catch (_: Exception) {
                 }
             }
             current = try { current.parent } catch (_: Exception) { null }

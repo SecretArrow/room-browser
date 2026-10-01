@@ -577,11 +577,14 @@ class LocalAiE2eTest {
                 drag()
                 continue
             }
-            // Direct injection, NOT the shell `input tap`: the shell
-            // command takes 50-150 ms to spawn its app_process, during which
-            // residual scroll motion makes the captured bounds STALE — the
-            // tap then lands where the button USED to be (CI 798d73c).
-            device.click(bounds.centerX(), bounds.centerY())
+            // SHELL tap (fire-and-forget), NOT device.click():
+            // UiAutomator's InteractionController click waits for an
+            // accessibility-idle window and TIMED OUT on this busy screen
+            // (CI ec43763: 'Timed out waiting 1000ms for command and
+            // events' — refresh/pull/install taps all died; three earlier
+            // runs of this shell path were green). The stale-bounds risk is
+            // handled by the post-drag settles above + verified retries.
+            device.executeShellCommand("input tap ${bounds.centerX()} ${bounds.centerY()}")
             device.waitForIdle(800)
             return true
         }
