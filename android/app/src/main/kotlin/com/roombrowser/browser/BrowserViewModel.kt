@@ -1040,18 +1040,36 @@ class BrowserViewModel(
         // logcat from app or renderer, queued input events never
         // processed, the a11y tree frozen on the last dispatched frame,
         // the tab-persist coroutine never ran, the DB row never updated).
-        // PixelCopy (API 26+, minSdk 28) is the asynchronous surface copy:
-        // it delivers the frame — or an error — through the callback, and
-        // the main thread is NEVER blocked. A failed thumbnail is purely
-        // cosmetic: never worth a crash or a hang.
+        // PixelCopy is the asynchronous surface copy: it delivers the
+        // frame — or an error — through the callback, and the main thread
+        // is NEVER blocked. The View-source overload is API 34 — this
+        // project's platform surface offers the API-26 Window overload
+        // only, so the copy runs against the ACTIVITY window and is CROPPED
+        // to the engine's bounds (getLocationInWindow — the standard
+        // compat pattern). A failed thumbnail is purely cosmetic: never
+        // worth a crash or a hang.
+        val root = view.rootView
+        val window = (root.context as? android.app.Activity)?.window ?: return
+        if (root.width == 0 || root.height == 0) return
         try {
-            val bmp = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+            val full = Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888)
             android.view.PixelCopy.request(
-                view,
-                bmp,
+                window,
+                full,
                 { result ->
                     if (result == android.view.PixelCopy.SUCCESS) {
-                        tabManager.captureThumbnail(id, bmp)
+                        runCatching {
+                            val loc = IntArray(2)
+                            view.getLocationInWindow(loc)
+                            val x = loc[0].coerceIn(0, full.width)
+                            val y = loc[1].coerceIn(0, full.height)
+                            val cropW = view.width.coerceAtMost(full.width - x)
+                            val cropH = view.height.coerceAtMost(full.height - y)
+                            if (cropW > 0 && cropH > 0) {
+                                val cropped = Bitmap.createBitmap(full, x, y, cropW, cropH)
+                                tabManager.captureThumbnail(id, cropped)
+                            }
+                        }
                     }
                 },
                 Handler(Looper.getMainLooper())
