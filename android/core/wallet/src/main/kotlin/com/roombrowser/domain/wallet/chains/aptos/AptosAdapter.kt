@@ -1,5 +1,7 @@
 package com.roombrowser.domain.wallet.chains.aptos
 
+import com.roombrowser.domain.wallet.chains.DerivationPathIndex
+import com.roombrowser.domain.wallet.chains.DerivationPathParsing
 import com.roombrowser.domain.wallet.crypto.Ed25519
 import com.roombrowser.domain.wallet.crypto.Hashes
 import com.roombrowser.domain.wallet.crypto.Hex
@@ -27,7 +29,7 @@ import kotlinx.serialization.json.put
  * signature always matches the chain's serialization rules. Pre-serialized
  * wallet-standard transactions (aptos:signTransaction) are hashed locally.
  */
-class AptosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) {
+class AptosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationPathIndex {
 
     fun chainType(): ChainType = ChainType.APTOS
 
@@ -40,6 +42,21 @@ class AptosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) {
             address = "0x" + Hex.encode(Hashes.sha3_256(pubkey + byteArrayOf(0x00))),
             path = "m/54'/6'/0'/0'/$index'"
         )
+    }
+
+    /**
+     * Inverts [deriveAccount]: m/54'/6'/0'/0'/{index}'. Like Sui, the index
+     * is the hardened FINAL level (the previous repository fix only taught it
+     * to strip the trailing "'" — this replaces that with the real shape).
+     */
+    override fun derivationIndexOf(path: String): Int? {
+        val levels = DerivationPathParsing.levels(path) ?: return null
+        if (levels.size != 5) return null
+        if (!DerivationPathParsing.isLevel(levels[0], 54)) return null
+        if (!DerivationPathParsing.isLevel(levels[1], 6)) return null
+        if (!DerivationPathParsing.isLevel(levels[2], 0)) return null
+        if (!DerivationPathParsing.isLevel(levels[3], 0)) return null
+        return DerivationPathParsing.levelValue(levels[4])
     }
 
     fun isValidAddress(address: String): Boolean {

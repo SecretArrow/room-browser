@@ -78,6 +78,7 @@ import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBottomSheetShape
 import com.roombrowser.ui.common.RoomCard
+import com.roombrowser.ui.common.RoomSheetHeader
 import com.roombrowser.ui.common.SectionHeader
 import com.roombrowser.ui.common.StatTile
 
@@ -842,15 +843,12 @@ private fun DownloadDetailsSheet(
         Column(
             Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
+                // Padding sits OUTSIDE the scroll, like every other sheet, so
+                // the gutters stay fixed while the body scrolls.
                 .padding(horizontal = 16.dp)
+                .verticalScroll(rememberScrollState())
         ) {
-            Text(
-                download.fileName,
-                style = MaterialTheme.typography.titleLarge,
-                color = extras.textPrimary
-            )
-            Spacer(Modifier.height(4.dp))
+            RoomSheetHeader(download.fileName)
             Text(
                 DownloadStatusLabels.of(download.status),
                 style = MaterialTheme.typography.labelLarge,
@@ -1061,6 +1059,8 @@ fun PrivacyDashboardScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                                 "DNS: System default (app connections)"
                             is com.roombrowser.browser.engine.DnsMonitor.DnsState.Protected ->
                                 "DNS: Protected (${dns.protocol}) — ${dns.resolver}"
+                            is com.roombrowser.browser.engine.DnsMonitor.DnsState.NotEnforced ->
+                                "DNS: ${dns.protocol} validated, not enforced by this app — enable OS Private DNS (${dns.detail})"
                             is com.roombrowser.browser.engine.DnsMonitor.DnsState.Misconfigured ->
                                 "DNS: Check configuration (${dns.reason})"
                         },

@@ -638,6 +638,318 @@ class WalletBridgeProtocolTest {
     }
 
     // ------------------------------------------------------------------
+    // Truthful advertising: every granted method must be routable
+    // ------------------------------------------------------------------
+
+    /** Params that make [method] a VALID call for [chain] (the happy shape). */
+    private fun stubParams(chain: ChainType, method: String): String = when (method) {
+        "personal_sign" -> "[\"0x48656c6c6f\",\"$evmAddress\"]"
+        "eth_signTypedData_v3", "eth_signTypedData_v4" ->
+            "[\"$evmAddress\",{\"types\":{},\"domain\":{},\"primaryType\":\"Mail\",\"message\":{}}]"
+        "eth_sendTransaction" -> "[{\"from\":\"$evmAddress\",\"to\":\"0xdef\"}]"
+        "wallet_switchEthereumChain" -> "[{\"chainId\":\"0x1\"}]"
+        "wallet_addEthereumChain" ->
+            "[{\"chainId\":\"0x89\",\"rpcUrls\":[\"https://rpc.example\"]}]"
+        "signAndSendTransaction" -> "{\"transaction\":\"BASE64TX==\"}"
+        "signAndSubmitTransaction" -> "{\"transaction\":{\"type\":\"entry_function_payload\"}}"
+        "signTransaction" -> if (chain == ChainType.APTOS) {
+            "{\"txBytes\":\"AA==\"}"
+        } else {
+            "{\"raw_data_hex\":\"0a02\"}"
+        }
+        "signAndExecuteTransactionBlock", "signAndExecuteTransaction" ->
+            "{\"transactionBlock\":{\"kind\":\"ProgrammableTransaction\"}}"
+        "signMessage", "signPersonalMessage", "signArbitrary" -> "{\"message\":\"gm\"}"
+        "signAmino" -> "{\"signDoc\":{\"chain_id\":\"cosmoshub-4\",\"msgs\":[]}}"
+        "signDirect" -> "{\"bodyBytes\":\"AA==\",\"authInfoBytes\":\"AA==\"," +
+            "\"chainId\":\"cosmoshub-4\",\"accountNumber\":\"7\"}"
+        "enable" -> "{\"chainId\":\"cosmoshub-4\"}"
+        else -> "[]"
+    }
+
+    /** Any non-blank account of [chain] (the builders only check presence). */
+    private fun stubAccount(chain: ChainType): String = when (chain) {
+        ChainType.EVM -> evmAddress
+        ChainType.SOLANA -> "9WzDXwBbmkg8ZTbNMqUxvQRAyrZ8DsGYdAVoxKPPQmMx"
+        ChainType.APTOS, ChainType.SUI -> "0x1"
+        ChainType.COSMOS -> "cosmos1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9"
+        ChainType.BITCOIN -> "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+        ChainType.TRON -> "TJRabPrwbZy45sbavfcjinPJC18kjpRTv8"
+    }
+
+    /**
+     * The invariant behind the audit: nothing is recorded in a permission
+     * grant that the wallet cannot route — otherwise a dApp is told it may
+     * call a method that then fails with UNSUPPORTED_METHOD.
+     */
+    @Test
+    fun `every granted method is routable`() {
+        for (chain in ChainType.entries) {
+            val granted = WalletBridgeProtocol.grantedMethodsFor(chain)
+            assertThat(granted).isNotEmpty()
+            assertThat(granted.toSet()).hasSize(granted.size) // no duplicate grants
+            for (method in granted) {
+                if (method in WalletBridgeProtocol.BRIDGE_LOCAL_METHODS) continue
+                val result = build(
+                    envelope("w1", chain.name, method, stubParams(chain, method)),
+                    activeNetworkId = "NET:" + chain.name,
+                    fallbackAddress = stubAccount(chain)
+                )
+                // A null error means DappBuildResult.Ok: the call routes.
+                assertThat((result as? DappBuildResult.Invalid)?.error)
+                    .isNull()
+            }
+        }
+    }
+
+    @Test
+    fun `granted methods never include client-rejected or unroutable names`() {
+        for (chain in ChainType.entries) {
+            val granted = WalletBridgeProtocol.grantedMethodsFor(chain)
+            // eth_signTransaction is hard-rejected client-side with 4200 and
+            // has no native route, so it must never be advertised.
+            assertThat(granted).doesNotContain("eth_signTransaction")
+            assertThat(granted).doesNotContain("eth_sendRawTransaction")
+            assertThat(granted).doesNotContain("eth_decrypt")
+            assertThat(granted).doesNotContain("eth_getEncryptionPublicKey")
+            // The engine has no sign-only path for these chains' transactions.
+            if (chain == ChainType.SOLANA || chain == ChainType.SUI || chain == ChainType.BITCOIN) {
+                assertThat(granted).doesNotContain("signTransaction")
+            }
+            // Sui's granted names must be the ones the protocol routes.
+            if (chain == ChainType.SUI) {
+                assertThat(granted).contains("signAndExecuteTransactionBlock")
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Aliases and the Cosmos/TRON/Sui routes added for the audit
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `eth_signTypedData_v3 is accepted like v4`() {
+        val typed = "{\"types\":{},\"domain\":{\"name\":\"D\"},\"primaryType\":\"Mail\",\"message\":{}}"
+        val request = ok(
+            build(envelope("w1", "EVM", "eth_signTypedData_v3", "[\"$evmAddress\",$typed]"))
+        ) as DappRequest.SignTypedData
+        assertThat(request.accountAddress).isEqualTo(evmAddress)
+        assertThat(request.typedDataJson).contains("\"primaryType\":\"Mail\"")
+    }
+
+    @Test
+    fun `sui wallet-standard aliases route to the same builders`() {
+        val personal = ok(
+            build(
+                envelope("w1", "SUI", "signPersonalMessage", "{\"message\":\"gm\"}"),
+                activeNetworkId = "SUI:mainnet",
+                fallbackAddress = "0xsui"
+            )
+        ) as DappRequest.SignMessage
+        assertThat(personal.chainType).isEqualTo(ChainType.SUI)
+        assertThat(personal.message).isEqualTo("gm")
+
+        val execute = ok(
+            build(
+                envelope(
+                    "w2", "SUI", "signAndExecuteTransaction",
+                    "{\"transactionBlock\":{\"kind\":\"ProgrammableTransaction\"}}"
+                ),
+                activeNetworkId = "SUI:mainnet",
+                fallbackAddress = "0xsui"
+            )
+        ) as DappRequest.SendTransaction
+        assertThat(execute.chainType).isEqualTo(ChainType.SUI)
+        assertThat(execute.txParamsJson).contains("ProgrammableTransaction")
+
+        // The alias is Sui-only.
+        assertThat(
+            invalid(build(envelope("w3", "SOLANA", "signPersonalMessage", "{\"message\":\"gm\"}"))).code
+        ).isEqualTo(-32602)
+    }
+
+    @Test
+    fun `cosmos signDirect builds a sign-only send transaction`() {
+        val signer = "cosmos1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9"
+        val request = ok(
+            build(
+                envelope(
+                    "w1", "COSMOS", "signDirect",
+                    "{\"chainId\":\"cosmoshub-4\",\"signer\":\"$signer\"," +
+                        "\"bodyBytes\":\"AQID\",\"authInfoBytes\":\"/w==\",\"accountNumber\":\"7\"}"
+                ),
+                activeNetworkId = "COSMOS:cosmoshub-4",
+                fallbackAddress = "cosmos1other"
+            )
+        ) as DappRequest.SendTransaction
+        // The signer the dApp named wins over the profile's primary account.
+        assertThat(request.accountAddress).isEqualTo(signer)
+        assertThat(request.networkId).isEqualTo("COSMOS:cosmoshub-4")
+        assertThat(request.txParamsJson).contains("\"signOnly\":true")
+        assertThat(request.txParamsJson).contains("\"bodyBytes\":\"AQID\"")
+        assertThat(request.txParamsJson).contains("\"authInfoBytes\":\"/w==\"")
+        assertThat(request.txParamsJson).contains("\"accountNumber\":\"7\"")
+
+        // The byte-array form (a page calling the interface directly) is
+        // normalized to base64 before it reaches the engine.
+        val fromBytes = ok(
+            build(
+                envelope(
+                    "w2", "COSMOS", "signDirect",
+                    "{\"chainId\":\"cosmoshub-4\",\"bodyBytes\":[1,2,3],\"authInfoBytes\":[255]}"
+                ),
+                activeNetworkId = "COSMOS:cosmoshub-4",
+                fallbackAddress = "cosmos1other"
+            )
+        ) as DappRequest.SendTransaction
+        assertThat(fromBytes.txParamsJson).contains("\"bodyBytes\":\"AQID\"")
+        assertThat(fromBytes.txParamsJson).contains("\"authInfoBytes\":\"/w==\"")
+        assertThat(fromBytes.txParamsJson).contains("\"accountNumber\":\"0\"")
+
+        // Missing pieces and wrong chains stay typed errors, never 4200
+        // (the method IS advertised — it must fail for real reasons only).
+        assertThat(
+            invalid(
+                build(
+                    envelope("w3", "COSMOS", "signDirect", "{\"chainId\":\"cosmoshub-4\"}"),
+                    activeNetworkId = "COSMOS:cosmoshub-4", fallbackAddress = "cosmos1other"
+                )
+            ).code
+        ).isEqualTo(-32602)
+        assertThat(
+            invalid(
+                build(
+                    envelope(
+                        "w4", "EVM", "signDirect",
+                        "{\"chainId\":\"1\",\"bodyBytes\":\"AA==\",\"authInfoBytes\":\"AA==\"}"
+                    )
+                )
+            ).code
+        ).isEqualTo(-32602)
+
+        // No active Cosmos network → CHAIN_DISCONNECTED.
+        assertThat(
+            invalid(
+                build(
+                    envelope(
+                        "w5", "COSMOS", "signDirect",
+                        "{\"chainId\":\"cosmoshub-4\",\"bodyBytes\":\"AA==\",\"authInfoBytes\":\"AA==\"}"
+                    ),
+                    activeNetworkId = null, fallbackAddress = "cosmos1other"
+                )
+            ).code
+        ).isEqualTo(4901)
+    }
+
+    @Test
+    fun `cosmos signAmino builds a sign-only send transaction`() {
+        val request = ok(
+            build(
+                envelope(
+                    "w1", "COSMOS", "signAmino",
+                    "{\"chainId\":\"cosmoshub-4\",\"signer\":null," +
+                        "\"signDoc\":{\"chain_id\":\"cosmoshub-4\",\"msgs\":[{\"type\":\"x\"}]}}"
+                ),
+                activeNetworkId = "COSMOS:cosmoshub-4",
+                fallbackAddress = "cosmos1primary"
+            )
+        ) as DappRequest.SendTransaction
+        assertThat(request.accountAddress).isEqualTo("cosmos1primary")
+        assertThat(request.txParamsJson).contains("\"signOnly\":true")
+        assertThat(request.txParamsJson).contains("aminoSignDoc")
+        assertThat(request.txParamsJson).contains("cosmoshub-4")
+
+        // A sign doc that is not an object is rejected.
+        assertThat(
+            invalid(
+                build(
+                    envelope("w2", "COSMOS", "signAmino", "{\"signDoc\":\"nope\"}"),
+                    activeNetworkId = "COSMOS:cosmoshub-4", fallbackAddress = "cosmos1primary"
+                )
+            ).code
+        ).isEqualTo(-32602)
+    }
+
+    @Test
+    fun `signTransaction routes to the chains that implement it`() {
+        // TRON: the raw transaction object travels as the tx params (the
+        // engine's TRON dispatch reads raw_data_hex from it).
+        val tron = ok(
+            build(
+                envelope("w1", "TRON", "signTransaction", "{\"raw_data_hex\":\"0a02\",\"visible\":false}"),
+                activeNetworkId = "TRON:mainnet",
+                fallbackAddress = "TJRabPrwbZy45sbavfcjinPJC18kjpRTv8"
+            )
+        ) as DappRequest.SendTransaction
+        assertThat(tron.chainType).isEqualTo(ChainType.TRON)
+        assertThat(tron.txParamsJson).contains("raw_data_hex")
+
+        // Aptos: sign a serialized transaction (the engine returns the
+        // signature without submitting it).
+        val aptos = ok(
+            build(
+                envelope("w2", "APTOS", "signTransaction", "{\"txBytes\":\"AA==\"}"),
+                activeNetworkId = "APTOS:mainnet",
+                fallbackAddress = "0xace"
+            )
+        ) as DappRequest.SendTransaction
+        assertThat(aptos.chainType).isEqualTo(ChainType.APTOS)
+        assertThat(aptos.txParamsJson).contains("txBytes")
+
+        // Aptos without txBytes: a typed error, not a broadcast.
+        assertThat(
+            invalid(
+                build(
+                    envelope("w3", "APTOS", "signTransaction", "{\"transaction\":{}}"),
+                    activeNetworkId = "APTOS:mainnet", fallbackAddress = "0xace"
+                )
+            ).code
+        ).isEqualTo(-32602)
+
+        // Bitcoin has no sign-only route: the method is NOT advertised, and
+        // the builder says so instead of pretending.
+        assertThat(
+            invalid(
+                build(
+                    envelope("w4", "BITCOIN", "signTransaction", "{\"rawTx\":\"00\"}"),
+                    activeNetworkId = "BITCOIN:mainnet", fallbackAddress = "bc1q"
+                )
+            ).code
+        ).isEqualTo(-32602)
+    }
+
+    @Test
+    fun `cosmos enable is a connect and permission key is per chain family`() {
+        val connect = ok(
+            build(
+                envelope("w1", "COSMOS", "enable", "{\"chainId\":\"cosmoshub-4\"}"),
+                activeNetworkId = "COSMOS:cosmoshub-4",
+                fallbackAddress = "cosmos1primary"
+            )
+        ) as DappRequest.Connect
+        assertThat(connect.chainType).isEqualTo(ChainType.COSMOS)
+        assertThat(connect.host).isEqualTo(host)
+
+        assertThat(WalletBridgeProtocol.permissionMethodFor(ChainType.COSMOS)).isEqualTo("enable")
+        assertThat(WalletBridgeProtocol.permissionMethodFor(ChainType.BITCOIN)).isEqualTo("connect")
+        assertThat(WalletBridgeProtocol.CONNECT_METHODS).contains("enable")
+    }
+
+    @Test
+    fun `keplr key result publishes no key material`() {
+        val address = "cosmos1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9"
+        val key = WalletBridgeProtocol.keplrKeyResult(address)
+        assertThat(key).contains("\"bech32Address\":\"$address\"")
+        assertThat(key).contains("\"address\":\"$address\"")
+        assertThat(key).contains("\"algo\":\"secp256k1\"")
+        // No private key, no seed, no raw key material — and pubKey is null
+        // because the engine never exposes public keys either.
+        assertThat(key).contains("\"pubKey\":null")
+        assertThat(key).doesNotContain("privateKey")
+        assertThat(key).doesNotContain("mnemonic")
+    }
+
+    // ------------------------------------------------------------------
     // Injected script invariants
     // ------------------------------------------------------------------
 
@@ -649,13 +961,15 @@ class WalletBridgeProtocolTest {
         // Main-frame-only + idempotent install, like the vault script.
         assertThat(script).contains("window.top !== window.self")
         assertThat(script).contains("__roomWalletInstalled")
-        // All five provider surfaces.
+        // All seven provider surfaces.
         assertThat(script).contains("window.ethereum")
         assertThat(script).contains("window.solana")
         assertThat(script).contains("window.aptos")
         assertThat(script).contains("window.suiWallet")
         assertThat(script).contains("window.tronLink")
         assertThat(script).contains("window.tronWeb")
+        assertThat(script).contains("window.keplr")
+        assertThat(script).contains("window.BitcoinProvider")
         // Detection markers + protocol hooks.
         assertThat(script).contains("isMetaMask: true")
         assertThat(script).contains("isPhantom: true")
@@ -663,5 +977,52 @@ class WalletBridgeProtocolTest {
         assertThat(script).contains("__roomWalletResponse")
         assertThat(script).contains("__roomWalletEmit")
         assertThat(script).contains("__roomB64")
+    }
+
+    @Test
+    fun `script exposes the standard EIP-1193 and EIP-6963 surface`() {
+        val script = RoomWalletScript.SCRIPT
+        // EIP-1193: connection state plus the three event families a dApp
+        // library subscribes to.
+        assertThat(script).contains("isConnected")
+        assertThat(script).contains("'connect'")
+        assertThat(script).contains("'disconnect'")
+        assertThat(script).contains("'message'")
+        // A 4900/4901 from the bridge means the wallet is gone: the page
+        // provider must both flip isConnected and tell listeners.
+        assertThat(script).contains("=== 4900")
+        assertThat(script).contains("=== 4901")
+        // EIP-6963 discovery: announce + answer the request event.
+        assertThat(script).contains("eip6963:announceProvider")
+        assertThat(script).contains("eip6963:requestProvider")
+        assertThat(script).contains("com.roombrowser.wallet")
+        // Keplr's keystore-change event, fired when accounts change.
+        assertThat(script).contains("keplr_keystorechange")
+        // solana.disconnect must actually revoke (bridge-local method), not
+        // just clear the local cache.
+        assertThat(script).contains("'disconnect'")
+    }
+
+    @Test
+    fun `script providers carry no key material and no plaintext key paths`() {
+        val script = RoomWalletScript.SCRIPT
+        // The script may only ever see addresses and signatures; nothing in
+        // it may name key-material concepts.
+        for (forbidden in listOf("privateKey", "mnemonic", "seedPhrase", "secretKey", "signingKey")) {
+            assertThat(script).doesNotContain(forbidden)
+        }
+        // Every signing path goes through the bridge's async request; the
+        // script never resolves a signature locally.
+        assertThat(script).contains("'request'")
+    }
+
+    @Test
+    fun `tronWeb shim documents what it does not implement`() {
+        val script = RoomWalletScript.SCRIPT
+        // The shim is honest about being a subset of the real TronWeb SDK.
+        assertThat(script).contains("DELIBERATE LIMIT")
+        assertThat(script).contains("defaultAddress")
+        assertThat(script).contains("toSun")
+        assertThat(script).contains("fromSun")
     }
 }

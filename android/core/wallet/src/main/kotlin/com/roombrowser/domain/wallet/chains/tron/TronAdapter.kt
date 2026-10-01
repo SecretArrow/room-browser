@@ -1,5 +1,7 @@
 package com.roombrowser.domain.wallet.chains.tron
 
+import com.roombrowser.domain.wallet.chains.DerivationPathIndex
+import com.roombrowser.domain.wallet.chains.DerivationPathParsing
 import com.roombrowser.domain.wallet.crypto.Base58
 import com.roombrowser.domain.wallet.crypto.Bip32PrivateKey
 import com.roombrowser.domain.wallet.crypto.Hashes
@@ -38,7 +40,7 @@ import java.math.BigInteger
  * keccak256("\x19TRON Signed Message:\n" + len + data) (verified against the
  * tronweb package source).
  */
-class TronAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) {
+class TronAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationPathIndex {
 
     fun chainType(): ChainType = ChainType.TRON
 
@@ -50,6 +52,20 @@ class TronAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) {
             address = addressFromPrivateKey(key.key),
             path = path
         )
+    }
+
+    /**
+     * Inverts [deriveAccount]: m/44'/195'/0'/0/{index}. TRON uses the plain
+     * BIP44 shape, so the index is the unhardened FINAL level.
+     */
+    override fun derivationIndexOf(path: String): Int? {
+        val levels = DerivationPathParsing.levels(path) ?: return null
+        if (levels.size != 5) return null
+        if (!DerivationPathParsing.isLevel(levels[0], 44)) return null
+        if (!DerivationPathParsing.isLevel(levels[1], 195)) return null
+        if (!DerivationPathParsing.isLevel(levels[2], 0)) return null
+        if (!DerivationPathParsing.isLevel(levels[3], 0)) return null
+        return DerivationPathParsing.levelValue(levels[4])
     }
 
     fun addressFromPrivateKey(privateKey: BigInteger): String {
@@ -372,7 +388,7 @@ class TronAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) {
             chainType = ChainType.TRON,
             chainId = "shasta",
             name = "TRON Shasta Testnet",
-            rpcUrls = listOf("https://api.shastatrpc.io"),
+            rpcUrls = listOf("https://api.shasta.trongrid.io"),
             nativeSymbol = "TRX",
             nativeDecimals = 6,
             explorerUrl = "https://shasta.tronscan.org",

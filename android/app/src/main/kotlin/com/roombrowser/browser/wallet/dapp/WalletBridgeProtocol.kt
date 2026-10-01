@@ -125,8 +125,11 @@ object WalletBridgeProtocol {
     /** Non-EVM message signature (solana/aptos/sui). */
     const val METHOD_SIGN_MESSAGE = "signMessage"
 
-    /** EIP-712 typed-data signature (v4; v3 treated identically). */
+    /** EIP-712 typed-data signature (v4). */
     const val METHOD_SIGN_TYPED_DATA_V4 = "eth_signTypedData_v4"
+
+    /** EIP-712 typed-data signature (v3 — same signer, older payload shape). */
+    const val METHOD_SIGN_TYPED_DATA_V3 = "eth_signTypedData_v3"
 
     /** Legacy EIP-712 alias. */
     const val METHOD_SIGN_TYPED_DATA = "eth_signTypedData"
@@ -149,13 +152,94 @@ object WalletBridgeProtocol {
     /** Sui sign + execute. */
     const val METHOD_SIGN_AND_EXECUTE_TX_BLOCK = "signAndExecuteTransactionBlock"
 
+    /** Sui wallet-standard alias for [METHOD_SIGN_AND_EXECUTE_TX_BLOCK]. */
+    const val METHOD_SIGN_AND_EXECUTE_TX = "signAndExecuteTransaction"
+
+    /** Sui wallet-standard personal-message name (the shim's own name is [METHOD_SIGN_MESSAGE]). */
+    const val METHOD_SIGN_PERSONAL_MESSAGE = "signPersonalMessage"
+
+    /** Sign WITHOUT broadcasting — Aptos serialized tx, TRON transaction object. */
+    const val METHOD_SIGN_TRANSACTION = "signTransaction"
+
+    /** Cosmos (Keplr) connect. */
+    const val METHOD_COSMOS_ENABLE = "enable"
+
+    /** Cosmos (Keplr) key read — permitted hosts only, never a prompt. */
+    const val METHOD_COSMOS_GET_KEY = "getKey"
+
+    /** Cosmos SIGN_MODE_LEGACY_AMINO_JSON signature (sign-only). */
+    const val METHOD_COSMOS_SIGN_AMINO = "signAmino"
+
+    /** Cosmos SIGN_MODE_DIRECT signature (sign-only). */
+    const val METHOD_COSMOS_SIGN_DIRECT = "signDirect"
+
+    /** Cosmos off-chain message signature. */
+    const val METHOD_COSMOS_SIGN_ARBITRARY = "signArbitrary"
+
+    /** dApp-initiated disconnect: revokes the host's permission for the chain. */
+    const val METHOD_DISCONNECT = "disconnect"
+
     /** Methods that mean "connect this host" for [call.chainType]. */
     val CONNECT_METHODS: Set<String> = setOf(
         METHOD_ETH_REQUEST_ACCOUNTS,
         METHOD_CONNECT,
         METHOD_REQUEST_ACCOUNTS,
-        METHOD_TRON_REQUEST_ACCOUNTS
+        METHOD_TRON_REQUEST_ACCOUNTS,
+        METHOD_COSMOS_ENABLE
     )
+
+    /**
+     * Methods the BRIDGE answers itself (permission bookkeeping and the
+     * permitted-account read) — they never reach [buildDappRequest], so they
+     * are routable even though no builder branch names them.
+     */
+    val BRIDGE_LOCAL_METHODS: Set<String> = setOf(
+        METHOD_ETH_ACCOUNTS,
+        METHOD_COSMOS_GET_KEY,
+        METHOD_DISCONNECT
+    )
+
+    /**
+     * The canonical method set recorded with a Connect permission. This is
+     * the SINGLE source of truth for "what this wallet advertises" — the
+     * engine grants exactly this list, so every advertised method must
+     * either have a [buildDappRequest] branch or be bridge-local
+     * ([BRIDGE_LOCAL_METHODS]); advertising anything else would hand the
+     * dApp a promise the wallet cannot keep. `WalletBridgeProtocolTest`
+     * enforces that invariant for every chain.
+     *
+     * Deliberately absent (the adapters can do it, this wallet does not
+     * route it yet): `eth_signTransaction` (sign-without-broadcast),
+     * Solana/Sui `signTransaction`, Bitcoin `signTransaction` — the engine
+     * has no sign-only path for those chains.
+     */
+    fun grantedMethodsFor(chainType: ChainType): List<String> = when (chainType) {
+        ChainType.EVM -> listOf(
+            METHOD_ETH_ACCOUNTS, METHOD_ETH_REQUEST_ACCOUNTS, METHOD_PERSONAL_SIGN,
+            METHOD_SIGN_TYPED_DATA_V3, METHOD_SIGN_TYPED_DATA_V4,
+            METHOD_SEND_TRANSACTION, METHOD_SWITCH_CHAIN, METHOD_ADD_CHAIN
+        )
+        ChainType.SOLANA -> listOf(
+            METHOD_CONNECT, METHOD_SIGN_MESSAGE, METHOD_SIGN_AND_SEND_TRANSACTION,
+            METHOD_DISCONNECT
+        )
+        ChainType.APTOS -> listOf(
+            METHOD_CONNECT, METHOD_SIGN_MESSAGE, METHOD_SIGN_TRANSACTION,
+            METHOD_SIGN_AND_SUBMIT_TRANSACTION
+        )
+        ChainType.SUI -> listOf(
+            METHOD_CONNECT, METHOD_SIGN_MESSAGE, METHOD_SIGN_PERSONAL_MESSAGE,
+            METHOD_SIGN_AND_EXECUTE_TX_BLOCK, METHOD_SIGN_AND_EXECUTE_TX
+        )
+        ChainType.COSMOS -> listOf(
+            METHOD_COSMOS_ENABLE, METHOD_COSMOS_GET_KEY, METHOD_COSMOS_SIGN_ARBITRARY,
+            METHOD_COSMOS_SIGN_AMINO, METHOD_COSMOS_SIGN_DIRECT
+        )
+        ChainType.BITCOIN -> listOf(METHOD_CONNECT, METHOD_SIGN_MESSAGE)
+        ChainType.TRON -> listOf(
+            METHOD_CONNECT, METHOD_SIGN_MESSAGE, METHOD_SIGN_TRANSACTION
+        )
+    }
 
     /** JSON-RPC server-error-range code used when a flood is shed (never a 4xxx user code). */
     const val CODE_RATE_LIMITED = -32005
@@ -166,10 +250,14 @@ object WalletBridgeProtocol {
     /**
      * The permission key the bridge queries [com.roombrowser.browser.wallet.WalletEngineApi.isDappPermitted]
      * with for a silent connect auto-approve: EVM dApps grant per
-     * `eth_requestAccounts`, the other chain families per `connect`.
+     * `eth_requestAccounts`, Cosmos per Keplr's `enable`, the other chain
+     * families per `connect`.
      */
-    fun permissionMethodFor(chainType: ChainType): String =
-        if (chainType == ChainType.EVM) METHOD_ETH_REQUEST_ACCOUNTS else METHOD_CONNECT
+    fun permissionMethodFor(chainType: ChainType): String = when (chainType) {
+        ChainType.EVM -> METHOD_ETH_REQUEST_ACCOUNTS
+        ChainType.COSMOS -> METHOD_COSMOS_ENABLE
+        else -> METHOD_CONNECT
+    }
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -363,8 +451,17 @@ object WalletBridgeProtocol {
             }
         }
 
-        if (method == METHOD_SIGN_MESSAGE) {
+        if (method == METHOD_SIGN_MESSAGE || method == METHOD_SIGN_ARBITRARY ||
+            method == METHOD_SIGN_PERSONAL_MESSAGE
+        ) {
+            val isSuiAlias = method == METHOD_SIGN_PERSONAL_MESSAGE
             if (call.chainType == ChainType.EVM) return invalidParams("signMessage is not an EVM method")
+            if (isSuiAlias && call.chainType != ChainType.SUI) {
+                return invalidParams("signPersonalMessage is Sui-only")
+            }
+            if (method == METHOD_SIGN_ARBITRARY && call.chainType != ChainType.COSMOS) {
+                return invalidParams("signArbitrary is Cosmos-only")
+            }
             val obj = params as? JsonObject ?: return invalidParams("signMessage expects a params object")
             val messageElement = obj["message"] ?: return invalidParams("signMessage is missing a message")
             when (val decoded = decodeMessageParam(messageElement)) {
@@ -384,7 +481,9 @@ object WalletBridgeProtocol {
             }
         }
 
-        if (method == METHOD_SIGN_TYPED_DATA_V4 || method == METHOD_SIGN_TYPED_DATA) {
+        if (method == METHOD_SIGN_TYPED_DATA_V4 || method == METHOD_SIGN_TYPED_DATA_V3 ||
+            method == METHOD_SIGN_TYPED_DATA
+        ) {
             if (call.chainType != ChainType.EVM) return invalidParams("typed data is EVM-only")
             val pair = typedDataParams(params)
                 ?: return invalidParams("typed-data signing expects params [address, typedData]")
@@ -430,9 +529,67 @@ object WalletBridgeProtocol {
             return buildChainSendTransaction(call, dappId, host, params, activeNetworkId, fallbackAddress)
         }
 
-        if (method == METHOD_SIGN_AND_EXECUTE_TX_BLOCK) {
+        if (method == METHOD_SIGN_AND_EXECUTE_TX_BLOCK || method == METHOD_SIGN_AND_EXECUTE_TX) {
             if (call.chainType != ChainType.SUI) return invalidParams("signAndExecuteTransactionBlock is Sui-only")
             return buildChainSendTransaction(call, dappId, host, params, activeNetworkId, fallbackAddress)
+        }
+
+        // -- sign WITHOUT broadcasting -------------------------------------
+        if (method == METHOD_SIGN_TRANSACTION) {
+            return when (call.chainType) {
+                // TronLink hands over the raw transaction object; the engine
+                // signs it and BROADCASTS (its TRON dispatch has no sign-only
+                // path), so the returned result is the txid.
+                ChainType.TRON -> {
+                    val tx = params as? JsonObject
+                        ?: return invalidParams("signTransaction expects a transaction object")
+                    buildChainSendTransaction(call, dappId, host, tx, activeNetworkId, fallbackAddress)
+                }
+                // Aptos `signTransaction`: the engine's Aptos dispatch signs a
+                // serialized tx (`txBytes`) and returns the signature WITHOUT
+                // submitting it.
+                ChainType.APTOS -> {
+                    val obj = params as? JsonObject
+                        ?: return invalidParams("signTransaction expects a params object")
+                    if (obj["txBytes"] == null) {
+                        return invalidParams("signTransaction expects {txBytes} for Aptos")
+                    }
+                    buildChainSendTransaction(call, dappId, host, obj, activeNetworkId, fallbackAddress)
+                }
+                else -> invalidParams("signTransaction is not supported for this chain")
+            }
+        }
+
+        // -- Cosmos (Keplr) sign-only --------------------------------------
+        if (method == METHOD_COSMOS_SIGN_DIRECT) {
+            if (call.chainType != ChainType.COSMOS) return invalidParams("signDirect is Cosmos-only")
+            val obj = params as? JsonObject ?: return invalidParams("signDirect expects a params object")
+            val bodyBytes = base64Param(obj["bodyBytes"])
+                ?: return invalidParams("signDirect is missing bodyBytes")
+            val authInfoBytes = base64Param(obj["authInfoBytes"])
+                ?: return invalidParams("signDirect is missing authInfoBytes")
+            val chainId = obj.str("chainId")?.takeIf { it.isNotBlank() }
+                ?: return invalidParams("signDirect is missing chainId")
+            val txJson = buildJsonObject {
+                put("signOnly", true)
+                put("bodyBytes", bodyBytes)
+                put("authInfoBytes", authInfoBytes)
+                put("chainId", chainId)
+                put("accountNumber", obj.str("accountNumber") ?: "0")
+            }.toString()
+            return buildCosmosSignOnly(call, dappId, host, obj, activeNetworkId, fallbackAddress, txJson)
+        }
+
+        if (method == METHOD_COSMOS_SIGN_AMINO) {
+            if (call.chainType != ChainType.COSMOS) return invalidParams("signAmino is Cosmos-only")
+            val obj = params as? JsonObject ?: return invalidParams("signAmino expects a params object")
+            val signDoc = obj["signDoc"] as? JsonObject
+                ?: return invalidParams("signAmino expects a {signDoc} JSON object")
+            val txJson = buildJsonObject {
+                put("signOnly", true)
+                put("aminoSignDoc", signDoc.toString())
+            }.toString()
+            return buildCosmosSignOnly(call, dappId, host, obj, activeNetworkId, fallbackAddress, txJson)
         }
 
         // -- networks -----------------------------------------------------
@@ -483,6 +640,61 @@ object WalletBridgeProtocol {
         return DappBuildResult.Ok(
             DappRequest.SendTransaction(dappId, host, call.chainType, networkId, account, obj.toString(), null)
         )
+    }
+
+    /**
+     * Shared builder for the Cosmos sign-only families (signDirect /
+     * signAmino). These still travel as a [DappRequest.SendTransaction]
+     * through the SAME confirmation sheet/bio gate as every other signing
+     * request — the engine's Cosmos dispatch sees `signOnly` in the params
+     * and returns a signature instead of broadcasting.
+     *
+     * The Keplr signer is honoured when the dApp names one (a sign doc is
+     * only valid for the account it was built for); otherwise the profile's
+     * primary Cosmos account is used.
+     */
+    private fun buildCosmosSignOnly(
+        call: WalletDappCall,
+        dappId: String,
+        host: String,
+        params: JsonObject,
+        activeNetworkId: String?,
+        fallbackAddress: String?,
+        txJson: String
+    ): DappBuildResult {
+        val networkId = activeNetworkId
+            ?: return DappBuildResult.Invalid(
+                WalletBridgeError(WalletBridgeError.CHAIN_DISCONNECTED, "No active Cosmos network")
+            )
+        val account = params.str("signer")?.takeIf { it.isNotBlank() }
+            ?: fallbackAddress?.takeIf { it.isNotBlank() }
+            ?: return DappBuildResult.Invalid(
+                WalletBridgeError(WalletBridgeError.UNAUTHORIZED, "No Cosmos account available")
+            )
+        return DappBuildResult.Ok(
+            DappRequest.SendTransaction(dappId, host, call.chainType, networkId, account, txJson, null)
+        )
+    }
+
+    /**
+     * A binary sign-doc field (Keplr sends Uint8Array): base64 text passes
+     * through, a JSON array of byte values is encoded, anything else is
+     * rejected. The page-side provider does the Uint8Array -> base64
+     * conversion; the array form is accepted for a page calling the
+     * interface directly.
+     */
+    private fun base64Param(element: JsonElement?): String? = when (element) {
+        is JsonPrimitive -> if (element.isString) element.content.takeIf { it.isNotBlank() } else null
+        is JsonArray -> {
+            val bytes = ByteArray(element.size)
+            for ((index, item) in element.withIndex()) {
+                val value = (item as? JsonPrimitive)?.contentOrNull?.toIntOrNull() ?: return null
+                if (value < 0 || value > 255) return null
+                bytes[index] = value.toByte()
+            }
+            Base64.getEncoder().encodeToString(bytes)
+        }
+        else -> null
     }
 
     /** personal_sign params: `[data, address]` or `{message, address}` (extra keys tolerated). */
@@ -598,6 +810,25 @@ object WalletBridgeProtocol {
     /** The page-visible value of `eth_accounts` for a permitted host. */
     fun accountsResult(addresses: List<String>): String =
         JsonArray(addresses.map { JsonPrimitive(it) }).toString()
+
+    /**
+     * The page-visible value of Keplr's `getKey` for a permitted host: the
+     * `Key` shape Keplr dApps read. `pubKey` is NULL on purpose — the engine
+     * never hands key material (or anything derived from a private key except
+     * a signature) to the bridge, so this wallet cannot publish the compressed
+     * public key. A dApp that needs it for offline fee/sign-doc construction
+     * must either fetch the signer's pubkey from the chain or use
+     * signAmino/signDirect, which the wallet answers with a real signature.
+     */
+    fun keplrKeyResult(address: String): String = buildJsonObject {
+        put("name", "Room Browser")
+        put("algo", "secp256k1")
+        put("pubKey", JsonNull)
+        put("address", address)
+        put("bech32Address", address)
+        put("isNanoLedger", false)
+        put("isKeystone", false)
+    }.toString()
 
     /**
      * The full `evaluateJavascript` call that settles one page promise:

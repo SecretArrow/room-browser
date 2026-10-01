@@ -258,7 +258,30 @@ class BrowserViewModel(
         private set
 
     private val clientCallbacks = object : RoomWebViewClient.Callbacks {
-        override fun currentUrlHost(): String? = UrlIntelligence.hostOf(pageState.url)
+        /**
+         * The page host a sub-resource of [view] is judged against.
+         *
+         * shouldInterceptRequest fires for every engine, background tabs
+         * included, so the answer has to come from the engine that fired.
+         * The active engine is the one case where there is a fresher source
+         * than the reverse index: `pageState.url` is updated the moment its
+         * page commits, while the index is refreshed on the persistence
+         * funnel. For any other engine the owner's indexed URL is the only
+         * correct answer — the active tab's URL is a different page.
+         *
+         * The `?: pageState.url` is a deliberate fallback, not a preference:
+         * an engine that owns no session (destroyed, or mid-teardown) has no
+         * indexed URL, and every sub-resource it is still fetching must keep
+         * being judged rather than silently unblocked.
+         */
+        override fun pageHostFor(view: WebView): String? {
+            val url = if (view === activeWebView) {
+                pageState.url
+            } else {
+                tabManager.pageUrlFor(view) ?: pageState.url
+            }
+            return UrlIntelligence.hostOf(url)
+        }
         override fun siteSettingFor(host: String): SiteSettingEntity? = siteSettingsSnapshot[host]
         override fun recordBlockEvent(host: String, category: String) {
             recordBlock(host, category)
@@ -276,8 +299,19 @@ class BrowserViewModel(
         override fun onSuspiciousSite(url: String, signals: List<String>) {
             emitMessage("Caution: ${signals.joinToString()}")
         }
-        override fun onPageStarted(url: String) {
-            Log.d(NAV_TAG, "onPageStarted url=$url")
+        override fun onPageStarted(view: WebView, url: String) {
+            // [view] is the engine that fired: everything below belongs to
+            // the tab that OWNS it. pageState is the ACTIVE tab's view state
+            // and is only ever written while the firing engine IS the active
+            // one (a background tab's load must never repaint this tab).
+            val owner = tabManager.idFor(view) ?: return
+            Log.d(NAV_TAG, "onPageStarted url=$url active=${view === activeWebView}")
+            if (view !== activeWebView) {
+                // A background tab navigating: the URL belongs to ITS row
+                // (title stays as stored — the new document has none yet).
+                persistTab(owner, url)
+                return
+            }
             lastPageEvent = PageEvent.Started(url, SystemClock.elapsedRealtime())
             pageError = null
             pageState = pageState.copy(url = url, loading = true, progress = 5, isHomepage = false)
@@ -287,24 +321,49 @@ class BrowserViewModel(
             // itself a navigation, and the user must still be able to save.
             invalidateVaultOfferOnNavigation()
         }
-        override fun onPageFinished(url: String, title: String) {
+        override fun onPageFinished(view: WebView, url: String, title: String) {
+            // ROUTING: the finish lands on the tab that OWNS the firing
+            // engine. pageState / pageError / thumbnails / shields belong to
+            // the ACTIVE tab only — a background tab's load must never write
+            // into them nor into the active tab's row (the cross-tab
+            // contamination: A finishing while B was active stamped A's
+            // url/title onto B and flipped the omnibox back to A).
+            val owner = tabManager.idFor(view) ?: return
+            val active = view === activeWebView
             // A freshly created WebView can fire a LATE finish for its
             // INITIAL about:blank commit at first attach — AFTER a real
             // navigation already started. (CI 75822ed: the artifact finish
             // flagged the tab as a homepage mid-load and the page content
             // swapped away; the real navigation never completed on screen.)
             // The artifact is ONLY meaningful while the tab still belongs
-            // to the start page or to an EXPLICIT about:blank navigation
-            // (that path arrives with pageState.url == "about:blank" from
-            // onPageStarted). The check is deliberately TITLE-AGNOSTIC:
-            // WebClients passes `view.title ?: url`, so the artifact can
-            // carry "about:blank" as its title and a title-based test
-            // would never fire. Otherwise it is a stale artifact: drop it
-            // and let the real page's finish land.
+            // to the start page or to an EXPLICIT about:blank navigation.
+            // The committed URL must be THIS tab's — pageState.url is the
+            // ACTIVE tab's and says nothing about another tab's commit.
+            // The check is deliberately TITLE-AGNOSTIC: WebClients passes
+            // `view.title ?: url`, so the artifact can carry "about:blank"
+            // as its title and a title-based test would never fire.
+            // Otherwise it is a stale artifact: drop it and let the real
+            // page's finish land.
+            val committed = if (active) {
+                pageState.url
+            } else {
+                tabs.firstOrNull { it.id == owner }?.url ?: ""
+            }
             if (url == "about:blank" &&
-                pageState.url != "about:home" && pageState.url != "about:blank"
+                committed != "about:home" && committed != "about:blank"
             ) {
-                Log.d(NAV_TAG, "dropped stale about:blank finish (committed=${pageState.url})")
+                Log.d(NAV_TAG, "dropped stale about:blank finish (committed=$committed)")
+                return
+            }
+            if (!active) {
+                // A background tab finished: persist into ITS OWN row (the
+                // row is the only store that outlives the engine) and record
+                // the visit under ITS privacy flag — never the active tab's.
+                Log.d(NAV_TAG, "onPageFinished (background) url=$url title=$title")
+                persistTab(owner, url, title)
+                if (tabs.firstOrNull { it.id == owner }?.isPrivate != true) {
+                    recordVisit(url, title)
+                }
                 return
             }
             lastPageEvent = PageEvent.Finished(url, title, SystemClock.elapsedRealtime())
@@ -317,21 +376,29 @@ class BrowserViewModel(
                 secure = url.startsWith("https://"),
                 isHomepage = url == "about:home" || (url == "about:blank" && title.isBlank())
             )
-            persistCurrentTab(url, title)
+            // Routed by the engine's OWNER, never by "whatever is active": the
+            // two coincide here, but the id comes from the view that fired.
+            persistTab(owner, url, title, touch = true)
             if (!pageState.isPrivate) recordVisit(url, title)
             captureThumbnail()
             refreshShields()
             refreshStats()
         }
-        override fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean) {
+        override fun onHistoryChanged(view: WebView, canGoBack: Boolean, canGoForward: Boolean) {
             // The single source of truth for the Back / Forward buttons and
             // the system-Back web-history branch. Without this the nav bar
             // stayed grey forever (canGoBack was never reported).
+            // Only the ACTIVE engine owns that UI state: a background tab's
+            // history lives inside its own WebView.
+            if (view !== activeWebView) return
             if (pageState.canGoBack != canGoBack || pageState.canGoForward != canGoForward) {
                 pageState = pageState.copy(canGoBack = canGoBack, canGoForward = canGoForward)
             }
         }
-        override fun onReceivedError(url: String, errorCode: Int, description: String?) {
+        override fun onReceivedError(view: WebView, url: String, errorCode: Int, description: String?) {
+            // The error surface belongs to the ACTIVE tab — a background
+            // failure must not paint an error page over the page on screen.
+            if (view !== activeWebView) return
             Log.d(NAV_TAG, "onReceivedError url=$url code=$errorCode")
             pageError = when (errorCode) {
                 android.webkit.WebViewClient.ERROR_HOST_LOOKUP -> PageError.DnsFailure(url)
@@ -341,7 +408,8 @@ class BrowserViewModel(
             }
             pageState = pageState.copy(loading = false)
         }
-        override fun onSslError(url: String, error: SslError) {
+        override fun onSslError(view: WebView, url: String, error: SslError) {
+            if (view !== activeWebView) return
             pageError = PageError.Ssl(url, sslErrorText(error))
             pageState = pageState.copy(loading = false)
         }
@@ -351,10 +419,19 @@ class BrowserViewModel(
     }
 
     private val chromeCallbacks = object : RoomWebChromeClient.ChromeCallbacks {
-        override fun onProgress(progress: Int) {
+        override fun onProgress(view: WebView, progress: Int) {
+            // Progress is pure ACTIVE-tab UI state — a background engine's
+            // progress must not drive the bar the user is watching.
+            if (view !== activeWebView) return
             pageState = pageState.copy(progress = progress, loading = progress < 100)
         }
-        override fun onTitleChanged(title: String) {
+        override fun onTitleChanged(view: WebView, title: String) {
+            // Only the ACTIVE engine's title paints the omnibox. A background
+            // tab's title is NOT lost: its onPageFinished persists url+title
+            // in ONE write to its own row — writing it here as well would be
+            // a second, racing read-modify-write on that same row (it could
+            // land after the finish and stamp the PRE-navigation URL back).
+            if (view !== activeWebView) return
             pageState = pageState.copy(title = title)
         }
         override fun onShowCustomView(view: View, callback: android.webkit.WebChromeClient.CustomViewCallback) {
@@ -367,35 +444,64 @@ class BrowserViewModel(
             customViewCallback = null
         }
         override fun onPermissionRequest(
+            view: WebView?,
             request: PermissionRequest,
             kinds: Set<PermissionKind>,
             originUrl: String
         ) {
+            // A background engine must not raise a grant sheet over the tab the
+            // user is looking at. Answered with an explicit DENY rather than
+            // left alone: an unanswered PermissionRequest leaves the page's
+            // request pending for the life of the document.
+            if (view == null || view !== activeWebView) {
+                request.deny()
+                return
+            }
             pendingPermission = PendingPermission(request, kinds, originUrl)
         }
         override fun onGeolocationPermissions(
+            view: WebView?,
             origin: String?,
             callback: android.webkit.GeolocationPermissions.Callback
         ) {
+            // Same rule as permissions: deny for a background engine instead of
+            // leaving the callback un-invoked.
+            if (view == null || view !== activeWebView) {
+                callback.invoke(origin, false, false)
+                return
+            }
             pendingGeolocation = PendingGeolocation(
                 origin, callback,
                 origin?.let { UrlIntelligence.hostOf(it) } ?: ""
             )
         }
         override fun onFileChooserIntent(
+            view: WebView?,
             intent: android.content.Intent,
             callback: RoomWebChromeClient.FileChooserResult
         ) {
+            // A file input waiting on a picker that will never open is worse
+            // than one told no, so a background engine's request is cancelled.
+            if (view == null || view !== activeWebView) {
+                callback.onResult(null)
+                return
+            }
             fileChooserLauncherIntent = intent
             fileChooserResult = callback
         }
-        override fun openNewWindow(url: String) {
+        override fun openNewWindow(view: WebView?, url: String) {
+            // The second of two checks: onCreateWindow already refuses a popup
+            // from a background engine before the transport is built, but the
+            // active tab can change while the popup's URL is being resolved, so
+            // ownership is re-checked here against the tab that actually asked.
+            if (view == null || view !== activeWebView) return
             viewModelScope.launch { openNewTab(url, isPrivate = false) }
         }
-        override fun onPopupBlocked() {
+        override fun onPopupBlocked(view: WebView?) {
             // handled by the WebViewClient path
         }
         override fun currentUrl(): String? = pageState.url
+        override fun isActiveEngine(view: WebView): Boolean = view === activeWebView
     }
 
     var fileChooserLauncherIntent: android.content.Intent? = null
@@ -1079,11 +1185,31 @@ class BrowserViewModel(
         }
     }
 
-    private fun persistCurrentTab(url: String, title: String) {
-        val id = activeTabId ?: return
+    /**
+     * Persists [url] — and [title] when the caller knows it — onto the tab
+     * with this id: the tab that OWNS the engine that fired, which is NOT
+     * necessarily the active one. A null [title] keeps the stored one (a
+     * navigation that just started has no new document title yet).
+     * [touch] stamps "last viewed" — a USER action (the active tab), while a
+     * background tab merely loading is not one and must not reorder recency.
+     */
+    private fun persistTab(id: String, url: String, title: String? = null, touch: Boolean = false) {
+        // Refresh the reverse index BEFORE the DB write: shouldInterceptRequest
+        // reads the owning engine's URL from it to judge sub-resources, and a
+        // background tab whose index entry still held the previous page would
+        // have its cross-site decisions made against the wrong host. Called
+        // here, on the callback's own (main) thread — the launch below may
+        // suspend and resume on another.
+        tabManager.setPageUrl(id, url)
         viewModelScope.launch {
             val tab = browserRepo.tab(id) ?: return@launch
-            browserRepo.updateTab(tab.copy(url = url, title = title, lastViewedAt = System.currentTimeMillis()))
+            browserRepo.updateTab(
+                if (touch) {
+                    tab.copy(url = url, title = title ?: tab.title, lastViewedAt = System.currentTimeMillis())
+                } else {
+                    tab.copy(url = url, title = title ?: tab.title)
+                }
+            )
         }
     }
 
@@ -1571,10 +1697,17 @@ class BrowserViewModel(
      * focused. Holds decrypted [SavedCredential]s (the sheet itself only ever
      * RENDERS username/title/domain — passwords are passed straight to the
      * page fill and nowhere else).
+     *
+     * [locked] marks the variant shown when a login field is focused while
+     * the vault is locked for this process: [credentials] is then ALWAYS
+     * empty — the sheet must not reveal whether anything is stored, let alone
+     * what — and the only way forward is the user's own unlock tap
+     * ([unlockVaultForOffer]).
      */
     data class VaultOffer(
         val host: String,
-        val credentials: List<SavedCredential>
+        val credentials: List<SavedCredential>,
+        val locked: Boolean = false
     )
 
     /**
@@ -1711,16 +1844,26 @@ class BrowserViewModel(
     }
 
     /**
-     * The user focused a password field on [webView]. Offers appear ONLY for
-     * an already-unlocked session: a locked vault answers with silence —
-     * focusing a login field must NEVER trigger a biometric prompt. Only the
-     * ACTIVE tab's engine may surface UI (a background tab's page cannot).
+     * The user focused a password field on [webView]. Only the ACTIVE tab's
+     * engine may surface UI (a background tab's page cannot).
+     *
+     * LOCKED VAULT: the vault starts locked in every ':browser' process, so
+     * treating "locked" as "say nothing" made the whole flow (open site ->
+     * tap the password field -> fill) silently do NOTHING after every process
+     * death. The locked answer is now the offer sheet's locked variant: it
+     * carries NO credentials and no counts — a locked vault still reveals
+     * nothing about what is stored — and its single action is the user's own
+     * unlock tap. The biometric gate is never started from here: focusing a
+     * login field must never raise a prompt by itself, only the tap may.
      */
     private fun handleVaultRequest(webView: WebView, host: String) {
         if (webView !== activeWebView) return
-        if (!graph.credentialRepo.isUnlocked.value) return
         if (vaultOffer != null) return
         if (host in dismissedOfferHosts) return
+        if (!graph.credentialRepo.isUnlocked.value) {
+            vaultOffer = VaultOffer(host, emptyList(), locked = true)
+            return
+        }
         viewModelScope.launch {
             val matches = runCatching {
                 graph.credentialRepo.findForDomain(profileId, host)
@@ -1728,6 +1871,60 @@ class BrowserViewModel(
             // The active tab may have changed while the lookup ran.
             if (webView !== activeWebView || matches.isEmpty()) return@launch
             vaultOffer = VaultOffer(host, matches)
+        }
+    }
+
+    /**
+     * "Unlock" on the LOCKED offer sheet. Runs the UI-owned biometric /
+     * device-credential gate (same contract as [savePromptedLogin]: the gate
+     * must genuinely have passed before the repo is told), then unlocks this
+     * process's vault and re-runs the offer so the now-available logins
+     * replace the locked prompt in place.
+     *
+     * SECURITY: this is strictly user-initiated — nothing else in this class
+     * calls it, and a cancelled or failed gate is a no-op ([onFailure] is
+     * deliberately empty: the sheet stays locked and the vault stays locked).
+     */
+    fun unlockVaultForOffer(
+        gateProvider: (onSuccess: () -> Unit, onFailure: () -> Unit) -> Unit
+    ) {
+        val offer = vaultOffer ?: return
+        if (!offer.locked) return
+        // Positional call: a function-type value cannot take named arguments
+        // (K2 prohibits them for function types).
+        if (graph.credentialRepo.isUnlocked.value) {
+            // Another surface unlocked while this sheet was up — no gate needed.
+            rerunVaultOffer(offer.host)
+        } else {
+            gateProvider(
+                {
+                    if (!graph.credentialRepo.isUnlocked.value) {
+                        graph.credentialRepo.unlock()
+                    }
+                    rerunVaultOffer(offer.host)
+                },
+                { /* Stay locked; the sheet keeps its locked state. */ }
+            )
+        }
+    }
+
+    /**
+     * Re-runs the offer lookup for [host] after an unlock, settling the
+     * EXISTING sheet rather than asking the user to focus the field again.
+     * Nothing is shown when the host has no saved logins (an unlocked lookup
+     * that finds nothing is a silent, empty answer — same as the original
+     * path), and a sheet whose host no longer matches (navigation, dismissal,
+     * tab switch) is left alone.
+     */
+    private fun rerunVaultOffer(host: String) {
+        val webView = activeWebView ?: return
+        viewModelScope.launch {
+            val matches = runCatching {
+                graph.credentialRepo.findForDomain(profileId, host)
+            }.getOrNull() ?: return@launch
+            if (webView !== activeWebView) return@launch
+            if (vaultOffer?.host != host) return@launch
+            vaultOffer = if (matches.isEmpty()) null else VaultOffer(host, matches)
         }
     }
 
@@ -1790,6 +1987,10 @@ class BrowserViewModel(
      */
     fun fillVaultCredential(credential: SavedCredential) {
         val offer = vaultOffer ?: return
+        // The locked variant carries no credentials, so there is nothing to
+        // fill; refuse it explicitly rather than trusting the sheet to have
+        // hidden its rows.
+        if (offer.locked) return
         val webView = activeWebView
         val currentHost = webView?.url?.let { UrlIntelligence.hostOf(it) }
         vaultOffer = null

@@ -2,6 +2,7 @@ package com.roombrowser.browser.ui
 
 import android.app.Activity
 import android.content.Intent
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.FrameLayout
@@ -44,6 +45,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -62,6 +64,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.FragmentActivity
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.domain.engine.UrlIntelligence
@@ -187,19 +192,25 @@ fun BrowserScreen(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            BrowserBottomBar(
-                // THE fix for the 3-button collision: the toolbar is padded
-                // above the system Back / Home / Recents bar (plus display
-                // cutouts in landscape).
-                modifier = Modifier.windowInsetsPadding(
-                    WindowInsets.systemBars
-                        .union(WindowInsets.displayCutout)
-                        .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
-                ),
-                viewModel = viewModel,
-                onOpenTabs = { route = BrowserRoute.Tabs },
-                onShowPageActions = { showPageActions = true }
-            )
+            // HTML5 fullscreen media hides ALL browser chrome: no toolbar
+            // competing with the video for the bottom of the screen. With an
+            // empty bottomBar the Scaffold's content padding collapses, so
+            // the media container below owns the full window height.
+            if (viewModel.customView == null) {
+                BrowserBottomBar(
+                    // THE fix for the 3-button collision: the toolbar is padded
+                    // above the system Back / Home / Recents bar (plus display
+                    // cutouts in landscape).
+                    modifier = Modifier.windowInsetsPadding(
+                        WindowInsets.systemBars
+                            .union(WindowInsets.displayCutout)
+                            .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
+                    ),
+                    viewModel = viewModel,
+                    onOpenTabs = { route = BrowserRoute.Tabs },
+                    onShowPageActions = { showPageActions = true }
+                )
+            }
         }
     ) { padding ->
         Box(
@@ -207,11 +218,18 @@ fun BrowserScreen(
                 .fillMaxSize()
                 .padding(padding)
                 // Below the status bar / beside cutouts: omnibox, tab strip
-                // and every routed screen start INSIDE the safe area.
+                // and every routed screen start INSIDE the safe area — EXCEPT
+                // while HTML5 fullscreen media is showing, where the media
+                // container must fill the whole window (the system bars
+                // themselves are hidden then, see FullscreenMediaHost).
                 .windowInsetsPadding(
-                    WindowInsets.systemBars
-                        .union(WindowInsets.displayCutout)
-                        .only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
+                    if (viewModel.customView != null) {
+                        WindowInsets(0, 0, 0, 0)
+                    } else {
+                        WindowInsets.systemBars
+                            .union(WindowInsets.displayCutout)
+                            .only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
+                    }
                 )
         ) {
             when (route) {
@@ -241,20 +259,11 @@ fun BrowserScreen(
                 )
             }
 
-            // Fullscreen media view
+            // Fullscreen media view (HTML5 onShowCustomView). The scaffold's
+            // chrome is dropped above and the system bars are hidden inside
+            // the host, so the video really is fullscreen.
             viewModel.customView?.let { view ->
-                AndroidView(
-                    factory = { context ->
-                        FrameLayout(context).apply {
-                            layoutParams = ViewGroup.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT
-                            )
-                            addView(view)
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
+                FullscreenMediaHost(view = view, activity = activity)
             }
         }
     }
@@ -362,16 +371,30 @@ fun BrowserScreen(
 
     // ---------- Password vault sheets (render points only) ----------
     // The offer appears when the user focuses a login form on a page whose
-    // host family has saved logins (vault unlocked for the session). The
-    // save prompt appears after a login form submits — including while the
-    // vault is LOCKED; the biometric gate for "Save" needs an Activity,
-    // which the ViewModel does not have, so the sheet's Save action borrows
+    // host family has saved logins (vault unlocked for the session) — or in
+    // its LOCKED variant when the vault is still locked, in which case the
+    // only action is the user's explicit unlock (never an automatic prompt).
+    // The save prompt appears after a login form submits — including while
+    // the vault is LOCKED; the biometric gate for "Save"/"Unlock" needs an
+    // Activity, which the ViewModel does not have, so those actions borrow
     // this one through a callback (never started from recomposition).
     viewModel.vaultOffer?.let { offer ->
         VaultOfferSheet(
             host = offer.host,
             credentials = offer.credentials,
+            locked = offer.locked,
             onPick = { viewModel.fillVaultCredential(it) },
+            onUnlock = {
+                viewModel.unlockVaultForOffer { onSuccess, onFailure ->
+                    val fragmentActivity = activity as? FragmentActivity
+                    if (fragmentActivity != null) {
+                        BiometricGate.unlock(fragmentActivity, "Password vault", onSuccess, onFailure)
+                    } else {
+                        // No fragment host = no biometric prompt = no unlock.
+                        onFailure()
+                    }
+                }
+            },
             onDismiss = { viewModel.dismissVaultOffer() }
         )
     }
@@ -464,4 +487,48 @@ fun BrowserScreen(
     // NOTE: the profile network warning is NOT a dialog anymore — a pending
     // decision launches the full-screen NetworkWarningActivity (BrowserActivity
     // owns the launch loop; while the gate stands no URL can load).
+}
+
+/**
+ * Hosts the WebView's HTML5 fullscreen view (WebChromeClient.onShowCustomView).
+ *
+ * The media is rendered edge-to-edge in a container that fills the whole
+ * window — the scaffold above drops its bottom bar and its status-bar/cutout
+ * padding while this is composed — and the system status/navigation bars are
+ * hidden through [WindowInsetsControllerCompat]. Only wiring `exitFullscreen`
+ * (as before) left the video letterboxed below the status bar with the
+ * browser toolbar and navigation bar still occupying the bottom.
+ *
+ * The previous [WindowInsetsControllerCompat.getSystemBarsBehavior] is
+ * captured before hiding and restored on exit; the restore also runs from
+ * `onDispose`, so leaving the screen or the activity being recreated while
+ * fullscreen can never strand the app with hidden system bars.
+ */
+@Composable
+private fun FullscreenMediaHost(view: View, activity: Activity) {
+    val window = activity.window
+    DisposableEffect(window) {
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        val previousBehavior = controller.systemBarsBehavior
+        // Swipe reveals the bars transiently instead of pinning them back on.
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+        onDispose {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior = previousBehavior
+        }
+    }
+    AndroidView(
+        factory = { context ->
+            FrameLayout(context).apply {
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                addView(view)
+            }
+        },
+        modifier = Modifier.fillMaxSize()
+    )
 }

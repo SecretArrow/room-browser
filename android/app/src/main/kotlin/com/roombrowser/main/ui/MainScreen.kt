@@ -85,6 +85,7 @@ import com.roombrowser.main.PendingExport
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.ProfileAvatar
 import com.roombrowser.ui.common.RoomBottomSheetShape
+import com.roombrowser.ui.common.RoomSheetHeader
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -675,7 +676,7 @@ private fun OpenWithProfileSheet(
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
         Column(Modifier.padding(horizontal = 16.dp)) {
-            Text("Open with profile", style = MaterialTheme.typography.titleLarge)
+            RoomSheetHeader("Open with profile")
             Text(
                 url,
                 style = MaterialTheme.typography.bodyMedium,

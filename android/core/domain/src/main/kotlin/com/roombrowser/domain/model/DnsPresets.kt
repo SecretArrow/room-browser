@@ -14,9 +14,12 @@ package com.roombrowser.domain.model
  *  - **SYSTEM** — the reset/default state. No preset is applied; the profile
  *    (or the browser-wide setting) resolves DNS the way the OS does.
  *  - **DOH + [dohUrl]** — the preset applied: the profile's `dnsMode` becomes
- *    [DnsMode.DOH] and its `dohUrl` becomes the preset's endpoint. The IPv4 /
- *    IPv6 fields are the same resolver's addresses, kept for display and for
- *    callers that pin the resolver by address instead of by endpoint.
+ *    [DnsMode.DOH] and its `dohUrl` becomes the preset's endpoint. The four
+ *    address fields are the same resolver's own DNS servers: the settings UI
+ *    shows them ([primaryIpv4] in the picker title, all four in the subtitle),
+ *    and `DnsMonitor` passes them to OkHttp as the DoH bootstrap hint so the
+ *    endpoint hostname is resolved by the resolver itself instead of being
+ *    leaked to the OS resolver.
  *  - **custom** — the user's own DoH URL: still [DnsMode.DOH], but with a URL
  *    that is not any preset's `dohUrl`. A preset is a shortcut for the common
  *    choices, not the boundary of what can be entered.

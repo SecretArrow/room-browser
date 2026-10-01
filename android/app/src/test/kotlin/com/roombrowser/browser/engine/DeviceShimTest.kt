@@ -4,6 +4,7 @@ import com.google.common.truth.Truth.assertThat
 import com.roombrowser.domain.model.ClaimedScreen
 import com.roombrowser.domain.model.Device
 import com.roombrowser.domain.model.Devices
+import com.roombrowser.domain.model.WebRtcPolicy
 import org.junit.Test
 
 /**
@@ -11,11 +12,30 @@ import org.junit.Test
  * -shaped context outside the JVM; what a unit test can hold down is the
  * splicing: every placeholder filled, nothing left behind, and a value that
  * cannot break out of the string literal it is written into.
+ *
+ * The WebRTC predicate is held down the same way, by asserting the text of the
+ * one function that makes the decision rather than by running it: there is no
+ * JavaScript engine on this classpath, and pinning the decision where it is
+ * written is what keeps the event filter and the SDP stripper from drifting
+ * apart. A change to the predicate therefore fails these tests on purpose.
  */
 class DeviceShimTest {
 
     private val device = Devices.all.first { it.formFactor == "phone" }
     private val tablet = Devices.all.first { it.formFactor == "tablet" }
+
+    /** The restricted script on its own, which is what the WebRTC tests read. */
+    private fun restricted(): String =
+        DeviceShim.scriptFor(null, null, WebRtcPolicy.RESTRICT_LOCAL_IP)
+
+    /**
+     * How many times [needle] occurs in [haystack]. Used to pin that a decision
+     * is written once and reached from every path that needs it, rather than
+     * copied into each — a count that moves is a call site that moved, which is
+     * exactly what those tests have to be told about.
+     */
+    private fun occurrences(haystack: String, needle: String): Int =
+        haystack.split(needle).size - 1
 
     @Test
     fun `script fills every placeholder`() {
@@ -150,6 +170,190 @@ class DeviceShimTest {
             // One line per statement: nothing in a device field leaked a
             // newline into the script.
             assertThat(js.lines().size).isEqualTo(expectedLines)
+        }
+    }
+
+    @Test
+    fun `the default WebRTC policy installs no script of its own`() {
+        // A profile that never touched the policy reads what it read before
+        // the policy had a script at all: DEFAULT leaves the peer connection
+        // alone, and the parameter's own default is DEFAULT, so a caller that
+        // passes only a device cannot accidentally get a policy applied.
+        val js = DeviceShim.scriptFor(device, null, WebRtcPolicy.DEFAULT)
+        assertThat(js).contains(device.userAgent)
+        assertThat(js).doesNotContain("RTCPeerConnection")
+        assertThat(js).doesNotContain("icecandidate")
+        // No device, no screen, default policy: still nothing at all.
+        assertThat(DeviceShim.scriptFor(null, null, WebRtcPolicy.DEFAULT)).isEmpty()
+    }
+
+    @Test
+    fun `disabling WebRTC takes the peer connection away`() {
+        // An engine built without WebRTC does not publish the constructor, so
+        // the policy removes it rather than leaving an undefined value behind:
+        // a feature test has to answer "no", not "yes, and the first new
+        // will throw". Removing the property is checked here as the literal
+        // the script performs.
+        val js = DeviceShim.scriptFor(null, null, WebRtcPolicy.DISABLED)
+        assertThat(js).contains("remove(window, 'RTCPeerConnection')")
+        assertThat(js).contains("delete target[prop]")
+        assertThat(js).contains("'webkitRTCPeerConnection' in window")
+        // Nothing here can answer a candidate or an SDP read, because there is
+        // no connection left to produce either.
+        assertThat(js).doesNotContain("typ host")
+        assertThat(js).doesNotContain("icecandidate")
+        assertThat(js).doesNotContain("__")
+    }
+
+    @Test
+    fun `restricting the local IP covers both ways a candidate can escape`() {
+        // The marker, and both places a candidate can escape: the event the
+        // page's handler is called with, and the SDP it reads or hands back.
+        // Which host candidates are withheld, and why, is pinned by the tests
+        // that follow.
+        val js = restricted()
+        assertThat(js).contains("var HOST_MARKER = 'typ host';")
+        assertThat(js).contains("onicecandidate")
+        assertThat(js).contains("addEventListener")
+        assertThat(js).contains("setLocalDescription")
+        assertThat(js).contains("'localDescription'")
+        assertThat(js).doesNotContain("__")
+    }
+
+    @Test
+    fun `a host candidate is withheld only when its address is a literal IP`() {
+        // The decision, pinned where it is written: the marker names the
+        // candidates to consider and the address decides, so a host candidate
+        // that carries no address is not a reason to drop anything.
+        val js = restricted()
+        assertThat(js).contains("function withholds(text) {")
+        assertThat(js).contains("return isLiteralAddress(addressToken(text));")
+        // The per-path judgement the shim used to have is gone, not merely
+        // unused: what it asked was the candidate's own type, which reads
+        // "host" for an addressless mDNS candidate too.
+        assertThat(js).doesNotContain("isHostCandidate")
+    }
+
+    @Test
+    fun `an mDNS host candidate survives the filter`() {
+        // Chrome hands out "<uuid>.local" in the address position of a host
+        // candidate before any page code sees it. There is no address in one,
+        // so withholding it buys no privacy, and it is the candidate two peers
+        // on the same network pair over when no STUN or TURN server answers —
+        // the call that fails outright if it is dropped. The type is what the
+        // old shim keyed on, and that is the assertion this pins. A name is
+        // not four dot-separated labels, so the literal test is false for it.
+        val js = restricted()
+        assertThat(js).doesNotContain(".type === 'host'")
+        assertThat(js).contains("if (labels.length !== 4) return false;")
+    }
+
+    @Test
+    fun `an IPv4 literal host candidate is dropped`() {
+        // The address this policy exists to withhold: four numeric labels,
+        // each in range. That is what the predicate requires before it says
+        // "literal", and it is what a dotted-quad address satisfies.
+        val js = restricted()
+        assertThat(js).contains("var labels = token.split('.');")
+        assertThat(js).contains("if (code < 48 || code > 57) return false;")
+        assertThat(js).contains("if (Number(label) > 255) return false;")
+    }
+
+    @Test
+    fun `an IPv6 literal host candidate is dropped, compressed form included`() {
+        // Every IPv6 spelling carries a colon — the compressed "2001:db8::1",
+        // the full form, and the bracketed "[...]" form a zone can be attached
+        // to — so one colon test covers all of them. A predicate that only
+        // knew dotted-quad IPv4 would let every IPv6 literal through, which is
+        // the failure this pins.
+        val js = restricted()
+        assertThat(js).contains("var zone = token.indexOf('%');")
+        assertThat(js).contains("if (token.charAt(0) === '[') return true;")
+        assertThat(js).contains("if (token.indexOf(':') !== -1) return true;")
+    }
+
+    @Test
+    fun `srflx and relay candidates are never withheld`() {
+        // Connectivity survives, asserted rather than described: a candidate
+        // reaches the address test only through a "typ host" marker, and no
+        // other candidate type is named anywhere in the script, so
+        // server-reflexive and relay candidates cannot be dropped — and the
+        // transport policy the page asked for is never overridden. Relay-only
+        // with no TURN server configured would fail every call, which is not
+        // this policy.
+        val js = restricted()
+        assertThat(js).contains("if (at === -1 || !endsMarker(text, at)) return false;")
+        assertThat(js).doesNotContain("typ srflx")
+        assertThat(js).doesNotContain("typ relay")
+        assertThat(js).doesNotContain("iceTransportPolicy")
+    }
+
+    @Test
+    fun `the event filter and the SDP stripper ask the same predicate`() {
+        // One definition, reached from both paths: the event-level spelling
+        // both listeners use, and the SDP stripper. A candidate removed from
+        // one path but not the other still reaches the page, so a second copy
+        // of the judgement is the bug this pins — the address test is called
+        // from exactly one place, and a call site added or moved has to be
+        // counted here deliberately.
+        val js = restricted()
+        assertThat(occurrences(js, "function withholds(")).isEqualTo(1)
+        assertThat(occurrences(js, "withholdsEvent(")).isEqualTo(3)
+        assertThat(occurrences(js, "isLiteralAddress(")).isEqualTo(2)
+        assertThat(js).contains("if (withholdsEvent(event)) return undefined;")
+        assertThat(js).contains("if (line.indexOf('a=candidate:') === 0 && withholds(line)) continue;")
+    }
+
+    @Test
+    fun `a WebRTC policy applies with neither a device nor a screen`() {
+        // The case the engine's early return has to keep: a profile that
+        // presents no device and claims no screen still has a policy, and
+        // dropping the script for those profiles alone would leave most
+        // profiles with a setting that does nothing.
+        val restricted = DeviceShim.scriptFor(null, null, WebRtcPolicy.RESTRICT_LOCAL_IP)
+        assertThat(restricted).isNotEmpty()
+        assertThat(restricted).doesNotContain("userAgentData")
+        assertThat(restricted).doesNotContain("Screen.prototype")
+
+        val disabled = DeviceShim.scriptFor(null, null, WebRtcPolicy.DISABLED)
+        assertThat(disabled).isNotEmpty()
+        assertThat(disabled).doesNotContain("userAgentData")
+        assertThat(disabled).doesNotContain("Screen.prototype")
+    }
+
+    @Test
+    fun `a WebRTC policy combines with the device and the screen`() {
+        val js = DeviceShim.scriptFor(device, ClaimedScreen(393, 852), WebRtcPolicy.RESTRICT_LOCAL_IP)
+        assertThat(js).contains(device.userAgent)
+        assertThat(js).contains("var SCREEN_W = 393;")
+        assertThat(js).contains("var HOST_MARKER = 'typ host';")
+        assertThat(js).doesNotContain("__")
+    }
+
+    @Test
+    fun `the two WebRTC policies produce different scripts`() {
+        val disabled = DeviceShim.scriptFor(null, null, WebRtcPolicy.DISABLED)
+        val restricted = DeviceShim.scriptFor(null, null, WebRtcPolicy.RESTRICT_LOCAL_IP)
+        assertThat(disabled).isNotEqualTo(restricted)
+        // Same policy, same script: a fingerprint that moved between loads
+        // would be worse than one that is simply unusual.
+        assertThat(restricted)
+            .isEqualTo(DeviceShim.scriptFor(null, null, WebRtcPolicy.RESTRICT_LOCAL_IP))
+    }
+
+    @Test
+    fun `no script block carries a dollar sign`() {
+        // The blocks are spliced into Kotlin raw strings, where a "$" is read
+        // as interpolation: the build would fail rather than the page, so the
+        // rule is worth pinning for the new blocks as well as the old ones.
+        val blocks = listOf(
+            DeviceShim.scriptFor(device, ClaimedScreen(393, 852), WebRtcPolicy.DEFAULT),
+            DeviceShim.scriptFor(null, null, WebRtcPolicy.DISABLED),
+            DeviceShim.scriptFor(null, null, WebRtcPolicy.RESTRICT_LOCAL_IP),
+            DeviceShim.scriptFor(device, ClaimedScreen(393, 852), WebRtcPolicy.RESTRICT_LOCAL_IP)
+        )
+        for (js in blocks) {
+            assertThat(js).doesNotContain('$')
         }
     }
 }

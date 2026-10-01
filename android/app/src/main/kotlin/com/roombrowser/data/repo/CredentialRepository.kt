@@ -6,13 +6,18 @@ import com.roombrowser.domain.credentials.CredentialDomainMatcher
 import com.roombrowser.domain.credentials.SavedCredential
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.security.VaultCryptor
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
 
@@ -23,6 +28,20 @@ import java.util.UUID
 class VaultLockedException : IllegalStateException(
     "The password vault is locked; run the unlock gate before using it"
 )
+
+/**
+ * Default unlock lifetime for [CredentialRepository]: 5 minutes. Long enough
+ * to cover the pattern this vault actually serves — unlock, fill or save a
+ * login, carry on browsing — without re-prompting mid-flow; short enough that
+ * decrypted passwords are not sitting in memory for an afternoon of
+ * backgrounded browsing. A repository constructed with a timeout <= 0 keeps
+ * the legacy behaviour (unlocked until locked or the process dies).
+ *
+ * Top-level rather than a companion member on purpose: it is a policy value
+ * shared by the constructor default and by tests, and this form has no
+ * declaration-order or companion-scope subtlety.
+ */
+const val DEFAULT_AUTO_LOCK_TIMEOUT_MS = 5L * 60L * 1000L
 
 /**
  * Per-profile password-manager repository: Room rows + per-profile vault
@@ -41,34 +60,85 @@ class VaultLockedException : IllegalStateException(
  * LOCKED in every process. The UI layer runs its biometric / device-credential
  * gate ONCE and then calls [unlock]; every repository call after that works
  * without re-prompting until [lock] (explicit lock, background timeout, ...).
+ * The "background timeout" is [autoLockTimeoutMs] (DEFAULT 5 minutes) and it
+ * is NOT sliding: the watchdog re-locks the vault [autoLockTimeoutMs] after
+ * the unlock, even if the vault is being used the whole time. That is the
+ * point — a sliding timer would let a busy session hold plaintext key
+ * material indefinitely, which is exactly what a timeout exists to bound.
+ * Within the window nothing re-prompts, so the per-session feel is unchanged
+ * for ordinary use (open the vault, fill a login, save a login: seconds).
  * Conversely, EVERY API (reads, saves, deletes, import/export) throws
  * [VaultLockedException] while locked — there is no unlocked back door. Both
  * processes (:browser + default) hold their own lock state, so unlocking the
  * manager UI in the main process does not silently unlock the ':browser'
  * process' copy.
+ *
+ * AUTO-LOCK LIMITATION (honest): the watchdog is a coroutine `delay` on a
+ * process-lived scope. Android freezes backgrounded processes, so on a
+ * device that is not in active use the re-lock lands LATE (it runs on thaw),
+ * never early and never never. The timeout therefore bounds the plaintext
+ * window of an ACTIVE process; process death remains the hard bound.
+ *
+ * [autoLockScope] is injectable so tests can drive the watchdog with virtual
+ * time; production never passes it. The repository is a singleton in the
+ * AppGraph, so the default scope's lifetime matches the process.
  */
 class CredentialRepository(
     private val dao: CredentialDao,
-    private val crypto: VaultCryptor
+    private val crypto: VaultCryptor,
+    /** Unlock lifetime in ms; <= 0 disables the timeout (legacy behaviour). */
+    private val autoLockTimeoutMs: Long = DEFAULT_AUTO_LOCK_TIMEOUT_MS,
+    private val autoLockScope: CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default)
 ) {
 
     private val lockState = MutableStateFlow(false)
+
+    /**
+     * The pending auto-lock watchdog, when one is armed. Touched only by
+     * [unlock]/[lock] (UI-thread calls) and by [armAutoLock]; a completed or
+     * cancelled job is left in place — replacing/cancelling it again is a
+     * no-op, and clearing it from inside the coroutine would be a self-cancel.
+     */
+    private var autoLockJob: Job? = null
 
     /** Live lock state for UI (lock screens listen to flip to the gate). */
     val isUnlocked: StateFlow<Boolean> = lockState.asStateFlow()
 
     /**
-     * Marks the vault unlocked for this process/session. The caller MUST have
-     * completed its own biometric (or device-credential) gate before calling —
-     * this method records the gate's result, it does not run the gate.
+     * Marks the vault unlocked for this process/session and arms the
+     * auto-lock watchdog. The caller MUST have completed its own biometric
+     * (or device-credential) gate before calling — this method records the
+     * gate's result, it does not run the gate.
      */
     fun unlock() {
         lockState.value = true
+        armAutoLock()
     }
 
     /** Re-locks the vault for this process (explicit lock / session end). */
     fun lock() {
+        autoLockJob?.cancel()
+        autoLockJob = null
         lockState.value = false
+    }
+
+    /**
+     * (Re-)arms the watchdog for one full [autoLockTimeoutMs] window. Any
+     * previous watchdog is cancelled first, so a lock→unlock cycle can never
+     * leave an older, earlier deadline behind.
+     */
+    private fun armAutoLock() {
+        autoLockJob?.cancel()
+        autoLockJob = null
+        if (autoLockTimeoutMs <= 0L) return
+        autoLockJob = autoLockScope.launch {
+            delay(autoLockTimeoutMs)
+            // Fail closed by writing the flag directly: this coroutine IS the
+            // job referenced above, so calling lock() here would cancel
+            // itself mid-function.
+            lockState.value = false
+        }
     }
 
     /**

@@ -1,5 +1,7 @@
 package com.roombrowser.domain.wallet.chains.cosmos
 
+import com.roombrowser.domain.wallet.chains.DerivationPathIndex
+import com.roombrowser.domain.wallet.chains.DerivationPathParsing
 import com.roombrowser.domain.wallet.crypto.Bech32
 import com.roombrowser.domain.wallet.crypto.Bip32PrivateKey
 import com.roombrowser.domain.wallet.crypto.Hashes
@@ -35,7 +37,7 @@ import java.math.BigInteger
  * Keplr's signArbitrary (a "sign/MsgSignData" amino doc). Broadcast goes
  * through the chain's LCD /cosmos/tx/v1beta1/txs endpoint.
  */
-class CosmosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) {
+class CosmosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationPathIndex {
 
     fun chainType(): ChainType = ChainType.COSMOS
 
@@ -52,6 +54,21 @@ class CosmosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) {
             hrp = hrp,
             path = path
         )
+    }
+
+    /**
+     * Inverts [deriveAccount]: m/44'/{coinType}'/0'/0/{index}. The index is
+     * the unhardened final level; coinType is left unchecked on purpose
+     * because it is per-network (118 for the Cosmos Hub, 60 for Injective)
+     * and the caller has already selected the chain by [ChainType].
+     */
+    override fun derivationIndexOf(path: String): Int? {
+        val levels = DerivationPathParsing.levels(path) ?: return null
+        if (levels.size != 5) return null
+        if (!DerivationPathParsing.isLevel(levels[0], 44)) return null
+        if (!DerivationPathParsing.isLevel(levels[2], 0)) return null
+        if (!DerivationPathParsing.isLevel(levels[3], 0)) return null
+        return DerivationPathParsing.levelValue(levels[4])
     }
 
     fun bech32Address(compressedPublicKey: ByteArray, hrp: String): String {
@@ -340,8 +357,8 @@ class CosmosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) {
                 chainType = ChainType.COSMOS,
                 chainId = "celestia",
                 name = "Celestia",
-                rpcUrls = listOf("https://rpc.celestia.pops"),
-                lcdUrl = "https://api.celestia.pops",
+                rpcUrls = listOf("https://celestia-rpc.polkachu.com"),
+                lcdUrl = "https://celestia-api.polkachu.com",
                 nativeSymbol = "TIA",
                 nativeDecimals = 6,
                 explorerUrl = "https://www.mintscan.io/celestia",

@@ -405,4 +405,12 @@ interface WalletEngineApi {
 
     /** Whether a host is already permitted for an account+method (no prompt needed). */
     fun isDappPermitted(host: String, chainType: ChainType, accountAddress: String, method: String): Boolean
+
+    /**
+     * Revokes [host]'s permission for one chain family — the dApp-initiated
+     * disconnect (`window.solana.disconnect`). Fire-and-forget on the main
+     * thread: the next silent connect auto-approve will prompt again, and
+     * `eth_accounts`/`getKey` stop answering for that host.
+     */
+    fun revokeDappPermission(host: String, chainType: ChainType)
 }

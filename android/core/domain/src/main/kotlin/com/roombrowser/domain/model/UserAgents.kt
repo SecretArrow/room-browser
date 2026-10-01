@@ -22,6 +22,20 @@ package com.roombrowser.domain.model
  * always report the real device, because a page laid out for a viewport the
  * phone does not have renders wrong. See SECURITY.md for the full list of
  * what is and is not presented.
+ *
+ * VERSIONS. A preset is only worth having if it is a string some real browser
+ * actually sends: a malformed UA is *more* fingerprintable than the WebView
+ * default, which is the opposite of the point. So every token here is a real
+ * one — the presets whose identity is Chrome carry a real 4-part
+ * Chrome-for-Android build, the Firefox presets carry the single Gecko token
+ * Firefox for Android sends, and no preset invents a vendor token no browser
+ * emits. The Chromium generation those Chrome-identity presets claim is the
+ * one the device catalogue ships (see [Devices]), so a profile on a preset and
+ * a profile on a device do not tell the same site two different stories about
+ * the same app. A vendor preset is the deliberate exception: its own release
+ * token and the Chromium build underneath it are a pair, and it keeps the pair
+ * its browser really sends rather than half-bumping one token into a release
+ * that never shipped.
  */
 data class UserAgentPreset(
     val id: String,
@@ -41,48 +55,85 @@ object UserAgents {
         id = "chrome_android",
         label = "Chrome Android",
         isDesktop = false,
-        value = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+        // A real Chrome-for-Android build, not the `<major>.0.0.0` placeholder:
+        // the three-zero form is a reduced-UA artefact, and a preset pinned to
+        // it while every device in the catalogue reports a full build is a
+        // mismatch between two profiles of the same app.
+        value = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.135 Mobile Safari/537.36"
     )
     private val CHROME_ANDROID_TABLET = UserAgentPreset(
         id = "chrome_android_tablet",
         label = "Chrome Android Tablet",
         isDesktop = false,
-        value = "Mozilla/5.0 (Linux; Android 14; Tablet) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        // Chrome puts a real device MODEL CODE in the platform slot — the word
+        // "Tablet" there is Firefox's convention, not Chrome's (see
+        // FIREFOX_ANDROID_TABLET below). SM-X710 is a Galaxy Tab S9, a model
+        // Google Play really ships to. Form factor is expressed the way Chrome
+        // expresses it: a tablet UA carries no " Mobile" token, the same rule
+        // [Devices] records on every handset it lists.
+        value = "Mozilla/5.0 (Linux; Android 14; SM-X710) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.135 Safari/537.36"
     )
     private val CHROME_BETA_ANDROID = UserAgentPreset(
         id = "chrome_beta_android",
         label = "Chrome Beta Android",
         isDesktop = false,
-        value = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36 ChromeBetA/124.0.0.0"
+        // Chrome Beta for Android sends the ORDINARY Chrome mobile UA: the
+        // channel is a client hint (full version list), never a UA token, so
+        // there is nothing extra to append. The only honest way this row
+        // differs from CHROME_ANDROID is the version, and it must be a real
+        // one — a later Chrome-for-Android build than the stable presets
+        // carry, in the same full 4-part form.
+        value = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.7204.157 Mobile Safari/537.36"
     )
     private val FIREFOX_ANDROID = UserAgentPreset(
         id = "firefox_android",
         label = "Firefox Android",
         isDesktop = false,
-        value = "Mozilla/5.0 (Android 14; Mobile; rv:127.0) Gecko/127.0 Gecko/20100101 Firefox/127.0"
+        // Firefox for Android sends exactly ONE Gecko token of the form
+        // Gecko/<version>. "Gecko/20100101" is the desktop build stamp and
+        // never appears on Android, so a preset carrying both tokens is a
+        // string no browser has ever sent. rv: must equal the Firefox version.
+        value = "Mozilla/5.0 (Android 14; Mobile; rv:127.0) Gecko/127.0 Firefox/127.0"
     )
     private val FIREFOX_ANDROID_TABLET = UserAgentPreset(
         id = "firefox_android_tablet",
         label = "Firefox Android Tablet",
         isDesktop = false,
-        value = "Mozilla/5.0 (Android 14; Tablet; rv:127.0) Gecko/127.0 Gecko/20100101 Firefox/127.0"
+        // Firefox is the one Android browser that DOES put "Tablet" in the
+        // platform slot, and its tablet UA drops "Mobile" — same single Gecko
+        // token as the phone preset.
+        value = "Mozilla/5.0 (Android 14; Tablet; rv:127.0) Gecko/127.0 Firefox/127.0"
     )
     private val EDGE_ANDROID = UserAgentPreset(
         id = "edge_android",
         label = "Edge Android",
         isDesktop = false,
-        value = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36 EdgA/124.0.0.0"
+        // Edge for Android sends a real build of its own (EdgA never uses the
+        // `<major>.0.0.0` placeholder) on top of the Chromium build it bundles,
+        // so the Chrome token tracks the same Chromium generation as the other
+        // presets while EdgA states the Edge release: 131.0.2903.87 is a real
+        // Edge-for-Android build.
+        value = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.135 Mobile Safari/537.36 EdgA/131.0.2903.87"
     )
     private val SAMSUNG_ANDROID = UserAgentPreset(
         id = "samsung_android",
         label = "Samsung Internet",
         isDesktop = false,
+        // Samsung Internet 25.0 really is built on Chromium 121, so this pair
+        // is left exactly as the browser sends it: bumping the Chrome token to
+        // the generation the other presets carry would describe a Samsung
+        // Internet release that does not exist.
         value = "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/25.0 Chrome/121.0.0.0 Mobile Safari/537.36"
     )
     private val OPERA_ANDROID = UserAgentPreset(
         id = "opera_android",
         label = "Opera Android",
         isDesktop = false,
+        // Same coupling: Opera states its own release on top of the Chromium
+        // build it ships, so the two tokens move together or not at all. No
+        // verified Opera-for-Android build exists for the Chromium generation
+        // the other presets carry, so the pair is left as it is rather than
+        // half-bumped.
         value = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36 OPR/79.4.4195.76198"
     )
     private val BRAVE_ANDROID = UserAgentPreset(
@@ -92,18 +143,26 @@ object UserAgents {
         // Brave's mobile browser is Chromium-based and intentionally reports
         // the plain Chrome mobile UA — an extra token would let sites
         // fingerprint it, so there is nothing to add.
-        value = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+        value = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.135 Mobile Safari/537.36"
     )
     private val DUCKDUCKGO_ANDROID = UserAgentPreset(
         id = "duckduckgo_android",
         label = "DuckDuckGo Android",
         isDesktop = false,
-        value = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36 DuckDuckGo/5"
+        // DuckDuckGo splices its application component in immediately after
+        // the " Mobile" token and BEFORE Safari/537.36 — that is the order its
+        // own UA builder emits (app component, then the browser's Safari
+        // component). Appending it after Safari is a string DuckDuckGo has
+        // never sent, and a wrong token order is itself a fingerprint.
+        value = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.135 Mobile DuckDuckGo/5 Safari/537.36"
     )
     private val VIVALDI_ANDROID = UserAgentPreset(
         id = "vivaldi_android",
         label = "Vivaldi Android",
         isDesktop = false,
+        // Same coupling again: Vivaldi states its own release on top of the
+        // Chromium build it ships, and no verified Vivaldi-for-Android build
+        // exists for the generation the other presets carry.
         value = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36 Vivaldi/6.8"
     )
     private val WEBVIEW = UserAgentPreset(

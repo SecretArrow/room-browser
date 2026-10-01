@@ -84,12 +84,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.roombrowser.browser.BrowserViewModel
+import com.roombrowser.domain.model.LanguagePresets
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.qr.QrCodeGenerator
 import com.roombrowser.ui.common.GlassBar
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.ProfileAvatar
 import com.roombrowser.ui.common.RoomBottomSheetShape
+import com.roombrowser.ui.common.RoomSheetHeader
 import kotlinx.coroutines.launch
 
 /**
@@ -249,7 +251,7 @@ fun PageActionsSheet(
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            SheetHeader("Page Actions")
+            RoomSheetHeader("Page Actions")
             SheetAction(Icons.AutoMirrored.Filled.ArrowBack, "Back") { viewModel.goBack(); onDismiss() }
             SheetAction(Icons.AutoMirrored.Filled.ArrowForward, "Forward") { viewModel.goForward(); onDismiss() }
             SheetAction(Icons.Filled.Add, "New tab") { viewModel.loadUrl("about:home", newTab = true); onDismiss() }
@@ -345,18 +347,6 @@ private fun addShortcutToHomeScreen(context: android.content.Context, viewModel:
     }
 }
 
-/**
- * Sheet title block. The drag handle itself comes from ModalBottomSheet's
- * built-in centered handle (rendered above the content) — the header only
- * adds the title, so no sheet ever draws two handles.
- */
-@Composable
-private fun SheetHeader(title: String) {
-    val extras = LocalRoomExtras.current
-    Text(title, style = MaterialTheme.typography.titleLarge, color = extras.textPrimary)
-    Spacer(Modifier.height(8.dp))
-}
-
 @Composable
 private fun SheetSectionLabel(text: String) {
     val extras = LocalRoomExtras.current
@@ -418,7 +408,7 @@ fun ProfileQuickSwitcherSheet(
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            SheetHeader("Switch Profile")
+            RoomSheetHeader("Switch Profile")
             Text(
                 "Switching closes the current browsing context completely before opening the next profile.",
                 style = MaterialTheme.typography.bodyMedium,
@@ -561,7 +551,7 @@ fun ShieldsSheet(viewModel: BrowserViewModel, onDismiss: () -> Unit) {
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            SheetHeader(shields.host.ifBlank { "Privacy Shield" })
+            RoomSheetHeader(shields.host.ifBlank { "Privacy Shield" })
             com.roombrowser.ui.common.RoomCard {
                 Column(Modifier.padding(14.dp)) {
                     ShieldStat("Ads blocked", shields.adsBlocked)
@@ -653,6 +643,16 @@ fun FindInPageBar(
 @Composable
 fun TranslateDialog(viewModel: BrowserViewModel, onDismiss: () -> Unit) {
     var target by remember { mutableStateOf(viewModel.profileSettings().translateTargetLanguage) }
+    // The field used to be spliced straight into the Translate URL, so an
+    // unknown code, an empty one, or anything containing a URL metacharacter
+    // went to Google verbatim. LanguagePresets.isSupported is the same
+    // validator the settings picker uses: it accepts a curated preset or any
+    // well-formed BCP-47-ish tag, and rejects blank and malformed input —
+    // its own charset (alphanumerics and hyphens) is what makes the URL safe,
+    // and the code is percent-encoded below as well so a future loosening of
+    // that regex cannot turn this into parameter injection.
+    val code = target.trim()
+    val valid = LanguagePresets.isSupported(code)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Translate this page?") },
@@ -664,22 +664,32 @@ fun TranslateDialog(viewModel: BrowserViewModel, onDismiss: () -> Unit) {
                     value = target,
                     onValueChange = { target = it },
                     label = { Text("Target language code (e.g. id, en, ja)") },
-                    singleLine = true
+                    singleLine = true,
+                    isError = target.isNotEmpty() && !valid,
+                    supportingText = {
+                        if (target.isNotEmpty() && !valid) {
+                            Text("Not a recognised language code.")
+                        }
+                    }
                 )
             }
         },
         confirmButton = {
-            Button(onClick = {
-                val url = viewModel.pageState.url
-                if (url != "about:home") {
-                    val encoded = java.net.URLEncoder.encode(url, "UTF-8")
-                    viewModel.loadUrl(
-                        "https://translate.google.com/translate?sl=auto&tl=$target&u=$encoded",
-                        newTab = true
-                    )
+            Button(
+                enabled = valid,
+                onClick = {
+                    val url = viewModel.pageState.url
+                    if (url != "about:home") {
+                        val encoded = java.net.URLEncoder.encode(url, "UTF-8")
+                        val tl = java.net.URLEncoder.encode(code, "UTF-8")
+                        viewModel.loadUrl(
+                            "https://translate.google.com/translate?sl=auto&tl=$tl&u=$encoded",
+                            newTab = true
+                        )
+                    }
+                    onDismiss()
                 }
-                onDismiss()
-            }) { Text("Translate") }
+            ) { Text("Translate") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )

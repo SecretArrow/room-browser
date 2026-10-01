@@ -1,5 +1,8 @@
 package com.roombrowser.domain.wallet.chains.bitcoin
 
+import com.roombrowser.domain.wallet.chains.DerivationPathIndex
+import com.roombrowser.domain.wallet.chains.DerivationPathParsing
+import com.roombrowser.domain.wallet.crypto.Base58
 import com.roombrowser.domain.wallet.crypto.Bech32
 import com.roombrowser.domain.wallet.crypto.Bip32PrivateKey
 import com.roombrowser.domain.wallet.crypto.Hashes
@@ -16,17 +19,20 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.math.BigInteger
 
 /**
- * Bitcoin adapter — native segwit (BIP84) HD accounts.
+ * Bitcoin adapter — native segwit (BIP84) HD accounts, plus legacy BIP44
+ * (P2PKH) accounts when explicitly requested.
  *
  * Derivation m/84'/0'/0'/0/i (mainnet) with bech32 P2WPKH addresses
- * (BIP173). Transaction building signs with the BIP143 segwit sighash —
- * covered by the official BIP143 test vector in BitcoinTest. UTXO/fee/broadcast
- * go through mempool.space (mainnet) and blockstream.info (testnet).
+ * (BIP173); legacy accounts derive at m/44' and return base58check P2PKH
+ * addresses instead. Transaction building signs with the BIP143 segwit
+ * sighash — covered by the official BIP143 test vector in BitcoinTest.
+ * UTXO/fee/broadcast go through mempool.space (mainnet) and blockstream.info
+ * (testnet).
  *
  * Bitcoin is NOT treated as an EVM chain: its addresses, signing and
  * serialization are all Bitcoin-specific.
  */
-class BitcoinAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) {
+class BitcoinAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationPathIndex {
 
     fun chainType(): ChainType = ChainType.BITCOIN
 
@@ -35,15 +41,37 @@ class BitcoinAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) {
         val purpose = if (legacy) 44L else 84L
         val path = "m/$purpose'/$coinType'/0'/0/$index"
         val key = Bip32PrivateKey.derive(seed, path)
-        val pubkeyHash = Hashes.ripemd160(Hashes.sha256(key.compressedPublicKey))
-        val hrp = if (network.isTestnet) "tb" else "bc"
-        val address = Bech32.encode(hrp, Bech32.to5bit(byteArrayOf(0x00) + pubkeyHash))
+        // A legacy (m/44') account must yield a base58check P2PKH address, not
+        // a bech32 one: pairing a m/44' derivation with a segwit address would
+        // hand the user an address whose key they cannot actually spend from.
+        val address = if (legacy) {
+            p2pkhAddress(key.compressedPublicKey, network.isTestnet)
+        } else {
+            p2wpkhAddress(key.compressedPublicKey, network.isTestnet)
+        }
         return DerivedBitcoinKey(
             privateKey = key.key,
             compressedPublicKey = key.compressedPublicKey,
             address = address,
             path = path
         )
+    }
+
+    /**
+     * Inverts [deriveAccount]: m/{purpose}'/{coinType}'/0'/0/{index}, where
+     * purpose is 84 (native segwit) or 44 (legacy P2PKH). The index is the
+     * unhardened FINAL level in both cases; coinType is left unchecked
+     * because it is only ever 0 (mainnet) or 1 (testnet), and the stored
+     * account already belongs to the chain the caller asked about.
+     */
+    override fun derivationIndexOf(path: String): Int? {
+        val levels = DerivationPathParsing.levels(path) ?: return null
+        if (levels.size != 5) return null
+        val purpose = DerivationPathParsing.levelValue(levels[0]) ?: return null
+        if (purpose != 44 && purpose != 84) return null
+        if (!DerivationPathParsing.isLevel(levels[2], 0)) return null
+        if (!DerivationPathParsing.isLevel(levels[3], 0)) return null
+        return DerivationPathParsing.levelValue(levels[4])
     }
 
     fun isValidAddress(address: String, testnet: Boolean): Boolean {
@@ -65,6 +93,19 @@ class BitcoinAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) {
         // to5bit encodes the witness version as a single 5-bit symbol followed
         // by the program's convertbits symbols (BIP173).
         return Bech32.encode(hrp, Bech32.to5bit(byteArrayOf(0x00) + pubkeyHash))
+    }
+
+    /**
+     * Base58check P2PKH address for a 33-byte compressed public key — the
+     * legacy (m/44') counterpart of [p2wpkhAddress]. Version byte 0x00 on
+     * mainnet, 0x6f on testnet, with the first 4 bytes of sha256d as the
+     * checksum (the same construction TronAdapter.base58Check uses).
+     */
+    fun p2pkhAddress(compressedPublicKey: ByteArray, testnet: Boolean): String {
+        val pubkeyHash = Hashes.ripemd160(Hashes.sha256(compressedPublicKey))
+        val version = if (testnet) 0x6f else 0x00 // 0x6f testnet, 0x00 mainnet
+        val payload = byteArrayOf(version.toByte()) + pubkeyHash
+        return Base58.encode(payload + Hashes.sha256d(payload).copyOfRange(0, 4))
     }
 
     // ------------------------------------------------------------------

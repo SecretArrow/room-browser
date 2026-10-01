@@ -390,10 +390,11 @@ class WalletRepositoryTest {
         // Non-contiguous indices: max(0, 2, 5) + 1.
         assertThat(repo.nextDerivationIndex(profileA, ChainType.EVM)).isEqualTo(6)
 
-        // Other chains are independent; an unparseable trailing element is ignored.
-        assertThat(repo.nextDerivationIndex(profileA, ChainType.SOLANA)).isEqualTo(0)
-        repo.addDerivedAccount(profileA, ChainType.SOLANA, "sol1", "m/44'/501'/0'/0'", "sol")
-        assertThat(repo.nextDerivationIndex(profileA, ChainType.SOLANA)).isEqualTo(0)
+        // Other chains are independent, and a hardened final level reads as
+        // its index: Sui stores m/44'/784'/0'/0'/i', so 0' is index 0.
+        assertThat(repo.nextDerivationIndex(profileA, ChainType.SUI)).isEqualTo(0)
+        repo.addDerivedAccount(profileA, ChainType.SUI, "0xsui0", "m/44'/784'/0'/0'/0'", "sui")
+        assertThat(repo.nextDerivationIndex(profileA, ChainType.SUI)).isEqualTo(1)
 
         // Imported accounts never count towards derivation.
         repo.addImportedAccount(profileA, ChainType.EVM, "0ximported", "evm-secret", "imp")
@@ -401,6 +402,93 @@ class WalletRepositoryTest {
 
         // A profile without a wallet reports 0, not an error.
         assertThat(repo.nextDerivationIndex(profileB, ChainType.EVM)).isEqualTo(0)
+    }
+
+    /**
+     * Each chain reads its own path shape. Sui and Aptos harden the ADDRESS
+     * level, so their stored paths end in "'" — reading that element with
+     * toIntOrNull alone returned null, the index fell back to 0 on every
+     * call and "Add account" re-derived the first account forever (a UNIQUE
+     * -index failure against the (wallet, chain, address) key). These
+     * assertions pin the end-to-end index the next account is derived at.
+     */
+    @Test
+    fun `nextDerivationIndex reads each chain's own path shape and never throws on a bad one`() =
+        runTest {
+            repo.createWallet(profileA, "Main", mnemonic)
+
+            // EVM's final level is unhardened (m/44'/60'/0'/0/i) — the
+            // regression guard for the chains that already worked.
+            assertThat(repo.nextDerivationIndex(profileA, ChainType.EVM)).isEqualTo(0)
+            repo.addDerivedAccount(profileA, ChainType.EVM, "0xa0", "m/44'/60'/0'/0/0", "0")
+            assertThat(repo.nextDerivationIndex(profileA, ChainType.EVM)).isEqualTo(1)
+
+            // Sui's canonical path carries the index on the hardened address
+            // level (m/44'/784'/0'/0'/i'): account 2 must be derived at 1,
+            // and account 3 at 2. This is the shape the earlier parse fix
+            // repaired; it stays here so the chain-aware version cannot
+            // regress it.
+            assertThat(repo.nextDerivationIndex(profileA, ChainType.SUI)).isEqualTo(0)
+            repo.addDerivedAccount(profileA, ChainType.SUI, "0xsui0", "m/44'/784'/0'/0'/0'", "s1")
+            assertThat(repo.nextDerivationIndex(profileA, ChainType.SUI)).isEqualTo(1)
+            repo.addDerivedAccount(profileA, ChainType.SUI, "0xsui1", "m/44'/784'/0'/0'/1'", "s2")
+            assertThat(repo.nextDerivationIndex(profileA, ChainType.SUI)).isEqualTo(2)
+
+            // Aptos has the same shape at m/54'/6'/0'/0'/i'.
+            repo.addDerivedAccount(profileA, ChainType.APTOS, "0xapt4", "m/54'/6'/0'/0'/4'", "a")
+            assertThat(repo.nextDerivationIndex(profileA, ChainType.APTOS)).isEqualTo(5)
+
+            // Solana derives at m/44'/501'/i'/0': the index is on the ACCOUNT
+            // level and the final element is the fixed hardened change 0'.
+            // This used to be the live defect — reading only the last element
+            // counted 0' for every account, so a third account asked for
+            // index 1 again and collided with the second under the UNIQUE
+            // (wallet, chain, address) index. The Solana adapter reads its own
+            // shape now, so 0 and 1 in storage give 2. (The two stored paths
+            // below are exactly what its adapter emits for 0 and 1.)
+            assertThat(repo.nextDerivationIndex(profileA, ChainType.SOLANA)).isEqualTo(0)
+            repo.addDerivedAccount(profileA, ChainType.SOLANA, "sol0", "m/44'/501'/0'/0'", "sol1")
+            repo.addDerivedAccount(profileA, ChainType.SOLANA, "sol1", "m/44'/501'/1'/0'", "sol2")
+            assertThat(repo.nextDerivationIndex(profileA, ChainType.SOLANA)).isEqualTo(2)
+
+            // A level the TRON adapter cannot read as an index — a corrupt or
+            // hand-edited row — is ignored, keeps the fallback and does NOT
+            // throw.
+            repo.addDerivedAccount(profileA, ChainType.TRON, "t-junk", "m/44'/195'/0'/0/x", "junk")
+            assertThat(repo.nextDerivationIndex(profileA, ChainType.TRON)).isEqualTo(0)
+            repo.addDerivedAccount(profileA, ChainType.TRON, "t-5", "m/44'/195'/0'/0/5", "five")
+            assertThat(repo.nextDerivationIndex(profileA, ChainType.TRON)).isEqualTo(6)
+        }
+
+    /**
+     * The Solana defect, end to end: Solana keeps its index on the ACCOUNT
+     * level (m/44'/501'/i'/0') and its final level is always the fixed 0', so
+     * a last-level rule counted 0 for every Solana account and a third
+     * account was offered an index that already existed — the UNIQUE
+     * (wallet, chain, address) index rejected it and the user could not
+     * create one. Each account below must advance the counter by exactly one.
+     */
+    @Test
+    fun `solana derivation index advances one per account so a third is creatable`() = runTest {
+        repo.createWallet(profileA, "Main", mnemonic)
+
+        assertThat(repo.nextDerivationIndex(profileA, ChainType.SOLANA)).isEqualTo(0)
+        repo.addDerivedAccount(profileA, ChainType.SOLANA, "sol0", "m/44'/501'/0'/0'", "sol1")
+        assertThat(repo.nextDerivationIndex(profileA, ChainType.SOLANA)).isEqualTo(1)
+        repo.addDerivedAccount(profileA, ChainType.SOLANA, "sol1", "m/44'/501'/1'/0'", "sol2")
+        assertThat(repo.nextDerivationIndex(profileA, ChainType.SOLANA)).isEqualTo(2)
+        // The third account — the one the bug could never hand out.
+        repo.addDerivedAccount(profileA, ChainType.SOLANA, "sol2", "m/44'/501'/2'/0'", "sol3")
+        assertThat(repo.nextDerivationIndex(profileA, ChainType.SOLANA)).isEqualTo(3)
+
+        // Holes are respected here too: 0, 1, 2 and 7 stored give 8.
+        repo.addDerivedAccount(profileA, ChainType.SOLANA, "sol7", "m/44'/501'/7'/0'", "sol8")
+        assertThat(repo.nextDerivationIndex(profileA, ChainType.SOLANA)).isEqualTo(8)
+
+        // Only the ACCOUNT level counts: a path whose third level is not a
+        // number is ignored rather than mis-read, and does not throw.
+        repo.addDerivedAccount(profileA, ChainType.SOLANA, "sol-junk", "m/44'/501'/x'/0'", "junk")
+        assertThat(repo.nextDerivationIndex(profileA, ChainType.SOLANA)).isEqualTo(8)
     }
 
     @Test

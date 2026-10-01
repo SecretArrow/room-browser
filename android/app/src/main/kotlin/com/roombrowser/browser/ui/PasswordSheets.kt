@@ -17,6 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -36,13 +37,16 @@ import androidx.compose.ui.unit.dp
 import com.roombrowser.domain.credentials.SavedCredential
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBottomSheetShape
+import com.roombrowser.ui.common.RoomSheetHeader
 
 /**
  * Password-manager sheets shown over the browsing surface (rendered by
  * BrowserScreen):
  *  - [VaultOfferSheet] — "Saved logins for <domain>": the autofill offer for
  *    the login form the user focused. Shows USERNAMES/TITLES ONLY — never a
- *    password; the picked login is passed straight to the page fill.
+ *    password; the picked login is passed straight to the page fill. It has
+ *    a LOCKED variant (see its own doc) shown when a login field is focused
+ *    while the vault is locked.
  *  - [VaultSaveSheet] — "Save login for <domain>?": the prompt after a login
  *    form submitted. Shows the username and a MASKED password. It may appear
  *    while the vault is locked (first-run users have nothing saved yet) — the
@@ -54,23 +58,21 @@ import com.roombrowser.ui.common.RoomBottomSheetShape
  */
 
 /**
- * The app-wide sheet title block. The drag handle itself comes from
- * ModalBottomSheet's built-in centered handle (rendered above the content) —
- * the header only adds the title, so no sheet ever draws two handles.
- */
-@Composable
-internal fun VaultSheetHeader(title: String) {
-    val extras = LocalRoomExtras.current
-    Text(title, style = MaterialTheme.typography.titleLarge, color = extras.textPrimary)
-    Spacer(Modifier.height(8.dp))
-}
-
-/**
  * Autofill offer: pick one of the logins saved for this page's host family.
  * Tapping a row fills BOTH the password field and the detected username field
  * on the page (through the injected script's `window.__roomVaultFill`), then
  * the sheet closes. Dismiss on outside tap simply closes it; the same page
  * will not re-offer until it is reloaded.
+ *
+ * LOCKED VARIANT ([locked] = true): the user focused a login field while the
+ * vault was still locked for this process (which is how every process
+ * starts). Without this the tap would look like it did nothing at all. The
+ * locked sheet deliberately shows NO credentials and no counts — it cannot
+ * even say whether anything is saved for this site, because that alone would
+ * leak vault contents through the page. It offers exactly one user-initiated
+ * action, [onUnlock], which the caller wires to the standard biometric /
+ * device-credential gate; unlocking is never automatic, and a failed or
+ * cancelled gate leaves this sheet in its locked state.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -78,7 +80,9 @@ fun VaultOfferSheet(
     host: String,
     credentials: List<SavedCredential>,
     onPick: (SavedCredential) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    locked: Boolean = false,
+    onUnlock: (() -> Unit)? = null
 ) {
     val extras = LocalRoomExtras.current
     ModalBottomSheet(
@@ -90,23 +94,90 @@ fun VaultOfferSheet(
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            VaultSheetHeader("Saved logins for $host")
-            Text(
-                "Pick a login to fill into this page. Passwords are filled into the page directly and are never shown here.",
-                style = MaterialTheme.typography.bodySmall,
-                color = extras.textSecondary
-            )
-            Spacer(Modifier.height(10.dp))
-            credentials.forEach { credential ->
-                VaultCredentialOption(
-                    username = credential.username,
-                    subtitle = credential.title ?: credential.domain,
-                    onClick = { onPick(credential) }
+            if (locked) {
+                VaultLockedOfferContent(host = host, onUnlock = onUnlock)
+            } else {
+                RoomSheetHeader("Saved logins for $host")
+                Text(
+                    "Pick a login to fill into this page. Passwords are filled into the page directly and are never shown here.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = extras.textSecondary
                 )
+                Spacer(Modifier.height(10.dp))
+                credentials.forEach { credential ->
+                    VaultCredentialOption(
+                        username = credential.username,
+                        subtitle = credential.title ?: credential.domain,
+                        onClick = { onPick(credential) }
+                    )
+                }
+                Spacer(Modifier.height(24.dp))
             }
-            Spacer(Modifier.height(24.dp))
         }
     }
+}
+
+/**
+ * Body of the offer sheet while the vault is locked. Wording rules: never
+ * state or imply that a login EXISTS for [host] (that is vault content), and
+ * never render a credential or a count — only the page's own host, which the
+ * page already knows.
+ */
+@Composable
+private fun VaultLockedOfferContent(host: String, onUnlock: (() -> Unit)?) {
+    val extras = LocalRoomExtras.current
+    RoomSheetHeader("Unlock to fill")
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .size(34.dp)
+                .clip(RoundedCornerShape(11.dp))
+                .background(extras.primary.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Filled.Lock,
+                contentDescription = null,
+                tint = extras.primary,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(
+            host,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.bodyLarge,
+            color = extras.textPrimary
+        )
+    }
+    Spacer(Modifier.height(10.dp))
+    Text(
+        "The password vault is locked. Unlock it to fill one of your saved logins into this page.",
+        style = MaterialTheme.typography.bodySmall,
+        color = extras.textSecondary
+    )
+    Spacer(Modifier.height(4.dp))
+    // Honest about the trade-off: the locked sheet is shown for EVERY login
+    // form, so its presence says nothing about what is stored.
+    Text(
+        "This prompt appears on any login form — it does not mean a login is saved for this site.",
+        style = MaterialTheme.typography.bodySmall,
+        color = extras.textSecondary
+    )
+    Spacer(Modifier.height(16.dp))
+    Button(
+        onClick = { onUnlock?.invoke() },
+        // No gate wired up (non-Fragment host) = nothing to tap.
+        enabled = onUnlock != null,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+    ) { Text("Unlock") }
+    Spacer(Modifier.height(24.dp))
 }
 
 /** One offered login: full-width touch target (≥48dp), username + label. */
@@ -184,7 +255,7 @@ fun VaultSaveSheet(
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            VaultSheetHeader("Save login for $host?")
+            RoomSheetHeader("Save login for $host?")
             Text(
                 "A login form was submitted on this page.",
                 style = MaterialTheme.typography.bodySmall,

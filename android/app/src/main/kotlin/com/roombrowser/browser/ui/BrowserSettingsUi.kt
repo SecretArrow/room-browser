@@ -256,6 +256,17 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
         }
 
         SectionHeader("Global DNS")
+        // The scope note sits ABOVE the controls on purpose: a user who reads
+        // it after choosing has already formed the wrong expectation, and the
+        // wrong expectation here is that this protects their browsing.
+        InfoNote(
+            "Applies to this app's own connections — the AI agent, downloads " +
+                "and the network checks above. It does NOT change how pages " +
+                "resolve names: Android WebView always resolves through the OS " +
+                "stack, and an app cannot intercept that without routing every " +
+                "packet through a VPN. For DNS that covers browsing, set " +
+                "Private DNS in Android Settings."
+        )
         SettingsGroup {
             DropdownRow(
                 label = "DNS mode",
@@ -491,7 +502,7 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             SettingSwitchRow(title = "JavaScript enabled", checked = settings.javascriptEnabled, onCheckedChange = { update(settings.copy(javascriptEnabled = it)) })
         }
 
-        SectionHeader("WebRTC (informational)")
+        SectionHeader("WebRTC")
         SettingsGroup {
             DropdownRow(
                 label = "Policy",
@@ -508,7 +519,16 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 }
             )
         }
-        InfoNote("Android WebView does not expose full WebRTC IP-handling control to normal apps. Camera/microphone grants stay under permission control; local IP exposure limits are documented in SECURITY.md.")
+        InfoNote(
+            "Enforced by a page script, so it is real but not total. " +
+                "\"Restrict local IP exposure\" removes ICE candidates that carry a real " +
+                "IPv4/IPv6 address; mDNS candidates (the .local kind, which contain no " +
+                "address) and STUN/TURN candidates are kept, so calls still connect. " +
+                "\"Disabled\" removes the peer-connection API from the page. Known limits, " +
+                "stated plainly: page scripts run in the document, so code a page runs " +
+                "inside a Web Worker still sees the engine's own WebRTC, and ICE statistics " +
+                "are not rewritten. Camera and microphone remain permission-gated."
+        )
 
         SectionHeader("Device")
         SettingsGroup {
@@ -692,6 +712,11 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
         )
 
         SectionHeader("Profile DNS")
+        InfoNote(
+            "Same scope as the global setting: this app's own connections for " +
+                "this profile, not the pages loaded in its tabs. Pages always " +
+                "resolve through the OS resolver."
+        )
         SettingsGroup {
             DropdownRow(
                 label = "DNS mode",
@@ -699,8 +724,8 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                     mode.name to when (mode) {
                         DnsMode.SYSTEM -> "System"
                         DnsMode.AUTO -> "Use global browser setting"
-                        DnsMode.DOH -> "DNS-over-HTTPS"
-                        DnsMode.DOT -> "DNS-over-TLS"
+                        DnsMode.DOH -> "DNS-over-HTTPS (app connections)"
+                        DnsMode.DOT -> "DNS-over-TLS (recommend only)"
                     }
                 },
                 selected = settings.dnsMode.name,
@@ -986,6 +1011,16 @@ private fun DropdownRow(
  * derived from the stored URL, so a custom URL typed into the DoH field
  * simply un-highlights the preset rows. "Reset to system DNS" stores
  * [DnsMode.SYSTEM].
+ *
+ * The addresses shown are NOT the resolvers used for the sites a user
+ * visits. They are the published addresses of the resolver's own DoH
+ * endpoint, which the networking layer pins as bootstrap hints so that
+ * resolving the endpoint hostname does not itself leak to the OS resolver
+ * (see `DnsMonitor.buildDoh` / `bootstrapAddresses`). The row used to lead
+ * with the IPv4 address, which read as "your DNS will be 1.1.1.1" — true
+ * of the endpoint, misleading about the browsing it appeared to describe.
+ * The scope note at the top of each DNS section says what this actually
+ * covers.
  */
 @Composable
 private fun DnsPresetRows(
@@ -996,9 +1031,10 @@ private fun DnsPresetRows(
 ) {
     DnsPresets.all.forEach { preset ->
         PresetRow(
-            title = "${preset.label} (${preset.primaryIpv4})",
-            subtitle = "IPv4 ${preset.primaryIpv4} / ${preset.secondaryIpv4} · " +
-                "IPv6 ${preset.primaryIpv6} / ${preset.secondaryIpv6}",
+            title = preset.label,
+            subtitle = "Endpoint addresses ${preset.primaryIpv4} / " +
+                "${preset.secondaryIpv4} · IPv6 ${preset.primaryIpv6} / " +
+                "${preset.secondaryIpv6}",
             selected = currentMode == DnsMode.DOH && currentDohUrl == preset.dohUrl,
             onSelect = { onPreset(preset) }
         )

@@ -64,8 +64,15 @@ class IpConflictDetector(private val clock: () -> Long = { System.currentTimeMil
         history: List<IpAssociation>,
         global: BrowserGlobalSettings,
         profileNetworkProtectionEnabled: Boolean = true,
+        /** Persisted "don't warn again for this IP". */
         suppressedIps: Set<String> = emptySet(),
-        suppressedThisSession: Set<String> = emptySet(),
+        /**
+         * IPs suppressed for this session only (in-memory, cleared on restart).
+         * Keyed on the IP address, exactly like [suppressedIps]: the set is
+         * populated with addresses by `NetworkIdentity.suppressCurrentIp`, and
+         * the feature is "don't warn for this network again this session".
+         */
+        suppressedIpsThisSession: Set<String> = emptySet(),
         alreadyWarnedNetworks: Set<String> = emptySet()
     ): CheckResult {
         if (!global.networkProtectionEnabled || !profileNetworkProtectionEnabled) {
@@ -80,7 +87,10 @@ class IpConflictDetector(private val clock: () -> Long = { System.currentTimeMil
 
         val candidates = history
             .filter { it.profileId != currentProfileId && it.ip == ip }
-            .filterNot { it.profileId.value in suppressedThisSession }
+            // Session suppression keys on the IP address. It previously
+            // compared the *profile id* against a set of IPs — both Strings, so
+            // it compiled, but it could never match and was a silent no-op.
+            .filterNot { it.ip in suppressedIpsThisSession }
             .filterNot { it.lastSeenAt < (global.retention.cutoff(clock()) ?: Long.MIN_VALUE) }
 
         val latest = candidates.maxByOrNull { it.lastSeenAt }

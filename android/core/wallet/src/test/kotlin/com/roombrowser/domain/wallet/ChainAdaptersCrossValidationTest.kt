@@ -235,6 +235,73 @@ class ChainAdaptersCrossValidationTest {
         )
     }
 
+    /**
+     * The canonical Sui mnemonic → address vectors, published by Mysten Labs.
+     * The SAME three cases appear in both official implementations — the Rust
+     * `sui keytool` unit tests
+     * (crates/sui/src/unit_tests/keytool_tests.rs, test_mnemonics_ed25519) and
+     * @mysten/sui's ed25519-keypair.test.ts — and both derive them with NO
+     * explicit path, i.e. DEFAULT_ED25519_DERIVATION_PATH = m/44'/784'/0'/0'/0'.
+     *
+     * This is the strongest check available for this adapter: if the path
+     * shape, the SLIP-0010 walk or the address hash drifts from the official
+     * SDKs, one of these fails.
+     */
+    @Test
+    fun `sui index-0 address matches the official keytool vectors`() {
+        val vectors = listOf(
+            "film crazy soon outside stand loop subway crumble thrive popular green nuclear " +
+                "struggle pistol arm wife phrase warfare march wheat nephew ask sunny firm" to
+                "0xa2d14fad60c56049ecf75246a481934691214ce413e6a8ae2fe6834c173a6133",
+            "require decline left thought grid priority false tiny gasp angle royal system " +
+                "attack beef setup reward aunt skill wasp tray vital bounce inflict level" to
+                "0x1ada6e6f3f3e4055096f606c746690f1108fcc2ca479055cc434a3e1d3f758aa",
+            "organ crash swim stick traffic remember army arctic mesh slice swear summer " +
+                "police vast chaos cradle squirrel hood useless evidence pet hub soap lake" to
+                "0xe69e896ca10f5a77732769803cc2b5707f0ab9d4407afb5e4b4464b89769af14"
+        )
+        for ((mnemonic, expected) in vectors) {
+            val derived = sui.deriveAccount(Mnemonics.toSeed(mnemonic), 0)
+            assertThat(derived.path).isEqualTo("m/44'/784'/0'/0'/0'")
+            assertThat(derived.address).isEqualTo(expected)
+        }
+    }
+
+    /**
+     * The index is the FINAL (address) level; account and change stay at 0',
+     * so every index past 0 is a genuinely different account on the SAME
+     * account/change path — not a different account node.
+     *
+     * UNVERIFIED AGAINST A PUBLISHED VECTOR: no official mnemonic → address
+     * vector exists for index != 0 (the SDKs only assert that such paths are
+     * ACCEPTED, never what they yield). The index-1/2 addresses below were
+     * produced by @mysten/sui 1.45.2 (Ed25519Keypair.deriveKeypair) — an
+     * independent, official implementation, but computed rather than quoted.
+     */
+    @Test
+    fun `sui account index sits on the canonical address level`() {
+        val seed = Mnemonics.toSeed(ABANDON_MNEMONIC)
+        val account0 = sui.deriveAccount(seed, 0)
+        val account1 = sui.deriveAccount(seed, 1)
+        val account2 = sui.deriveAccount(seed, 2)
+
+        assertThat(account0.path).isEqualTo("m/44'/784'/0'/0'/0'")
+        assertThat(account1.path).isEqualTo("m/44'/784'/0'/0'/1'")
+        assertThat(account2.path).isEqualTo("m/44'/784'/0'/0'/2'")
+        // The account/change prefix must NOT move with the index.
+        assertThat(account0.path.substringBeforeLast('/')).isEqualTo("m/44'/784'/0'/0'")
+        assertThat(account1.path.substringBeforeLast('/')).isEqualTo("m/44'/784'/0'/0'")
+
+        assertThat(account0.address)
+            .isEqualTo("0x5e93a736d04fbb25737aa40bee40171ef79f65fae833749e3c089fe7cc2161f1")
+        assertThat(account1.address)
+            .isEqualTo("0xf7c7a39996ac7f1c307b96c96d65cce0855dcc7ccd021c453964f2f62f98e71f")
+        assertThat(account2.address)
+            .isEqualTo("0xd67b0f1c352cb1f3318ef464b04c8fa29aca0eb0574f8c7a4b8a5ea77f9ba455")
+        assertThat(account1.address).isNotEqualTo(account0.address)
+        assertThat(Hex.encode(account1.publicKey)).isNotEqualTo(Hex.encode(account0.publicKey))
+    }
+
     // ==================================================================
     // TRON
     // ==================================================================
@@ -284,6 +351,41 @@ class ChainAdaptersCrossValidationTest {
         assertThat(bitcoin.p2wpkhAddress(pubkey, testnet = false))
             .isEqualTo("bc1q6st6ar40sznz36w33vyl0eq700jvyg4estcfx8")
         assertThat(bitcoin.isValidAddress("bc1q6st6ar40sznz36w33vyl0eq700jvyg4estcfx8", testnet = false)).isTrue()
+    }
+
+    @Test
+    fun `bitcoin non-legacy derivation stays on BIP84 bech32`() {
+        val seed = Mnemonics.toSeed(ABANDON_MNEMONIC)
+        val mainnet = bitcoin.deriveAccount(seed, BitcoinAdapter.mainnet(), 0)
+        assertThat(mainnet.path).isEqualTo("m/84'/0'/0'/0/0")
+        // Published BIP84 vector for the standard abandon ... about mnemonic.
+        assertThat(mainnet.address).isEqualTo("bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu")
+        // The key material predates the legacy fix and must not have moved —
+        // both address encodings are built from this exact compressed pubkey.
+        assertThat(Hex.encode(mainnet.compressedPublicKey))
+            .isEqualTo("0330d54fd0dd420a6e5f8d3624f5f3482cae350f79d5f0753bf5beef9c2d91af3c")
+
+        val testnet = bitcoin.deriveAccount(seed, BitcoinAdapter.testnet(), 0)
+        assertThat(testnet.address).isEqualTo("tb1q6rz28mcfaxtmd6v789l9rrlrusdprr9pqcpvkl")
+    }
+
+    @Test
+    fun `bitcoin legacy derivation returns base58check P2PKH`() {
+        val seed = Mnemonics.toSeed(ABANDON_MNEMONIC)
+        // Published BIP44 vectors for the same mnemonic: a m/44' account must
+        // produce a base58check P2PKH address, never a bech32 one.
+        val mainnet = bitcoin.deriveAccount(seed, BitcoinAdapter.mainnet(), 0, legacy = true)
+        assertThat(mainnet.path).isEqualTo("m/44'/0'/0'/0/0")
+        assertThat(mainnet.address).isEqualTo("1LqBGSKuX5yYUonjxT5qGfpUsXKYYWeabA")
+
+        val testnet = bitcoin.deriveAccount(seed, BitcoinAdapter.testnet(), 0, legacy = true)
+        assertThat(testnet.path).isEqualTo("m/44'/1'/0'/0/0")
+        assertThat(testnet.address).isEqualTo("mkpZhYtJu2r87Js3pDiWJDmPte2NRZ8bJV")
+
+        // The legacy branch interpolates the index too.
+        val second = bitcoin.deriveAccount(seed, BitcoinAdapter.mainnet(), 1, legacy = true)
+        assertThat(second.address).isEqualTo("1Ak8PffB2meyfYnbXZR9EGfLfFZVpzJvQP")
+        assertThat(second.address).isNotEqualTo(mainnet.address)
     }
 
     /** Official BIP143 native-P2WPKH test vector (sigHash check). */
@@ -509,5 +611,73 @@ class ChainAdaptersCrossValidationTest {
         assertThat(messages[0].typeUrl).isEqualTo("/cosmos.bank.v1beta1.MsgSend")
         assertThat(messages[0].understood).isTrue()
         assertThat(messages[0].summary).contains("1000 uatom")
+    }
+
+    // ==================================================================
+    // Derivation-path shape (DerivationPathIndex)
+    // ==================================================================
+
+    /**
+     * Every adapter must read its OWN index back out of the path it wrote —
+     * that is the whole contract, and it is what lets the repository stop
+     * guessing where a chain keeps its index. Solana is the case that forced
+     * this: its index is the ACCOUNT level (m/44'/501'/i'/0'), not the final
+     * level, so a "read the last element" rule could never reach index 2.
+     */
+    @Test
+    fun `each adapter reads the index back out of its own path`() {
+        val seed = Mnemonics.toSeed(ABANDON_MNEMONIC)
+        for (index in listOf(0, 1, 2, 7, 44)) {
+            assertThat(evm.derivationIndexOf(evm.deriveAccount(seed, index).path)).isEqualTo(index)
+            assertThat(solana.derivationIndexOf(solana.deriveAccount(seed, index).path)).isEqualTo(index)
+            assertThat(aptos.derivationIndexOf(aptos.deriveAccount(seed, index).path)).isEqualTo(index)
+            assertThat(sui.derivationIndexOf(sui.deriveAccount(seed, index).path)).isEqualTo(index)
+            assertThat(tron.derivationIndexOf(tron.deriveAccount(seed, index).path)).isEqualTo(index)
+            assertThat(cosmos.derivationIndexOf(cosmos.deriveAccount(seed, cosmosHub, index).path))
+                .isEqualTo(index)
+            assertThat(
+                bitcoin.derivationIndexOf(
+                    bitcoin.deriveAccount(seed, BitcoinAdapter.mainnet(), index).path
+                )
+            ).isEqualTo(index)
+            // The legacy m/44' branch must read back too, not just BIP84.
+            assertThat(
+                bitcoin.derivationIndexOf(
+                    bitcoin.deriveAccount(seed, BitcoinAdapter.mainnet(), index, legacy = true).path
+                )
+            ).isEqualTo(index)
+        }
+
+        // The shapes really do differ — this is why one rule cannot serve
+        // them all. Solana's index is the third level; Sui's is the fifth.
+        assertThat(solana.deriveAccount(seed, 2).path).isEqualTo("m/44'/501'/2'/0'")
+        assertThat(sui.deriveAccount(seed, 2).path).isEqualTo("m/44'/784'/0'/0'/2'")
+    }
+
+    /**
+     * A path that is not this chain's shape reads as null and never throws:
+     * the repository then ignores that row (falling back to -1) instead of
+     * mis-counting it. Without this, a hand-edited or foreign path could
+     * push the next index onto an address that already exists.
+     */
+    @Test
+    fun `an unrecognised path reads as null rather than throwing`() {
+        // Solana's own path with the account/change levels moved is not its shape.
+        assertThat(solana.derivationIndexOf("m/44'/501'/3'/5'")).isNull()
+        assertThat(solana.derivationIndexOf("m/44'/501'/3'")).isNull()
+        assertThat(solana.derivationIndexOf("m/44'/501'/x'/0'")).isNull()
+        assertThat(solana.derivationIndexOf("m/44'/60'/0'/0/3")).isNull() // an EVM path
+        assertThat(solana.derivationIndexOf("")).isNull()
+        assertThat(solana.derivationIndexOf("not-a-path")).isNull()
+
+        // Sui: the account level is fixed at 0', so a moved one is not Sui's.
+        assertThat(sui.derivationIndexOf("m/44'/784'/1'/0'/0'")).isNull()
+        assertThat(sui.derivationIndexOf("m/44'/784'/0'/0'/x'")).isNull()
+
+        // Depth and purpose checks.
+        assertThat(evm.derivationIndexOf("m/44'/60'/0'/0")).isNull()
+        assertThat(evm.derivationIndexOf("m/44'/60'/0'/0/0/0")).isNull()
+        assertThat(bitcoin.derivationIndexOf("m/49'/0'/0'/0/0")).isNull() // BIP49 is not emitted
+        assertThat(tron.derivationIndexOf("m/44'/195'/0'/0/x")).isNull()
     }
 }

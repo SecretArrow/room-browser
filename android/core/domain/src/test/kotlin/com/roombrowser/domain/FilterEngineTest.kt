@@ -11,8 +11,21 @@ class FilterEngineTest {
         maliciousHosts = setOf("phishing.example.net")
     )
 
-    private fun decide(host: String, pageHost: String? = "site.com") =
-        engine.decide(host, pageHost)
+    /**
+     * These tests are about the RULES, not about the defaults, so every
+     * switch is stated here rather than inherited. The product default is
+     * all-off (see ProfileSettings), and FilterEngine's own parameter
+     * defaults were changed to match it — a test that silently leaned on
+     * the old all-on defaults would then have failed for the wrong reason.
+     */
+    private fun decide(
+        host: String,
+        pageHost: String? = "site.com",
+        blockAds: Boolean = true,
+        blockTrackers: Boolean = true,
+        blockCrossSite: Boolean = true,
+        blockMalicious: Boolean = true
+    ) = engine.decide(host, pageHost, "/", blockAds, blockTrackers, blockCrossSite, blockMalicious)
 
     @Test
     fun `blocks exact ad host`() {
@@ -37,7 +50,7 @@ class FilterEngineTest {
 
     @Test
     fun `allows tracker host when blockTrackers disabled`() {
-        val d = engine.decide("google-analytics.com", "site.com", "/", blockTrackers = false)
+        val d = decide("google-analytics.com", blockTrackers = false)
         assertThat(d).isEqualTo(FilterEngine.Decision.Allowed())
     }
 
@@ -55,16 +68,13 @@ class FilterEngineTest {
 
     @Test
     fun `keyword rules match path`() {
-        val d = engine.decide("unknown-host.net", "site.com", "/js/ads/banner.js")
+        val d = decide("unknown-host.net", path = "/js/ads/banner.js")
         assertThat((d as FilterEngine.Decision.Blocked).category).isEqualTo(FilterEngine.FilterCategory.AD)
     }
 
     @Test
     fun `cross-site tracking allowed when only cross-site blocking is off`() {
-        val d = engine.decide(
-            "google-analytics.com", "site.com", "/",
-            blockCrossSite = false
-        )
+        val d = decide("google-analytics.com", blockCrossSite = false)
         // trackers blocking still on but cross-site only disabled → still blocked as same-site? host differs → allowed
         assertThat(d).isInstanceOf(FilterEngine.Decision.Allowed::class.java)
     }

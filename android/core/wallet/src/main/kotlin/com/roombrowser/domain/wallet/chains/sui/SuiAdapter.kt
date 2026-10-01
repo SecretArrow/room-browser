@@ -2,6 +2,8 @@ package com.roombrowser.domain.wallet.chains.sui
 
 import com.roombrowser.domain.wallet.bcs.BcsReader
 import com.roombrowser.domain.wallet.bcs.BcsWriter
+import com.roombrowser.domain.wallet.chains.DerivationPathIndex
+import com.roombrowser.domain.wallet.chains.DerivationPathParsing
 import com.roombrowser.domain.wallet.crypto.Ed25519
 import com.roombrowser.domain.wallet.crypto.Hashes
 import com.roombrowser.domain.wallet.crypto.Hex
@@ -21,7 +23,12 @@ import kotlinx.serialization.json.put
 /**
  * Sui adapter.
  *
- * Keys: SLIP-0010 ed25519 at m/44'/784'/0'/0' (official Sui path).
+ * Keys: SLIP-0010 ed25519 at m/44'/784'/0'/0'/i' — the CANONICAL Sui path.
+ * Account and change levels are fixed at 0'; the account index sits on the
+ * FINAL (address) level, exactly as the official SDKs document it
+ * (MystenLabs/sui `crates/sui-keys/src/key_derive.rs`:
+ * "Ed25519 follows SLIP-0010 using hardened path: m/44'/784'/0'/0'/{index}'",
+ * and @mysten/sui's DEFAULT_ED25519_DERIVATION_PATH = m/44'/784'/0'/0'/0').
  * Address = blake2b256(0x00 || pubkey) (verified against sui-types'
  * `impl From<&PublicKey> for SuiAddress`).
  *
@@ -35,19 +42,47 @@ import kotlinx.serialization.json.put
  * that fails to parse is shown as raw bytes with a warning instead of being
  * silently trusted.
  */
-class SuiAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) {
+class SuiAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationPathIndex {
 
     fun chainType(): ChainType = ChainType.SUI
 
     fun deriveAccount(seed: ByteArray, index: Int): DerivedSuiKey {
-        val key = Slip10Ed25519Key.derive(seed, "m/44'/784'/0'/0'")
+        // Canonical Sui derivation: the index is the FINAL (address) level and
+        // the account/change levels stay fixed at 0'. The official Rust
+        // keytool encodes the same shape as m/44'/784'/0'/0'/{index}' and its
+        // path validator rejects any other arrangement for ed25519, so a path
+        // with the index anywhere else is not interoperable with Sui Wallet,
+        // Suiet or any SDK-derived account.
+        //
+        // This DELIBERATELY changes index 0: the pre-release build put the
+        // index on the ACCOUNT level (m/44'/784'/i'/0'), a shape the official
+        // SDKs reject outright. Interop with the real Sui ecosystem wins over
+        // the addresses that pre-release derived.
+        val path = "m/44'/784'/0'/0'/$index'"
+        val key = Slip10Ed25519Key.derive(seed, path)
         val pubkey = Ed25519.publicKeyFromSeed(key.seed)
         return DerivedSuiKey(
             seed = key.seed,
             publicKey = pubkey,
             address = "0x" + Hex.encode(Hashes.blake2b256(byteArrayOf(0x00) + pubkey)),
-            path = "m/44'/784'/0'/0'"
+            path = path
         )
+    }
+
+    /**
+     * Inverts [deriveAccount]: m/44'/784'/0'/0'/{index}'. The account and
+     * change levels are fixed, so the index is the FINAL level here — unlike
+     * Solana, which is what makes this the chain the last-level rule did
+     * handle.
+     */
+    override fun derivationIndexOf(path: String): Int? {
+        val levels = DerivationPathParsing.levels(path) ?: return null
+        if (levels.size != 5) return null
+        if (!DerivationPathParsing.isLevel(levels[0], 44)) return null
+        if (!DerivationPathParsing.isLevel(levels[1], 784)) return null
+        if (!DerivationPathParsing.isLevel(levels[2], 0)) return null
+        if (!DerivationPathParsing.isLevel(levels[3], 0)) return null
+        return DerivationPathParsing.levelValue(levels[4])
     }
 
     fun isValidAddress(address: String): Boolean {

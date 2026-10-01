@@ -10,21 +10,33 @@ package com.roombrowser.browser.wallet.dapp
  * Providers installed (MAIN FRAME ONLY, like the vault script — an iframe
  * must never see wallet state of the embedding page):
  *  - `window.ethereum` — EIP-1193 subset: `request({method, params})`,
- *    `enable()`, `isMetaMask`, `isRoomBrowser`, `on`/`removeListener` for
- *    `accountsChanged`/`chainChanged`, and `chainId`/`selectedAddress`
- *    getters over cached state (populated from responses and native
+ *    `enable()`, `isMetaMask`, `isRoomBrowser`, `isConnected()`,
+ *    `on`/`removeListener` for `accountsChanged`/`chainChanged`/`connect`/
+ *    `disconnect`/`message`, and `chainId`/`selectedAddress` getters over
+ *    cached state (populated from responses and native
  *    `chainChanged`/`accountsChanged` pushes — a getter NEVER triggers a
- *    request).
- *  - `window.solana` — Phantom-compatible: `connect`, `disconnect`,
- *    `signMessage(message, encoding)`, `signAndSendTransaction(tx)`,
- *    cached `publicKey` getter, `isPhantom`, `isRoomBrowser`.
+ *    request). Also announces itself over EIP-6963
+ *    (`eip6963:announceProvider`, re-announcing on `eip6963:requestProvider`).
+ *  - `window.solana` — Phantom-compatible: `connect`, `disconnect` (revokes
+ *    the host's Solana permission natively), `signMessage(message, encoding)`,
+ *    `signAndSendTransaction(tx)`, cached `publicKey` getter, `isPhantom`,
+ *    `isRoomBrowser`.
  *  - `window.aptos` — Petra-compatible: `connect`, `account`,
  *    `signMessage({message, ...})`, `signAndSubmitTransaction(tx, opts)`.
  *  - `window.suiWallet` — Sui standard: `connect`, `requestAccounts`,
- *    `signMessage({message})`, `signAndExecuteTransactionBlock({...})`.
- *  - `window.tronLink` and a minimal `window.tronWeb` shim —
- *    `{ request({method}), connect() }`; `tron_requestAccounts` maps to a
- *    TRON Connect.
+ *    `signMessage`/`signPersonalMessage({message})`,
+ *    `signAndExecuteTransactionBlock`/`signAndExecuteTransaction({...})`.
+ *  - `window.keplr` — Keplr-compatible Cosmos provider: `enable(chainId)`,
+ *    `getKey(chainId)`, `signAmino`, `signDirect`, `signArbitrary`, and the
+ *    `keplr_keystorechange` event (fired whenever the accounts change).
+ *  - `window.BitcoinProvider` — `connect`, `getAccounts`, `signMessage`.
+ *    `signTransaction` is deliberately absent-in-effect: it rejects with
+ *    4200 (see the comment at its definition).
+ *  - `window.tronLink` and a MINIMAL `window.tronWeb` shim —
+ *    `request({method})`, `connect()`, `signMessage`, `signTransaction`;
+ *    `tron_requestAccounts`/`tron_signMessage`/`tron_signTransaction` map to
+ *    their native counterparts. The tronWeb shim is deliberately NOT the
+ *    TronWeb SDK — see the comment at its definition for the exact limit.
  *
  * PROTOCOL (see [WalletBridgeProtocol] for the native codec):
  *  - Every provider call wraps `{id, kind: "request"|"rpc", chain, method,
@@ -41,18 +53,26 @@ package com.roombrowser.browser.wallet.dapp
  *  - Native pushes `window.__roomWalletEmit(event, payloadJson)` for
  *    `accountsChanged` (`["0x…"]`) and `chainChanged` (`"0x…"`); solana/sui
  *    listeners receive the mapped `accountChanged` event with the first
- *    address as payload.
+ *    address as payload, Cosmos listeners get `keplr_keystorechange`, and an
+ *    unhandled event name surfaces on `window.ethereum`'s EIP-1193 `message`
+ *    listeners as `{type, data}`.
+ *  - A rejected call carrying 4900/4901 means native lost the wallet or the
+ *    chain, which is exactly EIP-1193's `disconnect`: it is dispatched to
+ *    `window.ethereum` listeners.
  *
  * MESSAGE ENCODING (the base64 convention): `personal_sign` payloads that
  * are 0x-hex strings pass through verbatim; EVERY other message payload
  * (UTF-8 text, Uint8Array) is encoded to its raw bytes, base64-wrapped as
  * `{"__roomB64": "…"}` — arbitrary text (emoji, quotes, newlines) would
  * otherwise be mangled or ambiguous across the JSON boundary. The native
- * codec decodes the wrapper symmetrically.
+ * codec decodes the wrapper symmetrically. Cosmos sign-doc bytes
+ * (signDirect's `bodyBytes`/`authInfoBytes`) go the other way: a Uint8Array
+ * is base64-encoded before it is sent.
  *
  * UNSUPPORTED methods (`eth_signTransaction`, `eth_sendRawTransaction`,
  * `eth_decrypt`, `eth_getEncryptionPublicKey`) settle client-side with
- * EIP-1193 code 4200 and never reach native.
+ * EIP-1193 code 4200 and never reach native — none of them is in the
+ * granted method set either, so the wallet never advertises them.
  *
  * Robustness rules (mirroring RoomVaultScript): everything in try/catch —
  * a hostile or broken page must still load; nothing is logged; idempotent
@@ -78,6 +98,8 @@ object RoomWalletScript {
     var CHAIN_SOLANA = 'SOLANA';
     var CHAIN_APTOS = 'APTOS';
     var CHAIN_SUI = 'SUI';
+    var CHAIN_COSMOS = 'COSMOS';
+    var CHAIN_BITCOIN = 'BITCOIN';
     var CHAIN_TRON = 'TRON';
 
     var READONLY_METHODS = {
@@ -93,14 +115,18 @@ object RoomWalletScript {
     var state = {
       chainId: null,
       selectedAddress: null,
+      evmConnected: false,
       solanaPublicKey: null,
-      aptosAddress: null
+      aptosAddress: null,
+      cosmosAddress: null,
+      bitcoinAddress: null,
+      tronAddress: null
     };
 
     var pending = {};
     var nextId = 1;
     var lastCallAt = {};
-    var listeners = { evm: {}, solana: {}, aptos: {}, sui: {} };
+    var listeners = { evm: {}, solana: {}, aptos: {}, sui: {}, cosmos: {}, bitcoin: {} };
 
     function bridgeError(code, message) {
       var e = new Error(message);
@@ -153,6 +179,54 @@ object RoomWalletScript {
       var encoded = toBase64(bytes);
       if (encoded === null) return value;
       return { __roomB64: encoded };
+    }
+
+    // The opposite direction, for Cosmos sign docs: the dApp hands us a
+    // Uint8Array, JSON can only carry text, so it becomes base64.
+    function bytesToBase64(value) {
+      if (typeof value === 'string') return value;
+      var bytes = toBytes(value);
+      if (bytes === null) return null;
+      return toBase64(bytes);
+    }
+
+    // Every provider family answers with its own address shape (EVM array,
+    // Solana {publicKey}, Aptos/Tron/Bitcoin {address}, Keplr a bare string
+    // or a Key list). One reader so caching never disagrees with a provider.
+    function addressOf(value) {
+      try {
+        if (typeof value === 'string') return value || null;
+        if (Array.isArray(value)) {
+          if (!value.length) return null;
+          var first = value[0];
+          if (typeof first === 'string') return first || null;
+          if (first && typeof first === 'object') {
+            if (typeof first.address === 'string' && first.address) return first.address;
+            if (typeof first.bech32Address === 'string' && first.bech32Address) return first.bech32Address;
+            if (typeof first.publicKey === 'string' && first.publicKey) return first.publicKey;
+          }
+          return null;
+        }
+        if (value && typeof value === 'object') {
+          if (typeof value.address === 'string' && value.address) return value.address;
+          if (typeof value.bech32Address === 'string' && value.bech32Address) return value.bech32Address;
+          if (typeof value.publicKey === 'string' && value.publicKey) return value.publicKey;
+        }
+      } catch (e) {}
+      return null;
+    }
+
+    // EIP-1193: the provider announces `connect` the first time it knows a
+    // chain id (from a read or a native chainChanged push).
+    function noteChainId(value) {
+      try {
+        if (typeof value !== 'string' || !value) return;
+        state.chainId = value;
+        if (!state.evmConnected) {
+          state.evmConnected = true;
+          dispatch('evm', 'connect', { chainId: value });
+        }
+      } catch (e) {}
     }
 
     // personal_sign carries its message at params[0] (array shape) or
@@ -209,17 +283,25 @@ object RoomWalletScript {
     function cacheFromResult(entry, value) {
       try {
         if (entry.method === 'eth_chainId' && typeof value === 'string') {
-          state.chainId = value;
+          noteChainId(value);
         } else if (entry.method === 'net_version' && typeof value === 'string') {
           var parsed = parseInt(value, 10);
-          if (!isNaN(parsed)) state.chainId = '0x' + parsed.toString(16);
+          if (!isNaN(parsed)) noteChainId('0x' + parsed.toString(16));
         } else if ((entry.method === 'eth_accounts' || entry.method === 'eth_requestAccounts') && Array.isArray(value)) {
           state.selectedAddress = value.length ? String(value[0]) : null;
-        } else if (entry.method === 'connect' || entry.method === 'requestAccounts') {
-          if (entry.chain === CHAIN_SOLANA && value && value.publicKey) {
-            state.solanaPublicKey = String(value.publicKey);
-          } else if (entry.chain === CHAIN_APTOS && value && value.address) {
-            state.aptosAddress = String(value.address);
+        } else if (entry.method === 'connect' || entry.method === 'requestAccounts' || entry.method === 'enable') {
+          var address = addressOf(value);
+          if (address === null) return;
+          if (entry.chain === CHAIN_SOLANA) {
+            state.solanaPublicKey = address;
+          } else if (entry.chain === CHAIN_APTOS) {
+            state.aptosAddress = address;
+          } else if (entry.chain === CHAIN_COSMOS) {
+            state.cosmosAddress = address;
+          } else if (entry.chain === CHAIN_BITCOIN) {
+            state.bitcoinAddress = address;
+          } else if (entry.chain === CHAIN_TRON) {
+            state.tronAddress = address;
           }
         }
       } catch (e) {}
@@ -234,6 +316,12 @@ object RoomWalletScript {
         if (code !== 0) {
           var msg = typeof errorMessage === 'string' && errorMessage
             ? errorMessage : 'Wallet request rejected';
+          // 4900/4901 = the wallet or its chain went away: that is exactly
+          // what EIP-1193's `disconnect` means, so tell the page.
+          if (code === 4900 || code === 4901) {
+            state.evmConnected = false;
+            dispatch('evm', 'disconnect', bridgeError(code, msg));
+          }
           entry.reject(bridgeError(code, msg));
           return;
         }
@@ -293,9 +381,21 @@ object RoomWalletScript {
           var first = Array.isArray(payload) && payload.length ? String(payload[0]) : null;
           dispatch('solana', 'accountChanged', first);
           dispatch('sui', 'accountChanged', first);
+          // Every other family's cached address belonged to the account that
+          // just went away: drop it and let the dApp re-read (that is what
+          // Keplr's keystorechange means).
+          state.cosmosAddress = null;
+          state.bitcoinAddress = null;
+          state.tronAddress = null;
+          dispatch('cosmos', 'keplr_keystorechange', null);
+          dispatch('bitcoin', 'accountsChanged', payload);
         } else if (event === 'chainChanged') {
-          if (typeof payload === 'string') state.chainId = payload;
+          if (typeof payload === 'string') noteChainId(payload);
           dispatch('evm', 'chainChanged', payload);
+        } else {
+          // Any other native push is surfaced through the one EIP-1193
+          // channel for it: the provider `message` event.
+          dispatch('evm', 'message', { type: String(event), data: payload });
         }
       } catch (e) {}
     };
@@ -327,11 +427,40 @@ object RoomWalletScript {
       enable: function () {
         return send(CHAIN_EVM, 'request', 'eth_requestAccounts', []);
       },
+      isConnected: function () {
+        return state.chainId !== null;
+      },
       on: evmEvents.on,
       removeListener: evmEvents.removeListener,
       get chainId() { return state.chainId; },
       get selectedAddress() { return state.selectedAddress; }
     };
+
+    // EIP-6963 (wallet discovery): dApps announce a requestProvider event and
+    // every wallet answers with its own info + provider. Without this a 2025+
+    // dApp's multi-wallet picker never lists us. The icon is an inline SVG
+    // data URI (no remote asset, no fingerprintable request).
+    try {
+      var eip6963Info = {
+        uuid: (window.crypto && typeof window.crypto.randomUUID === 'function')
+          ? window.crypto.randomUUID()
+          : '3f2b1c8e-9d4a-4c1f-8b6e-5a0d7c2e9f31',
+        name: 'Room Browser',
+        icon: 'data:image/svg+xml,<svg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 32 32\'>' +
+          '<rect width=\'32\' height=\'32\' rx=\'8\' fill=\'black\'/>' +
+          '<circle cx=\'16\' cy=\'16\' r=\'7\' fill=\'white\'/></svg>',
+        rdns: 'com.roombrowser.wallet'
+      };
+      var announceProvider = function () {
+        try {
+          window.dispatchEvent(new CustomEvent('eip6963:announceProvider', {
+            detail: Object.freeze({ info: eip6963Info, provider: window.ethereum })
+          }));
+        } catch (e) {}
+      };
+      window.addEventListener('eip6963:requestProvider', announceProvider);
+      announceProvider();
+    } catch (e) {}
 
     var solanaEvents = eventsFor('solana');
 
@@ -342,8 +471,10 @@ object RoomWalletScript {
         return send(CHAIN_SOLANA, 'request', 'connect', []);
       },
       disconnect: function () {
+        // Not cosmetic: native revokes this host's Solana permission, so the
+        // next connect has to be approved again.
         state.solanaPublicKey = null;
-        return Promise.resolve({});
+        return send(CHAIN_SOLANA, 'request', 'disconnect', []);
       },
       signMessage: function (message, encoding) {
         var params = { message: wrapMessage(message) };
@@ -399,6 +530,51 @@ object RoomWalletScript {
 
     var suiEvents = eventsFor('sui');
 
+    function suiSignMessage(input) {
+      var src = input && typeof input === 'object' ? input : {};
+      var params = {};
+      try { params.message = wrapMessage(src.message); } catch (e) {}
+      return send(CHAIN_SUI, 'request', 'signMessage', params);
+    }
+
+    function suiExecuteTransaction(input) {
+      var src = input && typeof input === 'object' ? input : {};
+      // The wallet standard hands over a Transaction OBJECT, which is not
+      // JSON-serializable across the bridge (it would arrive as {}). The
+      // engine signs and submits serialized bytes, so ask the object for them
+      // the way a wallet adapter does — Transaction.serialize(). A caller that
+      // already holds serialized bytes (a string transactionBlock, or txBytes)
+      // is passed straight through.
+      var tx = typeof src.transactionBlock !== 'undefined' ? src.transactionBlock : src.transaction;
+      if (typeof tx === 'string' && tx) {
+        return suiSend({ txBytes: tx }, src.options);
+      }
+      if (tx && typeof tx.serialize === 'function') {
+        // Sui's Transaction.serialize() returns base64 in some SDK versions
+        // and raw BCS bytes in others — accept either, like the Solana path.
+        var result = null;
+        try { result = tx.serialize(); } catch (e) { result = null; }
+        var serialized = typeof result === 'string' ? result : toBase64(result);
+        if (typeof serialized === 'string' && serialized) {
+          return suiSend({ txBytes: serialized }, src.options);
+        }
+        return Promise.reject(bridgeError(-32602, 'Could not serialize the Sui transaction'));
+      }
+      if (typeof src.txBytes === 'string' && src.txBytes) {
+        return suiSend({ txBytes: src.txBytes }, src.options);
+      }
+      // Nothing here can be signed: say so up front instead of prompting the
+      // user for a transaction the engine would then have to refuse.
+      return Promise.reject(bridgeError(
+        -32602, 'Sui signAndExecuteTransaction needs a Transaction object with serialize(), or base64 txBytes'
+      ));
+    }
+
+    function suiSend(params, options) {
+      if (typeof options !== 'undefined') params.options = options;
+      return send(CHAIN_SUI, 'request', 'signAndExecuteTransactionBlock', params);
+    }
+
     window.suiWallet = {
       isRoomBrowser: true,
       connect: function () {
@@ -407,21 +583,155 @@ object RoomWalletScript {
       requestAccounts: function () {
         return send(CHAIN_SUI, 'request', 'requestAccounts', []);
       },
-      signMessage: function (input) {
-        var src = input && typeof input === 'object' ? input : {};
-        var params = {};
-        try { params.message = wrapMessage(src.message); } catch (e) {}
-        return send(CHAIN_SUI, 'request', 'signMessage', params);
-      },
-      signAndExecuteTransactionBlock: function (input) {
-        var src = input && typeof input === 'object' ? input : {};
-        var params = {};
-        if (typeof src.transactionBlock !== 'undefined') params.transactionBlock = src.transactionBlock;
-        if (typeof src.options !== 'undefined') params.options = src.options;
-        return send(CHAIN_SUI, 'request', 'signAndExecuteTransactionBlock', params);
-      },
+      signMessage: suiSignMessage,
+      // The wallet-standard name for the same call.
+      signPersonalMessage: suiSignMessage,
+      signAndExecuteTransactionBlock: suiExecuteTransaction,
+      // The wallet standard's newer name for the same call.
+      signAndExecuteTransaction: suiExecuteTransaction,
       on: suiEvents.on,
       removeListener: suiEvents.removeListener
+    };
+
+    var cosmosEvents = eventsFor('cosmos');
+
+    function keplrKey(address) {
+      return {
+        name: 'Room Browser',
+        algo: 'secp256k1',
+        // The engine hands the bridge no public key, so this wallet cannot
+        // publish one (see WalletBridgeProtocol.keplrKeyResult). dApps that
+        // need the compressed pubkey must read it from the chain or sign
+        // through signAmino/signDirect.
+        pubKey: null,
+        address: address,
+        bech32Address: address,
+        isNanoLedger: false,
+        isKeystone: false
+      };
+    }
+
+    // Keplr's signAmino/signDirect resolve with {signed, signature}: the doc
+    // the dApp handed us (unchanged) plus the base64 signature over it.
+    function keplrSignResult(signDoc, signature) {
+      return { signed: signDoc, signature: String(signature) };
+    }
+
+    window.keplr = {
+      isRoomBrowser: true,
+      version: '0.1.0-roombrowser',
+      mode: 'extension',
+      enable: function (chainId) {
+        var params = { chainId: typeof chainId === 'string' ? chainId : null };
+        return send(CHAIN_COSMOS, 'request', 'enable', params).then(function (value) {
+          var address = addressOf(value);
+          if (address === null) throw bridgeError(-32603, 'Cosmos connect returned no address');
+          state.cosmosAddress = address;
+          return [keplrKey(address)];
+        });
+      },
+      getKey: function (chainId) {
+        var params = { chainId: typeof chainId === 'string' ? chainId : null };
+        return send(CHAIN_COSMOS, 'request', 'getKey', params).then(function (key) {
+          if (key && typeof key.bech32Address === 'string') state.cosmosAddress = key.bech32Address;
+          return key;
+        });
+      },
+      signAmino: function (chainId, signer, signDoc) {
+        if (!signDoc || typeof signDoc !== 'object') {
+          return Promise.reject(bridgeError(-32602, 'signAmino needs a sign doc object'));
+        }
+        return send(CHAIN_COSMOS, 'request', 'signAmino', {
+          chainId: typeof chainId === 'string' ? chainId : null,
+          signer: typeof signer === 'string' ? signer : null,
+          signDoc: signDoc
+        }).then(function (signature) {
+          return keplrSignResult(signDoc, signature);
+        });
+      },
+      signDirect: function (chainId, signer, signDoc) {
+        var src = signDoc && typeof signDoc === 'object' ? signDoc : {};
+        var body = bytesToBase64(src.bodyBytes);
+        var authInfo = bytesToBase64(src.authInfoBytes);
+        if (!body || !authInfo) {
+          return Promise.reject(bridgeError(-32602, 'signDirect needs bodyBytes and authInfoBytes'));
+        }
+        var docChainId = typeof src.chainId === 'string' && src.chainId
+          ? src.chainId : (typeof chainId === 'string' ? chainId : null);
+        if (!docChainId) {
+          return Promise.reject(bridgeError(-32602, 'signDirect needs a chain id'));
+        }
+        var accountNumber = typeof src.accountNumber === 'undefined' || src.accountNumber === null
+          ? '0' : String(src.accountNumber);
+        return send(CHAIN_COSMOS, 'request', 'signDirect', {
+          chainId: docChainId,
+          signer: typeof signer === 'string' ? signer : null,
+          bodyBytes: body,
+          authInfoBytes: authInfo,
+          accountNumber: accountNumber
+        }).then(function (signature) {
+          return keplrSignResult({
+            bodyBytes: src.bodyBytes,
+            authInfoBytes: src.authInfoBytes,
+            chainId: docChainId,
+            accountNumber: accountNumber
+          }, signature);
+        });
+      },
+      signArbitrary: function (chainId, signer, data) {
+        var params = {
+          chainId: typeof chainId === 'string' ? chainId : null,
+          signer: typeof signer === 'string' ? signer : null
+        };
+        try { params.message = wrapMessage(data); } catch (e) {}
+        return send(CHAIN_COSMOS, 'request', 'signArbitrary', params).then(function (signature) {
+          // pub_key is null for the same reason as getKey's: the engine does
+          // not expose public keys.
+          return { signature: String(signature), pub_key: null };
+        });
+      },
+      on: cosmosEvents.on,
+      off: cosmosEvents.removeListener,
+      removeListener: cosmosEvents.removeListener
+    };
+
+    var bitcoinEvents = eventsFor('bitcoin');
+
+    window.BitcoinProvider = {
+      isRoomBrowser: true,
+      connect: function () {
+        return send(CHAIN_BITCOIN, 'request', 'connect', []).then(function (value) {
+          var address = addressOf(value);
+          if (address === null) throw bridgeError(-32603, 'Bitcoin connect returned no address');
+          state.bitcoinAddress = address;
+          return { address: address, publicKey: null };
+        });
+      },
+      getAccounts: function () {
+        // Silent once this host is permitted (the bridge auto-approves a
+        // permitted Connect); a prompt the first time, like the other
+        // providers' connect.
+        if (state.bitcoinAddress) return Promise.resolve([state.bitcoinAddress]);
+        return window.BitcoinProvider.connect().then(function (account) {
+          return [account.address];
+        });
+      },
+      signMessage: function (message, options) {
+        var params = { message: wrapMessage(message) };
+        if (typeof options === 'string') params.protocol = options;
+        return send(CHAIN_BITCOIN, 'request', 'signMessage', params);
+      },
+      signTransaction: function () {
+        // DELIBERATE LIMIT: the engine refuses Bitcoin dApp transactions
+        // (WalletEngine.signAndBroadcastDappTransaction has no ChainType.BITCOIN
+        // route), so the wallet does not advertise the method and says so
+        // instead of failing halfway through a prompt.
+        return Promise.reject(bridgeError(
+          4200, 'Bitcoin transaction signing is not supported by this wallet'
+        ));
+      },
+      on: bitcoinEvents.on,
+      removeListener: bitcoinEvents.removeListener
     };
 
     function tronProvider() {
@@ -432,17 +742,78 @@ object RoomWalletScript {
         },
         request: function (args) {
           var method = args && typeof args.method === 'string' ? args.method : '';
+          var params = args && typeof args.params !== 'undefined' ? args.params : [];
           if (method === 'tron_requestAccounts') {
             return send(CHAIN_TRON, 'request', 'connect', []);
           }
-          var params = args && typeof args.params !== 'undefined' ? args.params : [];
+          if (method === 'tron_signMessage') {
+            var payload = Array.isArray(params) ? params[0] : params;
+            return send(CHAIN_TRON, 'request', 'signMessage', { message: wrapMessage(payload) });
+          }
+          if (method === 'tron_signTransaction') {
+            var tx = Array.isArray(params) ? params[0] : params;
+            if (!tx || typeof tx !== 'object') {
+              return Promise.reject(bridgeError(-32602, 'signTransaction expects a transaction object'));
+            }
+            return send(CHAIN_TRON, 'request', 'signTransaction', tx);
+          }
           return send(CHAIN_TRON, 'request', method, params);
+        },
+        signMessage: function (message) {
+          return send(CHAIN_TRON, 'request', 'signMessage', { message: wrapMessage(message) });
+        },
+        signTransaction: function (tx) {
+          if (!tx || typeof tx !== 'object') {
+            return Promise.reject(bridgeError(-32602, 'signTransaction expects a transaction object'));
+          }
+          return send(CHAIN_TRON, 'request', 'signTransaction', tx);
         }
       };
     }
 
     window.tronLink = tronProvider();
-    window.tronWeb = tronProvider();
+
+    // DELIBERATE LIMIT — this is NOT the TronWeb SDK. TronWeb is a large
+    // library: dApps reach for tronWeb.contract() (ABI encoding +
+    // triggerSmartContract), tronWeb.transactionBuilder.*, tronWeb.address.*,
+    // tronWeb.utils.* and the tronWeb.trx.* family (getBalance, getAccount,
+    // send, broadcast, sign, ...). None of that is re-implemented here, and
+    // pretending otherwise would fail later and more confusingly than saying
+    // it up front. What IS here: the account identity (defaultAddress), the
+    // two unit helpers, and the two signing entry points, all of which route
+    // through native confirmation. A dApp that needs the rest must fall back
+    // to window.tronLink.request({method: 'tron_signTransaction' |
+    // 'tron_signMessage'}) or to tronLink.signTransaction / signMessage.
+    // Anything else (for example tronWeb.contract()) throws a TypeError —
+    // by design, so the dApp can detect the limit instead of mis-signing.
+    window.tronWeb = {
+      isRoomBrowser: true,
+      ready: true,
+      get defaultAddress() {
+        var address = state.tronAddress;
+        if (address === null) return null;
+        // Hex form and the rest of the address helpers are not implemented.
+        return { base58: address, name: 'Room Browser', type: 'tron' };
+      },
+      toSun: function (amount) {
+        var parsed = Number(amount);
+        if (!isFinite(parsed)) throw new Error('toSun expects a number');
+        return Math.round(parsed * 1000000);
+      },
+      fromSun: function (sun) {
+        var parsed = Number(sun);
+        if (!isFinite(parsed)) throw new Error('fromSun expects a number');
+        return parsed / 1000000;
+      },
+      trx: {
+        sign: function (tx) {
+          return send(CHAIN_TRON, 'request', 'signTransaction', tx);
+        },
+        signMessage: function (message) {
+          return send(CHAIN_TRON, 'request', 'signMessage', { message: wrapMessage(message) });
+        }
+      }
+    };
   } catch (e) {
     // A page must still load even when the wallet bridge cannot install.
   }

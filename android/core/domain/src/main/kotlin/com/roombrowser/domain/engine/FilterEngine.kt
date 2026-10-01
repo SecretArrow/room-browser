@@ -34,15 +34,22 @@ class FilterEngine(
      * @param requestHost host of the requested resource
      * @param pageHost    host of the page that triggered the request (null for main frame)
      * @param path        path part of the URL, used for keyword rules (default "/")
+     *
+     * The block* defaults mirror ProfileSettings' compatibility-first
+     * defaults (all shields OFF). They used to default to `true`, which meant
+     * a caller that simply omitted them silently got blocking ON — the
+     * opposite of what the product promises a fresh install. The only
+     * production caller passes all four explicitly; these exist so a future
+     * one that forgets cannot disagree with the product default.
      */
     fun decide(
         requestHost: String,
         pageHost: String? = null,
         path: String = "/",
-        blockAds: Boolean = true,
-        blockTrackers: Boolean = true,
-        blockCrossSite: Boolean = true,
-        blockMalicious: Boolean = true
+        blockAds: Boolean = false,
+        blockTrackers: Boolean = false,
+        blockCrossSite: Boolean = false,
+        blockMalicious: Boolean = false
     ): Decision {
         val host = requestHost.lowercase().trimEnd('.')
         if (host.isEmpty()) return Decision.Allowed()

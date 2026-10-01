@@ -20,6 +20,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.BottomSheetDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
@@ -57,6 +59,34 @@ import androidx.compose.ui.graphics.RenderEffect as ComposeRenderEffect
  * corners stay square (sheet sits at screen bottom).
  */
 val RoomBottomSheetShape = RoundedCornerShape(topStart = 10.dp, topEnd = 10.dp)
+
+/**
+ * The single sheet drag handle. Every real sheet is a ModalBottomSheet, which
+ * draws M3's own centered handle above its content — so sheets never call
+ * this themselves. It exists for the sheet-like surfaces that are NOT
+ * ModalBottomSheets (the expanded AI agent panel) and re-exports the exact
+ * same treatment, so the whole app shows one identical handle.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun RoomSheetDragHandle() {
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        BottomSheetDefaults.DragHandle()
+    }
+}
+
+/**
+ * The one sheet title block, shared by EVERY sheet in the app. The drag
+ * handle itself comes from ModalBottomSheet's built-in centered handle
+ * (rendered above the content) — the header only adds the title and its 8dp
+ * gap, so no sheet ever draws two handles.
+ */
+@Composable
+fun RoomSheetHeader(title: String) {
+    val extras = LocalRoomExtras.current
+    Text(title, style = MaterialTheme.typography.titleLarge, color = extras.textPrimary)
+    Spacer(Modifier.height(8.dp))
+}
 
 /** A rounded, bordered card surface with optional theme gradient sheen. */
 @Composable

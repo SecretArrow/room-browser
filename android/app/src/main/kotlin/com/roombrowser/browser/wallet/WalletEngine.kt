@@ -92,7 +92,7 @@ class WalletLockedException : IllegalStateException(
  * DERIVATION POLICY (per chain, through the chain's own adapter — never
  * hand-rolled here): EVM m/44'/60'/0'/0/i, Solana m/44'/501'/i'/0',
  * Aptos m/54'/6'/0'/0'/i (the adapter's Petra-compatible canonical path),
- * Sui m/44'/784'/0'/0', Cosmos m/44'/118'/0'/0/i (coin 118, hrp "cosmos"),
+ * Sui m/44'/784'/0'/0'/i', Cosmos m/44'/118'/0'/0/i (coin 118, hrp "cosmos"),
  * Bitcoin m/84'/0'/0'/0/i (mainnet BIP84) and TRON m/44'/195'/0'/0/i.
  */
 open class WalletEngine(
@@ -900,6 +900,23 @@ open class WalletEngine(
         }
     }
 
+    /**
+     * dApp-initiated disconnect (`window.solana.disconnect`): drops the
+     * host's permission for one chain family, so the next connect prompts
+     * again. Main-thread entry point (the bridge lives there); the repository
+     * write happens on the engine scope, then the permission cache is
+     * refreshed — until it lands, the host is still "permitted", which is the
+     * safe direction (a permission is never widened by a race).
+     */
+    override fun revokeDappPermission(host: String, chainType: ChainType) {
+        if (host.isBlank()) return
+        val profileId = profileState.value ?: return
+        engineScope.launch {
+            quiet { repo.revokeDappPermission(profileId, host, chainType) }
+            permissionsState.value = quiet { repo.allDappPermissions(profileId) } ?: emptyList()
+        }
+    }
+
     /** Executes one approved/rejected decision into a settle outcome. */
     private suspend fun executeDecision(
         request: DappRequest,
@@ -1216,12 +1233,25 @@ open class WalletEngine(
             ChainType.COSMOS -> {
                 val fields = json.parseToJsonElement(request.txParamsJson) as? JsonObject
                     ?: throw WalletException.InvalidParams("tx params must be a JSON object")
+                // Keplr signAmino / signDirect are SIGN-ONLY: the dApp gets the
+                // signature back and broadcasts the transaction itself, so the
+                // digest must cover exactly the doc the dApp supplied.
+                (fields["aminoSignDoc"] as? JsonPrimitive)?.contentOrNull?.let { aminoDoc ->
+                    val doc = try {
+                        json.parseToJsonElement(aminoDoc)
+                    } catch (_: SerializationException) {
+                        throw WalletException.InvalidParams("aminoSignDoc is not valid JSON")
+                    }
+                    val signature = registry.cosmos.signAmino(secpPrivateKey(account), doc)
+                    return DappTransactionResult(
+                        hash = null, signature = signature.signatureBase64, feeLabel = null
+                    )
+                }
+                val signOnly = (fields["signOnly"] as? JsonPrimitive)?.contentOrNull == "true"
                 val body = fields["bodyBytes"]?.jsonPrimitive?.content?.let { decodeBase64(it) }
                     ?: throw WalletException.InvalidParams("Missing bodyBytes")
                 val authInfo = fields["authInfoBytes"]?.jsonPrimitive?.content?.let { decodeBase64(it) }
                     ?: throw WalletException.InvalidParams("Missing authInfoBytes")
-                val lcd = network.lcdUrl
-                    ?: throw WalletException.InvalidParams("Network has no LCD endpoint")
                 val signature = registry.cosmos.signDirect(
                     secpPrivateKey(account),
                     CosmosAdapter.DirectSignDoc(
@@ -1231,6 +1261,13 @@ open class WalletEngine(
                         accountNumber = fields["accountNumber"]?.jsonPrimitive?.content ?: "0"
                     )
                 )
+                if (signOnly) {
+                    return DappTransactionResult(
+                        hash = null, signature = signature.signatureBase64, feeLabel = null
+                    )
+                }
+                val lcd = network.lcdUrl
+                    ?: throw WalletException.InvalidParams("Network has no LCD endpoint")
                 val txRaw = ProtoWriter()
                     .writeBytes(1, body)
                     .writeBytes(2, authInfo)
@@ -1403,26 +1440,14 @@ open class WalletEngine(
         coalescedInto.clear()
     }
 
-    /** Canonical method set granted on Connect (recorded with the permission). */
-    private fun dappMethodsFor(chainType: ChainType): List<String> = when (chainType) {
-        ChainType.EVM -> listOf(
-            "eth_accounts", "eth_requestAccounts", "personal_sign", "eth_signTypedData_v4",
-            "eth_signTransaction", "eth_sendTransaction",
-            "wallet_switchEthereumChain", "wallet_addEthereumChain"
-        )
-        ChainType.SOLANA -> listOf(
-            "connect", "signMessage", "signTransaction", "signAndSendTransaction"
-        )
-        ChainType.APTOS -> listOf(
-            "connect", "signMessage", "signTransaction", "signAndSubmitTransaction"
-        )
-        ChainType.SUI -> listOf(
-            "connect", "signPersonalMessage", "signTransaction", "signAndExecuteTransaction"
-        )
-        ChainType.COSMOS -> listOf("enable", "signAmino", "signDirect", "signArbitrary")
-        ChainType.BITCOIN -> listOf("connect", "signMessage", "signTransaction")
-        ChainType.TRON -> listOf("connect", "signMessage", "signTransaction")
-    }
+    /**
+     * Canonical method set granted on Connect. The list lives in
+     * [WalletBridgeProtocol.grantedMethodsFor] — the bridge, the injected
+     * script and the tests all read the same table, so a method can never be
+     * advertised here without a route to answer it (see that function's doc).
+     */
+    private fun dappMethodsFor(chainType: ChainType): List<String> =
+        WalletBridgeProtocol.grantedMethodsFor(chainType)
 
     // ------------------------------------------------------------------
     // Key material (revealed per operation, never cached)

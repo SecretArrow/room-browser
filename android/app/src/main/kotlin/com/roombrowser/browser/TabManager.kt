@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.os.Bundle
 import android.webkit.WebView
 import com.roombrowser.data.db.TabEntity
+import java.util.concurrent.ConcurrentHashMap
 
 /** In-memory tab model bound to a WebView slot. */
 data class TabSession(
@@ -43,15 +44,53 @@ class TabManager {
      */
     private val savedStates = HashMap<String, Bundle>()
 
-    fun restore(entities: List<TabEntity>) {
-        entities.forEach { sessions[it.id] = TabSession(it, null, thumbnails[it.id]) }
-    }
+    /**
+     * Reverse index over live engines: engine -> (owning tab id, that tab's
+     * last known page URL).
+     *
+     * WHY IT EXISTS: engine callbacks carry the WebView that fired, and both
+     * questions asked of them — "which tab owns this engine?" and "which page
+     * is THIS engine showing?" — are answered from the firing view.
+     * [sessions] cannot answer either from a background thread.
+     *
+     * WHY CONCURRENT: [pageUrlFor] is read by shouldInterceptRequest, which
+     * runs on a WebView BACKGROUND thread for every sub-resource of every
+     * engine; [sessions] is main-thread state and iterating it from there
+     * could see a resize mid-flight. WebView does not override equals or
+     * hashCode, so the keys are engine IDENTITY — exactly the
+     * `session.webView === webView` semantics the old loops had.
+     *
+     * Kept in lockstep with [sessions] through the single [store] funnel. A
+     * STALE entry is worse than a missing one: a missing entry falls back to
+     * the pre-fix behaviour, a stale one would route an engine's callback to
+     * a tab that no longer owns it.
+     */
+    private val engineIndex = ConcurrentHashMap<WebView, EngineEntry>()
 
-    fun add(entity: TabEntity, webView: WebView?): TabSession {
-        val session = TabSession(entity, webView, thumbnails[entity.id])
-        sessions[entity.id] = session
+    /** Immutable index value, replaced wholesale and never mutated, so a
+     *  reader can never see a tab id and a URL from different tabs. */
+    private data class EngineEntry(val id: String, val url: String)
+
+    /**
+     * THE only place a session's engine reference is written: updates
+     * [sessions] and [engineIndex] together, so the reverse index can never
+     * disagree with the map it indexes. Main thread only.
+     */
+    private fun store(session: TabSession): TabSession {
+        val previous = sessions[session.id]?.webView
+        val engine = session.webView
+        if (previous != null && previous !== engine) engineIndex.remove(previous)
+        sessions[session.id] = session
+        if (engine != null) engineIndex[engine] = EngineEntry(session.id, session.url)
         return session
     }
+
+    fun restore(entities: List<TabEntity>) {
+        entities.forEach { store(TabSession(it, null, thumbnails[it.id])) }
+    }
+
+    fun add(entity: TabEntity, webView: WebView?): TabSession =
+        store(TabSession(entity, webView, thumbnails[entity.id]))
 
     /**
      * The session for this tab, created on demand and refreshed from the
@@ -60,14 +99,8 @@ class TabManager {
      */
     fun ensureSession(entity: TabEntity): TabSession {
         val existing = sessions[entity.id]
-        if (existing != null) {
-            val refreshed = existing.copy(entity = entity)
-            sessions[entity.id] = refreshed
-            return refreshed
-        }
-        val created = TabSession(entity, null, thumbnails[entity.id])
-        sessions[entity.id] = created
-        return created
+        if (existing != null) return store(existing.copy(entity = entity))
+        return store(TabSession(entity, null, thumbnails[entity.id]))
     }
 
     fun get(id: String): TabSession? = sessions[id]
@@ -75,23 +108,60 @@ class TabManager {
     fun all(): List<TabSession> = sessions.values.toList()
 
     fun updateEntity(entity: TabEntity) {
-        sessions[entity.id]?.let { sessions[entity.id] = it.copy(entity = entity) }
-            ?: run { sessions[entity.id] = TabSession(entity, null, thumbnails[entity.id]) }
+        val existing = sessions[entity.id]
+        if (existing != null) {
+            store(existing.copy(entity = entity))
+        } else {
+            store(TabSession(entity, null, thumbnails[entity.id]))
+        }
     }
 
     fun attachWebView(id: String, webView: WebView?) {
-        sessions[id]?.let { sessions[id] = it.copy(webView = webView, lastUsedAt = android.os.SystemClock.elapsedRealtime()) }
+        sessions[id]?.let {
+            store(it.copy(webView = webView, lastUsedAt = android.os.SystemClock.elapsedRealtime()))
+        }
     }
 
     /** Drops the engine reference from whichever session holds [webView]
      *  (per-tab engines are owned by exactly ONE session). */
     fun detachWebView(webView: WebView?) {
         if (webView == null) return
-        for ((id, session) in sessions) {
-            if (session.webView === webView) {
-                sessions[id] = session.copy(webView = null)
-            }
-        }
+        sessions.values.filter { it.webView === webView }
+            .forEach { store(it.copy(webView = null)) }
+    }
+
+    /** Reverse of [attachWebView]: the tab OWNING [webView] (per-tab engines
+     *  belong to exactly ONE session), or null when no session holds it —
+     *  a destroyed/never-tracked engine. Used to route an engine's callbacks
+     *  to its own tab instead of whichever tab happens to be active.
+     *  Thread-safe: reads the concurrent [engineIndex] only. */
+    fun idFor(webView: WebView?): String? {
+        if (webView == null) return null
+        return engineIndex[webView]?.id
+    }
+
+    /** Page URL of the tab OWNING [webView], or null when no session holds it
+     *  (destroyed or mid-teardown engine). Safe from ANY thread: this is the
+     *  one lookup shouldInterceptRequest may perform, and it must never touch
+     *  [sessions].
+     *
+     *  A null answer is the caller's cue to fall back — it is NOT a licence
+     *  to judge the engine against some other tab's page. */
+    fun pageUrlFor(webView: WebView?): String? {
+        if (webView == null) return null
+        return engineIndex[webView]?.url
+    }
+
+    /** Records [url] as this tab's current page URL, engine untouched. Called
+     *  from the navigation funnel so a BACKGROUND engine's page host — the one
+     *  shouldInterceptRequest judges its sub-resources against — is as fresh
+     *  as the row being persisted, rather than as stale as the last switch to
+     *  that tab. Main thread only; no-op for a tab with no session (a late
+     *  callback after the tab closed must not resurrect an index entry). */
+    fun setPageUrl(id: String, url: String) {
+        val session = sessions[id] ?: return
+        if (session.url == url) return
+        store(session.copy(entity = session.entity.copy(url = url)))
     }
 
     /** Stores the engine's back/forward bundle under [id] (pre-destroy). */
@@ -113,13 +183,17 @@ class TabManager {
             val oldest = thumbnails.keys.firstOrNull()
             oldest?.let { thumbnails.remove(it) }
         }
-        sessions[id]?.let { sessions[id] = it.copy(thumbnail = bitmap) }
+        sessions[id]?.let { store(it.copy(thumbnail = bitmap)) }
     }
 
-    fun remove(id: String): TabSession? = sessions.remove(id)
+    fun remove(id: String): TabSession? {
+        val removed = sessions.remove(id) ?: return null
+        removed.webView?.let { engineIndex.remove(it) }
+        return removed
+    }
 
     fun setDesktopMode(id: String, enabled: Boolean) {
-        sessions[id]?.let { sessions[id] = it.copy(desktopMode = enabled) }
+        sessions[id]?.let { store(it.copy(desktopMode = enabled)) }
     }
 
     fun privateTabs(): List<TabSession> = sessions.values.filter { it.entity.isPrivate }
@@ -145,6 +219,8 @@ class TabManager {
         // Engine-state bundles die with the profile context: the next
         // profile's tabs must never receive this profile's history.
         savedStates.clear()
+        // The engine index is a view of `sessions`; it dies with them.
+        engineIndex.clear()
     }
 
     companion object {

@@ -51,6 +51,7 @@ import com.google.zxing.DecodeHintType
 import com.google.zxing.MultiFormatReader
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
+import com.roombrowser.ui.common.RoomBrowserTheme
 
 /**
  * Built-in QR scanner (spec section 38): CameraX preview + ZXing decoding.
@@ -99,7 +100,13 @@ class QrScannerActivity : AppCompatActivity() {
                 setViewCompositionStrategy(
                     ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed
                 )
-                setContent { QrCloseOverlay(onClose = { closeScanner() }) }
+                // Themed like the rest of the app: RoomBrowserTheme is what
+                // applies isAppearanceLightStatusBars/NavigationBars, so on a
+                // light-system theme the clock and nav icons stay dark and
+                // visible instead of vanishing over the camera preview.
+                setContent {
+                    RoomBrowserTheme { QrCloseOverlay(onClose = { closeScanner() }) }
+                }
             },
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,

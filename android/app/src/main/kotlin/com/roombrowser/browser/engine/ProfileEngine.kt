@@ -38,6 +38,13 @@ import java.io.File
  */
 object ProfileEngine {
 
+    /**
+     * Whether a page must wait for a user gesture before it may start
+     * playing media. See the note at the assignment in [configure] for why
+     * this is a constant rather than a setting, and why it is false.
+     */
+    private const val MEDIA_PLAYBACK_REQUIRES_USER_GESTURE = false
+
     @Volatile
     private var boundProfileId: ProfileId? = null
 
@@ -175,7 +182,26 @@ object ProfileEngine {
         s.loadWithOverviewMode = true
         s.useWideViewPort = true
         s.setSupportMultipleWindows(true) // required for popup control
-        s.mediaPlaybackRequiresUserGesture = settings.blockMalicious // autoplay policy follows profile
+        // Autoplay used to be decided by `settings.blockMalicious`, which is a
+        // miswire: blocking malicious sites has nothing to do with whether a
+        // page may start playing media, so toggling that one shield silently
+        // changed an unrelated behaviour. It is now an explicit constant.
+        //
+        // It is FALSE — autoplay permitted — because that is both what the
+        // app has actually shipped (blockMalicious defaults to false, so the
+        // old expression evaluated to false for every fresh install and every
+        // profile that never touched the shield) and what compatibility-first
+        // mode means everywhere else in this app. A user who had turned the
+        // malicious-site shield on did get gesture-gated media as a side
+        // effect; that side effect is the bug being removed, not a feature.
+        //
+        // A real per-profile "block autoplay" setting would need: a
+        // ProfileSettings field + entity column + migration, a toggle in the
+        // settings UI, and — for the per-site `autoplay_blocked` column that
+        // already exists but has no consumer — a host at configure() time,
+        // which does not exist today. Until that lands this constant is the
+        // single place the answer lives.
+        s.mediaPlaybackRequiresUserGesture = MEDIA_PLAYBACK_REQUIRES_USER_GESTURE
         s.javaScriptCanOpenWindowsAutomatically = false
         // Mixed content: compatibility mode by default (blockMixedContent=false).
         // NEVER_ALLOW blanked real-world sites that still load some http
@@ -186,10 +212,24 @@ object ProfileEngine {
         } else {
             WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
         }
-        UserAgents.effectiveUserAgent(settings)?.let { s.userAgentString = it }
+        // A null result means "use the WebView default", and it must be
+        // APPLIED, not skipped: configure() re-runs on every settings change
+        // (reconfigureAllWebViews), so switching a profile from a device,
+        // preset or custom UA BACK TO DEFAULT has to clear the UA the live
+        // WebView is still carrying — `?.let` alone would leave the old
+        // identity installed on every open WebView until the process
+        // restarted. Same rule the desktop-mode toggle applies below
+        // (UaMode.DEFAULT -> null); assigning null is how WebSettings resets
+        // to the engine's own UA.
+        s.userAgentString = UserAgents.effectiveUserAgent(settings)
         s.textZoom = (settings.fontScale * 100f).toInt().coerceIn(50, 200)
 
-        applyDeviceShim(webView, UserAgents.device(settings), settings.claimedScreen())
+        applyDeviceShim(
+            webView,
+            UserAgents.device(settings),
+            settings.claimedScreen(),
+            settings.webRtcPolicy
+        )
 
         // Password-manager page bridge: a SEPARATE document-start script
         // from the device shim (installed on every configure, including
@@ -220,11 +260,20 @@ object ProfileEngine {
     /**
      * Install (or clear) the shim for one WebView.
      *
-     * Both halves are profile state, so both are passed in: [device] is the
-     * identity the profile presents and [screen] the size it claims, and either
-     * may be absent. Desktop mode clears the device but keeps the screen claim
-     * — a browser window on a screen of a stated size is not a contradiction,
-     * while an Android client-hint set under a desktop UA is.
+     * All three halves are profile state, so all three are passed in:
+     * [device] is the identity the profile presents, [screen] the size it
+     * claims and [webRtc] the policy it applies to peer connections. Any of
+     * them may be absent, and each half is independent of the others.
+     * Desktop mode clears the device but keeps the screen claim — a browser
+     * window on a screen of a stated size is not a contradiction, while an
+     * Android client-hint set under a desktop UA is — and it keeps the
+     * WebRTC policy too, which has nothing to do with which identity is
+     * being presented.
+     *
+     * The early return is the whole of the three, not of the device alone: a
+     * profile with no device, no screen claim and a non-default WebRTC policy
+     * still has something to install. Making that return about the device
+     * would silently drop the policy for every profile that never picked one.
      *
      * `configure` runs again every time settings change, so the previous
      * script is removed first — otherwise a long session would stack one copy
@@ -232,16 +281,21 @@ object ProfileEngine {
      * still a leak. Removal goes through the handler the add returned;
      * WebViewCompat has no free-standing remove call.
      */
-    private fun applyDeviceShim(webView: WebView, device: Device?, screen: ClaimedScreen?) {
+    private fun applyDeviceShim(
+        webView: WebView,
+        device: Device?,
+        screen: ClaimedScreen?,
+        webRtc: WebRtcPolicy
+    ) {
         deviceShims.remove(webView)?.let { previous ->
             // The view may already be gone; a failed removal costs nothing.
             runCatching { previous.remove() }
         }
-        if (device == null && screen == null) return
+        if (device == null && screen == null && webRtc == WebRtcPolicy.DEFAULT) return
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
         runCatching {
             deviceShims[webView] = WebViewCompat.addDocumentStartJavaScript(
-                webView, DeviceShim.scriptFor(device, screen), setOf("*")
+                webView, DeviceShim.scriptFor(device, screen, webRtc), setOf("*")
             )
         }
     }
@@ -301,7 +355,7 @@ object ProfileEngine {
             // is on and goes back when it is turned off. The screen claim is
             // not an Android client hint and stays: a desktop browser window on
             // a screen of a stated size is an ordinary thing.
-            applyDeviceShim(webView, null, screen)
+            applyDeviceShim(webView, null, screen, profile.settings.webRtcPolicy)
         } else {
             s.useWideViewPort = true
             s.loadWithOverviewMode = true
@@ -309,7 +363,12 @@ object ProfileEngine {
                 UaMode.DEFAULT -> s.userAgentString = null
                 else -> UserAgents.effectiveUserAgent(profile.settings)?.let { s.userAgentString = it }
             }
-            applyDeviceShim(webView, UserAgents.device(profile.settings), screen)
+            applyDeviceShim(
+                webView,
+                UserAgents.device(profile.settings),
+                screen,
+                profile.settings.webRtcPolicy
+            )
         }
     }
 

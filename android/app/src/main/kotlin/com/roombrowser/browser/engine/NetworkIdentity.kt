@@ -54,7 +54,12 @@ class NetworkIdentity(
     private val _netState = MutableStateFlow<NetState>(NetState.Idle)
     val netState: StateFlow<NetState> = _netState
 
-    private val suppressedThisSession = mutableSetOf<String>()
+    /**
+     * IPs the user suppressed in this session only, in memory. Holds IP
+     * ADDRESSES (see [suppressCurrentIp]) — never profile ids — and is passed
+     * to the detector as such.
+     */
+    private val suppressedIpsThisSession = mutableSetOf<String>()
 
     /**
      * Fetch the current public IP with caching + cooldown (spec 74.5:
@@ -125,7 +130,7 @@ class NetworkIdentity(
             global = global,
             profileNetworkProtectionEnabled = enabledForProfile,
             suppressedIps = appState.suppressedIps(),
-            suppressedThisSession = suppressedThisSession,
+            suppressedIpsThisSession = suppressedIpsThisSession,
             alreadyWarnedNetworks = appState.warnedNetworks()
         )
         val conflict = result.conflict
@@ -179,7 +184,7 @@ class NetworkIdentity(
             ?: (netState.value as? NetState.Conflict)?.currentIp
         if (ip != null) {
             appState.suppressIp(ip)
-            suppressedThisSession += ip
+            suppressedIpsThisSession += ip
             _netState.value = NetState.Known(ip)
         }
     }

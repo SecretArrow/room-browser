@@ -17,6 +17,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import okhttp3.OkHttpClient
 import java.lang.ref.WeakReference
 import java.util.ArrayDeque
@@ -61,10 +64,12 @@ import java.util.concurrent.TimeUnit
  *  - kind "request" is answered WITHOUT a prompt whenever it can be:
  *    already-permitted Connects auto-approve silently
  *    ([WalletEngineApi.isDappPermitted] with `eth_requestAccounts` for EVM,
- *    `connect` for the other families) and `eth_accounts` returns the
- *    permitted address list (empty while not permitted — never a prompt).
- *    Everything else becomes a contract [DappRequest] (UUID id) submitted
- *    to the engine queue; the outcome settles the page promise.
+ *    `enable` for Cosmos, `connect` for the other families), `eth_accounts`
+ *    returns the permitted address list (empty while not permitted — never a
+ *    prompt), Keplr's `getKey` answers for a permitted host only (4100
+ *    otherwise), and `disconnect` revokes the host's permission for the
+ *    calling chain. Everything else becomes a contract [DappRequest] (UUID
+ *    id) submitted to the engine queue; the outcome settles the page promise.
  *  - A null [engineProvider] (engine not bound) answers 4900 DISCONNECTED
  *    for wallet-level calls; the RPC relay works regardless.
  *
@@ -238,6 +243,15 @@ class WalletBridge(
             return
         }
 
+        // dApp-initiated disconnect: revoke, then resolve. The page's cached
+        // account state is cleared by the injected script on its side; the
+        // NEXT connect for this host prompts again.
+        if (call.method == WalletBridgeProtocol.METHOD_DISCONNECT) {
+            engine.revokeDappPermission(host, call.chainType)
+            respondSuccess(call.id, "{}")
+            return
+        }
+
         // eth_accounts: the permitted address list, never a prompt.
         if (call.method == WalletBridgeProtocol.METHOD_ETH_ACCOUNTS) {
             val addresses = engine.accounts.value
@@ -248,6 +262,43 @@ class WalletBridge(
         }
 
         val primary = engine.accounts.value.firstOrNull { it.chainType == call.chainType }
+
+        // Keplr getKey: a read for an already-permitted host (no prompt, and
+        // no prompt-free path to it otherwise); a non-permitted host gets
+        // 4100 so the dApp calls enable() first.
+        if (call.method == WalletBridgeProtocol.METHOD_COSMOS_GET_KEY) {
+            val permitted = primary != null && engine.isDappPermitted(
+                host, call.chainType, primary.address,
+                WalletBridgeProtocol.permissionMethodFor(call.chainType)
+            )
+            if (!permitted) {
+                respondError(
+                    call.id,
+                    WalletBridgeError(WalletBridgeError.UNAUTHORIZED, "Connect to this chain first")
+                )
+                return
+            }
+            respondSuccess(call.id, WalletBridgeProtocol.keplrKeyResult(primary.address))
+            return
+        }
+
+        // Cosmos is served from the profile's ACTIVE network only: a dApp
+        // naming a different chain id is told so (4902) instead of being
+        // handed an address on a chain the wallet will not sign for.
+        if (call.chainType == ChainType.COSMOS && call.method == WalletBridgeProtocol.METHOD_COSMOS_ENABLE) {
+            val requested = (call.params as? JsonObject)?.let { (it["chainId"] as? JsonPrimitive)?.contentOrNull }
+            val active = activeNetworkProvider(ChainType.COSMOS)?.chainId
+            if (!requested.isNullOrBlank() && !active.isNullOrBlank() && requested != active) {
+                respondError(
+                    call.id,
+                    WalletBridgeError(
+                        WalletBridgeError.UNRECOGNIZED_CHAIN,
+                        "This wallet serves " + active + " for Cosmos"
+                    )
+                )
+                return
+            }
+        }
 
         // Already-permitted connects auto-approve silently.
         if (call.method in WalletBridgeProtocol.CONNECT_METHODS && primary != null &&

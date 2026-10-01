@@ -54,9 +54,21 @@ class RoomWebViewClient(
     private val upgradeFallbacks = HttpsUpgradeFallbackPolicy.Registry()
 
     interface Callbacks {
-        /** Host of the currently displayed page (or null). */
-        fun currentUrlHost(): String?
-        /** Snapshot of site settings for the current page's host (thread-safe). */
+        /**
+         * Host of the page the FIRING engine is showing — the page host a
+         * sub-resource block is judged against. [view] is the engine that
+         * fired.
+         *
+         * WHY IT TAKES THE VIEW: shouldInterceptRequest runs for EVERY
+         * WebView, background tabs included. Answering with the ACTIVE tab's
+         * URL (what this callback used to do, as `currentUrlHost()`) judged a
+         * background tab's sub-resources against whatever page the user
+         * happened to be looking at — the cross-site determination was wrong
+         * and the blocked-event category recorded for that tab was wrong with
+         * it.
+         */
+        fun pageHostFor(view: WebView): String?
+        /** Snapshot of site settings for the given request host (thread-safe). */
         fun siteSettingFor(host: String): SiteSettingEntity?
         /** Record a real blocking event (Room insert, fire-and-forget). */
         fun recordBlockEvent(host: String, category: String)
@@ -64,14 +76,16 @@ class RoomWebViewClient(
         fun onHttpsUpgrade(host: String)
         fun onPopupBlocked()
         fun onSuspiciousSite(url: String, signals: List<String>)
-        fun onPageStarted(url: String)
-        fun onPageFinished(url: String, title: String)
+        /** [view] is the engine that fired: per-tab state must be routed to
+         *  the OWNING tab's row, never to whichever tab happens to be active. */
+        fun onPageStarted(view: WebView, url: String)
+        fun onPageFinished(view: WebView, url: String, title: String)
         /** Live web-history state — fires on EVERY navigation (including
          *  same-document pushState/replaceState) so the UI's Back / Forward
          *  controls are never stale. */
-        fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean)
-        fun onReceivedError(url: String, errorCode: Int, description: String?)
-        fun onSslError(url: String, error: SslError)
+        fun onHistoryChanged(view: WebView, canGoBack: Boolean, canGoForward: Boolean)
+        fun onReceivedError(view: WebView, url: String, errorCode: Int, description: String?)
+        fun onSslError(view: WebView, url: String, error: SslError)
         fun openInNewTab(url: String, isPrivate: Boolean)
     }
 
@@ -82,7 +96,12 @@ class RoomWebViewClient(
         if (request.isForMainFrame) return null
         val url = request.url
         val host = url.host?.lowercase() ?: return null
-        val pageHost = callbacks.currentUrlHost()
+        // The OWNING engine's page host, resolved from the firing [view] —
+        // never the active tab's (see [Callbacks.pageHostFor]). The resolver
+        // is total (pure map/URL lookups, no throw) and falls back to the
+        // active tab's URL for an engine that owns no session, so this hot
+        // path stays allocation-light and cannot fail a sub-resource load.
+        val pageHost = callbacks.pageHostFor(view)
 
         val siteOverride = callbacks.siteSettingFor(host)
         val shieldsDisabled = siteOverride?.shieldsDisabled == true
@@ -145,14 +164,14 @@ class RoomWebViewClient(
         // Early history feedback: the back/forward buttons light up as soon
         // as a navigation begins, then doUpdateVisitedHistory re-reports the
         // authoritative state when the entry lands.
-        callbacks.onHistoryChanged(view.canGoBack(), view.canGoForward())
-        callbacks.onPageStarted(url)
+        callbacks.onHistoryChanged(view, view.canGoBack(), view.canGoForward())
+        callbacks.onPageStarted(view, url)
     }
 
     override fun onPageFinished(view: WebView, url: String) {
         CookieManager.getInstance().flush()
-        callbacks.onHistoryChanged(view.canGoBack(), view.canGoForward())
-        callbacks.onPageFinished(url, view.title ?: url)
+        callbacks.onHistoryChanged(view, view.canGoBack(), view.canGoForward())
+        callbacks.onPageFinished(view, url, view.title ?: url)
     }
 
     /**
@@ -162,7 +181,7 @@ class RoomWebViewClient(
      * buttons stay grey forever on SPA sites.
      */
     override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
-        callbacks.onHistoryChanged(view.canGoBack(), view.canGoForward())
+        callbacks.onHistoryChanged(view, view.canGoBack(), view.canGoForward())
     }
 
     override fun onReceivedError(
@@ -180,6 +199,7 @@ class RoomWebViewClient(
                 return
             }
             callbacks.onReceivedError(
+                view,
                 failedUrl,
                 error.errorCode,
                 error.description?.toString()
@@ -233,7 +253,7 @@ class RoomWebViewClient(
         }
         // Never proceed automatically — the user decides via the error page.
         handler.cancel()
-        callbacks.onSslError(view.url ?: "", error)
+        callbacks.onSslError(view, view.url ?: "", error)
     }
 
     override fun onReceivedHttpAuthRequest(
@@ -247,6 +267,32 @@ class RoomWebViewClient(
 
     private fun blockedResponse(): WebResourceResponse =
         WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
+}
+
+/**
+ * The page host a sub-resource block is judged against, given the FIRING
+ * engine's own page URL and — only as a fallback — the ACTIVE tab's URL.
+ *
+ * Extracted as a pure function because the fallback is the load-bearing part
+ * of the cross-tab fix and the one piece the JVM tests can pin without a
+ * WebView (see SubResourcePageHostTest):
+ *
+ *  - the engine's OWN url wins, so a background tab's sub-resources are
+ *    judged against ITS page. Judging them against the active tab's page was
+ *    the bug: the cross-site test was decided by whichever tab the user was
+ *    looking at, and the category recorded for the block followed it.
+ *  - an engine that owns no session (destroyed, mid-teardown, never tracked)
+ *    falls back to the active tab's URL — exactly the pre-fix answer. An
+ *    untracked engine must not behave WORSE than it did before, and the
+ *    fallback is deliberately not "block everything".
+ *  - a page that resolves to no host at all (about:home, junk) answers null
+ *    for its own engine rather than borrowing the active tab's host.
+ *
+ * Never throws: [UrlIntelligence.hostOf] is total and returns null on junk.
+ */
+internal fun subResourcePageHost(enginePageUrl: String?, activePageUrl: String?): String? {
+    val url = enginePageUrl ?: activePageUrl ?: return null
+    return UrlIntelligence.hostOf(url)
 }
 
 /** Category names persisted for stats (kept in one place to avoid typos). */
@@ -271,30 +317,67 @@ object StatCategories {
 
 /**
  * Chrome client: windows (popups), permissions, fullscreen, file chooser.
+ *
+ * ONE INSTANCE PER ENGINE (built in the host's createWebView). A few chrome
+ * callbacks carry no WebView at all — onPermissionRequest and
+ * onGeolocationPermissionsShowPrompt — so without knowing its own engine a
+ * client cannot tell a background tab's request from the active tab's, and
+ * would raise a sheet over the tab the user is actually looking at. Every
+ * other callback here carries the firing view and routes on it.
  */
 class RoomWebChromeClient(
     private val profile: Profile,
-    private val callbacks: ChromeCallbacks
+    private val callbacks: ChromeCallbacks,
+    /**
+     * The engine this instance is installed on, or null for an engine-less
+     * instance (the host builds one per engine; null therefore means "not
+     * engine-bound", and callbacks treat it as the pre-fix shape — the active
+     * tab). WEAK: the engine owns its client, and a client must never keep a
+     * destroyed engine alive.
+     */
+    engine: WebView? = null
 ) : WebChromeClient() {
 
+    private val engineRef = WeakReference(engine)
+
+    /** The engine that fired, or null when this instance is not engine-bound
+     *  or its engine has been collected (a collected engine cannot call back;
+     *  the host's ownership guards treat null as the active tab). */
+    private fun firingEngine(): WebView? = engineRef.get()
+
     interface ChromeCallbacks {
-        fun onProgress(progress: Int)
-        fun onTitleChanged(title: String)
+        /** [view] is the engine that fired (see the WebViewClient callbacks). */
+        fun onProgress(view: WebView, progress: Int)
+        fun onTitleChanged(view: WebView, title: String)
         fun onShowCustomView(view: View, callback: CustomViewCallback)
         fun onHideCustomView()
+        /** [view] is the engine that fired, or null when it is unknown. The
+         *  host must refuse a request from anything but the ACTIVE engine. */
         fun onPermissionRequest(
+            view: WebView?,
             request: PermissionRequest,
             kinds: Set<PermissionKind>,
             originUrl: String
         )
         fun onGeolocationPermissions(
+            view: WebView?,
             origin: String?,
             callback: android.webkit.GeolocationPermissions.Callback
         )
-        fun onFileChooserIntent(intent: Intent, callback: FileChooserResult)
-        fun openNewWindow(url: String)
-        fun onPopupBlocked()
+        fun onFileChooserIntent(
+            view: WebView?,
+            intent: Intent,
+            callback: FileChooserResult
+        )
+        fun openNewWindow(view: WebView?, url: String)
+        /** [view] is the engine whose page tried to open the window, or null
+         *  when it is unknown. */
+        fun onPopupBlocked(view: WebView?)
         fun currentUrl(): String?
+        /** TRUE when [view] is the ACTIVE tab's engine. Needed because the
+         *  popup transport below must be refused BEFORE it is built, and the
+         *  chrome client has no other way to know which tab is on screen. */
+        fun isActiveEngine(view: WebView): Boolean
     }
 
     interface FileChooserResult {
@@ -302,11 +385,11 @@ class RoomWebChromeClient(
     }
 
     override fun onProgressChanged(view: WebView, newProgress: Int) {
-        callbacks.onProgress(newProgress)
+        callbacks.onProgress(view, newProgress)
     }
 
     override fun onReceivedTitle(view: WebView, title: String?) {
-        title?.let { callbacks.onTitleChanged(it) }
+        title?.let { callbacks.onTitleChanged(view, it) }
     }
 
     /** Popup blocking: new windows are refused while popups are blocked. */
@@ -318,9 +401,17 @@ class RoomWebChromeClient(
     ): Boolean {
         val blocked = profile.settings.blockPopups || !isUserGesture
         if (blocked) {
-            callbacks.onPopupBlocked()
+            callbacks.onPopupBlocked(view)
             return false
         }
+        // A popup from a BACKGROUND engine is refused outright, BEFORE the
+        // transport is built: opening a window on behalf of a page the user
+        // is not looking at is exactly the cross-tab surprise this guards.
+        // DROPPED rather than queued — a window opened now would be navigated
+        // whenever the user finally got to that tab, with no context for why,
+        // and the usual background case (no user gesture) was already refused
+        // above. The page simply sees window.open() fail.
+        if (!callbacks.isActiveEngine(view)) return false
         // Popups allowed → transport WebView forwards the target URL to a new tab.
         val temp = WebView(view.context)
         temp.webViewClient = object : WebViewClient() {
@@ -331,7 +422,10 @@ class RoomWebChromeClient(
                 val target = request.url.toString()
                 tempView.stopLoading()
                 tempView.post { tempView.destroy() }
-                callbacks.openNewWindow(target)
+                // The ORIGIN engine, not the transport: the host must re-check
+                // ownership against the tab that actually asked (the active
+                // tab can change while the popup's URL is being resolved).
+                callbacks.openNewWindow(view, target)
                 return true
             }
         }
@@ -353,14 +447,16 @@ class RoomWebChromeClient(
         val kinds = mutableSetOf<PermissionKind>()
         if (PermissionRequest.RESOURCE_VIDEO_CAPTURE in resources) kinds += PermissionKind.CAMERA
         if (PermissionRequest.RESOURCE_AUDIO_CAPTURE in resources) kinds += PermissionKind.MICROPHONE
-        callbacks.onPermissionRequest(request, kinds, callbacks.currentUrl() ?: "")
+        // No WebView on this callback — firingEngine() is the only handle on
+        // the tab that asked. The host denies anything but the ACTIVE engine.
+        callbacks.onPermissionRequest(firingEngine(), request, kinds, callbacks.currentUrl() ?: "")
     }
 
     override fun onGeolocationPermissionsShowPrompt(
         origin: String?,
         callback: android.webkit.GeolocationPermissions.Callback
     ) {
-        callbacks.onGeolocationPermissions(origin, callback)
+        callbacks.onGeolocationPermissions(firingEngine(), origin, callback)
     }
 
     override fun onShowFileChooser(
@@ -369,7 +465,12 @@ class RoomWebChromeClient(
         fileChooserParams: FileChooserParams?
     ): Boolean {
         val intent = fileChooserParams?.createIntent() ?: return false
+        // `true` is returned even when the host refuses the chooser: false
+        // would hand the request to the platform's OWN picker, which is the
+        // very UI the ownership check exists to suppress. The host answers a
+        // refused request by completing the callback with a null result.
         callbacks.onFileChooserIntent(
+            webView,
             intent,
             object : FileChooserResult {
                 override fun onResult(values: Array<out Uri>?) {
@@ -390,8 +491,11 @@ class RoomWebChromeClient(
  *    focused/tapped a password field. No values are returned to the page; the
  *    native side decides whether to surface an "offer" sheet at all.
  *  - `RoomVault.reportCredential(location.host, username, password)` — a
- *    login form containing a non-empty password just submitted. Observational
- *    only; nothing is stored until the user taps "Save" on the prompt sheet.
+ *    login form containing a non-empty password was submitted: the DOM
+ *    submit event, a submit-control click, Enter in the password field, a
+ *    scripted form submit(), or a request sent in the window after a vault
+ *    fill (see [RoomVaultScript]). Observational only; nothing is stored
+ *    until the user taps "Save" on the prompt sheet.
  *
  * SECURITY MODEL — the bridge never trusts the page:
  *  1. Only these two `@JavascriptInterface` methods are reachable from JS.
@@ -405,8 +509,10 @@ class RoomWebChromeClient(
  *     check is the second, and it holds even against a page that calls the
  *     interface directly instead of going through the script.)
  *  3. Nothing here reads the vault or shows UI — that is the ViewModel's
- *     decision ([com.roombrowser.browser.BrowserViewModel]); a LOCKED vault
- *     answers requests with silence (no biometric prompt on page focus).
+ *     decision ([com.roombrowser.browser.BrowserViewModel]). The bridge is
+ *     silent to the page either way, and a LOCKED vault never starts a
+ *     biometric prompt on page focus; at most the ViewModel may show the
+ *     offer sheet's locked variant, whose only action is the user's own tap.
  *  4. No argument is ever logged.
  *
  * THREADING: `@JavascriptInterface` methods arrive on WebView's internal
@@ -516,20 +622,49 @@ class RoomVaultBridge(
  * the device shim) that provides the page-side detection and fill logic the
  * native [RoomVaultBridge] calls back into.
  *
- * Scope, by design (v1):
+ * Scope, by design:
  *  - MAIN FRAME ONLY (`window.top === window.self`): embedded third-party
  *    login widgets inside iframes are out of scope — the native host check
  *    would compare an iframe's host against the top page anyway, and filling
  *    across frame boundaries is a phishing vector we simply do not open.
- *  - Detection = focus/click on an `input[type=password]` (offer) and the
- *    DOM `submit` event of forms containing a password input (save prompt).
- *    Forms submitted purely by JavaScript (no submit event) are not detected
- *    in v1.
+ *    Cross-origin iframe logins are therefore NOT detected, by choice.
+ *  - OFFER = focus/click on an `input[type=password]`.
+ *  - SAVE = a login form being submitted, whatever path the page uses:
+ *      1. the DOM `submit` event — native submits and `form.requestSubmit()`;
+ *      2. a capture-phase `click` on a submit control (`input[type=submit]`,
+ *         `input[type=image]`, `button[type=submit]`, and a `<button>` with
+ *         no type attribute, whose default IS submit) inside a form — the
+ *         shape of nearly every "Sign in" button, including the ones whose
+ *         form handler preventDefaults and posts with fetch;
+ *      3. `Enter` in a password field (SPAs routinely consume the key and
+ *         post the form themselves, so no DOM event ever reaches us);
+ *      4. the form's own `submit()` / `requestSubmit()` (a scripted
+ *         `submit()` bypasses the submit event entirely);
+ *      5. `fetch` and `XMLHttpRequest.prototype.send` WHILE a password field
+ *         we filled is still recent — the SPA login that reads the field and
+ *         POSTs JSON, with no DOM signal at all.
+ *
+ * Why 2/3/5 are deliberately narrow: `click`, `keydown` and `fetch` fire for
+ * everything on a page (toggles, search-as-you-type, analytics), so the click
+ * path accepts only genuine submit controls, and the network path requires a
+ * fill made by us within RECENT_FILL_MS. Paths 1 and 4 are exact signals and
+ * are never gated.
+ *
+ * STILL NOT DETECTED — the honest list, so nobody mistakes this for total
+ * coverage: cross-origin iframe logins; canvas/WebGL-drawn login UIs (there
+ * are no input elements to observe); a page that collects the password
+ * without any of the five signals above (e.g. keeps keystrokes in a variable
+ * and posts from a Web Worker or WebSocket); a page that replaces
+ * `window.fetch` / `XMLHttpRequest.prototype.send` AFTER this script has run
+ * (we wrap once, at document start — re-wrapping on every assignment would be
+ * an arms race we lose anyway); and a submit from a password field that was
+ * never focused, clicked or filled through anything we can see.
  *
  * Robustness rules: everything is wrapped in try/catch — a broken page must
  * still load; nothing is ever written to the console (no spam); the script is
  * idempotent under re-injection (a reconfigure replaces the document-start
- * handler, and the install guard makes a double injection a no-op anyway).
+ * handler, and the install guard makes a double injection a no-op anyway —
+ * which is also why the prototype/`fetch` wrappers need no second guard).
  *
  * Username heuristics: within the password field's form (falling back to the
  * whole document), the text/email/tel inputs BEFORE the password field are
@@ -541,8 +676,9 @@ class RoomVaultBridge(
  * string `{"u": username, "p": password}` (JSON-quoted by the native side —
  * values are never naively interpolated into JS). The fill writes through
  * the input prototype's native value setter and dispatches input/change
- * events so framework-driven pages (React et al.) register the values. The
- * element references captured at request time are used when still attached;
+ * events so framework-driven pages (React et al.) register the values, and it
+ * starts the post-fill window that arms detection path 5. The element
+ * references captured at request time are used when still attached;
  * otherwise detection re-runs against the live document.
  */
 object RoomVaultScript {
@@ -560,9 +696,14 @@ object RoomVaultScript {
 
     var REQUEST_COOLDOWN_MS = 800;
     var REPORT_SAME_KEY_MS = 30000;
+    // How long after a vault fill the network wrappers keep watching. Long
+    // enough for a round-trip login, short enough that later unrelated
+    // requests are not mistaken for one.
+    var RECENT_FILL_MS = 15000;
     var lastRequestAt = 0;
     var lastReportKey = '';
     var lastReportAt = 0;
+    var lastFillAt = 0;
     var userField = null;
     var passField = null;
 
@@ -665,6 +806,47 @@ object RoomVaultScript {
       return null;
     }
 
+    function firstPassword(scope) {
+      try {
+        if (!scope || !scope.querySelectorAll) return null;
+        var list = scope.querySelectorAll('input');
+        for (var i = 0; i < list.length; i++) {
+          if (isPassword(list[i])) return list[i];
+        }
+      } catch (e) {}
+      return null;
+    }
+
+    function closestForm(el) {
+      try {
+        var n = el;
+        while (n && n.nodeType === 1) {
+          if (n.tagName === 'FORM') return n;
+          n = n.parentNode;
+        }
+      } catch (e) {}
+      return null;
+    }
+
+    function isSubmitControl(el) {
+      try {
+        if (!el || (el.tagName !== 'BUTTON' && el.tagName !== 'INPUT')) return false;
+        var t = String(el.type || '').toLowerCase();
+        if (el.tagName === 'INPUT') return t === 'submit' || t === 'image';
+        if (t === 'submit') return true;
+        // A BUTTON with no type attribute defaults to type=submit; an
+        // explicit type=button is a toggle or other control and is ignored,
+        // which is what keeps "show password" buttons from looking like logins.
+        return !el.hasAttribute('type');
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function recentlyFilled() {
+      return lastFillAt > 0 && (Date.now() - lastFillAt) < RECENT_FILL_MS;
+    }
+
     window.__roomVaultFill = function (payload) {
       try {
         var data = (typeof payload === 'string') ? JSON.parse(payload) : payload;
@@ -675,6 +857,9 @@ object RoomVaultScript {
         if (data.p !== undefined && data.p !== null) setValue(pf, String(data.p));
         var uf = (userField && document.contains(userField)) ? userField : bestUsername(pf);
         if (uf && data.u !== undefined && data.u !== null) setValue(uf, String(data.u));
+        // Open the post-fill window: on an SPA the next fetch/XHR is very
+        // likely the login submit, and it sends no DOM event we could see.
+        lastFillAt = Date.now();
       } catch (e) {}
     };
 
@@ -696,24 +881,106 @@ object RoomVaultScript {
       } catch (e) {}
     }
 
-    function report(form) {
+    // Reports ONE password field: reads its own (and its username field's)
+    // value, applies the duplicate suppression, and hands the payload to the
+    // native bridge — the one place every detection path funnels through.
+    // Returns true when something was actually reported.
+    function reportElement(pw) {
       try {
-        var pw = null;
-        var list = form.querySelectorAll('input');
-        for (var i = 0; i < list.length; i++) {
-          if (isPassword(list[i])) { pw = list[i]; break; }
-        }
-        if (!pw || !pw.value) return;
+        if (!pw || !isPassword(pw) || !pw.value) return false;
         var uf = bestUsername(pw);
         var username = uf ? String(uf.value || '') : '';
         var password = String(pw.value || '');
         var key = String(location.host || '') + '\n' + username + '\n' + password;
         var now = Date.now();
-        if (key === lastReportKey && now - lastReportAt < REPORT_SAME_KEY_MS) return;
+        if (key === lastReportKey && now - lastReportAt < REPORT_SAME_KEY_MS) return false;
         lastReportKey = key;
         lastReportAt = now;
         if (window.RoomVault && typeof window.RoomVault.reportCredential === 'function') {
           window.RoomVault.reportCredential(String(location.host || ''), username, password);
+        }
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function report(scope) {
+      try {
+        var pw = firstPassword(scope);
+        if (pw) reportElement(pw);
+      } catch (e) {}
+    }
+
+    // The password field we last saw, when it is still in the document and
+    // holds something; otherwise the first one on the page. Used by the paths
+    // that have no form argument (network wrappers, the fill window).
+    function reportBest() {
+      try {
+        if (passField && document.contains(passField) && isPassword(passField) && passField.value) {
+          return reportElement(passField);
+        }
+        var pf = anyPassword();
+        if (pf && pf.value) return reportElement(pf);
+      } catch (e) {}
+      return false;
+    }
+
+    // Armed only by the fetch/XHR wrappers: they see every request on the
+    // page, so they must only fire inside the short window after a fill made
+    // by the vault. The first hit closes the window, so a page that fires
+    // several requests after a login cannot produce several prompts.
+    function maybeReportOnSubmit() {
+      if (!recentlyFilled()) return;
+      if (reportBest()) lastFillAt = 0;
+    }
+
+    // Path 4: a scripted form.submit() skips the submit event entirely, and
+    // requestSubmit() fires it (reporting twice is harmless — the key
+    // suppression above dedupes). Wrapped once, at document start; a page
+    // that replaces these later defeats the wrap (documented above).
+    function hookFormMethods() {
+      try {
+        var proto = window.HTMLFormElement && window.HTMLFormElement.prototype;
+        if (!proto) return;
+        var origSubmit = proto.submit;
+        if (typeof origSubmit === 'function') {
+          proto.submit = function () {
+            try { report(this); } catch (e) {}
+            return origSubmit.apply(this, arguments);
+          };
+        }
+        var origRequestSubmit = proto.requestSubmit;
+        if (typeof origRequestSubmit === 'function') {
+          proto.requestSubmit = function () {
+            try { report(this); } catch (e) {}
+            return origRequestSubmit.apply(this, arguments);
+          };
+        }
+      } catch (e) {}
+    }
+
+    // Path 5: the SPA login that reads the field and POSTs, with no DOM
+    // signal at all. Both wrappers report BEFORE the request leaves, so the
+    // values are still in the page.
+    function hookNetwork() {
+      try {
+        if (typeof window.fetch === 'function') {
+          var origFetch = window.fetch;
+          window.fetch = function () {
+            try { maybeReportOnSubmit(); } catch (e) {}
+            return origFetch.apply(this, arguments);
+          };
+        }
+      } catch (e) {}
+      try {
+        var xhrProto = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
+        if (xhrProto && typeof xhrProto.send === 'function') {
+          var origSend = xhrProto.send;
+          xhrProto.send = function () {
+            try { maybeReportOnSubmit(); } catch (e) {}
+            return origSend.apply(this, arguments);
+          };
         }
       } catch (e) {}
     }
@@ -728,16 +995,51 @@ object RoomVaultScript {
     document.addEventListener('click', function (ev) {
       try {
         var t = ev.target;
-        if (isPassword(t)) request(t);
+        if (isPassword(t)) { request(t); return; }
+        // Path 2: walk up from the click target (it is usually a child of
+        // the control) to a genuine submit control inside a form.
+        var el = t;
+        while (el && el.nodeType === 1 && el !== document && !isSubmitControl(el)) {
+          el = el.parentNode;
+        }
+        if (!isSubmitControl(el)) return;
+        var form = closestForm(el);
+        if (!form && el.form && el.form.tagName === 'FORM') form = el.form;
+        if (!form) return;
+        var pw = firstPassword(form);
+        if (pw && pw.value) reportElement(pw);
       } catch (e) {}
     }, true);
 
+    // Path 3: Enter in a password field. Deferred one tick so a page that
+    // consumes the key and posts the form itself has run first; the values
+    // are already in the field either way.
+    document.addEventListener('keydown', function (ev) {
+      try {
+        var key = ev.key;
+        if (key !== 'Enter' && ev.keyCode !== 13) return;
+        var t = ev.target;
+        if (!isPassword(t)) return;
+        var form = closestForm(t);
+        setTimeout(function () {
+          try {
+            var pw = form ? firstPassword(form) : t;
+            if (pw && pw.value) reportElement(pw);
+          } catch (e) {}
+        }, 0);
+      } catch (e) {}
+    }, true);
+
+    // Path 1: the DOM submit event (native submits, requestSubmit()).
     document.addEventListener('submit', function (ev) {
       try {
         var f = ev.target;
         if (f && f.tagName === 'FORM') report(f);
       } catch (e) {}
     }, true);
+
+    hookFormMethods();
+    hookNetwork();
   } catch (e) {
     // A page must still load even when the bridge cannot install.
   }

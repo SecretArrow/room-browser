@@ -86,6 +86,37 @@ class IpConflictDetectorTest {
     }
 
     @Test
+    fun `session suppressed ip suppresses`() {
+        val history = listOf(IpAssociation(work, "1.2.3.4", now, now))
+        assertThat(
+            detector.check(
+                research, "1.2.3.4", history, defaults,
+                suppressedIpsThisSession = setOf("1.2.3.4")
+            ).shouldWarn
+        ).isFalse()
+    }
+
+    @Test
+    fun `session suppression keys on the ip, not the profile id`() {
+        val history = listOf(IpAssociation(work, "1.2.3.4", now, now))
+        // The session set holds IP addresses. A profile id in it must NOT
+        // suppress — that comparison is the type confusion this guards against.
+        assertThat(
+            detector.check(
+                research, "1.2.3.4", history, defaults,
+                suppressedIpsThisSession = setOf("work")
+            ).shouldWarn
+        ).isTrue()
+        // Neither must an unrelated IP.
+        assertThat(
+            detector.check(
+                research, "1.2.3.4", history, defaults,
+                suppressedIpsThisSession = setOf("5.6.7.8")
+            ).shouldWarn
+        ).isTrue()
+    }
+
+    @Test
     fun `once per network suppresses second time`() {
         val history = listOf(IpAssociation(work, "1.2.3.4", now, now))
         val s = defaults.copy(warningBehavior = WarningBehavior.ONCE_PER_NETWORK)

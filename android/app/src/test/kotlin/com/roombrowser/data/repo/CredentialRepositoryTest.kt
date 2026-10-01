@@ -11,6 +11,7 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
 import org.junit.Test
@@ -321,6 +322,82 @@ class CredentialRepositoryTest {
         repo.lock() // session ends while a collector still holds the flow
 
         assertThrowsSuspend<VaultLockedException> { flow.first() }
+    }
+
+    // ---------- Auto-lock timeout ----------
+    // The watchdog is an ordinary coroutine delay, so these run on the test
+    // scheduler's VIRTUAL clock (testScheduler.advanceTimeBy) — no real
+    // sleeping, no flake. Production uses the 5-minute default scope.
+
+    private fun TestScope.timedRepo(timeoutMs: Long) = CredentialRepository(
+        fakeDao.dao,
+        cryptor,
+        autoLockTimeoutMs = timeoutMs,
+        autoLockScope = backgroundScope
+    )
+
+    @Test
+    fun `vault re-locks itself once the unlock window passes`() = runTest {
+        val timed = timedRepo(60_000L)
+        timed.unlock()
+        testScheduler.runCurrent() // let the watchdog reach its delay
+        assertThat(timed.isUnlocked.value).isTrue()
+
+        // One millisecond short of the window: still open.
+        testScheduler.advanceTimeBy(59_999L)
+        testScheduler.runCurrent()
+        assertThat(timed.isUnlocked.value).isTrue()
+
+        // Past the window: re-locked, and the lock is REAL — the API rejects.
+        testScheduler.advanceTimeBy(1L)
+        testScheduler.runCurrent()
+        assertThat(timed.isUnlocked.value).isFalse()
+        assertThrowsSuspend<VaultLockedException> { timed.get(profileA, "id") }
+    }
+
+    @Test
+    fun `a second unlock restarts the window and an explicit lock ends it`() = runTest {
+        val timed = timedRepo(60_000L)
+        timed.unlock()
+        testScheduler.runCurrent()
+        testScheduler.advanceTimeBy(30_000L)
+        testScheduler.runCurrent()
+
+        // Re-unlocking must cancel the FIRST watchdog: 90s after the first
+        // unlock is 60s after the second, and the vault must still be open.
+        timed.unlock()
+        testScheduler.runCurrent()
+        testScheduler.advanceTimeBy(59_000L)
+        testScheduler.runCurrent()
+        assertThat(timed.isUnlocked.value).isTrue()
+
+        // An explicit lock cancels the pending watchdog outright.
+        timed.lock()
+        assertThat(timed.isUnlocked.value).isFalse()
+        testScheduler.advanceTimeBy(120_000L)
+        testScheduler.runCurrent()
+        assertThat(timed.isUnlocked.value).isFalse()
+    }
+
+    @Test
+    fun `a non-positive timeout keeps the vault open until it is locked`() = runTest {
+        val untimed = timedRepo(0L)
+        untimed.unlock()
+        testScheduler.runCurrent()
+
+        // A day of virtual time must not lock a vault with the timeout off.
+        testScheduler.advanceTimeBy(24L * 60L * 60L * 1000L)
+        testScheduler.runCurrent()
+        assertThat(untimed.isUnlocked.value).isTrue()
+
+        untimed.lock()
+        assertThat(untimed.isUnlocked.value).isFalse()
+    }
+
+    @Test
+    fun `the default unlock window is five minutes`() {
+        // Pins the documented policy: the constant is part of the contract.
+        assertThat(DEFAULT_AUTO_LOCK_TIMEOUT_MS).isEqualTo(300_000L)
     }
 
     @Test

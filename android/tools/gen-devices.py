@@ -33,8 +33,15 @@ USAGE
                                                     so the catalogue can be
                                                     audited and regenerated
                                                     without the CSV)
+
+    --out and --tsv-out redirect those two outputs.  They exist so a change
+    to this file can be checked against a scratch copy instead of the
+    committed Devices.kt:
+        python3 android/tools/gen-devices.py supported_devices.csv \
+            --out /tmp/Devices.kt --tsv-out /tmp/devices.tsv
 """
 
+import argparse
 import csv
 import io
 import os
@@ -294,7 +301,572 @@ def hardware_concurrency(year):
 
 # WebGL strings by chipset family.  The renderer string is what
 # WEBGL_debug_renderer_info hands out, and it names the GPU the SoC actually
-# has -- an Adreno on a Exynos handset would be a contradiction.
+# has -- an Adreno on an Exynos handset would be a contradiction.
+#
+# PER MODEL, NOT PER BRAND, and that is deliberate.  An earlier version of
+# this file mapped one GPU pair per brand, so every handset of a maker
+# carried the same renderer: six distinct strings across the whole
+# catalogue, with one of them ("Adreno (TM) 740") on 48.7% of it.  No real
+# population of handsets looks like that, so the catalogue fingerprinted the
+# generator instead of the devices it claimed to be.  Every model therefore
+# states its own GPU below, and a model added later needs its own entry
+# rather than inheriting its maker's.
+#
+# Keyed by (brand, marketing name), the pair a CSV row carries.  The few
+# names that were sold on two different SoCs -- the Exynos and Snapdragon
+# builds of one Galaxy S, which go to different regions -- are not here at
+# all; they are in GPU_BY_CODE, where the model code is what separates them.
+# The CSV spells two Lenovo Pad names in Chinese. They are built from their
+# code points so this file stays ASCII; the key is still the real name.
+_XIAOXIN = chr(0x5C0F) + chr(0x65B0)
+
+GPU_BY_MODEL = {
+    # ---- ASUS ------------------------------------------------------
+    ("ASUS", "ROG Phone 9"): ("Qualcomm", "Adreno (TM) 830"),
+    ("ASUS", "ROG Phone 9 Pro"): ("Qualcomm", "Adreno (TM) 830"),
+    ("ASUS", "Zenfone 10"): ("Qualcomm", "Adreno (TM) 740"),
+    ("ASUS", "Zenfone 11 Ultra"): ("Qualcomm", "Adreno (TM) 750"),
+    ("ASUS", "Zenfone 12 Ultra"): ("Qualcomm", "Adreno (TM) 830"),
+    ("ASUS", "Zenfone 8"): ("Qualcomm", "Adreno (TM) 660"),
+    ("ASUS", "Zenfone 9"): ("Qualcomm", "Adreno (TM) 730"),
+    # ---- Blu -------------------------------------------------------
+    ("Blu", "G50 MEGA 2022"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("Blu", "M8L 2022"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("Blu", "Studio X10 2022"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("Blu", "Studio X10L 2022"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    # ---- Google ----------------------------------------------------
+    ("Google", "Pixel 6a"): ("ARM", "Mali-G78 MP20"),
+    ("Google", "Pixel 7"): ("ARM", "Mali-G710 MP7"),
+    ("Google", "Pixel 7a"): ("ARM", "Mali-G710 MP7"),
+    ("Google", "Pixel 8"): ("ARM", "Mali-G715-Immortalis MC10"),
+    ("Google", "Pixel 8a"): ("ARM", "Mali-G715-Immortalis MC10"),
+    ("Google", "Pixel 9"): ("ARM", "Mali-G715-Immortalis MC10"),
+    ("Google", "Pixel 9a"): ("ARM", "Mali-G715-Immortalis MC10"),
+    ("Google", "Pixel Fold"): ("ARM", "Mali-G710 MP7"),
+    ("Google", "Pixel Tablet"): ("ARM", "Mali-G710 MP7"),
+    # ---- HONOR -----------------------------------------------------
+    ("HONOR", "HONOR 100"): ("Qualcomm", "Adreno (TM) 720"),
+    ("HONOR", "HONOR 100 Pro"): ("Qualcomm", "Adreno (TM) 740"),
+    ("HONOR", "HONOR 200"): ("Qualcomm", "Adreno (TM) 720"),
+    ("HONOR", "HONOR 200 Pro"): ("Qualcomm", "Adreno (TM) 735"),
+    ("HONOR", "HONOR 70"): ("Qualcomm", "Adreno (TM) 642L"),
+    ("HONOR", "HONOR 70 Lite"): ("Qualcomm", "Adreno (TM) 619"),
+    ("HONOR", "HONOR 90"): ("Qualcomm", "Adreno (TM) 644"),
+    ("HONOR", "HONOR 90 Lite"): ("ARM", "Mali-G57 MC2"),
+    ("HONOR", "HONOR Magic4 Lite"): ("Qualcomm", "Adreno (TM) 619"),
+    ("HONOR", "HONOR Magic4 Pro"): ("Qualcomm", "Adreno (TM) 730"),
+    ("HONOR", "HONOR Magic5"): ("Qualcomm", "Adreno (TM) 740"),
+    ("HONOR", "HONOR Magic5 Pro"): ("Qualcomm", "Adreno (TM) 740"),
+    ("HONOR", "HONOR Magic6"): ("Qualcomm", "Adreno (TM) 750"),
+    ("HONOR", "HONOR Magic6 Pro"): ("Qualcomm", "Adreno (TM) 750"),
+    ("HONOR", "HONOR Magic7"): ("Qualcomm", "Adreno (TM) 830"),
+    ("HONOR", "HONOR Magic7 Lite"): ("Qualcomm", "Adreno (TM) 710"),
+    ("HONOR", "HONOR Magic7 Pro"): ("Qualcomm", "Adreno (TM) 830"),
+    ("HONOR", "HONOR X6a"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("HONOR", "HONOR X7"): ("Qualcomm", "Adreno (TM) 610"),
+    ("HONOR", "HONOR X7a"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("HONOR", "HONOR X8"): ("Qualcomm", "Adreno (TM) 610"),
+    ("HONOR", "HONOR X8a"): ("ARM", "Mali-G52 MC2"),
+    ("HONOR", "HONOR X9"): ("Qualcomm", "Adreno (TM) 619"),
+    # ---- Infinix ---------------------------------------------------
+    ("Infinix", "GT 20 Pro"): ("ARM", "Mali-G610 MC6"),
+    ("Infinix", "GT 30"): ("ARM", "Mali-G615 MC2"),
+    ("Infinix", "GT 30 Pro"): ("ARM", "Mali-G615 MC6"),
+    ("Infinix", "HOT 11"): ("ARM", "Mali-G52 MC2"),
+    ("Infinix", "HOT 11 2022"): ("ARM", "Mali-G52 MC2"),
+    ("Infinix", "HOT 11S"): ("ARM", "Mali-G52 MC2"),
+    ("Infinix", "HOT 12i"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("Infinix", "HOT 20 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "HOT 20 PLAY"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("Infinix", "HOT 20S"): ("ARM", "Mali-G52 MC2"),
+    ("Infinix", "HOT 20i"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("Infinix", "HOT 30 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "Infinix HOT 11S NFC"): ("ARM", "Mali-G52 MC2"),
+    ("Infinix", "Infinix HOT 12"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("Infinix", "Infinix HOT 12 PRO"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("Infinix", "Infinix HOT 12 Play"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("Infinix", "Infinix HOT 12 Play NFC"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("Infinix", "Infinix HOT 20"): ("ARM", "Mali-G52 MC2"),
+    ("Infinix", "Infinix HOT 30 PLAY"): ("ARM", "Mali-G57 MP1"),
+    ("Infinix", "Infinix HOT 30i"): ("ARM", "Mali-G57 MP1"),
+    ("Infinix", "Infinix HOT 40"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "Infinix HOT 40 Pro"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "Infinix HOT 40i"): ("ARM", "Mali-G57 MP1"),
+    ("Infinix", "Infinix NOTE 11"): ("ARM", "Mali-G52 MC2"),
+    ("Infinix", "Infinix NOTE 11i"): ("ARM", "Mali-G52 MC2"),
+    ("Infinix", "Infinix NOTE 12"): ("ARM", "Mali-G52 MC2"),
+    ("Infinix", "Infinix NOTE 12 2023"): ("ARM", "Mali-G52 MC2"),
+    ("Infinix", "Infinix NOTE 12 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "Infinix NOTE 12 PRO"): ("ARM", "Mali-G52 MC2"),
+    ("Infinix", "Infinix NOTE 12 Pro 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "Infinix NOTE 12i"): ("ARM", "Mali-G52 MC2"),
+    ("Infinix", "Infinix NOTE 30"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "Infinix NOTE 30 5G"): ("ARM", "Mali-G68 MC4"),
+    ("Infinix", "Infinix NOTE 40"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "Infinix NOTE 40 5G"): ("ARM", "Mali-G68 MC4"),
+    ("Infinix", "Infinix NOTE 40 Pro"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "Infinix NOTE 40 Pro 5G"): ("ARM", "Mali-G68 MC4"),
+    ("Infinix", "Infinix NOTE 40S"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "Infinix NOTE 40X 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "Infinix ZERO 20"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "Infinix ZERO 30"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "Infinix ZERO 40"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "Infinix ZERO 40 5G"): ("ARM", "Mali-G610 MC6"),
+    ("Infinix", "NOTE 11 Pro"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "NOTE 11S"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "NOTE 12"): ("ARM", "Mali-G52 MC2"),
+    ("Infinix", "NOTE 12 VIP"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "NOTE 12i 2022"): ("ARM", "Mali-G52 MC2"),
+    ("Infinix", "NOTE 30"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "NOTE 30 Pro"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "NOTE 30 VIP"): ("ARM", "Mali-G77 MC9"),
+    ("Infinix", "NOTE 30i"): ("ARM", "Mali-G57 MC2"),
+    ("Infinix", "NOTE 40 Pro+ 5G"): ("ARM", "Mali-G610 MC6"),
+    ("Infinix", "ZERO 30 5G"): ("ARM", "Mali-G77 MC9"),
+    ("Infinix", "ZERO 5G 2023"): ("ARM", "Mali-G68 MC4"),
+    # ---- Lenovo ----------------------------------------------------
+    ("Lenovo", "Lenovo Tab M8 (4th Gen) 2024"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    # The CSV spells these two Lenovo Pad names in Chinese. The name is
+    # built from its code points so this file stays ASCII; the key is still
+    # the real name, and that is what the catalogue carries.
+    ("Lenovo", _XIAOXIN + "Pad Plus 2023"): ("Qualcomm", "Adreno (TM) 650"),
+    ("Lenovo", _XIAOXIN + "Pad Pro 2022"): ("Qualcomm", "Adreno (TM) 650"),
+    # ---- Motorola --------------------------------------------------
+    ("Motorola", "moto g - 2025"): ("Qualcomm", "Adreno (TM) 619"),
+    ("Motorola", "moto g 5G (2022)"): ("ARM", "Mali-G57 MC2"),
+    ("Motorola", "moto g 5G - 2023"): ("Qualcomm", "Adreno (TM) 619"),
+    ("Motorola", "moto g 5G - 2024"): ("Qualcomm", "Adreno (TM) 619"),
+    ("Motorola", "moto g play - 2024"): ("Qualcomm", "Adreno (TM) 610"),
+    ("Motorola", "moto g power (2022)"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("Motorola", "moto g power - 2025"): ("ARM", "Mali-G57 MC2"),
+    ("Motorola", "moto g power 5G - 2023"): ("ARM", "Mali-G68 MC4"),
+    ("Motorola", "moto g stylus (2022)"): ("ARM", "Mali-G52 MC2"),
+    ("Motorola", "moto g stylus (2023)"): ("ARM", "Mali-G52 MC2"),
+    ("Motorola", "moto g stylus 5G (2022)"): ("Qualcomm", "Adreno (TM) 619"),
+    ("Motorola", "moto g stylus 5G - 2023"): ("Qualcomm", "Adreno (TM) 619"),
+    ("Motorola", "moto g stylus 5G - 2024"): ("Qualcomm", "Adreno (TM) 710"),
+    ("Motorola", "moto g stylus 5G - 2025"): ("Qualcomm", "Adreno (TM) 710"),
+    ("Motorola", "motorola edge (2022)"): ("ARM", "Mali-G77 MC9"),
+    ("Motorola", "motorola edge 2023"): ("ARM", "Mali-G57 MC2"),
+    ("Motorola", "motorola edge 2024"): ("Qualcomm", "Adreno (TM) 710"),
+    ("Motorola", "motorola edge 2025"): ("ARM", "Mali-G615 MC2"),
+    ("Motorola", "motorola edge plus (2022)"): ("Qualcomm", "Adreno (TM) 730"),
+    ("Motorola", "motorola edge plus 2023"): ("Qualcomm", "Adreno (TM) 740"),
+    ("Motorola", "motorola edge plus 5G UW (2022)"): ("Qualcomm", "Adreno (TM) 730"),
+    ("Motorola", "motorola razr 2022"): ("Qualcomm", "Adreno (TM) 730"),
+    ("Motorola", "motorola razr 2023"): ("Qualcomm", "Adreno (TM) 644"),
+    ("Motorola", "motorola razr 2024"): ("ARM", "Mali-G615 MC2"),
+    ("Motorola", "motorola razr 2025"): ("ARM", "Mali-G615 MC2"),
+    ("Motorola", "motorola razr plus 2023"): ("Qualcomm", "Adreno (TM) 730"),
+    ("Motorola", "motorola razr plus 2024"): ("Qualcomm", "Adreno (TM) 735"),
+    ("Motorola", "motorola razr plus 2025"): ("Qualcomm", "Adreno (TM) 735"),
+    ("Motorola", "motorola razr ultra 2025"): ("Qualcomm", "Adreno (TM) 830"),
+    # ---- Nokia -----------------------------------------------------
+    ("Nokia", "Nokia C31"): ("Imagination Technologies", "PowerVR Rogue GE8322"),
+    ("Nokia", "Nokia C32"): ("Imagination Technologies", "PowerVR Rogue GE8322"),
+    ("Nokia", "Nokia G11"): ("ARM", "Mali-G57 MP1"),
+    ("Nokia", "Nokia G21"): ("ARM", "Mali-G57 MP1"),
+    ("Nokia", "Nokia X20"): ("Qualcomm", "Adreno (TM) 619"),
+    # ---- Nothing ---------------------------------------------------
+    ("Nothing", "Nothing Phone (1)"): ("Qualcomm", "Adreno (TM) 642L"),
+    ("Nothing", "Nothing Phone (2)"): ("Qualcomm", "Adreno (TM) 730"),
+    ("Nothing", "Nothing Phone (2a)"): ("ARM", "Mali-G610 MC4"),
+    ("Nothing", "Nothing Phone (3)"): ("Qualcomm", "Adreno (TM) 825"),
+    ("Nothing", "Nothing Phone (3a)"): ("Qualcomm", "Adreno (TM) 810"),
+    # ---- OPPO ------------------------------------------------------
+    ("OPPO", "A57"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("OPPO", "A58"): ("ARM", "Mali-G57 MC2"),
+    ("OPPO", "A59"): ("ARM", "Mali-G52 MC2"),
+    ("OPPO", "A59 5G"): ("ARM", "Mali-G57 MC2"),
+    ("OPPO", "A77"): ("ARM", "Mali-G52 MC2"),
+    ("OPPO", "A77 5G"): ("ARM", "Mali-G57 MC2"),
+    ("OPPO", "A78"): ("ARM", "Mali-G52 MC2"),
+    ("OPPO", "A78 5G"): ("ARM", "Mali-G57 MC2"),
+    ("OPPO", "A79"): ("ARM", "Mali-G52 MC2"),
+    ("OPPO", "A79 5G"): ("ARM", "Mali-G57 MC2"),
+    ("OPPO", "A98 5G"): ("Qualcomm", "Adreno (TM) 619"),
+    ("OPPO", "OPPO Reno10 5G"): ("ARM", "Mali-G68 MC4"),
+    ("OPPO", "OPPO Reno10 Pro 5G"): ("ARM", "Mali-G610 MC6"),
+    ("OPPO", "OPPO Reno10 Pro+ 5G"): ("Qualcomm", "Adreno (TM) 730"),
+    ("OPPO", "Reno10 5G"): ("ARM", "Mali-G68 MC4"),
+    ("OPPO", "Reno10 Pro 5G"): ("ARM", "Mali-G610 MC6"),
+    ("OPPO", "Reno10 Pro+ 5G"): ("Qualcomm", "Adreno (TM) 730"),
+    ("OPPO", "Reno11"): ("ARM", "Mali-G68 MC4"),
+    ("OPPO", "Reno11 A"): ("ARM", "Mali-G68 MC4"),
+    ("OPPO", "Reno11 F 5G"): ("ARM", "Mali-G68 MC4"),
+    ("OPPO", "Reno11 Pro"): ("ARM", "Mali-G610 MC6"),
+    ("OPPO", "Reno12"): ("ARM", "Mali-G615 MC2"),
+    ("OPPO", "Reno12 5G"): ("ARM", "Mali-G615 MC2"),
+    ("OPPO", "Reno12 F"): ("ARM", "Mali-G615 MC2"),
+    ("OPPO", "Reno12 F 5G"): ("ARM", "Mali-G615 MC2"),
+    ("OPPO", "Reno12 Pro"): ("ARM", "Mali-G615 MC2"),
+    ("OPPO", "Reno12 Pro 5G"): ("ARM", "Mali-G615 MC2"),
+    ("OPPO", "Reno13"): ("ARM", "Mali-G615 MC6"),
+    ("OPPO", "Reno13 5G"): ("ARM", "Mali-G615 MC6"),
+    ("OPPO", "Reno13 A"): ("ARM", "Mali-G615 MC2"),
+    ("OPPO", "Reno13 F"): ("ARM", "Mali-G615 MC2"),
+    ("OPPO", "Reno13 F 5G"): ("ARM", "Mali-G615 MC2"),
+    ("OPPO", "Reno13 Pro"): ("ARM", "Mali-G615 MC6"),
+    ("OPPO", "Reno13 Pro 5G"): ("ARM", "Mali-G615 MC6"),
+    # ---- OnePlus ---------------------------------------------------
+    ("OnePlus", "OnePlus 10 Pro"): ("Qualcomm", "Adreno (TM) 730"),
+    ("OnePlus", "OnePlus 10 Pro 5G"): ("Qualcomm", "Adreno (TM) 730"),
+    ("OnePlus", "OnePlus 10R 5G"): ("ARM", "Mali-G610 MC6"),
+    ("OnePlus", "OnePlus 10T 5G"): ("Qualcomm", "Adreno (TM) 730"),
+    ("OnePlus", "OnePlus 11 5G"): ("Qualcomm", "Adreno (TM) 740"),
+    ("OnePlus", "OnePlus 11R 5G"): ("Qualcomm", "Adreno (TM) 730"),
+    ("OnePlus", "OnePlus 12"): ("Qualcomm", "Adreno (TM) 750"),
+    ("OnePlus", "OnePlus 12R"): ("Qualcomm", "Adreno (TM) 740"),
+    ("OnePlus", "OnePlus 13"): ("Qualcomm", "Adreno (TM) 830"),
+    ("OnePlus", "OnePlus 13R"): ("Qualcomm", "Adreno (TM) 750"),
+    ("OnePlus", "OnePlus 13T"): ("Qualcomm", "Adreno (TM) 830"),
+    ("OnePlus", "OnePlus Nord 2T 5G"): ("ARM", "Mali-G77 MC9"),
+    ("OnePlus", "OnePlus Nord 3 5G"): ("ARM", "Mali-G710 MC10"),
+    ("OnePlus", "OnePlus Nord 4"): ("Qualcomm", "Adreno (TM) 732"),
+    ("OnePlus", "OnePlus Nord 5"): ("Qualcomm", "Adreno (TM) 735"),
+    ("OnePlus", "OnePlus Nord N20 5G"): ("Qualcomm", "Adreno (TM) 619"),
+    ("OnePlus", "OnePlus Nord N30 5G"): ("Qualcomm", "Adreno (TM) 619"),
+    # ---- POCO ------------------------------------------------------
+    ("POCO", "POCO C50"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("POCO", "POCO C51"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("POCO", "POCO C55"): ("ARM", "Mali-G52 MC2"),
+    ("POCO", "POCO C61"): ("ARM", "Mali-G52 MC2"),
+    ("POCO", "POCO C65"): ("ARM", "Mali-G52 MC2"),
+    ("POCO", "POCO C71"): ("ARM", "Mali-G52 MC2"),
+    ("POCO", "POCO C75"): ("ARM", "Mali-G52 MC2"),
+    ("POCO", "POCO C75 5G"): ("ARM", "Mali-G52 MC2"),
+    ("POCO", "POCO C81"): ("ARM", "Mali-G52 MC2"),
+    ("POCO", "POCO C81 Pro"): ("ARM", "Mali-G52 MC2"),
+    ("POCO", "POCO C85"): ("ARM", "Mali-G52 MC2"),
+    ("POCO", "POCO C85 5G"): ("ARM", "Mali-G52 MC2"),
+    ("POCO", "POCO F4"): ("Qualcomm", "Adreno (TM) 650"),
+    ("POCO", "POCO F4 GT"): ("Qualcomm", "Adreno (TM) 730"),
+    ("POCO", "POCO F5"): ("Qualcomm", "Adreno (TM) 725"),
+    ("POCO", "POCO F6"): ("Qualcomm", "Adreno (TM) 735"),
+    ("POCO", "POCO F6 Pro"): ("Qualcomm", "Adreno (TM) 740"),
+    ("POCO", "POCO M4 5G"): ("ARM", "Mali-G57 MC2"),
+    ("POCO", "POCO M4 Pro"): ("ARM", "Mali-G57 MC2"),
+    ("POCO", "POCO M4 Pro 5G"): ("ARM", "Mali-G57 MC2"),
+    ("POCO", "POCO M5"): ("ARM", "Mali-G57 MC2"),
+    ("POCO", "POCO M6"): ("Qualcomm", "Adreno (TM) 610"),
+    ("POCO", "POCO M6 Plus 5G"): ("ARM", "Mali-G57 MC2"),
+    ("POCO", "POCO M6 Pro"): ("ARM", "Mali-G57 MC2"),
+    ("POCO", "POCO M6 Pro 5G"): ("ARM", "Mali-G57 MC2"),
+    ("POCO", "POCO M7"): ("ARM", "Mali-G615 MC2"),
+    ("POCO", "POCO M7 5G"): ("ARM", "Mali-G615 MC2"),
+    ("POCO", "POCO M7 Plus 5G"): ("ARM", "Mali-G57 MC2"),
+    ("POCO", "POCO M7 Pro 5G"): ("ARM", "Mali-G57 MC2"),
+    ("POCO", "POCO X4 GT"): ("ARM", "Mali-G610 MC6"),
+    ("POCO", "POCO X4 Pro 5G"): ("Qualcomm", "Adreno (TM) 619"),
+    ("POCO", "POCO X5 Pro 5G"): ("Qualcomm", "Adreno (TM) 642L"),
+    ("POCO", "POCO X6 5G"): ("Qualcomm", "Adreno (TM) 710"),
+    ("POCO", "POCO X6 Pro 5G"): ("ARM", "Mali-G615 MC6"),
+    ("POCO", "POCO X7"): ("ARM", "Mali-G615 MC2"),
+    ("POCO", "POCO X7 Pro"): ("ARM", "Mali-G720-Immortalis MC7"),
+    # ---- Redmi -----------------------------------------------------
+    ("Redmi", "REDMI 15C 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Redmi", "REDMI 17 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Redmi", "REDMI 17C 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Redmi", "REDMI A7"): ("ARM", "Mali-G52 MC2"),
+    ("Redmi", "REDMI A7 Pro"): ("ARM", "Mali-G52 MC2"),
+    ("Redmi", "REDMI A7 Pro 5G"): ("ARM", "Mali-G57 MP1"),
+    ("Redmi", "REDMI K80"): ("Qualcomm", "Adreno (TM) 750"),
+    ("Redmi", "REDMI K80 Pro"): ("Qualcomm", "Adreno (TM) 830"),
+    ("Redmi", "REDMI K80 Ultra"): ("ARM", "Mali-G925-Immortalis MC12"),
+    ("Redmi", "REDMI K90"): ("Qualcomm", "Adreno (TM) 840"),
+    ("Redmi", "REDMI Note 15"): ("ARM", "Mali-G57 MC2"),
+    ("Redmi", "REDMI Note 15 5G"): ("ARM", "Mali-G615 MC2"),
+    ("Redmi", "REDMI Note 15 Pro"): ("ARM", "Mali-G57 MC2"),
+    ("Redmi", "REDMI Note 15 Pro 5G"): ("Qualcomm", "Adreno (TM) 710"),
+    ("Redmi", "REDMI Note 15 Pro+"): ("Qualcomm", "Adreno (TM) 710"),
+    ("Redmi", "REDMI Note 15R"): ("ARM", "Mali-G57 MC2"),
+    ("Redmi", "REDMI Note 17"): ("ARM", "Mali-G57 MC2"),
+    ("Redmi", "REDMI Note 17 5G"): ("ARM", "Mali-G615 MC2"),
+    ("Redmi", "REDMI Note 17 Pro"): ("ARM", "Mali-G57 MC2"),
+    ("Redmi", "REDMI Note 17 Pro 5G"): ("Qualcomm", "Adreno (TM) 710"),
+    ("Redmi", "Redmi 10 2022"): ("ARM", "Mali-G52 MC2"),
+    # ---- Samsung ---------------------------------------------------
+    ("Samsung", "Galaxy A13"): ("ARM", "Mali-G52 MP1"),
+    ("Samsung", "Galaxy A13 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Samsung", "Galaxy A14"): ("ARM", "Mali-G52 MP1"),
+    ("Samsung", "Galaxy A14 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Samsung", "Galaxy A15"): ("ARM", "Mali-G57 MC2"),
+    ("Samsung", "Galaxy A15 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Samsung", "Galaxy A16"): ("ARM", "Mali-G57 MC2"),
+    ("Samsung", "Galaxy A16 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Samsung", "Galaxy A17"): ("ARM", "Mali-G57 MC2"),
+    ("Samsung", "Galaxy A17 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Samsung", "Galaxy A23"): ("Qualcomm", "Adreno (TM) 610"),
+    ("Samsung", "Galaxy A23 5G"): ("Qualcomm", "Adreno (TM) 619"),
+    ("Samsung", "Galaxy A24"): ("ARM", "Mali-G57 MC2"),
+    ("Samsung", "Galaxy A25 5G"): ("ARM", "Mali-G68 MC4"),
+    ("Samsung", "Galaxy A26 5G"): ("ARM", "Mali-G68 MC4"),
+    ("Samsung", "Galaxy A33 5G"): ("ARM", "Mali-G68 MC4"),
+    ("Samsung", "Galaxy A34 5G"): ("ARM", "Mali-G68 MC4"),
+    ("Samsung", "Galaxy A35 5G"): ("ARM", "Mali-G68 MC4"),
+    ("Samsung", "Galaxy A36 5G"): ("Qualcomm", "Adreno (TM) 710"),
+    ("Samsung", "Galaxy A53 5G"): ("ARM", "Mali-G68 MC4"),
+    ("Samsung", "Galaxy A54 5G"): ("ARM", "Mali-G68 MC4"),
+    ("Samsung", "Galaxy A55 5G"): ("Samsung", "Xclipse 530"),
+    ("Samsung", "Galaxy A56 5G"): ("Samsung", "Xclipse 540"),
+    ("Samsung", "Galaxy A73 5G"): ("Qualcomm", "Adreno (TM) 642L"),
+    ("Samsung", "Galaxy F14"): ("ARM", "Mali-G52 MP1"),
+    ("Samsung", "Galaxy F14 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Samsung", "Galaxy F15 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Samsung", "Galaxy F16 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Samsung", "Galaxy F54 5G"): ("ARM", "Mali-G68 MC4"),
+    ("Samsung", "Galaxy F55 5G"): ("Qualcomm", "Adreno (TM) 644"),
+    ("Samsung", "Galaxy M14"): ("ARM", "Mali-G52 MP1"),
+    ("Samsung", "Galaxy M14 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Samsung", "Galaxy M15 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Samsung", "Galaxy M16 5G"): ("ARM", "Mali-G57 MC2"),
+    ("Samsung", "Galaxy M33 5G"): ("ARM", "Mali-G68 MC4"),
+    ("Samsung", "Galaxy M34 5G"): ("ARM", "Mali-G68 MC4"),
+    ("Samsung", "Galaxy M35 5G"): ("ARM", "Mali-G68 MC4"),
+    ("Samsung", "Galaxy M53 5G"): ("ARM", "Mali-G68 MC4"),
+    ("Samsung", "Galaxy M54 5G"): ("Qualcomm", "Adreno (TM) 660"),
+    ("Samsung", "Galaxy M55 5G"): ("Qualcomm", "Adreno (TM) 644"),
+    ("Samsung", "Galaxy S23"): ("Qualcomm", "Adreno (TM) 740"),
+    ("Samsung", "Galaxy S23 Ultra"): ("Qualcomm", "Adreno (TM) 740"),
+    ("Samsung", "Galaxy S23+"): ("Qualcomm", "Adreno (TM) 740"),
+    ("Samsung", "Galaxy S24 FE"): ("Samsung", "Xclipse 940"),
+    ("Samsung", "Galaxy S24 Ultra"): ("Qualcomm", "Adreno (TM) 750"),
+    ("Samsung", "Galaxy S25"): ("Qualcomm", "Adreno (TM) 830"),
+    ("Samsung", "Galaxy S25 Ultra"): ("Qualcomm", "Adreno (TM) 830"),
+    ("Samsung", "Galaxy S25+"): ("Qualcomm", "Adreno (TM) 830"),
+    ("Samsung", "Galaxy Tab S10 Ultra"): ("ARM", "Mali-G720-Immortalis MC12"),
+    ("Samsung", "Galaxy Tab S10+"): ("ARM", "Mali-G720-Immortalis MC12"),
+    ("Samsung", "Galaxy Tab S8"): ("Qualcomm", "Adreno (TM) 730"),
+    ("Samsung", "Galaxy Tab S8 Ultra"): ("Qualcomm", "Adreno (TM) 730"),
+    ("Samsung", "Galaxy Tab S8+"): ("Qualcomm", "Adreno (TM) 730"),
+    ("Samsung", "Galaxy Tab S9"): ("Qualcomm", "Adreno (TM) 740"),
+    ("Samsung", "Galaxy Tab S9 Ultra"): ("Qualcomm", "Adreno (TM) 740"),
+    ("Samsung", "Galaxy Tab S9+"): ("Qualcomm", "Adreno (TM) 740"),
+    ("Samsung", "Galaxy XCover6 Pro"): ("Qualcomm", "Adreno (TM) 642L"),
+    ("Samsung", "Galaxy XCover7 Pro"): ("Qualcomm", "Adreno (TM) 710"),
+    ("Samsung", "Galaxy Z Flip4"): ("Qualcomm", "Adreno (TM) 730"),
+    ("Samsung", "Galaxy Z Flip5"): ("Qualcomm", "Adreno (TM) 740"),
+    ("Samsung", "Galaxy Z Flip6"): ("Qualcomm", "Adreno (TM) 750"),
+    ("Samsung", "Galaxy Z Flip7"): ("Qualcomm", "Adreno (TM) 830"),
+    ("Samsung", "Galaxy Z Fold4"): ("Qualcomm", "Adreno (TM) 730"),
+    ("Samsung", "Galaxy Z Fold5"): ("Qualcomm", "Adreno (TM) 740"),
+    ("Samsung", "Galaxy Z Fold6"): ("Qualcomm", "Adreno (TM) 750"),
+    ("Samsung", "Galaxy Z Fold7"): ("Qualcomm", "Adreno (TM) 830"),
+    # ---- Sony ------------------------------------------------------
+    ("Sony", "Xperia 1 IV"): ("Qualcomm", "Adreno (TM) 730"),
+    ("Sony", "Xperia 1 V"): ("Qualcomm", "Adreno (TM) 740"),
+    ("Sony", "Xperia 1 VI"): ("Qualcomm", "Adreno (TM) 750"),
+    ("Sony", "Xperia 1 VII"): ("Qualcomm", "Adreno (TM) 830"),
+    ("Sony", "Xperia 10 IV"): ("Qualcomm", "Adreno (TM) 619"),
+    ("Sony", "Xperia 10 V"): ("Qualcomm", "Adreno (TM) 619"),
+    ("Sony", "Xperia 10 VI"): ("Qualcomm", "Adreno (TM) 710"),
+    ("Sony", "Xperia 10 VII"): ("Qualcomm", "Adreno (TM) 710"),
+    ("Sony", "Xperia 5 IV"): ("Qualcomm", "Adreno (TM) 730"),
+    ("Sony", "Xperia 5 V"): ("Qualcomm", "Adreno (TM) 740"),
+    # ---- TCL -------------------------------------------------------
+    ("TCL", "TAB 10s 2022"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("TCL", "TAB 10s 4G 2022"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("TCL", "TCL 30"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("TCL", "TCL 30 5G"): ("ARM", "Mali-G57 MC2"),
+    ("TCL", "TCL 30 SE"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("TCL", "TCL 30 XL"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("TCL", "TCL 40 NXTPAPER"): ("ARM", "Mali-G57 MC2"),
+    ("TCL", "TCL 40 SE"): ("ARM", "Mali-G52 MC2"),
+    ("TCL", "TCL 403"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("TCL", "TCL 405"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("TCL", "TCL 408"): ("ARM", "Mali-G52 MC2"),
+    ("TCL", "TCL 40XL"): ("ARM", "Mali-G52 MC2"),
+    ("TCL", "TCL 50 5G"): ("ARM", "Mali-G57 MC2"),
+    ("TCL", "TCL 50 SE"): ("ARM", "Mali-G57 MC2"),
+    ("TCL", "TCL 505"): ("ARM", "Mali-G52 MC2"),
+    ("TCL", "TCL 605"): ("Qualcomm", "Adreno (TM) 613"),
+    # ---- TECNO -----------------------------------------------------
+    ("TECNO", "CAMON 20 Pro"): ("ARM", "Mali-G52 MC2"),
+    ("TECNO", "CAMON 20 Pro 5G"): ("ARM", "Mali-G77 MC9"),
+    ("TECNO", "SPARK 10 5G"): ("ARM", "Mali-G57 MC2"),
+    ("TECNO", "SPARK Go 2023"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("TECNO", "SPARK Go 2024"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("TECNO", "TECNO CAMON 20"): ("ARM", "Mali-G52 MC2"),
+    ("TECNO", "TECNO CAMON 20 Premier 5G"): ("ARM", "Mali-G77 MC9"),
+    ("TECNO", "TECNO CAMON 20s Pro 5G"): ("ARM", "Mali-G77 MC9"),
+    ("TECNO", "TECNO CAMON 30"): ("ARM", "Mali-G57 MC2"),
+    ("TECNO", "TECNO CAMON 30 5G"): ("ARM", "Mali-G68 MC4"),
+    ("TECNO", "TECNO CAMON 30 Premier 5G"): ("ARM", "Mali-G610 MC6"),
+    ("TECNO", "TECNO CAMON 30 Pro 5G"): ("ARM", "Mali-G610 MC6"),
+    ("TECNO", "TECNO CAMON 30S"): ("ARM", "Mali-G57 MC2"),
+    ("TECNO", "TECNO CAMON 30S Pro"): ("ARM", "Mali-G57 MC2"),
+    ("TECNO", "TECNO CAMON 30T"): ("ARM", "Mali-G57 MC2"),
+    ("TECNO", "TECNO SPARK 10"): ("ARM", "Mali-G52 MC2"),
+    ("TECNO", "TECNO SPARK 10 Pro"): ("ARM", "Mali-G52 MC2"),
+    ("TECNO", "TECNO SPARK 10C"): ("ARM", "Mali-G52 MC2"),
+    ("TECNO", "TECNO SPARK 20"): ("ARM", "Mali-G52 MC2"),
+    ("TECNO", "TECNO SPARK 20 Pro"): ("ARM", "Mali-G57 MC2"),
+    ("TECNO", "TECNO SPARK 20 Pro 5G"): ("ARM", "Mali-G57 MC2"),
+    ("TECNO", "TECNO SPARK 20 Pro+"): ("ARM", "Mali-G57 MC2"),
+    ("TECNO", "TECNO SPARK 20C"): ("ARM", "Mali-G52 MC2"),
+    ("TECNO", "TECNO SPARK 30"): ("ARM", "Mali-G52 MC2"),
+    ("TECNO", "TECNO SPARK 30 5G"): ("ARM", "Mali-G57 MC2"),
+    ("TECNO", "TECNO SPARK 30 Pro"): ("ARM", "Mali-G57 MC2"),
+    ("TECNO", "TECNO SPARK 30C"): ("ARM", "Mali-G52 MC2"),
+    ("TECNO", "TECNO SPARK 30C 5G"): ("ARM", "Mali-G57 MC2"),
+    ("TECNO", "TECNO SPARK Go 2022"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    ("TECNO", "TECNO SPARK Go 2024"): ("Imagination Technologies", "PowerVR Rogue GE8320"),
+    # ---- Xiaomi ----------------------------------------------------
+    ("Xiaomi", "Xiaomi 12"): ("Qualcomm", "Adreno (TM) 730"),
+    ("Xiaomi", "Xiaomi 12 Lite"): ("Qualcomm", "Adreno (TM) 642L"),
+    ("Xiaomi", "Xiaomi 12 Pro"): ("Qualcomm", "Adreno (TM) 730"),
+    ("Xiaomi", "Xiaomi 12T"): ("ARM", "Mali-G610 MC6"),
+    ("Xiaomi", "Xiaomi 13"): ("Qualcomm", "Adreno (TM) 740"),
+    ("Xiaomi", "Xiaomi 13 Lite"): ("Qualcomm", "Adreno (TM) 644"),
+    ("Xiaomi", "Xiaomi 13 Pro"): ("Qualcomm", "Adreno (TM) 740"),
+    ("Xiaomi", "Xiaomi 13 Ultra"): ("Qualcomm", "Adreno (TM) 740"),
+    ("Xiaomi", "Xiaomi 13T"): ("ARM", "Mali-G610 MC6"),
+    ("Xiaomi", "Xiaomi 14"): ("Qualcomm", "Adreno (TM) 750"),
+    ("Xiaomi", "Xiaomi 14 Pro"): ("Qualcomm", "Adreno (TM) 750"),
+    ("Xiaomi", "Xiaomi 14 Ultra"): ("Qualcomm", "Adreno (TM) 750"),
+    ("Xiaomi", "Xiaomi 14T"): ("ARM", "Mali-G615 MC6"),
+    ("Xiaomi", "Xiaomi 15"): ("Qualcomm", "Adreno (TM) 830"),
+    ("Xiaomi", "Xiaomi 15 Pro"): ("Qualcomm", "Adreno (TM) 830"),
+    ("Xiaomi", "Xiaomi 15 Ultra"): ("Qualcomm", "Adreno (TM) 830"),
+    ("Xiaomi", "Xiaomi 15T"): ("ARM", "Mali-G720-Immortalis MC7"),
+    ("Xiaomi", "Xiaomi Pad 5"): ("Qualcomm", "Adreno (TM) 640"),
+    ("Xiaomi", "Xiaomi Pad 5 Pro"): ("Qualcomm", "Adreno (TM) 650"),
+    ("Xiaomi", "Xiaomi Pad 6"): ("Qualcomm", "Adreno (TM) 650"),
+    ("Xiaomi", "Xiaomi Pad 7"): ("Qualcomm", "Adreno (TM) 732"),
+    ("Xiaomi", "Xiaomi Pad 7 Pro"): ("Qualcomm", "Adreno (TM) 735"),
+    # ---- ZTE -------------------------------------------------------
+    ("ZTE", "ZTE A2022L"): ("ARM", "Mali-G57 MP1"),
+    ("ZTE", "ZTE A2022PG"): ("ARM", "Mali-G57 MP1"),
+    ("ZTE", "ZTE A2023"): ("ARM", "Mali-G57 MP1"),
+    ("ZTE", "ZTE A2023G"): ("ARM", "Mali-G57 MP1"),
+    ("ZTE", "ZTE A2023P"): ("ARM", "Mali-G57 MP1"),
+    ("ZTE", "ZTE A2023PG"): ("ARM", "Mali-G57 MP1"),
+    # ---- iQOO ------------------------------------------------------
+    ("iQOO", "iQOO 15"): ("Qualcomm", "Adreno (TM) 840"),
+    ("iQOO", "iQOO 15 Ultra"): ("Qualcomm", "Adreno (TM) 840"),
+    ("iQOO", "iQOO 15R"): ("Qualcomm", "Adreno (TM) 825"),
+    ("iQOO", "iQOO 15T"): ("Qualcomm", "Adreno (TM) 830"),
+    ("iQOO", "iQOO Neo 10"): ("Qualcomm", "Adreno (TM) 825"),
+    ("iQOO", "iQOO Neo11"): ("Qualcomm", "Adreno (TM) 825"),
+    ("iQOO", "iQOO Z10 Lite"): ("ARM", "Mali-G57 MC2"),
+    ("iQOO", "iQOO Z10 Lite 5G"): ("ARM", "Mali-G57 MC2"),
+    ("iQOO", "iQOO Z10 Turbo"): ("ARM", "Mali-G720-Immortalis MC7"),
+    ("iQOO", "iQOO Z10R 5G"): ("ARM", "Mali-G57 MC2"),
+    ("iQOO", "iQOO Z11"): ("ARM", "Mali-G615 MC2"),
+    ("iQOO", "iQOO Z11 5G"): ("ARM", "Mali-G615 MC2"),
+    ("iQOO", "iQOO Z11 Turbo"): ("ARM", "Mali-G720-Immortalis MC7"),
+    ("iQOO", "iQOO Z11i"): ("ARM", "Mali-G615 MC2"),
+    ("iQOO", "iQOO Z11x"): ("ARM", "Mali-G615 MC2"),
+    ("iQOO", "iQOO Z11x 5G"): ("ARM", "Mali-G615 MC2"),
+    ("iQOO", "iQOO Z9 Lite"): ("ARM", "Mali-G57 MC2"),
+    # ---- itel ------------------------------------------------------
+    ("itel", "itel  A24 2023"): ("Imagination Technologies", "PowerVR Rogue GE8322"),
+    ("itel", "itel A24 2023"): ("Imagination Technologies", "PowerVR Rogue GE8322"),
+    # ---- realme ----------------------------------------------------
+    ("realme", "NARZO 70 5G"): ("ARM", "Mali-G57 MC2"),
+    ("realme", "NARZO 70 Pro 5G"): ("ARM", "Mali-G68 MC4"),
+    ("realme", "realme 10"): ("ARM", "Mali-G57 MC2"),
+    ("realme", "realme 10 Pro"): ("Qualcomm", "Adreno (TM) 619"),
+    ("realme", "realme 10 Pro+"): ("ARM", "Mali-G68 MC4"),
+    ("realme", "realme 11"): ("ARM", "Mali-G57 MC2"),
+    ("realme", "realme 11 Pro+"): ("ARM", "Mali-G68 MC4"),
+    ("realme", "realme 12"): ("ARM", "Mali-G57 MC2"),
+    ("realme", "realme GT 2"): ("Qualcomm", "Adreno (TM) 730"),
+    ("realme", "realme GT 2 Pro"): ("Qualcomm", "Adreno (TM) 730"),
+    ("realme", "realme GT 6"): ("Qualcomm", "Adreno (TM) 735"),
+    ("realme", "realme GT 6T"): ("Qualcomm", "Adreno (TM) 732"),
+    ("realme", "realme GT 7 Pro"): ("Qualcomm", "Adreno (TM) 830"),
+    ("realme", "realme GT 7T"): ("ARM", "Mali-G720-Immortalis MC7"),
+    ("realme", "realme GT5"): ("Qualcomm", "Adreno (TM) 740"),
+    ("realme", "realme GT5 Pro"): ("Qualcomm", "Adreno (TM) 750"),
+    ("realme", "realme NARZO 70 Turbo 5G"): ("ARM", "Mali-G615 MC2"),
+    ("realme", "realme NARZO 80 Pro 5G"): ("ARM", "Mali-G615 MC2"),
+    # ---- vivo ------------------------------------------------------
+    ("vivo", "V2022"): ("Qualcomm", "Adreno (TM) 610"),
+    ("vivo", "V2023"): ("ARM", "Mali-G57 MC2"),
+    ("vivo", "V2023A"): ("ARM", "Mali-G57 MC2"),
+    ("vivo", "V2023EA"): ("ARM", "Mali-G57 MC2"),
+    ("vivo", "V2024"): ("Qualcomm", "Adreno (TM) 619"),
+    ("vivo", "V2024A"): ("Qualcomm", "Adreno (TM) 619"),
+    ("vivo", "V2025"): ("ARM", "Mali-G57 MC2"),
+    ("vivo", "V2025A"): ("ARM", "Mali-G57 MC2"),
+    ("vivo", "vivo S15 Pro"): ("ARM", "Mali-G610 MC6"),
+    ("vivo", "vivo S15e"): ("ARM", "Mali-G78 MP10"),
+    ("vivo", "vivo S16"): ("Qualcomm", "Adreno (TM) 720"),
+    ("vivo", "vivo S16 Pro"): ("ARM", "Mali-G610 MC6"),
+    ("vivo", "vivo S16e"): ("ARM", "Mali-G78 MP10"),
+    ("vivo", "vivo S17e"): ("ARM", "Mali-G610 MC4"),
+    ("vivo", "vivo S18"): ("Qualcomm", "Adreno (TM) 720"),
+    ("vivo", "vivo S18e"): ("ARM", "Mali-G610 MC4"),
+    ("vivo", "vivo S19"): ("Qualcomm", "Adreno (TM) 720"),
+    ("vivo", "vivo T2"): ("Qualcomm", "Adreno (TM) 710"),
+    ("vivo", "vivo X200"): ("ARM", "Mali-G925-Immortalis MC12"),
+    ("vivo", "vivo X80"): ("ARM", "Mali-G710 MC10"),
+    ("vivo", "vivo X80 Pro"): ("Qualcomm", "Adreno (TM) 730"),
+    ("vivo", "vivo X90"): ("ARM", "Mali-G715-Immortalis MC11"),
+    ("vivo", "vivo X90 Pro"): ("ARM", "Mali-G715-Immortalis MC11"),
+    ("vivo", "vivo X90 Pro+"): ("Qualcomm", "Adreno (TM) 740"),
+}
+
+# Marketing names sold on more than one SoC, keyed by model code.  Only
+# those belong here: a code is the identity a site keys on, so a code in
+# this table must not also sit in the name table above.
+GPU_BY_CODE = {
+    "SC-51C": ("Qualcomm", "Adreno (TM) 730"),
+    "SC-51E": ("Qualcomm", "Adreno (TM) 750"),
+    "SC-52C": ("Qualcomm", "Adreno (TM) 730"),
+    "SCG13": ("Qualcomm", "Adreno (TM) 730"),
+    "SCG14": ("Qualcomm", "Adreno (TM) 730"),
+    "SCG24": ("Samsung", "Xclipse 920"),
+    "SCG25": ("Qualcomm", "Adreno (TM) 750"),
+    "SM-S7110": ("Samsung", "Xclipse 920"),
+    "SM-S711B": ("Samsung", "Xclipse 920"),
+    "SM-S711N": ("Samsung", "Xclipse 920"),
+    "SM-S711U": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S711U1": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S711W": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S9010": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S901B": ("Samsung", "Xclipse 920"),
+    "SM-S901E": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S901N": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S901U": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S901U1": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S901W": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S9060": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S906B": ("Samsung", "Xclipse 920"),
+    "SM-S906E": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S906N": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S906U": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S906U1": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S906W": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S9080": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S908B": ("Samsung", "Xclipse 920"),
+    "SM-S908E": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S908N": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S908U": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S908U1": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S908W": ("Qualcomm", "Adreno (TM) 730"),
+    "SM-S9210": ("Qualcomm", "Adreno (TM) 750"),
+    "SM-S921B": ("Samsung", "Xclipse 940"),
+    "SM-S921E": ("Samsung", "Xclipse 940"),
+    "SM-S921N": ("Samsung", "Xclipse 940"),
+    "SM-S921Q": ("Qualcomm", "Adreno (TM) 750"),
+    "SM-S921U": ("Qualcomm", "Adreno (TM) 750"),
+    "SM-S921U1": ("Qualcomm", "Adreno (TM) 750"),
+    "SM-S921W": ("Qualcomm", "Adreno (TM) 750"),
+    "SM-S9260": ("Qualcomm", "Adreno (TM) 750"),
+    "SM-S926B": ("Samsung", "Xclipse 940"),
+    "SM-S926N": ("Samsung", "Xclipse 940"),
+    "SM-S926U": ("Qualcomm", "Adreno (TM) 750"),
+    "SM-S926U1": ("Qualcomm", "Adreno (TM) 750"),
+    "SM-S926W": ("Qualcomm", "Adreno (TM) 750"),
+}
+
+# Backstop for a model neither table above covers -- a handset the CSV
+# gained after this table was written.  It is a fallback, not the rule:
+# falling back to the brand restores exactly the one-GPU-per-brand
+# degeneracy the per-model tables exist to avoid, so a model that lands
+# here wants an entry of its own.
 GPU_BY_BRAND = {
     "Samsung": ("Qualcomm", "Adreno (TM) 740"),
     "Google": ("Qualcomm", "Adreno (TM) 740"),
@@ -319,6 +891,16 @@ GPU_BY_BRAND = {
     "TCL": ("Qualcomm", "Adreno (TM) 610"),
 }
 DEFAULT_GPU = ("Qualcomm", "Adreno (TM) 619")
+
+
+def gpu_for(brand, name, model):
+    """The (vendor, renderer) pair the catalogue emits for one device."""
+    gpu = GPU_BY_CODE.get(model)
+    if gpu is None:
+        gpu = GPU_BY_MODEL.get((brand, name))
+    if gpu is None:
+        gpu = GPU_BY_BRAND.get(brand, DEFAULT_GPU)
+    return gpu
 
 
 def slug(text):
@@ -397,9 +979,18 @@ def build_user_agent(model, android, build_id, chrome, tablet=False):
 
 
 def main():
-    if len(sys.argv) < 2:
-        raise SystemExit(__doc__)
-    rows = load_rows(sys.argv[1])
+    parser = argparse.ArgumentParser(
+        description="Regenerate the bundled device catalogue (Devices.kt) "
+                    "and the joined TSV from Google's supported-devices CSV.")
+    parser.add_argument("csv", help="path to supported_devices.csv (UTF-16 or UTF-8)")
+    parser.add_argument("--out", default=None,
+                        help="write the Kotlin catalogue here instead of the "
+                             "committed Devices.kt")
+    parser.add_argument("--tsv-out", default=None,
+                        help="write the joined TSV here instead of "
+                             "android/tools/devices.tsv")
+    args = parser.parse_args()
+    rows = load_rows(args.csv)
 
     # One entry per (brand, model code).  A model code is the identity a site
     # actually keys on, so the same code listed under two marketing names is
@@ -427,7 +1018,7 @@ def main():
         android = ANDROID_BY_YEAR[year]
         chrome = CHROME_BY_YEAR[year]
         build_id = BUILD_IDS[android]
-        gpu_vendor, gpu_renderer = GPU_BY_BRAND.get(brand, DEFAULT_GPU)
+        gpu_vendor, gpu_renderer = gpu_for(brand, name, model)
         tablet = bool(TABLET.search(name))
         devices.append({
             "id": slug("%s-%s" % (brand, model)),
@@ -448,8 +1039,9 @@ def main():
 
     if not devices:
         raise SystemExit("no devices matched — is the CSV the right one?")
-    write_tsv(devices, os.path.join(os.path.dirname(__file__), "devices.tsv"))
-    write_kotlin(devices)
+    tsv_path = args.tsv_out or os.path.join(os.path.dirname(__file__), "devices.tsv")
+    write_tsv(devices, tsv_path)
+    write_kotlin(devices, args.out)
     print("devices: %d" % len(devices))
     years = {}
     for d in devices:
@@ -482,7 +1074,7 @@ def kotlin_str(text):
     return '"%s"' % text.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def write_kotlin(devices):
+def write_kotlin(devices, path=None):
     out = io.StringIO()
     out.write(
         "// GENERATED FILE, DO NOT EDIT BY HAND.\n"
@@ -563,7 +1155,7 @@ def write_kotlin(devices):
         "    }\n"
         "}\n"
     )
-    path = os.path.normpath(KOTLIN_OUT)
+    path = os.path.normpath(path or KOTLIN_OUT)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(out.getvalue())
 

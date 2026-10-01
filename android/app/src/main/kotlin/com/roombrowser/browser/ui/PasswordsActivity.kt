@@ -23,9 +23,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -51,6 +49,7 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -58,6 +57,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -86,6 +86,7 @@ import androidx.fragment.app.FragmentActivity
 import com.roombrowser.RoomBrowserApp
 import com.roombrowser.data.repo.CredentialRepository
 import com.roombrowser.data.repo.VaultLockedException
+import com.roombrowser.domain.credentials.PasswordGenerator
 import com.roombrowser.domain.credentials.SavedCredential
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.theme.BuiltInThemes
@@ -95,8 +96,10 @@ import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBottomSheetShape
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomCard
+import com.roombrowser.ui.common.RoomSheetHeader
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /**
  * Password manager — the full-screen vault UI for ONE profile.
@@ -656,7 +659,11 @@ private fun CredentialRow(
 /**
  * Add/edit sheet — the app-wide sheet shape. Domain/Username/Password are
  * required (inline errors after the first attempted save); the title/label
- * is optional. Form state is deliberately plain `remember` (NOT
+ * is optional. Under the password field sit the generator controls
+ * (PasswordGenerator): a Generate button, a strength readout, the character
+ * classes, the length and the look-alike filter — the generated value lands
+ * in the same `password` state the keyboard writes, so there is exactly one
+ * storage path. Form state is deliberately plain `remember` (NOT
  * rememberSaveable): passwords never belong in saved instance state, and the
  * manifest's configChanges means rotation does not recreate the activity.
  */
@@ -674,6 +681,17 @@ private fun CredentialEditorSheet(
     var title by remember { mutableStateOf(initial?.title ?: "") }
     var passwordVisible by remember { mutableStateOf(false) }
     var attempted by remember { mutableStateOf(false) }
+    // Generator options — plain composition state like the field values
+    // (never saved: they are not secrets, but they belong to this edit only).
+    // Defaults mirror PasswordGenerator.Options: 20 chars, all four classes,
+    // look-alikes allowed (the domain default; the UI starts with the safer
+    // "avoid" ON because the user cannot see the characters before inserting).
+    var generatorLength by remember { mutableStateOf(20) }
+    var generatorUpper by remember { mutableStateOf(true) }
+    var generatorLower by remember { mutableStateOf(true) }
+    var generatorDigits by remember { mutableStateOf(true) }
+    var generatorSymbols by remember { mutableStateOf(true) }
+    var generatorAvoidAmbiguous by remember { mutableStateOf(true) }
 
     val domainBlank = domain.trim().isEmpty()
     val usernameBlank = username.trim().isEmpty()
@@ -682,24 +700,18 @@ private fun CredentialEditorSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        // The app-wide sheet standard.
-        shape = RoomBottomSheetShape,
-        // Insets are applied explicitly by the content (navigation bar +
-        // cutouts + IME) — deterministic on every API level.
-        contentWindowInsets = { WindowInsets(0, 0, 0, 0) }
+        // The app-wide sheet standard. Insets are NOT overridden: the default
+        // BottomSheetDefaults.windowInsets pads the content above the
+        // navigation bar and the sheet dialog resizes for the IME — the same
+        // one token every other sheet in the app uses.
+        shape = RoomBottomSheetShape
     ) {
         Column(
             Modifier
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
-                .windowInsetsPadding(
-                    WindowInsets.navigationBars
-                        .union(WindowInsets.displayCutout)
-                        .union(WindowInsets.ime)
-                        .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
-                )
         ) {
-            VaultSheetHeader(if (initial == null) "Add login" else "Edit login")
+            RoomSheetHeader(if (initial == null) "Add login" else "Edit login")
 
             OutlinedTextField(
                 value = domain,
@@ -759,6 +771,100 @@ private fun CredentialEditorSheet(
                 shape = fieldShape,
                 modifier = Modifier.fillMaxWidth()
             )
+
+            // ---------- Generator ----------
+            // A real CSPRNG generator (domain.PasswordGenerator) so the "Add
+            // login" flow can produce a strong secret instead of whatever the
+            // user types. Every control below only picks generation OPTIONS;
+            // the value itself is written through the same `password` state
+            // the keyboard writes, so nothing here is a special storage path.
+            val generatorOptions = PasswordGenerator.Options(
+                length = generatorLength,
+                upper = generatorUpper,
+                lower = generatorLower,
+                digits = generatorDigits,
+                symbols = generatorSymbols,
+                avoidAmbiguous = generatorAvoidAmbiguous
+            )
+            val anyClassSelected = generatorUpper || generatorLower ||
+                generatorDigits || generatorSymbols
+
+            Spacer(Modifier.height(4.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        // The button is disabled without a class, so the
+                        // generator's class requirement cannot throw here.
+                        password = PasswordGenerator.generate(generatorOptions)
+                        // Reveal what was generated: a password the user
+                        // never sees is a password they cannot record.
+                        passwordVisible = true
+                    },
+                    enabled = anyClassSelected,
+                    modifier = Modifier.heightIn(min = 44.dp)
+                ) { Text("Generate") }
+                StrengthLabel(password)
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                GeneratorClassChip("A-Z", generatorUpper) { generatorUpper = it }
+                GeneratorClassChip("a-z", generatorLower) { generatorLower = it }
+                GeneratorClassChip("0-9", generatorDigits) { generatorDigits = it }
+                GeneratorClassChip("!@#", generatorSymbols) { generatorSymbols = it }
+            }
+            if (!anyClassSelected) {
+                Text(
+                    "Pick at least one character class to generate.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "Length",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = extras.textSecondary
+                )
+                Slider(
+                    value = generatorLength.toFloat(),
+                    onValueChange = { generatorLength = it.roundToInt() },
+                    // 8 is short but legal for every class selection (max 4
+                    // classes need one character each); 64 keeps a generated
+                    // secret typeable when a site has no length limit.
+                    valueRange = MIN_GENERATOR_LENGTH.toFloat()..MAX_GENERATOR_LENGTH.toFloat(),
+                    steps = MAX_GENERATOR_LENGTH - MIN_GENERATOR_LENGTH - 1,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    generatorLength.toString(),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = extras.textPrimary
+                )
+            }
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                GeneratorClassChip("Avoid look-alikes", generatorAvoidAmbiguous) {
+                    generatorAvoidAmbiguous = it
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = title,
                 onValueChange = { title = it },
@@ -811,4 +917,55 @@ private fun copySensitive(context: Context, label: String, value: String) {
         putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
     }
     clipboard.setPrimaryClip(clip)
+}
+
+/** Generator length bounds (characters) offered by the editor slider. */
+private const val MIN_GENERATOR_LENGTH = 8
+private const val MAX_GENERATOR_LENGTH = 64
+
+/**
+ * Strength readout for the password currently in the editor. It calls the
+ * domain heuristic (PasswordGenerator.strength) and renders its bucket — a
+ * hint that an obviously short or single-class secret is about to be saved,
+ * NOT a crack-time claim. A blank field reads "—" rather than "Weak".
+ */
+@Composable
+private fun StrengthLabel(password: String) {
+    val extras = LocalRoomExtras.current
+    if (password.isEmpty()) {
+        Text(
+            "Strength: —",
+            style = MaterialTheme.typography.labelMedium,
+            color = extras.textSecondary
+        )
+        return
+    }
+    val (label, tint) = when (PasswordGenerator.strength(password)) {
+        PasswordGenerator.Strength.WEAK -> "Weak" to MaterialTheme.colorScheme.error
+        PasswordGenerator.Strength.FAIR -> "Fair" to extras.secondary
+        PasswordGenerator.Strength.STRONG -> "Strong" to extras.primary
+    }
+    Text(
+        "Strength: $label",
+        style = MaterialTheme.typography.labelMedium,
+        color = tint
+    )
+}
+
+/**
+ * One generator toggle (a character class, or the look-alike filter). State
+ * lives in the editor sheet; this is presentation only.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun GeneratorClassChip(
+    label: String,
+    selected: Boolean,
+    onSelect: (Boolean) -> Unit
+) {
+    FilterChip(
+        selected = selected,
+        onClick = { onSelect(!selected) },
+        label = { Text(label) }
+    )
 }

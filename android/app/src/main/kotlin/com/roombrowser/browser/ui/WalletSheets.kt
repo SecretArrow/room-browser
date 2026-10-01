@@ -71,6 +71,7 @@ import com.roombrowser.qr.QrCodeGenerator
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBottomSheetShape
+import com.roombrowser.ui.common.RoomSheetHeader
 import com.roombrowser.ui.common.SettingActionRow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -97,18 +98,6 @@ import java.math.BigInteger
 // ---------------------------------------------------------------------------
 // Shared sheet pieces
 // ---------------------------------------------------------------------------
-
-/**
- * The wallet sheet title block. The drag handle comes from ModalBottomSheet's
- * built-in centered handle — the header only adds the title (no sheet ever
- * draws two handles).
- */
-@Composable
-private fun WalletSheetHeader(title: String) {
-    val extras = LocalRoomExtras.current
-    Text(title, style = MaterialTheme.typography.titleLarge, color = extras.textPrimary)
-    Spacer(Modifier.height(8.dp))
-}
 
 /** Quiet explanatory note — mirrors the settings screens' InfoNote look. */
 @Composable
@@ -339,7 +328,7 @@ fun ConnectRequestSheet(
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            WalletSheetHeader("Connect site")
+            RoomSheetHeader("Connect site")
             HostBadge(request.host)
             Spacer(Modifier.height(8.dp))
             SheetDataRow("Chain", request.chainType.displayName)
@@ -397,7 +386,7 @@ fun SignMessageSheet(
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            WalletSheetHeader("Sign message")
+            RoomSheetHeader("Sign message")
             HostBadge(request.host)
             Spacer(Modifier.height(8.dp))
             SheetDataRow("Account", shortenAddress(request.accountAddress))
@@ -442,7 +431,7 @@ fun SignTypedDataSheet(
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            WalletSheetHeader("Sign typed data")
+            RoomSheetHeader("Sign typed data")
             HostBadge(request.host)
             Spacer(Modifier.height(8.dp))
             SheetDataRow("Account", shortenAddress(request.accountAddress))
@@ -503,7 +492,7 @@ fun SendTransactionSheet(
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            WalletSheetHeader("Send transaction")
+            RoomSheetHeader("Send transaction")
             HostBadge(request.host)
             Spacer(Modifier.height(8.dp))
             SheetDataRow("Network", network?.name ?: request.networkId)
@@ -563,7 +552,7 @@ fun SwitchChainSheet(
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            WalletSheetHeader("Switch network")
+            RoomSheetHeader("Switch network")
             HostBadge(request.host)
             Spacer(Modifier.height(8.dp))
             SheetDataRow("Current", current?.name ?: "—")
@@ -608,7 +597,7 @@ fun AddChainSheet(
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            WalletSheetHeader("Add network")
+            RoomSheetHeader("Add network")
             HostBadge(request.host)
             Spacer(Modifier.height(8.dp))
             SheetDataRow("Name", proposed.name)
@@ -715,7 +704,7 @@ fun SendSheet(
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            WalletSheetHeader("Send ${chainType.displayName}")
+            RoomSheetHeader("Send ${chainType.displayName}")
             if (network == null) {
                 WalletInfoNote(
                     "No active ${chainType.displayName} network — pick one under Networks first."
@@ -876,7 +865,7 @@ fun ReceiveSheet(
                 .fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            WalletSheetHeader("Receive ${chainType.displayName}")
+            RoomSheetHeader("Receive ${chainType.displayName}")
             if (chainAccounts.size > 1) {
                 chainAccounts.forEach { account ->
                     RadioRow(
@@ -957,7 +946,7 @@ fun NetworkPickerSheet(
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            WalletSheetHeader("${chainType.displayName} network")
+            RoomSheetHeader("${chainType.displayName} network")
             if (enabledNetworks.isEmpty()) {
                 WalletInfoNote(
                     "No enabled ${chainType.displayName} networks yet — add one below."
@@ -1036,7 +1025,7 @@ fun AddNetworkSheet(
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            WalletSheetHeader("Add network")
+            RoomSheetHeader("Add network")
             OutlinedTextField(
                 value = name,
                 onValueChange = { name = it },
@@ -1202,7 +1191,7 @@ fun ChainlistSheet(
     ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
         // No outer verticalScroll: the list below is the scrolling element.
         Column(Modifier.padding(horizontal = 16.dp)) {
-            WalletSheetHeader("Chainlist browser")
+            RoomSheetHeader("Chainlist browser")
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
@@ -1324,7 +1313,7 @@ fun AddAccountSheet(
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            WalletSheetHeader("Add account")
+            RoomSheetHeader("Add account")
             ChainType.entries.forEach { chain ->
                 SettingActionRow(
                     title = "Add ${chain.displayName} account",
@@ -1401,7 +1390,7 @@ fun ImportKeySheet(
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            WalletSheetHeader("Import private key")
+            RoomSheetHeader("Import private key")
             Row(
                 Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)

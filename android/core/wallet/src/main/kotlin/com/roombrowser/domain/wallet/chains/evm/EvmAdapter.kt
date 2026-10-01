@@ -1,5 +1,7 @@
 package com.roombrowser.domain.wallet.chains.evm
 
+import com.roombrowser.domain.wallet.chains.DerivationPathIndex
+import com.roombrowser.domain.wallet.chains.DerivationPathParsing
 import com.roombrowser.domain.wallet.crypto.Bip32PrivateKey
 import com.roombrowser.domain.wallet.crypto.Hashes
 import com.roombrowser.domain.wallet.crypto.Hex
@@ -32,7 +34,7 @@ import java.math.BigInteger
  * (legacy + EIP-1559 with EIP-155 replay protection), balances and
  * ERC-20/ERC-721 reads via eth_call.
  */
-class EvmAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) {
+class EvmAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationPathIndex {
 
     fun chainType(): ChainType = ChainType.EVM
 
@@ -55,6 +57,22 @@ class EvmAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) {
             address = addressFromPrivateKey(key.key),
             path = "m/44'/60'/0'/0/$index"
         )
+    }
+
+    /**
+     * Inverts [deriveAccount]: m/44'/60'/0'/0/{index} — the standard BIP44
+     * shape, index on the unhardened ADDRESS level. This is the case the old
+     * last-level rule already read correctly; the check here is what keeps
+     * that behaviour, not what changes it.
+     */
+    override fun derivationIndexOf(path: String): Int? {
+        val levels = DerivationPathParsing.levels(path) ?: return null
+        if (levels.size != 5) return null
+        if (!DerivationPathParsing.isLevel(levels[0], 44)) return null
+        if (!DerivationPathParsing.isLevel(levels[1], 60)) return null
+        if (!DerivationPathParsing.isLevel(levels[2], 0)) return null
+        if (!DerivationPathParsing.isLevel(levels[3], 0)) return null
+        return DerivationPathParsing.levelValue(levels[4])
     }
 
     fun isValidAddress(address: String): Boolean {

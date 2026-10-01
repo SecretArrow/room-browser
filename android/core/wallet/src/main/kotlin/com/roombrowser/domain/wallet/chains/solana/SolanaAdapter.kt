@@ -2,6 +2,8 @@ package com.roombrowser.domain.wallet.chains.solana
 
 import com.roombrowser.domain.wallet.bcs.BcsReader
 import com.roombrowser.domain.wallet.bcs.BcsWriter
+import com.roombrowser.domain.wallet.chains.DerivationPathIndex
+import com.roombrowser.domain.wallet.chains.DerivationPathParsing
 import com.roombrowser.domain.wallet.crypto.Base58
 import com.roombrowser.domain.wallet.crypto.Ed25519
 import com.roombrowser.domain.wallet.crypto.Slip10Ed25519Key
@@ -28,7 +30,7 @@ import kotlinx.serialization.json.put
  * Transactions arrive from dApps as base64-serialized wire transactions; the
  * signature commits to the message bytes following the signature section.
  */
-class SolanaAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) {
+class SolanaAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationPathIndex {
 
     fun chainType(): ChainType = ChainType.SOLANA
 
@@ -41,6 +43,24 @@ class SolanaAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) {
             address = Base58.encode(pubkey),
             path = "m/44'/501'/$index'/0'"
         )
+    }
+
+    /**
+     * Inverts [deriveAccount]: m/44'/501'/{index}'/0'.
+     *
+     * The index is the ACCOUNT level — the third one — while the final level
+     * is the fixed hardened change `0'`. This is the shape that broke the
+     * repository's old "read the last level" rule: a second account counted,
+     * but the counter could never pass 1, so a third account was derived at
+     * an address that already existed.
+     */
+    override fun derivationIndexOf(path: String): Int? {
+        val levels = DerivationPathParsing.levels(path) ?: return null
+        if (levels.size != 4) return null
+        if (!DerivationPathParsing.isLevel(levels[0], 44)) return null
+        if (!DerivationPathParsing.isLevel(levels[1], 501)) return null
+        if (!DerivationPathParsing.isLevel(levels[3], 0)) return null
+        return DerivationPathParsing.levelValue(levels[2])
     }
 
     fun isValidAddress(address: String): Boolean {

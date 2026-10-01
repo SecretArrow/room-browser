@@ -43,6 +43,25 @@ class ChainRegistry(rpcClient: JsonRpcClient = JsonRpcClient()) {
 
     fun allDefaultNetworks(): List<NetworkConfig> = ChainType.entries.flatMap { defaultNetworks(it) }
 
+    /**
+     * The account index [path] encodes for [chainType], or null when that
+     * chain's adapter does not recognise the path — a wrong shape, a
+     * hand-edited row, a non-numeric index level. Callers use this to find
+     * the next free account index without knowing where any chain keeps its
+     * index; see [DerivationPathIndex] for why the position differs.
+     *
+     * Never throws: an unrecognised path is the null case, not an error.
+     */
+    fun derivationIndexOf(chainType: ChainType, path: String): Int? = when (chainType) {
+        ChainType.EVM -> evm.derivationIndexOf(path)
+        ChainType.SOLANA -> solana.derivationIndexOf(path)
+        ChainType.APTOS -> aptos.derivationIndexOf(path)
+        ChainType.SUI -> sui.derivationIndexOf(path)
+        ChainType.COSMOS -> cosmos.derivationIndexOf(path)
+        ChainType.BITCOIN -> bitcoin.derivationIndexOf(path)
+        ChainType.TRON -> tron.derivationIndexOf(path)
+    }
+
     companion object {
         /** The default EVM set: major mainnets first, then testnets. */
         val EvmNetworkDefaults: List<NetworkConfig> by lazy {

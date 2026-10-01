@@ -151,7 +151,12 @@ class AgentProviderEditorActivity : ComponentActivity() {
                     )
                 } else {
                     Column(
-                        Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars),
+                        // The app-wide inset pattern: system bars UNION the
+                        // display cutout (never systemBars alone — a cutout
+                        // can reach further in than the status bar).
+                        Modifier.fillMaxSize().windowInsetsPadding(
+                            WindowInsets.systemBars.union(WindowInsets.displayCutout)
+                        ),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {

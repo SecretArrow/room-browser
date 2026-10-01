@@ -253,17 +253,23 @@ class WalletRepository(
         }
 
     /**
-     * The next free BIP44 account index for the chain: the highest index
-     * found among the profile's DERIVED accounts' paths (the LAST path
-     * element, e.g. "m/44'/60'/0'/0/3" reads 3) plus one — 0 when the chain
-     * has no derived accounts yet. Non-contiguous holes are respected
+     * The next free account index for the chain: the highest index found
+     * among the profile's DERIVED accounts' paths plus one — 0 when the
+     * chain has no derived accounts yet. Non-contiguous holes are respected
      * (0, 2 and 5 in storage give 6), and imported accounts never count
      * (they carry no derivation path).
+     *
+     * Where that index sits in the path differs per chain and the chain's own
+     * adapter answers it ([ChainRegistry.derivationIndexOf]): EVM, Bitcoin,
+     * Cosmos, TRON, Sui and Aptos carry it on the final level, Solana on the
+     * ACCOUNT level (m/44'/501'/i'/0'). A path no adapter claims is counted
+     * as -1 — ignored, never a thrown error — so a hand-edited row cannot
+     * advance the counter.
      */
     override suspend fun nextDerivationIndex(profileId: ProfileId, chainType: ChainType): Int =
         withContext(Dispatchers.IO) {
             accountDao.derivedForProfileChain(profileId.value, chainType.name)
-                .maxOfOrNull { it.path.substringAfterLast('/').toIntOrNull() ?: -1 }
+                .maxOfOrNull { registry.derivationIndexOf(chainType, it.path) ?: -1 }
                 ?.plus(1)
                 ?: 0
         }
