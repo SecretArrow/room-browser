@@ -412,6 +412,30 @@ class WalletE2eTest {
         }
     }
 
+    /**
+     * A leftover modal sheet (site controls, page actions, profile switcher)
+     * is its own window, and while it is up the WebView stops serving its
+     * accessibility subtree: `By.text` cannot see loaded page content even
+     * though the page is plainly rendered on screen (CI 01d5a06 — the
+     * screenshot shows the page heading while every text probe returns
+     * nothing). Back dismisses Compose modal sheets; two passes cover the
+     * IME-then-sheet stack.
+     */
+    private fun dismissSheetIfAny() {
+        val markers = listOf(
+            "Clear site data",              // site controls (shields)
+            "Toggle JavaScript for this site",
+            "Page Actions",                 // page-actions sheet header
+            "Switch Profile"                // profile switcher
+        )
+        repeat(2) {
+            val up = markers.any { device.wait(Until.hasObject(By.text(it)), 250) }
+            if (!up) return
+            device.pressBack()
+            device.waitForIdle(800)
+        }
+    }
+
     private fun engineUiUp(timeoutMs: Long): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
@@ -549,6 +573,7 @@ class WalletE2eTest {
             // Settle: the first seconds after engine boot churn the tree.
             device.waitForIdle(1_500)
             hideImeIfNeeded()
+            dismissSheetIfAny()
             // CI 75822ed: findObject (active window) can go blind while the
             // IME holds a11y focus — fall through to the all-windows sweep
             // (findObjects), which still sees the omnibox.

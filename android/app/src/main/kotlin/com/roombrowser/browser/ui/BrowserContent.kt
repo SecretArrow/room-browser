@@ -1,6 +1,5 @@
 package com.roombrowser.browser.ui
 
-import android.util.Log
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.compose.animation.AnimatedVisibility
@@ -9,6 +8,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -46,7 +46,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,6 +53,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
@@ -86,17 +87,6 @@ fun BrowserContent(
     onOpenPrivacyDashboard: () -> Unit
 ) {
     val page = viewModel.pageState
-    // TEMPORARY DIAGNOSTIC (omnibox e2e forensics): which surface the UI
-    // actually composes, and the engine/tab bookkeeping behind it.
-    LaunchedEffect(page.isHomepage, page.url, viewModel.pageError, viewModel.activeWebView) {
-        Log.d(
-            "RoomNav",
-            "surface home=${page.isHomepage} url=${page.url} " +
-                "err=${viewModel.pageError != null} " +
-                "engine=${System.identityHashCode(viewModel.activeWebView)} " +
-                "tabs=${viewModel.tabs.size} active=${viewModel.activeTabId}"
-        )
-    }
     val extras = LocalRoomExtras.current
     var omniInput by remember(page.url) { mutableStateOf(if (page.isHomepage) "" else UrlIntelligence.displayUrl(page.url)) }
     val context = LocalContext.current
@@ -111,26 +101,63 @@ fun BrowserContent(
             // The address pill owns the FULL row width — back/forward moved
             // down to the bottom navigation bar (Brave-style) so the URL
             // never fights nav arrows for space.
+            //
+            // The pill itself is deliberately NOT clickable. Tapping the
+            // address bar has to focus the URL field — that is the only way
+            // a user can type a URL, and it is what every other browser
+            // does. Site controls live on the leading lock/shield icon.
+            // (With a clickable pill the whole bar was one Shields button:
+            // tap-to-edit did nothing but open the site-controls sheet, and
+            // any UiAutomator tap helper that resolves the field by walking
+            // up to its nearest clickable ancestor — `clickSmart` does — hit
+            // that button instead of the field, leaving the sheet over the
+            // page for the rest of the test.)
             Row(
                 modifier = Modifier
                     .weight(1f)
                     .clip(RoundedCornerShape(extras.radius.dp))
                     .background(extras.addressBar)
-                    .clickable(onClick = onShowShields)
                     .border(0.5.dp, extras.border, RoundedCornerShape(extras.radius.dp))
                     .heightIn(min = 46.dp)
                     .padding(horizontal = 12.dp, vertical = 11.dp)
                     .semantics { contentDescription = "Address bar: ${if (page.isHomepage) "search or type URL" else page.url}" },
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    if (page.isPrivate) Icons.Filled.Close else if (page.secure) Icons.Filled.Lock else Icons.Filled.Security,
-                    contentDescription = null,
-                    tint = if (page.secure || page.isPrivate) extras.primary else extras.icon,
-                    modifier = Modifier.size(17.dp)
-                )
-                Spacer(Modifier.width(10.dp))
-                Box(Modifier.weight(1f)) {
+                // Site controls (shields, connection info, per-site
+                // toggles) — the lock is the trigger, as in every browser.
+                Box(
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .clickable(onClick = onShowShields)
+                        .semantics { contentDescription = "Site controls" },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        if (page.isPrivate) Icons.Filled.Close else if (page.secure) Icons.Filled.Lock else Icons.Filled.Security,
+                        contentDescription = null,
+                        tint = if (page.secure || page.isPrivate) extras.primary else extras.icon,
+                        modifier = Modifier.size(17.dp)
+                    )
+                }
+                Spacer(Modifier.width(4.dp))
+                val omniFocus = remember { FocusRequester() }
+                Box(
+                    Modifier
+                        .weight(1f)
+                        // Tap anywhere on the bar to edit. No ripple
+                        // indication: the caret is the feedback, and a
+                        // ripple would paint over the URL.
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { omniFocus.requestFocus() }
+                        // Stable a11y hook for the navigation e2e suite
+                        // (same pattern as agent_composer_field). It sits on
+                        // the field's own container so the node a tap helper
+                        // resolves is the node that focuses the field.
+                        .semantics { contentDescription = "omni_field" }
+                ) {
                     if (omniInput.isEmpty()) {
                         Text(
                             if (page.isPrivate) "Private tab — search or type URL" else "Search or type URL",
@@ -152,9 +179,7 @@ fun BrowserContent(
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
-                            // Stable a11y hook for the navigation e2e suite
-                            // (same pattern as agent_composer_field).
-                            .semantics { contentDescription = "omni_field" }
+                            .focusRequester(omniFocus)
                     )
                 }
                 if (!page.isHomepage) {
@@ -296,13 +321,6 @@ private fun WebViewHost(viewModel: BrowserViewModel) {
         },
         update = { frame ->
             val webView = viewModel.activeWebView
-            Log.d(
-                "RoomNav",
-                "WebViewHost update engine=${System.identityHashCode(webView)} " +
-                    "parented=${webView != null && webView.parent == frame} " +
-                    "frame=${System.identityHashCode(frame)} children=${frame.childCount} " +
-                    "frameAttached=${frame.isAttachedToWindow}"
-            )
             // Swap-in semantics for the ACTIVE tab's engine: detach it from
             // any previous parent first (a view that still has a parent can
             // never be addView'd — the "child already has a parent" crash),

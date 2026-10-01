@@ -244,6 +244,30 @@ class TabsE2eTest {
         }
     }
 
+    /**
+     * A leftover modal sheet (site controls, page actions, profile switcher)
+     * is its own window, and while it is up the WebView stops serving its
+     * accessibility subtree: `By.text` cannot see loaded page content even
+     * though the page is plainly rendered on screen (CI 01d5a06 — the
+     * screenshot shows the page heading while every text probe returns
+     * nothing). Back dismisses Compose modal sheets; two passes cover the
+     * IME-then-sheet stack.
+     */
+    private fun dismissSheetIfAny() {
+        val markers = listOf(
+            "Clear site data",              // site controls (shields)
+            "Toggle JavaScript for this site",
+            "Page Actions",                 // page-actions sheet header
+            "Switch Profile"                // profile switcher
+        )
+        repeat(2) {
+            val up = markers.any { device.wait(Until.hasObject(By.text(it)), 250) }
+            if (!up) return
+            device.pressBack()
+            device.waitForIdle(800)
+        }
+    }
+
     private fun engineUiUp(timeoutMs: Long): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
@@ -397,6 +421,7 @@ class TabsE2eTest {
             // Settle: the first seconds after engine boot churn the tree.
             device.waitForIdle(1_500)
             hideImeIfNeeded()
+            dismissSheetIfAny()
             snap("tabs-r$round-pre")
             // CI 75822ed: after a failed round the IME can keep the a11y
             // ACTIVE window even while hidden-looking — findObject (active
@@ -589,13 +614,20 @@ class TabsE2eTest {
         assertTrue("Engine must come up on a fresh profile", bootstrapFreshEngine())
 
         // ---- 1. Tab A = the initial start-page tab, loaded with page A ----
+        // The action runs BEFORE the assertion, in its own statement: Kotlin
+        // evaluates assertTrue's MESSAGE argument before its CONDITION, so an
+        // inline "${uiTree()}" photographs the tree before the load has even
+        // started. That is what made CI 01d5a06's failure message report a
+        // pristine start page (clock 4:20) while the screenshots at the same
+        // moment showed the page loaded and rendered (clock 4:21).
+        val pageALoaded = loadInOmnibox(urlA, contentA)
         assertTrue(
             "Page A must load through the omnibox\n${uiTree()}\n" +
                 "DB TABS (persisted rows): ${openTabsGroundTruth()}\n" +
                 "(urlA=$urlA — a row still saying about:home means the load " +
                 "never finished; a row with urlA means the finish landed and " +
                 "the UI state was clobbered afterwards)",
-            loadInOmnibox(urlA, contentA)
+            pageALoaded
         )
 
         // ---- 2. New tab B: the start page must NOT clobber tab A ---------
