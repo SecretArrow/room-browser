@@ -113,8 +113,6 @@ import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBottomSheetShape
-import com.roombrowser.ui.common.RoomSheetDragHandle
-import com.roombrowser.ui.common.RoomSheetHeader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -168,16 +166,12 @@ fun AgentPanelHost(
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .fillMaxHeight(0.72f),
-                // Same sheet language as every ModalBottomSheet in the app:
-                // the shared 10dp top-corner token (never a bespoke radius)
-                // plus the same centered drag handle the real sheets get.
-                shape = RoomBottomSheetShape,
+                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
                 color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 3.dp,
                 shadowElevation = 16.dp
             ) {
                 Column(Modifier.fillMaxSize()) {
-                    RoomSheetDragHandle()
                     AgentPanelHeader(
                         agent = agent,
                         onCollapse = { onExpandedChange(false) },
@@ -977,7 +971,8 @@ fun ModelPickerSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
                 // be unreachable below the fold.
                 .verticalScroll(rememberScrollState())
         ) {
-            RoomSheetHeader("Select model")
+            Text("Select model", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(4.dp))
             Text(
                 "Providers are configured in Agent settings; model lists come from the provider's /models endpoint.",
                 style = MaterialTheme.typography.bodyMedium,

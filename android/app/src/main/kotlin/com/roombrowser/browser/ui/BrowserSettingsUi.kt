@@ -724,8 +724,8 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                     mode.name to when (mode) {
                         DnsMode.SYSTEM -> "System"
                         DnsMode.AUTO -> "Use global browser setting"
-                        DnsMode.DOH -> "DNS-over-HTTPS (app connections)"
-                        DnsMode.DOT -> "DNS-over-TLS (recommend only)"
+                        DnsMode.DOH -> "DNS-over-HTTPS"
+                        DnsMode.DOT -> "DNS-over-TLS"
                     }
                 },
                 selected = settings.dnsMode.name,
@@ -1031,10 +1031,9 @@ private fun DnsPresetRows(
 ) {
     DnsPresets.all.forEach { preset ->
         PresetRow(
-            title = preset.label,
-            subtitle = "Endpoint addresses ${preset.primaryIpv4} / " +
-                "${preset.secondaryIpv4} · IPv6 ${preset.primaryIpv6} / " +
-                "${preset.secondaryIpv6}",
+            title = "${preset.label} (${preset.primaryIpv4})",
+            subtitle = "IPv4 ${preset.primaryIpv4} / ${preset.secondaryIpv4} · " +
+                "IPv6 ${preset.primaryIpv6} / ${preset.secondaryIpv6}",
             selected = currentMode == DnsMode.DOH && currentDohUrl == preset.dohUrl,
             onSelect = { onPreset(preset) }
         )
