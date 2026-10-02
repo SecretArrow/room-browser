@@ -7,12 +7,16 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.browser.ui.BrowserScreen
+import com.roombrowser.browser.ui.LaunchRequest
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.security.BiometricGate
 import com.roombrowser.ui.common.RoomBrowserTheme
@@ -36,9 +40,19 @@ import kotlinx.coroutines.launch
 class BrowserActivity : FragmentActivity() {
 
     private var boundProfileId: ProfileId? = null
-    private var initialUrl: String? = null
     private var pendingSwitch = false
     private var browserViewModel: BrowserViewModel? = null
+
+    /**
+     * The engine's outstanding open request, as Compose state.
+     *
+     * State, not a plain field, because it CHANGES during the activity's
+     * life: this activity is `singleTask`, so a second launch (deep link,
+     * share target, `am start`) is delivered to [onNewIntent] and onCreate
+     * never runs again. A plain field read once at setContent time could
+     * never carry that, which is how the second launch used to be dropped.
+     */
+    private var launchRequest by mutableStateOf<LaunchRequest?>(null)
 
     /** True while the full-screen NetworkWarningActivity is on top. */
     private var networkWarningRunning = false
@@ -71,8 +85,9 @@ class BrowserActivity : FragmentActivity() {
         }
 
         val profileId = ProfileId(profileIdString)
-        initialUrl = intent.getStringExtra(EXTRA_INITIAL_URL)
+        val initialUrl = intent.getStringExtra(EXTRA_INITIAL_URL)
             ?: savedInstanceState?.getString(EXTRA_INITIAL_URL)
+        launchRequest = initialUrl?.let { LaunchRequest(it, System.nanoTime()) }
 
         // THE isolation-critical step: bind this process to the profile.
         val bound = ProfileEngine.bindProcessToProfile(profileId)
@@ -136,7 +151,7 @@ class BrowserActivity : FragmentActivity() {
                 BrowserScreen(
                     activity = this,
                     viewModel = viewModel,
-                    initialUrl = initialUrl,
+                    launchRequest = launchRequest,
                     onSwitchProfile = { targetProfileId -> switchProfile(targetProfileId) }
                 )
             }
@@ -146,6 +161,14 @@ class BrowserActivity : FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // A second launch of an ALREADY RUNNING engine lands here, never in
+        // onCreate: the activity is singleTask, so the system reuses this
+        // instance and delivers the intent. Reading the extra only in
+        // onCreate meant the intent was recorded and then read by nobody —
+        // the browser stayed where it was and the URL was silently dropped.
+        intent.getStringExtra(EXTRA_INITIAL_URL)?.let { url ->
+            launchRequest = LaunchRequest(url, System.nanoTime())
+        }
     }
 
     override fun onResume() {
@@ -239,7 +262,7 @@ class BrowserActivity : FragmentActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        initialUrl?.let { outState.putString(EXTRA_INITIAL_URL, it) }
+        launchRequest?.let { outState.putString(EXTRA_INITIAL_URL, it.url) }
     }
 
     /**

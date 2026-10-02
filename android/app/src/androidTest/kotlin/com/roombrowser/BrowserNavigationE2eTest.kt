@@ -591,6 +591,43 @@ class BrowserNavigationE2eTest {
     }
 
     /**
+     * A second launch of a RUNNING engine must open its URL.
+     *
+     * BrowserActivity is `launchMode="singleTask"`, so when the engine is
+     * already up the system reuses this instance and delivers the intent to
+     * onNewIntent — onCreate never runs again. Reading EXTRA_INITIAL_URL
+     * only in onCreate therefore dropped the URL entirely: a deep link, a
+     * share target or `am start` against a backgrounded engine did nothing
+     * at all, and the browser stayed on whatever page it was showing.
+     *
+     * The launch here deliberately carries NO FLAG_ACTIVITY_CLEAR_TASK. That
+     * flag is what the other tests use to force a cold start through
+     * onCreate, and it is exactly the path that already worked.
+     */
+    @Test
+    fun a_second_launch_opens_its_url_in_the_running_engine() {
+        val base = server.url("/").toString().trimEnd('/')
+        assertTrue("Engine must be reachable from the launcher", openEngineFromLauncher())
+
+        assertLoaded("Page ONE must load first", "relaunch-1-page-one-missing") {
+            openEngineAt("$base/page1")
+        }
+
+        // The engine is RUNNING and showing page ONE. Same class, no
+        // CLEAR_TASK: the singleTask instance is reused.
+        targetContext.startActivity(
+            Intent()
+                .setClassName(targetContext.packageName, "com.roombrowser.browser.BrowserActivity")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                .putExtra("com.roombrowser.extra.INITIAL_URL", "$base/page2")
+        )
+
+        assertLoaded("A second launch must open its URL", "relaunch-2-url-dropped") {
+            hasText("ROOM-E2E-PAGE-TWO", 20_000)
+        }
+    }
+
+    /**
      * A page's location request must reach the USER and be SETTLED.
      *
      * This test lives here because this class owns the local HTTP server and

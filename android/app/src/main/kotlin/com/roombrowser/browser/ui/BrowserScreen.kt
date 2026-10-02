@@ -90,6 +90,18 @@ sealed interface BrowserRoute {
 }
 
 /**
+ * A request to open [url] in the engine.
+ *
+ * The nonce is load-bearing. An engine launch can arrive twice with the SAME
+ * url — a deep link re-delivered, a share target, `am start` on an already
+ * running engine — and on a running engine it arrives at onNewIntent, not
+ * onCreate. A bare String compares equal to the previous request, so the
+ * effect keyed on it would not re-run and the second launch would be
+ * silently ignored; the nonce makes every request a new one.
+ */
+data class LaunchRequest(val url: String, val nonce: Long)
+
+/**
  * The browser shell: omnibox, toolbar, WebView host, homepage, error
  * pages, IP conflict warning, find-in-page and reader mode.
  */
@@ -97,7 +109,7 @@ sealed interface BrowserRoute {
 fun BrowserScreen(
     activity: Activity,
     viewModel: BrowserViewModel,
-    initialUrl: String?,
+    launchRequest: LaunchRequest?,
     onSwitchProfile: (targetProfileId: ProfileId) -> Unit
 ) {
     var route by remember { mutableStateOf<BrowserRoute>(BrowserRoute.Browser) }
@@ -121,9 +133,9 @@ fun BrowserScreen(
         }
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(launchRequest) {
         viewModel.refreshAllProfiles()
-        if (initialUrl != null) viewModel.loadUrl(initialUrl, newTab = true)
+        if (launchRequest != null) viewModel.loadUrl(launchRequest.url, newTab = true)
     }
 
     var showPageActions by remember { mutableStateOf(false) }
