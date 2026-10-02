@@ -79,6 +79,27 @@ class BrowserNavigationE2eTest {
                             """.trimIndent()
                         )
                     }
+                    path.startsWith("/geo") -> html(
+                        """
+                        <h1>ROOM-E2E-GEO</h1>
+                        <div id="out">GEO-WAITING</div>
+                        <script>
+                          var out = document.getElementById('out');
+                          // 127.0.0.1 is a secure context, so the API exists;
+                          // the branch keeps a missing API distinguishable
+                          // from a refusal instead of looking like the same
+                          // silent nothing.
+                          if (!navigator.geolocation) {
+                            out.textContent = 'GEO-UNAVAILABLE';
+                          } else {
+                            navigator.geolocation.getCurrentPosition(
+                              function () { out.textContent = 'GEO-POSITION'; },
+                              function (e) { out.textContent = 'GEO-DENIED-' + e.code; }
+                            );
+                          }
+                        </script>
+                        """.trimIndent()
+                    )
                     else -> MockResponse().setResponseCode(404)
                 }
             }
@@ -337,14 +358,14 @@ class BrowserNavigationE2eTest {
      * opens in a NEW tab whose fresh engine has NO back history, exactly the
      * state where system Back used to kick the user out of the app.
      */
-    private fun openEngineAt(url: String): Boolean {
+    private fun openEngineAt(url: String, marker: String = "ROOM-E2E-PAGE-ONE"): Boolean {
         targetContext.startActivity(
             Intent()
                 .setClassName(targetContext.packageName, "com.roombrowser.browser.BrowserActivity")
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
                 .putExtra("com.roombrowser.extra.INITIAL_URL", url)
         )
-        return hasText("ROOM-E2E-PAGE-ONE", 30_000)
+        return hasText(marker, 30_000)
     }
 
     // ---------- The contract ------------------------------------------------
@@ -465,6 +486,51 @@ class BrowserNavigationE2eTest {
         assertTrue(
             "Back on the homepage must background the app (engine stays alive)\n${uiTree()}",
             waitUntil(6_000) { device.currentPackageName != targetContext.packageName }
+        )
+    }
+
+    /**
+     * A page's location request must reach the USER and be SETTLED.
+     *
+     * This test lives here because this class owns the local HTTP server and
+     * the engine-launch/tree helpers the flow needs, and because it is the
+     * same browser-chrome contract as its neighbours — the sheet had no UI at
+     * all, so every request was left un-invoked and the page's promise stayed
+     * pending for the life of the document.
+     *
+     * The Deny branch is asserted rather than Allow on purpose: allowing a
+     * position would need a fix from the emulator's console, and a test that
+     * waits for one is a test that flakes. A refusal is fully deterministic —
+     * it must arrive as PERMISSION_DENIED (code 1), which also proves the
+     * callback was really INVOKED rather than dropped.
+     */
+    @Test
+    fun a_location_request_is_raised_as_a_sheet_and_settled_by_deny() {
+        val base = server.url("/").toString().trimEnd('/')
+        assertTrue("Engine must be reachable from the launcher", openEngineFromLauncher())
+
+        assertTrue(
+            "The geolocation page must load\n${uiTree()}",
+            openEngineAt("$base/geo", marker = "ROOM-E2E-GEO")
+        )
+
+        // The sheet the browser never had.
+        assertTrue(
+            "The location sheet must be raised for the requesting origin\n${uiTree()}",
+            hasText("Share your location?", 20_000)
+        )
+        assertTrue(
+            "The sheet must name the host that asked\n${uiTree()}",
+            hasText("127.0.0.1", 5_000)
+        )
+
+        assertTrue("Deny must be tappable\n${uiTree()}", clickText("Deny", 10_000))
+
+        assertTrue(
+            "Denying must SETTLE the page's request (permission denied), not drop it\n${uiTree()}",
+            waitUntil(20_000) {
+                device.findObjects(By.text("GEO-DENIED-1")).isNotEmpty()
+            }
         )
     }
 }

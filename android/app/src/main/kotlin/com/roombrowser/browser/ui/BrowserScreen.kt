@@ -343,6 +343,16 @@ fun BrowserScreen(
         )
     }
 
+    // The one sheet NOT driven by a local boolean: the PAGE decides when a
+    // permission request arrives, so it is rendered from viewModel state.
+    // Gated on the browsing route — a background tab's request is already
+    // refused upstream, and raising a camera prompt over the bookmarks list
+    // would ask about a page the user cannot see. It stays pending until they
+    // come back, rather than being lost.
+    if (route == BrowserRoute.Browser) {
+        SitePermissionHost(viewModel = viewModel)
+    }
+
     if (showFindBar) {
         FindInPageBar(
             onFind = { viewModel.findInPage(it) },

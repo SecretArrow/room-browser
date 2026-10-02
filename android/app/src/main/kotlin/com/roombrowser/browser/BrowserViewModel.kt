@@ -40,12 +40,14 @@ import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.model.BrowserGlobalSettings
 import com.roombrowser.domain.model.Device
 import com.roombrowser.domain.model.Devices
+import com.roombrowser.domain.model.PermissionDecision
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.theme.BuiltInThemes
 import com.roombrowser.domain.theme.RoomThemeSpec
 import com.roombrowser.domain.theme.ThemeJson
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -238,10 +240,21 @@ class BrowserViewModel(
     var pendingPermission by mutableStateOf<PendingPermission?>(null)
         private set
 
+    /**
+     * A camera/microphone request the page is waiting on.
+     *
+     * [requesterOrigin] is `request.origin` — the origin that ASKED, which is
+     * a frame's origin when a cross-origin iframe asked, not the hosting
+     * page's. The sheet names this one; naming [pageUrl] instead would pin a
+     * third-party frame's camera request on the site the user is reading,
+     * which is the same misattribution the wallet sheets refuse when they
+     * name the WebView-verified host rather than the page's claim.
+     */
     data class PendingPermission(
         val request: PermissionRequest,
         val kinds: Set<PermissionKind>,
-        val originUrl: String
+        val pageUrl: String,
+        val requesterOrigin: String
     )
 
     var pendingGeolocation by mutableStateOf<PendingGeolocation?>(null)
@@ -320,6 +333,10 @@ class BrowserViewModel(
             // prompt deliberately SURVIVES navigation — a form submit is
             // itself a navigation, and the user must still be able to save.
             invalidateVaultOfferOnNavigation()
+            // Same reasoning for a pending camera/mic/location sheet, minus
+            // the exception: nothing about the new document can justify the
+            // old one's grant, so it is refused rather than carried over.
+            invalidateWebPermissionRequests()
         }
         override fun onPageFinished(view: WebView, url: String, title: String) {
             // ROUTING: the finish lands on the tab that OWNS the firing
@@ -457,7 +474,13 @@ class BrowserViewModel(
                 request.deny()
                 return
             }
-            pendingPermission = PendingPermission(request, kinds, originUrl)
+            val origin = request.origin
+            // A request always carries an origin; the fallback keeps the sheet
+            // naming the page rather than an empty line if one ever does not.
+            val requesterOrigin = if (origin == null) originUrl else origin.toString()
+            viewModelScope.launch {
+                answerOrRaise(request, kinds, originUrl, requesterOrigin, view)
+            }
         }
         override fun onGeolocationPermissions(
             view: WebView?,
@@ -470,10 +493,25 @@ class BrowserViewModel(
                 callback.invoke(origin, false, false)
                 return
             }
-            pendingGeolocation = PendingGeolocation(
-                origin, callback,
-                origin?.let { UrlIntelligence.hostOf(it) } ?: ""
-            )
+            val host = origin?.let { UrlIntelligence.hostOf(it) } ?: ""
+            viewModelScope.launch {
+                if (view !== activeWebView) {
+                    callback.invoke(origin, false, false)
+                    return@launch
+                }
+                when (storedDecisionFor(host, setOf(PermissionKind.LOCATION))) {
+                    PermissionDecision.BLOCK -> callback.invoke(origin, false, false)
+                    PermissionDecision.ALLOW -> callback.invoke(origin, true, false)
+                    // No stored answer: ask. `retain = false` on the way out
+                    // (see respondGeolocation) — the WebView's own per-origin
+                    // store is not where a decision the user can neither see
+                    // nor revoke belongs.
+                    else -> {
+                        retirePendingGeolocation()
+                        pendingGeolocation = PendingGeolocation(origin, callback, host)
+                    }
+                }
+            }
         }
         override fun onFileChooserIntent(
             view: WebView?,
@@ -508,6 +546,121 @@ class BrowserViewModel(
         private set
     var fileChooserResult: RoomWebChromeClient.FileChooserResult? = null
         private set
+
+    // ------------------------------------------------------------------
+    // Answers to the engine's permission requests.
+    //
+    // The engine's callbacks (onPermissionRequest / onGeolocationPermissions)
+    // are the entry point; the sheet is the only caller of the methods below,
+    // and it runs on the UI thread — which is the thread the WebView requires:
+    // a PermissionRequest settled off it is ignored and the page waits for the
+    // life of the document.
+    //
+    // The ONE thing that can answer without the sheet is a decision already
+    // stored for the site. Nothing in the app writes one — the sheet
+    // deliberately does not persist, so it can honestly say "allowed for this
+    // visit only" — but a restored profile backup carries the table with it
+    // (ProfileRepositoryImpl.importBackup), and re-asking would silently throw
+    // away an answer the user carried across. A stored decision is therefore
+    // read and honoured, and "Clear site data" revokes it for the host.
+    // ------------------------------------------------------------------
+
+    /**
+     * Answers [request] from the store when the site has a decision for every
+     * one of [kinds], and otherwise raises the sheet.
+     *
+     * The store read is a suspend hop, so the answer is applied after one: the
+     * engine may have been replaced while it ran, and a request from a page
+     * that is gone must not be granted.
+     */
+    private suspend fun answerOrRaise(
+        request: PermissionRequest,
+        kinds: Set<PermissionKind>,
+        pageUrl: String,
+        requesterOrigin: String,
+        engine: WebView
+    ) {
+        if (engine !== activeWebView) {
+            request.deny()
+            return
+        }
+        val host = UrlIntelligence.hostOf(requesterOrigin) ?: ""
+        when (storedDecisionFor(host, kinds)) {
+            PermissionDecision.BLOCK -> request.deny()
+            PermissionDecision.ALLOW -> request.grant(request.resources)
+            else -> {
+                // The sheet shows one request at a time. A request still on
+                // screen when a second arrives is refused rather than
+                // overwritten: overwriting would leave the first page's promise
+                // pending for the life of its document.
+                retirePendingPermission()
+                pendingPermission = PendingPermission(
+                    request = request,
+                    kinds = kinds,
+                    pageUrl = pageUrl,
+                    requesterOrigin = requesterOrigin
+                )
+            }
+        }
+    }
+
+    /**
+     * The decision stored for [host] covering EVERY one of [kinds], or null
+     * when the site has not answered for all of them.
+     *
+     * A single BLOCK answers for the whole request: the WebView's grant is
+     * wholesale, so a request for camera+microphone cannot be half-granted.
+     *
+     * Deliberately fail-open. An unreadable store means "no stored answer",
+     * and the sheet then decides — the one outcome that cannot be wrong, and
+     * the one that keeps a database failure from leaving a page hanging.
+     */
+    private suspend fun storedDecisionFor(
+        host: String,
+        kinds: Set<PermissionKind>
+    ): PermissionDecision? {
+        if (host.isBlank() || kinds.isEmpty()) return null
+        val decisions = try {
+            kinds.map { browserRepo.permissionFor(profileId, host, it) }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (unreadable: Exception) {
+            return null
+        }
+        return when {
+            decisions.any { it == PermissionDecision.BLOCK } -> PermissionDecision.BLOCK
+            decisions.all { it == PermissionDecision.ALLOW } -> PermissionDecision.ALLOW
+            else -> null
+        }
+    }
+
+    /** Refuses a request still on screen so a replacement cannot orphan it. */
+    private fun retirePendingPermission() {
+        val previous = pendingPermission ?: return
+        pendingPermission = null
+        previous.request.deny()
+    }
+
+    private fun retirePendingGeolocation() {
+        val previous = pendingGeolocation ?: return
+        pendingGeolocation = null
+        previous.callback.invoke(previous.origin, false, false)
+    }
+
+    /**
+     * Retires both pending requests with a refusal when the active page
+     * navigates. They were asked for by the document being left: answering
+     * them afterwards would hand a capability to a page that is gone, and
+     * the outgoing document's promise is already moot. Refused rather than
+     * dropped, for the reason above.
+     */
+    private fun invalidateWebPermissionRequests() {
+        denyPendingPermission()
+        respondGeolocation(false)
+    }
+
+    /** A one-line message for the UI's snackbar (public entry point). */
+    fun showMessage(message: String) = emitMessage(message)
 
     init {
         webViewClient = RoomWebViewClient(profile, graph.filterEngine, clientCallbacks)
@@ -1387,27 +1540,39 @@ class BrowserViewModel(
 
     // ---------- Permissions (web engine) ----------
 
+    /**
+     * Grants the pending camera/microphone request.
+     *
+     * `request.resources` is the WebView's OWN array, passed through whole.
+     * Granting a subset is not the cautious choice it looks like: a page that
+     * asked for camera+microphone and is granted only the microphone gets a
+     * getUserMedia({audio,video}) promise that rejects, which it cannot tell
+     * apart from a broken device. The sheet says what will be shared and the
+     * user answers all of it.
+     */
     fun grantPendingPermission() {
         val pending = pendingPermission ?: return
-        val host = UrlIntelligence.hostOf(pending.originUrl) ?: ""
-        viewModelScope.launch {
-            val decision = browserRepo.permissionFor(profileId, host, PermissionKind.CAMERA)
-            // Real grants only for explicit ALLOW decisions; ASK keeps prompting
-            if (decision == com.roombrowser.domain.model.PermissionDecision.ALLOW) {
-                pending.request.grant(pending.request.resources)
-            } else {
-                pending.request.deny()
-            }
-            pendingPermission = null
-        }
-    }
-
-    fun denyPendingPermission() {
-        pendingPermission?.request?.deny()
         pendingPermission = null
+        pending.request.grant(pending.request.resources)
     }
 
-    fun setPermission(kind: PermissionKind, decision: com.roombrowser.domain.model.PermissionDecision) {
+    /**
+     * Refuses the pending camera/microphone request. Dismissal routes here
+     * too: a dropped request is not a refusal, it is silence, and silence
+     * leaves the page's promise pending forever.
+     */
+    fun denyPendingPermission() {
+        val pending = pendingPermission ?: return
+        pendingPermission = null
+        pending.request.deny()
+    }
+
+    /**
+     * The hook a settings screen would write through. NOT called by the
+     * permission sheet: that sheet answers one visit and says so, and a
+     * durable decision belongs on a screen that can also show and revoke it.
+     */
+    fun setPermission(kind: PermissionKind, decision: PermissionDecision) {
         val host = UrlIntelligence.hostOf(pageState.url) ?: return
         viewModelScope.launch {
             browserRepo.setPermission(profileId, host, kind, decision)
@@ -1415,10 +1580,16 @@ class BrowserViewModel(
         }
     }
 
+    /**
+     * Settles the pending location request. `retain = false` deliberately:
+     * retaining would store the decision in the WebView's own per-origin
+     * store, where nothing in Settings could show or revoke it. Every visit
+     * asks again, and this answer is the only place a location grant exists.
+     */
     fun respondGeolocation(allow: Boolean) {
         val pending = pendingGeolocation ?: return
-        pending.callback.invoke(pending.origin, allow, false)
         pendingGeolocation = null
+        pending.callback.invoke(pending.origin, allow, false)
     }
 
     // ---------- Clear data ----------
