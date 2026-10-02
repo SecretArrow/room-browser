@@ -7,7 +7,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -156,7 +158,17 @@ private fun BackupPassphraseDialog(
         onDismissRequest = onDismiss,
         title = { Text("Password for the backup file") },
         text = {
-            Column(Modifier.imePadding()) {
+            // Scrollable, because this body does not fit everywhere: the
+            // warning paragraph plus two password fields overflow a landscape
+            // dialog and a large font scale, and an AlertDialog's text slot
+            // CLIPS what it cannot fit. The second field — and with it the
+            // only way to satisfy "Choose location…" — simply vanished, with
+            // no hint that anything was below the fold.
+            Column(
+                Modifier
+                    .verticalScroll(rememberScrollState())
+                    .imePadding()
+            ) {
                 Text(
                     "Your recovery phrase and imported keys will be sealed into one " +
                         "text file under this password. Without it the file cannot be " +

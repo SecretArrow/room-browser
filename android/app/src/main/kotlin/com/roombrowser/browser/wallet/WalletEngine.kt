@@ -168,6 +168,15 @@ open class WalletEngine(
     // ------------------------------------------------------------------
 
     override fun bind(profileId: ProfileId) {
+        // RE-BIND TO THE SAME PROFILE IS A NO-OP. The engine is a process
+        // singleton with two independent binders — BrowserViewModel on engine
+        // start, and WalletActivity when the wallet screen opens — so opening
+        // the wallet UI used to re-run everything below for a profile that had
+        // not changed: a full collector restart, a wiped unlock session, and
+        // settleAllPending(DISCONNECTED) aborting every dApp request raised by
+        // the pages behind the sheet. Guarding on the live generation makes the
+        // second binder free, which is what it always meant to be.
+        if (profileState.value == profileId && bindJob?.isActive == true) return
         // Cancel-and-replace: exactly ONE collector generation is alive (the
         // observeTabCounts duplicate-collector fix, applied to wallet state).
         bindJob?.cancel()
@@ -618,13 +627,32 @@ open class WalletEngine(
     internal open suspend fun fetchChainlistCatalog(): List<NetworkConfig> =
         registry.chainlist.catalog(forceRefresh = true)
 
-    /** Shared validation for UI-added networks and wallet_addEthereumChain. */
-    internal fun isValidNetworkConfig(config: NetworkConfig): Boolean {
+    /**
+     * Shared validation for UI-added networks and wallet_addEthereumChain.
+     *
+     * [requireTls] separates the two callers. A network the USER types into
+     * Settings may be plaintext: `http://127.0.0.1:8545` is how a local dev
+     * node is reached, and refusing it would remove a legitimate capability
+     * from someone who already knows what they are doing. A network a WEB PAGE
+     * proposes may not: `wallet_addEthereumChain` lets an arbitrary dApp pick
+     * the endpoint every later balance read, fee estimate and
+     * `eth_sendRawTransaction` of that chain travels through, and over
+     * plaintext any network observer can both read those addresses and amounts
+     * and rewrite the responses the signing UI shows. That is a prompt the
+     * user cannot meaningfully audit, so the transport is required to be TLS.
+     */
+    internal fun isValidNetworkConfig(
+        config: NetworkConfig,
+        requireTls: Boolean = false
+    ): Boolean {
         val decimalOrHexChainId = config.chainId.toLongOrNull() != null ||
             config.chainId.removePrefix("0x").toLongOrNull(16) != null
+        val hasUsableRpc = config.rpcUrls.any {
+            it.startsWith("https://") || (!requireTls && it.startsWith("http://"))
+        }
         return config.id.isNotBlank() &&
             config.name.isNotBlank() &&
-            config.rpcUrls.any { it.startsWith("http://") || it.startsWith("https://") } &&
+            hasUsableRpc &&
             config.nativeDecimals > 0 &&
             (config.chainType != ChainType.EVM || decimalOrHexChainId)
     }
@@ -1168,12 +1196,12 @@ open class WalletEngine(
         request: DappRequest.AddChain,
         profileId: ProfileId
     ): DappOutcome {
-        if (!isValidNetworkConfig(request.proposed)) {
+        if (!isValidNetworkConfig(request.proposed, requireTls = true)) {
             return DappOutcome(
                 request.id, null,
                 WalletBridgeError(
                     WalletBridgeError.INVALID_PARAMS,
-                    "Proposed chain is not a usable network"
+                    "Proposed chain is not a usable network (an https:// RPC endpoint is required)"
                 )
             )
         }
@@ -1447,6 +1475,30 @@ open class WalletEngine(
             ?.let { formatBaseUnits(it, network.nativeDecimals) + " " + network.nativeSymbol }
             ?: "contract call"
         return if (feeLabel != null) "$amount (fee ~$feeLabel)" else amount
+    }
+
+    /**
+     * Drops the pending requests of a page that has gone away (see
+     * [WalletEngineApi.cancelDappRequests]). Main-thread only, like every
+     * other dApp-queue mutation — [WalletBridge.dispose] runs there.
+     */
+    override fun cancelDappRequests(requestIds: Collection<String>) {
+        if (requestIds.isEmpty()) return
+        val ids = requestIds.toSet()
+        pendingRequestsState.value = pendingRequestsState.value.filterNot { it.id in ids }
+        ids.forEach { id ->
+            settleDappOutcome(
+                id,
+                DappOutcome(
+                    id, null,
+                    WalletBridgeError(WalletBridgeError.DISCONNECTED, "Page closed")
+                )
+            )
+            // A coalesced duplicate whose ORIGINAL belongs to a surviving page
+            // is settled above by id; this clears the mapping either way so a
+            // later settle of that original cannot look for a dead callback.
+            coalescedInto.remove(id)
+        }
     }
 
     /** Settles one original request AND every coalesced duplicate of it. */

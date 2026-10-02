@@ -418,6 +418,18 @@ interface WalletEngineApi {
      */
     fun submitDappRequest(request: DappRequest, onSettled: (DappOutcome) -> Unit)
 
+    /**
+     * Abandons the still-pending requests belonging to a page that is gone.
+     *
+     * The engine is a process singleton and keeps a callback per outstanding
+     * request until the user resolves its prompt. A tab closed or evicted
+     * mid-prompt therefore used to pin its bridge — and everything the bridge
+     * holds — for the life of the process, while a confirmation sheet stayed
+     * queued for a page that no longer exists. Each id settles with
+     * DISCONNECTED and leaves the pending queue. Unknown ids are no-ops.
+     */
+    fun cancelDappRequests(requestIds: Collection<String>)
+
     /** UI entry point. Rejected requests settle with USER_REJECTED. */
     fun decideDappRequest(decision: DappDecision)
 

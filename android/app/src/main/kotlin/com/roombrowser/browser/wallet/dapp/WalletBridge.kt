@@ -16,6 +16,7 @@ import com.roombrowser.domain.wallet.rpc.JsonRpcClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -98,14 +99,14 @@ class WalletBridge(
      */
     private val relayScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    /** The bridge's own relay client (pure-JVM, okhttp-based). */
-    private val rpc = JsonRpcClient(
-        OkHttpClient.Builder()
-            .connectTimeout(RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            .readTimeout(RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            .writeTimeout(RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            .build()
-    )
+    /**
+     * The bridge's relay client. The OkHttp client behind it is SHARED across
+     * every bridge (see [sharedRelayClient]) — one bridge is built per engine
+     * and engines churn under the live-WebView LRU budget, so a per-bridge
+     * client meant every tab create and every eviction allocated a fresh
+     * connection pool and dispatcher thread pool that nothing ever shut down.
+     */
+    private val rpc = JsonRpcClient(sharedRelayClient)
 
     /**
      * Main-thread-confined pending state. [pendingById] tracks every call
@@ -401,9 +402,57 @@ class WalletBridge(
         }
     }
 
+    /**
+     * Releases everything this bridge owns. MUST be called when the WebView
+     * behind it is destroyed.
+     *
+     * [webViewRef] being weak is not enough on its own: an in-flight relay
+     * coroutine is a strong reference to the bridge, and through it to the
+     * Handler and the whole pending-state bookkeeping. Without this the bridge
+     * of every closed or LRU-evicted tab stayed alive until its last relay
+     * timed out, and any relay still running kept issuing `respond*` calls
+     * into a WebView that was already gone.
+     *
+     * The shared relay client is deliberately NOT shut down here — it belongs
+     * to the process, not to one bridge.
+     */
+    fun dispose() {
+        relayScope.cancel()
+        runOnMain {
+            // The engine outlives this bridge and keeps a callback per
+            // outstanding request. Hand those back before clearing the map,
+            // or a prompt for a page that no longer exists stays queued and
+            // the callback keeps this bridge reachable from the singleton.
+            if (pageIdByDappId.isNotEmpty()) {
+                val ids = pageIdByDappId.keys.toList()
+                runCatching { engineProvider()?.cancelDappRequests(ids) }
+            }
+            pendingById.clear()
+            pageIdByDappId.clear()
+            pendingByHost.clear()
+            lastDispatchAt.clear()
+        }
+    }
+
     companion object {
         /** JS object name the injected script (and, defensively, pages) see. */
         const val JS_INTERFACE_NAME = "RoomWallet"
+
+        /**
+         * ONE relay client for every bridge in the process.
+         *
+         * OkHttp is explicitly designed to be shared: the connection pool and
+         * the dispatcher's thread pool are the expensive parts, and they are
+         * exactly what a per-bridge client duplicated. Lazy so a process that
+         * never touches a dApp never builds one.
+         */
+        private val sharedRelayClient: OkHttpClient by lazy {
+            OkHttpClient.Builder()
+                .connectTimeout(RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                .readTimeout(RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                .writeTimeout(RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                .build()
+        }
 
         /** Minimum gap between calls of the same (host, method). */
         private const val MIN_METHOD_GAP_MS = 300L
