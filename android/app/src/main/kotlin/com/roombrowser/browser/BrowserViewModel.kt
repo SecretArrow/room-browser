@@ -277,6 +277,41 @@ class BrowserViewModel(
         val host: String
     )
 
+    /**
+     * An outstanding HTTP Basic/Digest challenge. Carries an identity guard
+     * ([pageUrl]) for the same reason the permission prompts do: a second
+     * page's challenge must never be answered by the dialog the user is
+     * looking at.
+     */
+    var pendingHttpAuth by mutableStateOf<PendingHttpAuth?>(null)
+        private set
+
+    data class PendingHttpAuth(
+        val host: String,
+        val realm: String,
+        val pageUrl: String,
+        val proceed: (String, String) -> Unit,
+        val cancel: () -> Unit
+    )
+
+    /** Answers the outstanding challenge with credentials. */
+    fun submitHttpAuth(user: String, password: String) {
+        val pending = pendingHttpAuth ?: return
+        pendingHttpAuth = null
+        pending.proceed(user, password)
+    }
+
+    /**
+     * Refuses the outstanding challenge. The engine MUST be answered — a
+     * dropped handler leaves the navigation hanging forever — so dismissing
+     * the dialog is a cancel, and the 401 that follows renders normally.
+     */
+    fun dismissHttpAuth() {
+        val pending = pendingHttpAuth ?: return
+        pendingHttpAuth = null
+        pending.cancel()
+    }
+
     /** File-chooser bridge for <input type=file>. */
     var fileChooserCallback: ValueCallback<Array<Uri>>? = null
         private set
@@ -470,6 +505,36 @@ class BrowserViewModel(
             if (view !== activeWebView) return
             pageError = PageError.Ssl(url, sslErrorText(error))
             pageState = pageState.copy(loading = false)
+        }
+        override fun onHttpAuthRequest(
+            view: WebView,
+            host: String,
+            realm: String,
+            proceed: (String, String) -> Unit,
+            cancel: () -> Unit
+        ) {
+            // A BACKGROUND engine must not raise a credential prompt over the
+            // page the user is reading — and it cannot be left unanswered
+            // either, so it is refused outright. The same rule the popup
+            // transport follows.
+            if (view !== activeWebView) {
+                cancel()
+                return
+            }
+            // One challenge at a time. A second one arriving while a dialog is
+            // up is refused rather than silently replacing the first, which
+            // would strand the first handler.
+            if (pendingHttpAuth != null) {
+                cancel()
+                return
+            }
+            pendingHttpAuth = PendingHttpAuth(
+                host = host,
+                realm = realm,
+                pageUrl = view.url.orEmpty(),
+                proceed = proceed,
+                cancel = cancel
+            )
         }
         override fun openInNewTab(url: String, isPrivate: Boolean) {
             viewModelScope.launch { openNewTab(url, isPrivate) }
@@ -1294,6 +1359,19 @@ class BrowserViewModel(
         // A load deferred for this engine can never fire anymore — drop it
         // so a destroyed view is never asked to navigate.
         pendingEngineActions.remove(webView)
+        // Only the ACTIVE engine is ever allowed to raise a credential
+        // challenge, so a pending one belongs to this engine when this engine
+        // is the active one. Cancelling it settles the handler while the
+        // WebView is still alive and takes the dialog down with it; leaving it
+        // would strand a prompt over a tab that no longer exists.
+        if (webView === activeWebView && pendingHttpAuth != null) dismissHttpAuth()
+        // The dApp bridge must go FIRST, while the WebView is still intact.
+        // A WeakHashMap entry is not enough to release it: an in-flight relay
+        // coroutine is a strong reference to the bridge, so without this the
+        // bridge of every closed or LRU-evicted tab outlived its engine —
+        // still holding a Handler and its pending-call bookkeeping, and still
+        // trying to respond into a destroyed WebView.
+        runCatching { walletBridges.remove(webView)?.dispose() }
         tabManager.detachWebView(webView)
         runCatching { webView.stopLoading() }
         runCatching { (webView.parent as? android.view.ViewGroup)?.removeView(webView) }
@@ -2019,8 +2097,18 @@ class BrowserViewModel(
                                 if (previous[chain]?.chainId != network.chainId &&
                                     chain == com.roombrowser.domain.wallet.model.ChainType.EVM
                                 ) {
-                                    val hex = "0x" + network.chainId.toLongOrNull(10)
-                                        ?.toString(16)?.lowercase() ?: network.chainId
+                                    // The parentheses are the fix, not style:
+                                    // `+` binds tighter than `?:`, so
+                                    // `"0x" + x?.y ?: z` makes the elvis's left
+                                    // operand the whole concatenation — never
+                                    // null, so the fallback was unreachable and
+                                    // a non-decimal chainId emitted the literal
+                                    // string "0xnull" to every connected dApp.
+                                    val hex = "0x" + (
+                                        network.chainId.toLongOrNull(10)
+                                            ?.toString(16)?.lowercase()
+                                            ?: network.chainId.removePrefix("0x")
+                                        )
                                     emitWalletEvent("chainChanged", "\"$hex\"")
                                 }
                             }

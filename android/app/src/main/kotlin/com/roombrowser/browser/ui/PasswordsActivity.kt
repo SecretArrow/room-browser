@@ -76,6 +76,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.flowWithLifecycle
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -229,14 +232,25 @@ private fun PasswordsRoot(
     // Live list while unlocked. observe() re-checks the lock on every
     // emission and throws when it lands — runCatching ends the collector
     // (fail closed), and this effect restarts it on the next unlock.
-    LaunchedEffect(unlocked) {
+    //
+    // flowWithLifecycle, not a bare collect: LaunchedEffect is scoped to the
+    // COMPOSITION, which outlives visibility here (the activity keeps its
+    // composition while merely stopped), so a backgrounded vault screen kept
+    // decrypting every credential on every Room invalidation behind whatever
+    // the user had moved on to. Collection now stops at STOP and resumes at
+    // START; the last snapshot stays in state, so returning does not flash
+    // an empty list.
+    val vaultLifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(unlocked, vaultLifecycle) {
         if (!unlocked) {
             allCredentials = emptyList()
             searchResults = null
             revealedIds = emptySet()
         } else {
             runCatching {
-                repo.observe(profileId).collect { allCredentials = it }
+                repo.observe(profileId)
+                    .flowWithLifecycle(vaultLifecycle, Lifecycle.State.STARTED)
+                    .collect { allCredentials = it }
             }
         }
     }

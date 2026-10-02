@@ -52,6 +52,8 @@ import com.google.zxing.MultiFormatReader
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import com.roombrowser.ui.common.RoomBrowserTheme
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 /**
  * Built-in QR scanner (spec section 38): CameraX preview + ZXing decoding.
@@ -62,7 +64,26 @@ class QrScannerActivity : AppCompatActivity() {
 
     private lateinit var previewView: PreviewView
     private var reader: MultiFormatReader? = null
+
+    /**
+     * Written on the analyzer thread, read there and on the main thread —
+     * @Volatile so the "already delivered" short-circuit is actually visible
+     * to the next frame instead of being cached in a register.
+     */
+    @Volatile
     private var delivered = false
+
+    /**
+     * The analyzer runs HERE, not on the main thread.
+     *
+     * ZXing's decode walks the whole luminance plane: at preview resolution
+     * that is single-digit milliseconds on a fast phone and far more on a
+     * slow one or on the CI emulator, every frame, on the thread that also
+     * has to draw. The result was a scanner whose own close button stuttered
+     * while it scanned. STRATEGY_KEEP_ONLY_LATEST means a slow decode drops
+     * frames rather than queueing them, so one background thread is enough.
+     */
+    private val analyzerExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -142,7 +163,7 @@ class QrScannerActivity : AppCompatActivity() {
             val analysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
-            analysis.setAnalyzer(ContextCompat.getMainExecutor(this), ::analyzeFrame)
+            analysis.setAnalyzer(analyzerExecutor, ::analyzeFrame)
             provider.unbindAll()
             runCatching {
                 provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
@@ -157,14 +178,26 @@ class QrScannerActivity : AppCompatActivity() {
             image.close()
             return
         }
-        val result = runCatching { decode(image) }.getOrNull()
-        if (result != null) {
-            delivered = true
-            val intent = Intent().apply { putExtra(EXTRA_QR_TEXT, result) }
-            setResult(RESULT_OK, intent)
+        // `image.close()` in a finally: an exception escaping the decode used
+        // to leak the frame's buffer back to CameraX unreleased, and with
+        // KEEP_ONLY_LATEST the pipeline then starves after a few frames —
+        // a scanner that silently stops scanning.
+        val result = try {
+            runCatching { decode(image) }.getOrNull()
+        } finally {
+            image.close()
+        }
+        if (result == null) return
+        // Analyzer thread → setResult/finish are main-thread-only API.
+        // `delivered` is flipped here, not in the posted block, so the
+        // frames already in flight behind this one short-circuit instead of
+        // each posting their own finish().
+        delivered = true
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            setResult(RESULT_OK, Intent().apply { putExtra(EXTRA_QR_TEXT, result) })
             finish()
         }
-        image.close()
     }
 
     private fun decode(image: ImageProxy): String? {
@@ -190,7 +223,15 @@ class QrScannerActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        // Order matters. `delivered` first so a frame already running bails
+        // out of the decode, then the executor is shut down (no new frame can
+        // start), and only then is the reader released — MultiFormatReader is
+        // not thread-safe, so resetting it while the analyzer thread was
+        // inside decodeWithState was a real race.
+        delivered = true
+        analyzerExecutor.shutdown()
         reader?.reset()
+        reader = null
         super.onDestroy()
     }
 

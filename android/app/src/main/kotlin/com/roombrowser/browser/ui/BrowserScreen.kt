@@ -61,6 +61,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -365,6 +366,21 @@ fun BrowserScreen(
         SitePermissionHost(viewModel = viewModel)
     }
 
+    // HTTP Basic/Digest auth challenge. NOT gated on the route: the WebView
+    // holds the whole navigation open until the handler is answered, so a
+    // challenge that is merely deferred reads as a page that never loads.
+    // Only ONE can be outstanding at a time (the ViewModel cancels the rest),
+    // which is also why the dialog cannot be dismissed into limbo — every
+    // exit path settles the handler.
+    viewModel.pendingHttpAuth?.let { challenge ->
+        HttpAuthDialog(
+            host = challenge.host,
+            realm = challenge.realm,
+            onSignIn = { user, password -> viewModel.submitHttpAuth(user, password) },
+            onCancel = { viewModel.dismissHttpAuth() }
+        )
+    }
+
     if (showFindBar) {
         FindInPageBar(
             onFind = { viewModel.findInPage(it) },
@@ -512,6 +528,79 @@ fun BrowserScreen(
 }
 
 /**
+ * The HTTP Basic/Digest credential prompt.
+ *
+ * Every way out of this dialog settles the WebView's auth handler, because
+ * an unsettled handler is a navigation that hangs forever with no error page
+ * and no spinner: Sign in proceeds, Cancel and an outside tap/system Back
+ * both cancel. The realm is shown verbatim — it is attacker-controlled text
+ * from the server, so it is rendered as content below the host, never as the
+ * title, and the host (which the user can trust) is what the title asserts.
+ *
+ * The fields are deliberately NOT prefilled from the vault: WebView's
+ * built-in credential store is per-origin and silently reusable, and the
+ * audit's scope was making the challenge answerable at all.
+ */
+@Composable
+private fun HttpAuthDialog(
+    host: String,
+    realm: String,
+    onSignIn: (String, String) -> Unit,
+    onCancel: () -> Unit
+) {
+    var user by remember(host, realm) { mutableStateOf("") }
+    var password by remember(host, realm) { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Sign in to $host") },
+        text = {
+            Column(
+                modifier = Modifier.imePadding(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                if (realm.isNotBlank()) {
+                    Text(
+                        text = realm,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                OutlinedTextField(
+                    value = user,
+                    onValueChange = { user = it },
+                    singleLine = true,
+                    label = { Text("Username") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics { contentDescription = "httpauth_user" }
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    label = { Text("Password") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics { contentDescription = "httpauth_password" }
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSignIn(user, password) },
+                enabled = user.isNotBlank(),
+                modifier = Modifier.semantics { contentDescription = "httpauth_submit" }
+            ) { Text("Sign in") }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel) { Text("Cancel") }
+        }
+    )
+}
+
+/**
  * Hosts the WebView's HTML5 fullscreen view (WebChromeClient.onShowCustomView).
  *
  * The media is rendered edge-to-edge in a container that fills the whole
@@ -551,6 +640,12 @@ private fun FullscreenMediaHost(view: View, activity: Activity) {
                 addView(view)
             }
         },
+        // The custom view belongs to the WebView, not to this host: leaving it
+        // parented to the discarded FrameLayout kept that container reachable
+        // after fullscreen exited, and made the NEXT addView of the same
+        // instance throw "The specified child already has a parent". The
+        // sibling host in BrowserContent releases the same way.
+        onRelease = { frame -> frame.removeAllViews() },
         modifier = Modifier.fillMaxSize()
     )
 }

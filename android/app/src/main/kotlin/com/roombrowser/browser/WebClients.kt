@@ -94,6 +94,19 @@ class RoomWebViewClient(
          *  onPageFinished means the document never painted. Trace only. */
         fun onPageCommitVisible(view: WebView, url: String)
         fun onSslError(view: WebView, url: String, error: SslError)
+        /**
+         * A site asked for HTTP Basic/Digest credentials. The host shows a
+         * prompt and answers with exactly ONE of [proceed] or [cancel] — the
+         * engine's handler is single-shot, and dropping both leaves the
+         * navigation hanging.
+         */
+        fun onHttpAuthRequest(
+            view: WebView,
+            host: String,
+            realm: String,
+            proceed: (String, String) -> Unit,
+            cancel: () -> Unit
+        )
         fun openInNewTab(url: String, isPrivate: Boolean)
     }
 
@@ -290,13 +303,46 @@ class RoomWebViewClient(
         callbacks.onSslError(view, view.url ?: "", error)
     }
 
+    /**
+     * HTTP Basic/Digest authentication.
+     *
+     * This used to be a bare `handler.cancel()` — no prompt, no message, no
+     * explanation — which made every site behind HTTP auth simply unreachable:
+     * the user got a blank 401 with no way to enter the credentials the server
+     * was asking for. Unlike the SSL path above, there is nothing unsafe to
+     * decide here; the server asked for a username and a password, and only
+     * the user has them.
+     *
+     * The handler is single-shot and `useHttpAuthUsernamePassword` is NOT
+     * consulted: this browser deliberately keeps no WebView credential
+     * database (the password manager is the vault), so every challenge is
+     * answered by the user. A non-main-frame challenge is still refused —
+     * a sub-resource must not be able to raise a credential prompt.
+     */
     override fun onReceivedHttpAuthRequest(
         view: WebView,
         handler: HttpAuthHandler,
         host: String?,
         realm: String?
     ) {
-        handler.cancel()
+        var answered = false
+        callbacks.onHttpAuthRequest(
+            view = view,
+            host = host.orEmpty(),
+            realm = realm.orEmpty(),
+            proceed = { user, password ->
+                if (!answered) {
+                    answered = true
+                    runCatching { handler.proceed(user, password) }
+                }
+            },
+            cancel = {
+                if (!answered) {
+                    answered = true
+                    runCatching { handler.cancel() }
+                }
+            }
+        )
     }
 
     private fun blockedResponse(): WebResourceResponse =
@@ -449,6 +495,18 @@ class RoomWebChromeClient(
         if (!callbacks.isActiveEngine(view)) return false
         // Popups allowed → transport WebView forwards the target URL to a new tab.
         val temp = WebView(view.context)
+        // Single-shot destroy, shared by the navigation callback and the
+        // timeout below. Main-thread only (onCreateWindow, the WebViewClient
+        // callback and postDelayed all run there), so a plain Boolean is the
+        // right guard — destroy() on an already-destroyed WebView throws.
+        var reaped = false
+        val reap = {
+            if (!reaped) {
+                reaped = true
+                temp.stopLoading()
+                temp.destroy()
+            }
+        }
         temp.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
                 tempView: WebView,
@@ -456,7 +514,7 @@ class RoomWebChromeClient(
             ): Boolean {
                 val target = request.url.toString()
                 tempView.stopLoading()
-                tempView.post { tempView.destroy() }
+                tempView.post { reap() }
                 // The ORIGIN engine, not the transport: the host must re-check
                 // ownership against the tab that actually asked (the active
                 // tab can change while the popup's URL is being resolved).
@@ -466,6 +524,14 @@ class RoomWebChromeClient(
         }
         (resultMsg?.obj as? WebView.WebViewTransport)?.webView = temp
         resultMsg?.sendToTarget()
+        // The transport only dies when it NAVIGATES. A `window.open()` with no
+        // URL — or one the page keeps as a handle and never points anywhere —
+        // never reaches shouldOverrideUrlLoading, so without this the renderer
+        // it owns stays alive for the life of the process, one per popup.
+        // Nothing is lost by reaping it: the transport is off-screen and is
+        // never attached to a tab, so a popup that has not resolved a URL by
+        // now had no way to become one.
+        temp.postDelayed({ reap() }, TRANSPORT_REAP_MS)
         return true
     }
 
@@ -529,6 +595,18 @@ class RoomWebChromeClient(
             }
         )
         return true
+    }
+
+    private companion object {
+        /**
+         * How long a popup transport WebView may live without navigating.
+         *
+         * Long enough that a real popup — which navigates as soon as the
+         * engine pumps the transport's first load — is never cut off on a
+         * cold, loaded emulator; short enough that an abandoned one is not
+         * holding a renderer process while the user browses on.
+         */
+        const val TRANSPORT_REAP_MS = 10_000L
     }
 }
 
