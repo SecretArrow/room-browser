@@ -662,9 +662,13 @@ class BrowserNavigationE2eTest {
             "Page Actions must open\n${uiTree()}",
             clickDesc("Page actions and settings", 10_000)
         )
+        // Scroll-aware: Share is the 13th row of the sheet, well below the
+        // fold on the 320x640 CI profile, and an off-screen node is not in
+        // the a11y tree at all — a plain By.text probe fails on a row that is
+        // present and correct.
         assertTrue(
             "Sharing a link must still be reachable from Page Actions\n${uiTree()}",
-            device.wait(Until.hasObject(By.text("Share")), 10_000)
+            hasTextScrollable("Share", attempts = 8)
         )
     }
 
