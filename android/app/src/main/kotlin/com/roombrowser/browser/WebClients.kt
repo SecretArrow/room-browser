@@ -2,6 +2,7 @@ package com.roombrowser.browser
 
 import android.content.Intent
 import android.graphics.Bitmap
+import android.net.Uri
 import android.net.http.SslError
 import android.os.Handler
 import android.os.Looper

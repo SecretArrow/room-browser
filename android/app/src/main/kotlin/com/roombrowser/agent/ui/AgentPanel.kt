@@ -130,7 +130,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.roundToInt
 
 /**
  * The floating AI Agent panel — the agent-mode chat experience layered over
@@ -281,8 +280,8 @@ private fun DraggableAgentPill(
     // The distance the pill's top-left corner may travel. Zero on an axis
     // means the pill already fills it — the drag is then a no-op there
     // rather than a division by zero.
-    val rangeX = (bounds.width - pillSize.width - marginPx * 2).coerceAtLeast(0)
-    val rangeY = (bounds.height - pillSize.height - marginPx * 2).coerceAtLeast(0)
+    val rangeX = AgentPillPosition.range(bounds.width, pillSize.width, marginPx)
+    val rangeY = AgentPillPosition.range(bounds.height, pillSize.height, marginPx)
 
     var fracX by remember { mutableFloatStateOf((agent.settings.agentButtonXFrac ?: 1f).coerceIn(0f, 1f)) }
     var fracY by remember { mutableFloatStateOf((agent.settings.agentButtonYFrac ?: 1f).coerceIn(0f, 1f)) }
@@ -300,8 +299,8 @@ private fun DraggableAgentPill(
             .onSizeChanged { pillSize = it }
             .offset {
                 IntOffset(
-                    marginPx + (rangeX * fracX).roundToInt(),
-                    marginPx + (rangeY * fracY).roundToInt()
+                    AgentPillPosition.offsetPx(fracX, rangeX, marginPx),
+                    AgentPillPosition.offsetPx(fracY, rangeY, marginPx)
                 )
             }
             // Restores the designed corner without a drag. Screen-reader users
@@ -333,8 +332,8 @@ private fun DraggableAgentPill(
                     onDragCancel = { longPressClaimed = false },
                     onDrag = { change, dragAmount ->
                         change.consume()
-                        if (rangeX > 0) fracX = (fracX + dragAmount.x / rangeX).coerceIn(0f, 1f)
-                        if (rangeY > 0) fracY = (fracY + dragAmount.y / rangeY).coerceIn(0f, 1f)
+                        fracX = AgentPillPosition.dragBy(fracX, dragAmount.x, rangeX)
+                        fracY = AgentPillPosition.dragBy(fracY, dragAmount.y, rangeY)
                     }
                 )
             }
