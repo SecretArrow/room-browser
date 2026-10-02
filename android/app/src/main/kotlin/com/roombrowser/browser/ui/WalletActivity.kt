@@ -516,6 +516,7 @@ private fun WalletDashboard(
     var sendChain by remember { mutableStateOf<ChainType?>(null) }
     var receiveChain by remember { mutableStateOf<ChainType?>(null) }
     var backupOpen by remember { mutableStateOf(false) }
+    var connectedSitesOpen by remember { mutableStateOf(false) }
     var activeAccountByChain by remember { mutableStateOf<Map<ChainType, String>>(emptyMap()) }
     // The address the user just copied, so the card that was tapped can
     // confirm the copy AT the tap: a snackbar alone lands at the far bottom
@@ -753,6 +754,16 @@ private fun WalletDashboard(
                     leadingIcon = Icons.Filled.FileDownload,
                     onClick = { backupOpen = true }
                 )
+                // A granted permission is invisible from here, but it is the
+                // reason a site stops asking to connect. Leaving it with no
+                // way to review or take back would make "connected" a state
+                // the user can only enter, never leave.
+                SettingActionRow(
+                    title = "Connected sites",
+                    subtitle = "Sites you have approved, and their permissions",
+                    leadingIcon = Icons.Filled.Public,
+                    onClick = { connectedSitesOpen = true }
+                )
             }
             // Every chain this wallet actually holds an account on, plus any
             // chain with a selected network — never a filtered view, because
@@ -835,6 +846,13 @@ private fun WalletDashboard(
             engine = engine,
             onMessage = { onMessage(it) },
             onDismiss = { chainlistOpen = false }
+        )
+    }
+    if (connectedSitesOpen) {
+        ConnectedSitesSheet(
+            engine = engine,
+            onMessage = { onMessage(it) },
+            onDismiss = { connectedSitesOpen = false }
         )
     }
     sendChain?.let { chain ->

@@ -148,6 +148,8 @@ open class WalletEngine(
         pendingRequestsState.asStateFlow()
     override val activities: StateFlow<List<WalletActivityRecord>> =
         activitiesState.asStateFlow()
+    override val dappPermissions: StateFlow<List<DappPermissionRecord>> =
+        permissionsState.asStateFlow()
 
     /** Collector-generation handles — cancel-and-replace on (re)bind (Task 1-a hygiene). */
     private var bindJob: Job? = null

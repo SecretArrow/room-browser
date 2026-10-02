@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.roombrowser.browser.wallet.DappDecision
+import com.roombrowser.browser.wallet.DappPermissionRecord
 import com.roombrowser.browser.wallet.DappRequest
 import com.roombrowser.browser.wallet.NetworkRecord
 import com.roombrowser.browser.wallet.WalletEngineApi
@@ -1149,6 +1150,112 @@ fun NetworkPickerSheet(
             )
             Spacer(Modifier.height(24.dp))
         }
+    }
+}
+
+/**
+ * Every site this profile has connected to, and the way back out.
+ *
+ * A granted permission is what makes a dApp STOP asking: once it lands, the
+ * connect prompt never appears again for that host, on that chain, for that
+ * account. With no place to see and revoke them the only way back is to
+ * delete the wallet, so this sheet is the counterpart of the connect prompt
+ * rather than a nicety.
+ *
+ * One row per permission — a host can hold several, one per chain, and each
+ * is revoked on its own, which is exactly the granularity the engine records.
+ * Disconnecting is immediate and asks for no confirmation: the site simply
+ * prompts again next time, which is a recoverable outcome, and a dialog
+ * stacked on a sheet is one more surface to get wrong.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ConnectedSitesSheet(
+    engine: WalletEngineApi,
+    onMessage: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val permissions by engine.dappPermissions.collectAsState()
+
+    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
+        Column(
+            Modifier
+                .padding(horizontal = 16.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            RoomSheetHeader("Connected sites")
+            if (permissions.isEmpty()) {
+                WalletInfoNote(
+                    "No site is connected yet. A site appears here once you approve " +
+                        "its connect request — and until you disconnect it, it will " +
+                        "not have to ask again."
+                )
+            }
+            permissions.forEach { record ->
+                ConnectedSiteRow(
+                    record = record,
+                    onDisconnect = {
+                        engine.revokeDappPermission(record.host, record.chainType)
+                        onMessage("Disconnected ${record.host}")
+                    }
+                )
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+/**
+ * Host, what it was granted, and the one action that takes it back.
+ *
+ * The granted methods are shown rather than summarised: they are the actual
+ * grant, and "can sign" would be a friendlier way of saying something less
+ * true. The address matters too — a host permitted on one account is not
+ * permitted on another.
+ */
+@Composable
+private fun ConnectedSiteRow(record: DappPermissionRecord, onDisconnect: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = record.host,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.semantics {
+                    contentDescription = "Connected site ${record.host}"
+                }
+            )
+            Text(
+                text = "${record.chainType.displayName} · " +
+                    shortenAddress(record.accountAddress),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (record.methods.isNotEmpty()) {
+                Text(
+                    text = record.methods.joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        TextButton(
+            onClick = onDisconnect,
+            modifier = Modifier.semantics {
+                contentDescription = "Disconnect ${record.host}"
+            }
+        ) { Text("Disconnect") }
     }
 }
 

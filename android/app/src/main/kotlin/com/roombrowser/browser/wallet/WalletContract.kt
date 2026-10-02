@@ -376,6 +376,14 @@ interface WalletEngineApi {
     val pendingRequests: StateFlow<List<DappRequest>>
     val activities: StateFlow<List<WalletActivityRecord>>
 
+    /**
+     * The profile's granted dApp permissions, one row per (host, chain,
+     * account). Read-only view of what the connect prompt has already
+     * answered — revoking goes through [revokeDappPermission], which is what
+     * makes a host start asking again.
+     */
+    val dappPermissions: StateFlow<List<DappPermissionRecord>>
+
     /** Bind to a profile (idempotent; re-binds on profile switch). */
     fun bind(profileId: ProfileId)
 
