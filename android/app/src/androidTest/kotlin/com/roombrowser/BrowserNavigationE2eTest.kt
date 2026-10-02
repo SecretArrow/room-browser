@@ -437,15 +437,37 @@ class BrowserNavigationE2eTest {
      * opens in a NEW tab whose fresh engine has NO back history, exactly the
      * state where system Back used to kick the user out of the app.
      */
-    private fun openEngineAt(url: String, marker: String = "ROOM-E2E-PAGE-ONE"): Boolean {
+    private fun launchEngineAt(url: String) {
         targetContext.startActivity(
             Intent()
                 .setClassName(targetContext.packageName, "com.roombrowser.browser.BrowserActivity")
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
                 .putExtra("com.roombrowser.extra.INITIAL_URL", url)
         )
-        return hasText(marker, 30_000)
     }
+
+    /**
+     * Cold-starts the engine activity with the mock URL as EXTRA_INITIAL_URL
+     * (the persisted active profile is picked up automatically) — the page
+     * opens in a NEW tab whose fresh engine has NO back history, exactly the
+     * state where system Back used to kick the user out of the app. Waits
+     * for page ONE's marker, which is the page every caller of this helper
+     * navigates to.
+     *
+     * The permission tests must NOT use this: their pages raise a modal
+     * sheet while loading, and a modal sheet's dialog window is the ACTIVE
+     * one — the only window UiAutomator returns nodes from — so their marker
+     * is unreachable by construction. They use [launchEngineAt] and witness
+     * the load through [serverHits] instead.
+     */
+    private fun openEngineAt(url: String): Boolean {
+        launchEngineAt(url)
+        return hasText("ROOM-E2E-PAGE-ONE", 30_000)
+    }
+
+    /** How many times this test's server was asked for [path]. The one
+     *  witness that a modal dialog window cannot hide. */
+    private fun serverHits(path: String): Int = hitsByPath[path]?.get() ?: 0
 
     // ---------- The contract ------------------------------------------------
 
@@ -588,16 +610,27 @@ class BrowserNavigationE2eTest {
         val base = server.url("/").toString().trimEnd('/')
         assertTrue("Engine must be reachable from the launcher", openEngineFromLauncher())
 
-        assertLoaded("The geolocation page must load", "geo-1-page-load-failed") {
-            openEngineAt("$base/geo", marker = "ROOM-E2E-GEO")
+        launchEngineAt("$base/geo")
+
+        // The SHEET is the contract, and it is asserted first on purpose.
+        // The page asks for a position while it parses, so the sheet is up
+        // before its <h1> could ever be read — and while a modal sheet is
+        // up, its dialog window is the ACTIVE one, which is the only window
+        // UiAutomator returns nodes from. Asserting the marker first asks
+        // the framework for a node it has already stopped handing out, which
+        // is exactly how this test failed while the browser was correct.
+        assertLoaded("The location sheet must be raised", "geo-1-sheet-never-raised") {
+            hasText("Share your location?", 30_000)
+        }
+        assertLoaded("The sheet must name the host that asked", "geo-2-sheet-unnamed") {
+            hasText("127.0.0.1", 5_000)
         }
 
-        // The sheet the browser never had.
-        assertLoaded("The location sheet must be raised", "geo-2-sheet-never-raised") {
-            hasText("Share your location?", 20_000)
-        }
-        assertLoaded("The sheet must name the host that asked", "geo-3-sheet-unnamed") {
-            hasText("127.0.0.1", 5_000)
+        // The page really loaded — witnessed by the server, which a dialog
+        // window cannot hide the way it hides the WebView's accessibility
+        // nodes.
+        assertLoaded("The engine must have requested /geo", "geo-3-page-never-requested") {
+            serverHits("/geo") > 0
         }
 
         assertTrue("Deny must be tappable\n${uiTree()}", clickText("Deny", 10_000))
@@ -627,12 +660,17 @@ class BrowserNavigationE2eTest {
         val base = server.url("/").toString().trimEnd('/')
         assertTrue("Engine must be reachable from the launcher", openEngineFromLauncher())
 
-        assertLoaded("The media page must load", "media-1-page-load-failed") {
-            openEngineAt("$base/media", marker = "ROOM-E2E-MEDIA")
+        launchEngineAt("$base/media")
+
+        // Sheet first, for the same reason as the location test: getUserMedia
+        // runs as the page parses, so the modal window is already the active
+        // one by the time anything else could be read.
+        assertLoaded("The camera/microphone sheet must be raised", "media-1-sheet-never-raised") {
+            hasText("Share your camera and microphone?", 30_000)
         }
 
-        assertLoaded("The camera/microphone sheet must be raised", "media-2-sheet-never-raised") {
-            hasText("Share your camera and microphone?", 20_000)
+        assertLoaded("The engine must have requested /media", "media-2-page-never-requested") {
+            serverHits("/media") > 0
         }
 
         assertTrue("Deny must be tappable\n${uiTree()}", clickText("Deny", 10_000))
