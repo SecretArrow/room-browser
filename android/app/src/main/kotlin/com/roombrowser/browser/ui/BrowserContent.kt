@@ -46,6 +46,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -234,6 +235,20 @@ fun BrowserContent(
                 .background(extras.background)
         ) {
             val error = viewModel.pageError
+            // Which surface is on screen and why — the one line that says
+            // whether a missing page is a blank engine, a stale error, or the
+            // start page, and which ViewModel decided it. Logged on CHANGE
+            // only, so it costs one line per screen transition.
+            LaunchedEffect(error, page.url, page.isHomepage, page.loading) {
+                android.util.Log.d(
+                    "RoomNav",
+                    "vm=${viewModel.navId} surface=${when {
+                        error != null -> "error:${error::class.simpleName}@${error.urlOrNull()}"
+                        page.isHomepage -> "home"
+                        else -> "engine"
+                    }} url=${page.url} loading=${page.loading}"
+                )
+            }
             when {
                 error != null -> ErrorPage(
                     error = error,
@@ -525,4 +540,19 @@ private fun Homepage(
             }
         }
     }
+}
+
+/**
+ * The URL a page error was raised FOR.
+ *
+ * The error surface renders ABOVE the page surface, so whose failure it is
+ * decides whether the screen is telling the truth: an error whose URL is not
+ * the active tab's belongs to a tab no longer in front (see
+ * BrowserViewModel.openNewTab/selectTab, which clear it).
+ */
+private fun PageError.urlOrNull(): String = when (this) {
+    is PageError.NoInternet -> url
+    is PageError.Ssl -> url
+    is PageError.DnsFailure -> url
+    is PageError.Generic -> url
 }

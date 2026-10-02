@@ -141,6 +141,19 @@ class BrowserViewModel(
         private set
     var pageError by mutableStateOf<PageError?>(null)
         private set
+
+    /**
+     * Short identity for THIS ViewModel, carried on every RoomNav line.
+     *
+     * WHY (CI 36949239247/36944983033): one BrowserActivity lifecycle can
+     * build two or three ViewModels back to back — a CLEAR_TASK relaunch, the
+     * self-restart for a profile rebind, a launcher start racing the test's
+     * own — and they all log under the same tag from the same pid. Reading
+     * an interleaved trace, "selectTab" and "openNewTab" looked like one
+     * instance contradicting itself, when they were two instances with
+     * different tabs. The id makes the owner of every line explicit.
+     */
+    val navId: String = Integer.toHexString(System.identityHashCode(this)).takeLast(4)
     var shieldsState by mutableStateOf(ShieldsState())
         private set
     var tabs by mutableStateOf<List<TabEntity>>(emptyList())
@@ -316,7 +329,7 @@ class BrowserViewModel(
             // and is only ever written while the firing engine IS the active
             // one (a background tab's load must never repaint this tab).
             val owner = tabManager.idFor(view) ?: return
-            Log.d(NAV_TAG, "onPageStarted url=$url active=${view === activeWebView}")
+            Log.d(NAV_TAG, "vm=$navId onPageStarted url=$url active=${view === activeWebView}")
             if (view !== activeWebView) {
                 // A background tab navigating: the URL belongs to ITS row
                 // (title stays as stored — the new document has none yet).
@@ -367,14 +380,14 @@ class BrowserViewModel(
             if (url == "about:blank" &&
                 committed != "about:home" && committed != "about:blank"
             ) {
-                Log.d(NAV_TAG, "dropped stale about:blank finish (committed=$committed)")
+                Log.d(NAV_TAG, "vm=$navId dropped stale about:blank finish (committed=$committed)")
                 return
             }
             if (!active) {
                 // A background tab finished: persist into ITS OWN row (the
                 // row is the only store that outlives the engine) and record
                 // the visit under ITS privacy flag — never the active tab's.
-                Log.d(NAV_TAG, "onPageFinished (background) url=$url title=$title")
+                Log.d(NAV_TAG, "vm=$navId onPageFinished (background) url=$url title=$title")
                 persistTab(owner, url, title)
                 if (tabs.firstOrNull { it.id == owner }?.isPrivate != true) {
                     recordVisit(url, title)
@@ -382,7 +395,7 @@ class BrowserViewModel(
                 return
             }
             lastPageEvent = PageEvent.Finished(url, title, SystemClock.elapsedRealtime())
-            Log.d(NAV_TAG, "onPageFinished url=$url title=$title")
+            Log.d(NAV_TAG, "vm=$navId onPageFinished url=$url title=$title")
             pageState = pageState.copy(
                 url = url,
                 title = title,
@@ -414,7 +427,7 @@ class BrowserViewModel(
             // The error surface belongs to the ACTIVE tab — a background
             // failure must not paint an error page over the page on screen.
             if (view !== activeWebView) return
-            Log.d(NAV_TAG, "onReceivedError url=$url code=$errorCode")
+            Log.d(NAV_TAG, "vm=$navId onReceivedError url=$url code=$errorCode")
             pageError = when (errorCode) {
                 android.webkit.WebViewClient.ERROR_HOST_LOOKUP -> PageError.DnsFailure(url)
                 android.webkit.WebViewClient.ERROR_CONNECT,
@@ -870,7 +883,7 @@ class BrowserViewModel(
                     isHomepage = false
                 )
                 pageError = null
-                Log.d(NAV_TAG, "loadUrl same-tab url=$url attached=${webView.parent != null}")
+                Log.d(NAV_TAG, "vm=$navId loadUrl same-tab url=$url attached=${webView.parent != null}")
                 runWhenAttached(webView) { webView.loadUrl(url) }
             }
         }
@@ -888,7 +901,7 @@ class BrowserViewModel(
      * history instead of secretly back-stepping into the abandoned page.
      */
     fun goHome() {
-        Log.d(NAV_TAG, "goHome")
+        Log.d(NAV_TAG, "vm=$navId goHome")
         destroyActiveWebView()
         pageState = PageState(isPrivate = pageState.isPrivate)
         pageError = null
@@ -931,6 +944,16 @@ class BrowserViewModel(
             canGoBack = false,
             canGoForward = false
         )
+        // The previous tab's failure dies with the previous tab. A page error
+        // renders ABOVE the page surface (BrowserContent's `when` tests it
+        // first), so one left standing here covers the tab that follows: the
+        // restore loads a persisted tab whose server is gone, that load fails,
+        // and the tab the user actually asked for finishes fine BEHIND an
+        // error it never caused. Observed on CI 36949239247 — /media loaded
+        // (onPageFinished, title=localhost:57991/media) while the screen still
+        // showed /geo's "No Internet". Clearing it here is what makes the
+        // error belong to the tab that produced it.
+        pageError = null
         if (url != "about:home") {
             // PER-TAB WebView: every tab gets its OWN engine instance so
             // web history stays tab-scoped (no cross-tab back-stepping) and
@@ -944,7 +967,7 @@ class BrowserViewModel(
             // Nothing may load while a network decision is pending; the
             // load fires the moment the user decides.
             networkGate.first { !it }
-            Log.d(NAV_TAG, "openNewTab url=$url attached=${webView.parent != null}")
+            Log.d(NAV_TAG, "vm=$navId openNewTab url=$url attached=${webView.parent != null}")
             runWhenAttached(webView) { webView.loadUrl(url) }
         } else {
             // The previous tab keeps its engine alive in its OWN session;
@@ -956,7 +979,7 @@ class BrowserViewModel(
 
     fun selectTab(id: String) {
         if (id == activeTabId && activeWebView != null) return
-        Log.d(NAV_TAG, "selectTab id=$id same=${id == activeTabId}")
+        Log.d(NAV_TAG, "vm=$navId selectTab id=$id same=${id == activeTabId}")
         activeTabId = id
         val tab = tabs.firstOrNull { it.id == id } ?: return
         pageState = pageState.copy(
@@ -967,6 +990,10 @@ class BrowserViewModel(
             loading = false,
             desktopMode = false
         )
+        // Same reason as openNewTab: the error surface belongs to the tab that
+        // produced it. A tab whose own engine then fails re-reports through
+        // onReceivedError, so nothing is hidden by clearing it here.
+        pageError = null
         // Every selected tab has a session — the engine's lifetime owner.
         tabManager.ensureSession(tab)
         if (tab.url == "about:home") {
@@ -1014,7 +1041,7 @@ class BrowserViewModel(
         tabManager.ensureSession(tab)
         tabManager.attachWebView(tab.id, webView)
         val saved = tabManager.engineState(tab.id)
-        Log.d(NAV_TAG, "engineFor tab=${tab.id} url=${tab.url} hasSaved=${saved != null}")
+        Log.d(NAV_TAG, "vm=$navId engineFor tab=${tab.id} url=${tab.url} hasSaved=${saved != null}")
         // The restore/fallback navigation must also start on an attached
         // view (see runWhenAttached — same WebView-83 detached-load wedge
         // as the omnibox path).
@@ -1221,7 +1248,7 @@ class BrowserViewModel(
      */
     fun consumePendingActionFor(webView: WebView) {
         pendingEngineActions.remove(webView)?.let { action ->
-            Log.d(NAV_TAG, "deferred engine action fired (attached)")
+            Log.d(NAV_TAG, "vm=$navId deferred engine action fired (attached)")
             webView.post(action)
         }
     }
@@ -2296,7 +2323,7 @@ class BrowserViewModel(
     }
 
     override fun onCleared() {
-        Log.d(NAV_TAG, "onCleared")
+        Log.d(NAV_TAG, "vm=$navId onCleared")
         runCatching { agent.shutdown() }
         // Per-tab engines must not outlive the ViewModel's scope.
         runCatching { destroyAllWebViews() }
