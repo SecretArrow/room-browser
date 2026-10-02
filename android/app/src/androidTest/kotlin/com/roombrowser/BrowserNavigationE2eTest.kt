@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *   MainActivity (default process)
  *     -> first-run welcome / profile list -> engine opens
  *   BrowserActivity (':browser' process), cold-started with EXTRA_INITIAL_URL
- *     -> http://127.0.0.1:PORT/page1 (local MockWebServer, cleartext allowed)
+ *     -> http://localhost:PORT/page1 (local MockWebServer, cleartext allowed)
  *     -> click the in-page link -> /page2 (real WebView navigation)
  *     -> bottom-bar "Go back" (desc) -> page ONE is visible again
  *     -> bottom-bar "Go forward" (desc) -> page TWO is visible again
@@ -94,7 +94,7 @@ class BrowserNavigationE2eTest {
                         <div id="out">GEO-WAITING</div>
                         <script>
                           var out = document.getElementById('out');
-                          // 127.0.0.1 is a secure context, so the API exists;
+                          // localhost is a secure context, so the API exists;
                           // the branch keeps a missing API distinguishable
                           // from a refusal instead of looking like the same
                           // silent nothing.
@@ -608,6 +608,12 @@ class BrowserNavigationE2eTest {
     @Test
     fun a_location_request_is_raised_as_a_sheet_and_settled_by_deny() {
         val base = server.url("/").toString().trimEnd('/')
+        // The sheet names the origin that ASKED, so the expected name is the
+        // one this test actually navigated to. MockWebServer hands out
+        // "localhost" (not 127.0.0.1), and hardcoding the other spelling made
+        // this assertion demand a string the app was right not to show —
+        // invisible until the marker assertions above stopped failing first.
+        val askingHost = java.net.URI(base).host
         assertTrue("Engine must be reachable from the launcher", openEngineFromLauncher())
 
         launchEngineAt("$base/geo")
@@ -623,7 +629,7 @@ class BrowserNavigationE2eTest {
             hasText("Share your location?", 30_000)
         }
         assertLoaded("The sheet must name the host that asked", "geo-2-sheet-unnamed") {
-            hasText("127.0.0.1", 5_000)
+            hasText(askingHost, 5_000)
         }
 
         // The page really loaded — witnessed by the server, which a dialog
