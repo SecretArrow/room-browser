@@ -437,9 +437,20 @@ class BrowserViewModel(
         }
 
         override fun onPageCommitVisible(view: WebView, url: String) {
-            // The first frame the engine is willing to show. Its absence
-            // after onPageFinished means the document never painted.
-            Log.d(NAV_TAG, "vm=$navId onPageCommitVisible url=$url")
+            // The first frame the engine is willing to show, and the earliest
+            // point at which a layout pass has certainly run — so the size
+            // here is real, unlike the one taken when the deferred load fires.
+            // A 0x0 or shown=false at THIS moment is the difference between
+            // "the page is slow" and "the page has nowhere to draw": the two
+            // look identical from the device side, because a WebView with no
+            // area still loads, still reports onPageFinished, and publishes no
+            // accessibility nodes for UiAutomator to find.
+            Log.d(
+                NAV_TAG,
+                "vm=$navId onPageCommitVisible url=$url " +
+                    "size=${view.width}x${view.height} shown=${view.isShown} " +
+                    "active=${view === activeWebView}"
+            )
         }
 
         override fun onReceivedError(view: WebView, url: String, errorCode: Int, description: String?) {
@@ -1267,17 +1278,12 @@ class BrowserViewModel(
      */
     fun consumePendingActionFor(webView: WebView) {
         pendingEngineActions.remove(webView)?.let { action ->
-            // Size is logged WITH the fire: a WebView that never got measured
-            // still runs its load and still reports onPageFinished, but lays
-            // out nothing — no rendering, no JS-visible layout, and no
-            // accessibility nodes for UiAutomator to find. A "0x0" here is
-            // the difference between "the page is slow" and "the page has
-            // nowhere to draw", which the two look identical without.
-            Log.d(
-                NAV_TAG,
-                "vm=$navId deferred engine action fired (attached) " +
-                    "size=${webView.width}x${webView.height} shown=${webView.isShown}"
-            )
+            // No size here. This runs from the AndroidView `update` callback,
+            // i.e. BEFORE the first layout pass, so it reports 0x0 for every
+            // engine — including the ones whose pages render perfectly. That
+            // measurement is taken at onPageCommitVisible instead, which is
+            // after layout and therefore means something.
+            Log.d(NAV_TAG, "vm=$navId deferred engine action fired (attached)")
             webView.post(action)
         }
     }

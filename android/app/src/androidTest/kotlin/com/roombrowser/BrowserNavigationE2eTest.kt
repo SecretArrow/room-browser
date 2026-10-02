@@ -14,6 +14,7 @@ import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -245,7 +246,18 @@ class BrowserNavigationE2eTest {
             "'Reload page' button" to By.desc("Reload page"),
             "'Exit Room Browser?' dialog" to By.text("Exit Room Browser?"),
             "'Back to start page' action" to By.text("Back to start page"),
-            "omni_field" to By.desc("omni_field")
+            "omni_field" to By.desc("omni_field"),
+            // The permission sheets. Probed explicitly because "the page
+            // loaded but its <h1> is not in the tree" has two very different
+            // causes: the sheet is up and its modal window is the ACTIVE one,
+            // so UiAutomator no longer returns the activity window's nodes at
+            // all — or the sheet never came up, which is a real bug in the
+            // permission path. The message alone cannot tell them apart.
+            "'Share your location?' sheet" to By.text("Share your location?"),
+            "'Share your camera and microphone?' sheet"
+                to By.text("Share your camera and microphone?"),
+            "'Deny' button" to By.text("Deny"),
+            "'Allow' button" to By.text("Allow")
         )
         for ((label, selector) in probes) {
             val nodes = runCatching { device.findObjects(selector) }.getOrDefault(emptyList())
@@ -274,6 +286,37 @@ class BrowserNavigationE2eTest {
         sb.toString().take(8000)
     } catch (t: Throwable) {
         "probe dump failed: $t"
+    }
+
+    /**
+     * A real screenshot of the device at a named moment. The CI failure
+     * fallback pulls /sdcard/e2e-shots into the e2e-reports artifact, so
+     * "the page loaded but the screen shows something else" is settled by
+     * looking instead of by inference.
+     */
+    private fun snap(name: String) {
+        runCatching {
+            device.executeShellCommand("mkdir -p /sdcard/e2e-shots")
+            device.executeShellCommand("screencap -p /sdcard/e2e-shots/$name.png")
+        }
+    }
+
+    /**
+     * Asserts a wait and, when it fails, dumps the tree AS IT IS AFTER the
+     * wait — never as an eagerly evaluated message argument.
+     *
+     * `assertTrue("...${uiTree()}", hasText(x, 30_000))` builds the dump
+     * BEFORE hasText ever runs, so the failure message describes the screen
+     * one step earlier. That is not a cosmetic difference: it reported the
+     * start page for the geolocation test and the geolocation error page for
+     * the camera test, which are the states each test INHERITED from the one
+     * before it, and it sent this suite's debugging after the wrong page.
+     */
+    private fun assertLoaded(what: String, snapshot: String, loaded: () -> Boolean) {
+        if (!loaded()) {
+            snap(snapshot)
+            fail("$what\n${uiTree()}")
+        }
     }
 
     private fun launchMainActivity() {
@@ -545,29 +588,25 @@ class BrowserNavigationE2eTest {
         val base = server.url("/").toString().trimEnd('/')
         assertTrue("Engine must be reachable from the launcher", openEngineFromLauncher())
 
-        assertTrue(
-            "The geolocation page must load\n${uiTree()}",
+        assertLoaded("The geolocation page must load", "geo-1-page-load-failed") {
             openEngineAt("$base/geo", marker = "ROOM-E2E-GEO")
-        )
+        }
 
         // The sheet the browser never had.
-        assertTrue(
-            "The location sheet must be raised for the requesting origin\n${uiTree()}",
+        assertLoaded("The location sheet must be raised", "geo-2-sheet-never-raised") {
             hasText("Share your location?", 20_000)
-        )
-        assertTrue(
-            "The sheet must name the host that asked\n${uiTree()}",
+        }
+        assertLoaded("The sheet must name the host that asked", "geo-3-sheet-unnamed") {
             hasText("127.0.0.1", 5_000)
-        )
+        }
 
         assertTrue("Deny must be tappable\n${uiTree()}", clickText("Deny", 10_000))
 
-        assertTrue(
-            "Denying must SETTLE the page's request (permission denied), not drop it\n${uiTree()}",
+        assertLoaded("Denying must SETTLE the page's request", "geo-4-not-settled") {
             waitUntil(20_000) {
                 device.findObjects(By.text("GEO-DENIED-1")).isNotEmpty()
             }
-        )
+        }
     }
 
     /**
@@ -588,23 +627,20 @@ class BrowserNavigationE2eTest {
         val base = server.url("/").toString().trimEnd('/')
         assertTrue("Engine must be reachable from the launcher", openEngineFromLauncher())
 
-        assertTrue(
-            "The media page must load\n${uiTree()}",
+        assertLoaded("The media page must load", "media-1-page-load-failed") {
             openEngineAt("$base/media", marker = "ROOM-E2E-MEDIA")
-        )
+        }
 
-        assertTrue(
-            "The camera/microphone sheet must be raised\n${uiTree()}",
+        assertLoaded("The camera/microphone sheet must be raised", "media-2-sheet-never-raised") {
             hasText("Share your camera and microphone?", 20_000)
-        )
+        }
 
         assertTrue("Deny must be tappable\n${uiTree()}", clickText("Deny", 10_000))
 
-        assertTrue(
-            "Denying must REJECT the page's getUserMedia, not drop it\n${uiTree()}",
+        assertLoaded("Denying must REJECT the page's getUserMedia", "media-3-not-rejected") {
             waitUntil(20_000) {
                 device.findObjects(By.text("MEDIA-DENIED-NotAllowedError")).isNotEmpty()
             }
-        )
+        }
     }
 }
