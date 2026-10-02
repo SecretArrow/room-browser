@@ -71,8 +71,15 @@ private const val ATTACHMENT_INLINE_BUDGET = 60_000
  * (~60k chars) — later text attachments degrade to metadata lines.
  *
  * Pure function (no Android deps) so it is unit-testable on the JVM.
+ *
+ * `internal`, like [formatSize] below: this is a prompt-assembly detail of the
+ * controller, and it was public only by omission — nothing outside this module
+ * ever called it, so the wider visibility published a signature no caller
+ * wanted and no one could change freely. Not `private`, because the unit test
+ * (AgentAttachmentsTest) exercises it directly, and the test source set is a
+ * friend of this module.
  */
-fun renderAttachments(attachments: List<AgentAttachment>): String {
+internal fun renderAttachments(attachments: List<AgentAttachment>): String {
     if (attachments.isEmpty()) return ""
     val sections = mutableListOf<String>()
     var inlineChars = 0

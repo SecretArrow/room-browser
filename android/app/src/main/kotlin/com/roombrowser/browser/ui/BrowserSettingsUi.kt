@@ -63,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import com.roombrowser.BuildConfig
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.engine.ProfileEngine
+import com.roombrowser.domain.engine.DnsValidator
 import com.roombrowser.domain.model.BrowserGlobalSettings
 import com.roombrowser.domain.model.ClaimedScreen
 import com.roombrowser.domain.model.DnsMode
@@ -466,9 +467,19 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 selected = settings.searchEngineId,
                 onSelect = { value -> update(settings.copy(searchEngineId = value)) }
             )
+            // The subtitle described a privacy trade-off this build does not
+            // actually make. The stored flag has exactly one reader,
+            // BrowserViewModel.fetchSuggestions(), and that function has no
+            // callers: no suggestion list is requested and none is drawn, so
+            // the switch sends nothing in EITHER position. The original
+            // sentence stays (it is what the setting will mean once the
+            // dropdown is wired up) and the honest caveat is appended, because
+            // a privacy claim that overstates what leaves the device is worse
+            // than a feature that is merely missing.
             SettingSwitchRow(
                 title = "Search suggestions",
-                subtitle = "Sends typed queries to the selected search engine (privacy trade-off)",
+                subtitle = "Sends typed queries to the selected search engine (privacy trade-off)" +
+                    " — not active yet: this build never requests or shows suggestions, so nothing is sent either way",
                 checked = settings.searchSuggestions,
                 onCheckedChange = { update(settings.copy(searchSuggestions = it)) }
             )
@@ -1071,7 +1082,17 @@ private fun PresetRow(
         // Single touch target: the whole row picks; the radio itself is
         // display-only (onClick = null) so there is no nested clickable.
         RadioButton(selected = selected, onClick = null)
-        Column(Modifier.padding(start = 8.dp)) {
+        // weight(1f) so the text column owns exactly the space the radio
+        // leaves and nothing it ever grows beside can be pushed off the
+        // edge, and a capped subtitle because the DNS presets' own line
+        // ("IPv4 … · IPv6 2606:4700:4700::1111 / …") is longer than a
+        // 320dp-wide phone: unbounded it wrapped to four lines and made one
+        // preset as tall as three.
+        Column(
+            Modifier
+                .weight(1f)
+                .padding(start = 8.dp)
+        ) {
             Text(
                 title,
                 maxLines = 1,
@@ -1082,7 +1103,9 @@ private fun PresetRow(
             Text(
                 subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = extras.textSecondary
+                color = extras.textSecondary,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -1407,41 +1430,100 @@ private fun ScreenSizeFields(
     }
 }
 
+/**
+ * The custom DoH endpoint.
+ *
+ * Validated against the SAME [DnsValidator.validateDohUrl] the resolver uses,
+ * because a typo here used to be accepted in silence: Apply stored whatever
+ * was in the box, [DnsValidator] then resolved the profile to MISCONFIGURED —
+ * and that word is only ever rendered on the DNS panel, a different screen.
+ * The settings row kept reading "DNS-over-HTTPS" while the app was back on the
+ * OS resolver, which is the one failure mode a privacy setting must not have.
+ * Apply now refuses a URL the resolver would reject, and the field says why.
+ */
 @Composable
 private fun DnsUrlField(initial: String, onCommit: (String) -> Unit) {
     val extras = LocalRoomExtras.current
     var value by remember(initial) { mutableStateOf(initial) }
+    var attempted by remember { mutableStateOf(false) }
+    val candidate = value.trim()
+    val valid = DnsValidator.validateDohUrl(candidate)
     Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
         OutlinedTextField(
             value = value,
-            onValueChange = { value = it },
+            onValueChange = {
+                value = it
+                attempted = false
+            },
             label = { Text("DoH URL (https://…)") },
             singleLine = true,
+            isError = !valid && (attempted || candidate.isNotEmpty()),
+            supportingText = {
+                if (!valid && (attempted || candidate.isNotEmpty())) {
+                    Text(
+                        "A DoH endpoint is an https:// URL with a host, like https://dns.google/dns-query"
+                    )
+                }
+            },
             shape = RoundedCornerShape((extras.radius * 0.6f).dp),
             modifier = Modifier.fillMaxWidth()
         )
         TextButton(
-            onClick = { onCommit(value.trim()) },
+            onClick = {
+                if (valid) {
+                    attempted = false
+                    onCommit(candidate)
+                } else {
+                    attempted = true
+                }
+            },
             modifier = Modifier.align(Alignment.End)
         ) { Text("Apply") }
     }
 }
 
+/**
+ * The custom DoT hostname — same contract as [DnsUrlField] above: an empty or
+ * malformed hostname used to be stored without a word, leaving the row saying
+ * "DNS-over-TLS" over a MISCONFIGURED resolver that only the DNS panel ever
+ * admits to. [DnsValidator.validateDotHostname] is the resolver's own rule.
+ */
 @Composable
 private fun DotHostField(initial: String, onCommit: (String) -> Unit) {
     val extras = LocalRoomExtras.current
     var value by remember(initial) { mutableStateOf(initial) }
+    var attempted by remember { mutableStateOf(false) }
+    val candidate = value.trim()
+    val valid = DnsValidator.validateDotHostname(candidate)
     Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
         OutlinedTextField(
             value = value,
-            onValueChange = { value = it },
+            onValueChange = {
+                value = it
+                attempted = false
+            },
             label = { Text("DoT hostname (e.g. dns.google)") },
             singleLine = true,
+            isError = !valid && (attempted || candidate.isNotEmpty()),
+            supportingText = {
+                if (!valid && (attempted || candidate.isNotEmpty())) {
+                    Text(
+                        "A DoT hostname is a bare host, optionally with a port — \"dns.google\" or \"dns.google:853\", no scheme and no path"
+                    )
+                }
+            },
             shape = RoundedCornerShape((extras.radius * 0.6f).dp),
             modifier = Modifier.fillMaxWidth()
         )
         TextButton(
-            onClick = { onCommit(value.trim()) },
+            onClick = {
+                if (valid) {
+                    attempted = false
+                    onCommit(candidate)
+                } else {
+                    attempted = true
+                }
+            },
             modifier = Modifier.align(Alignment.End)
         ) { Text("Apply") }
     }

@@ -166,6 +166,12 @@ private fun ThemeStudioRoot(controller: ThemeStudioController, onDone: () -> Uni
     var saveAsOpen by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<RoomThemeSpec?>(null) }
     var importOpen by remember { mutableStateOf(false) }
+    // Reset is the one quick action that THROWS WORK AWAY: resetToDefault()
+    // replaces the working spec with Obsidian and clears the profile's stored
+    // theme_json, so every color, gradient, radius and blur the user tuned is
+    // gone and there is no undo. It sat one tap away, right beside Apply, with
+    // no question asked — hence this gate.
+    var confirmReset by remember { mutableStateOf(false) }
     var pickerField by remember { mutableStateOf<String?>(null) }
 
     Scaffold(
@@ -224,7 +230,7 @@ private fun ThemeStudioRoot(controller: ThemeStudioController, onDone: () -> Uni
                     Spacer(Modifier.width(6.dp))
                     Text("Apply", maxLines = 1)
                 }
-                OutlinedButton(onClick = { controller.resetToDefault() }) {
+                OutlinedButton(onClick = { confirmReset = true }) {
                     Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Reset")
@@ -532,6 +538,35 @@ private fun ThemeStudioRoot(controller: ThemeStudioController, onDone: () -> Uni
                 }
                 importOpen = false
             }
+        )
+    }
+
+    if (confirmReset) {
+        AlertDialog(
+            onDismissRequest = { confirmReset = false },
+            title = { Text("Reset this theme?") },
+            text = {
+                Text(
+                    if (controller.profile != null)
+                        "Every color, gradient, corner radius and blur you tuned goes back to " +
+                            "the built-in Obsidian theme, and profile \"${controller.profile!!.name}\" " +
+                            "stops using its saved theme. Themes you kept in My themes are not touched."
+                    else
+                        "Every color, gradient, corner radius and blur you tuned goes back to the " +
+                            "built-in Obsidian theme. Themes you kept in My themes are not touched.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            // "Reset theme", not a bare "Reset": the quick-action button is
+            // already labelled "Reset", and two nodes answering to the same
+            // text would make a tap on either ambiguous.
+            confirmButton = {
+                TextButton(onClick = {
+                    controller.resetToDefault()
+                    confirmReset = false
+                }) { Text("Reset theme") }
+            },
+            dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("Cancel") } }
         )
     }
 }

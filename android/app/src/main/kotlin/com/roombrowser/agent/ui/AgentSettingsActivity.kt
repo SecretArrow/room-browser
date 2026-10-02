@@ -160,6 +160,15 @@ private fun AgentSettingsRoot(
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     var confirmClearSessions by remember { mutableStateOf(false) }
+    // The provider queued for deletion. Removing one used to happen on the
+    // SINGLE tap of its trash icon, next to the edit icon in the same row:
+    // one mis-tap and the endpoint, its default model and its API key were
+    // gone. The key is the part that makes this unrecoverable — it is sealed
+    // with AndroidKeyStore and never shown again, so "undo" means fetching it
+    // from the provider's dashboard a second time. Destructive and
+    // irreversible earns the same confirmation "Delete all agent chats"
+    // already asks for below.
+    var confirmDeleteProvider by remember { mutableStateOf<AgentProviderEntity?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(notice) {
@@ -281,12 +290,7 @@ private fun AgentSettingsRoot(
                             modifier = Modifier.semantics { contentDescription = "edit_provider_${provider.id}" }
                         ) { Icon(Icons.Filled.Edit, contentDescription = null) }
                         IconButton(
-                            onClick = {
-                                scope.launch {
-                                    controller.deleteProvider(provider.id)
-                                    notice = "Removed ${provider.name}"
-                                }
-                            },
+                            onClick = { confirmDeleteProvider = provider },
                             modifier = Modifier.semantics { contentDescription = "delete_provider_${provider.id}" }
                         ) { Icon(Icons.Filled.Delete, contentDescription = "Delete provider") }
                     }
@@ -475,6 +479,34 @@ private fun AgentSettingsRoot(
                 }) { Text("Delete") }
             },
             dismissButton = { TextButton(onClick = { confirmClearSessions = false }) { Text("Cancel") } }
+        )
+    }
+
+    confirmDeleteProvider?.let { target ->
+        AlertDialog(
+            onDismissRequest = { confirmDeleteProvider = null },
+            title = { Text("Remove ${target.name}?") },
+            text = {
+                Text(
+                    "This deletes the endpoint, its default model and its stored API key. " +
+                        "The key cannot be recovered — it is encrypted on this device and never " +
+                        "shown again, so adding the provider back means pasting the key in afresh."
+                )
+            },
+            // "Remove provider", NOT the plain "Delete" the chats dialog
+            // above answers to: two destructive confirmations live on this one
+            // screen, and a selector matching "Delete" must never be able to
+            // hit whichever of them happens to be open.
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDeleteProvider = null
+                    scope.launch {
+                        controller.deleteProvider(target.id)
+                        notice = "Removed ${target.name}"
+                    }
+                }) { Text("Remove provider") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDeleteProvider = null }) { Text("Cancel") } }
         )
     }
 }

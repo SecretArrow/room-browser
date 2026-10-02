@@ -413,6 +413,11 @@ fun ProfileQuickSwitcherSheet(
     val extras = LocalRoomExtras.current
     val scope = rememberCoroutineScope()
     var showCreateDialog by remember { mutableStateOf(false) }
+    // In-flight flag for the create. It lives HERE and not in the dialog
+    // because this is where the launch and both of its outcomes are: a
+    // failure has to re-arm the button so the user can fix the name and try
+    // again, and only this scope knows when that happened.
+    var creating by remember { mutableStateOf(false) }
     ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
         Column(
             Modifier
@@ -500,21 +505,34 @@ fun ProfileQuickSwitcherSheet(
     if (showCreateDialog) {
         QuickCreateProfileDialog(
             initialName = viewModel.suggestedProfileName(),
-            onDismiss = { showCreateDialog = false },
+            creating = creating,
+            onDismiss = { showCreateDialog = false; creating = false },
             onCreate = { name ->
-                scope.launch {
-                    runCatching { viewModel.createProfileFromSwitcher(name) }
-                        .onSuccess { created ->
-                            showCreateDialog = false
-                            // EXISTING switch path — BrowserActivity.switchProfile
-                            // runs the 7-step process-restart protocol.
-                            onSwitch(created.id)
-                        }
-                        .onFailure { failure ->
-                            // Snackbar + stay: the dialog remains open, the
-                            // current profile/session is untouched.
-                            viewModel.postMessage(failure.message ?: "Could not create profile")
-                        }
+                // Second guard behind the button's own `enabled`: a tap that
+                // was already in flight when the recomposition landed must
+                // not start a SECOND createProfileFromSwitcher. The
+                // duplicate-name check inside it is not transactional, so two
+                // concurrent creates can both pass it and leave two
+                // identically named profiles racing the switch below.
+                if (!creating) {
+                    creating = true
+                    scope.launch {
+                        runCatching { viewModel.createProfileFromSwitcher(name) }
+                            .onSuccess { created ->
+                                creating = false
+                                showCreateDialog = false
+                                // EXISTING switch path — BrowserActivity.switchProfile
+                                // runs the 7-step process-restart protocol.
+                                onSwitch(created.id)
+                            }
+                            .onFailure { failure ->
+                                // Snackbar + stay: the dialog remains open, the
+                                // current profile/session is untouched, and the
+                                // button re-arms for another attempt.
+                                creating = false
+                                viewModel.postMessage(failure.message ?: "Could not create profile")
+                            }
+                    }
                 }
             }
         )
@@ -524,14 +542,19 @@ fun ProfileQuickSwitcherSheet(
 /**
  * Minimal create dialog for the quick switcher: a name field only — icon and
  * color are picked automatically (the full editor lives on the main screen).
+ *
+ * [creating] is the owner's in-flight flag: the dialog stays on screen until
+ * the suspend create returns, so the button has to go dead for that window.
  */
 @Composable
 private fun QuickCreateProfileDialog(
     initialName: String,
+    creating: Boolean,
     onDismiss: () -> Unit,
     onCreate: (String) -> Unit
 ) {
     var name by remember { mutableStateOf(initialName) }
+    val blank = name.isBlank()
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New Profile") },
@@ -540,11 +563,32 @@ private fun QuickCreateProfileDialog(
                 value = name,
                 onValueChange = { name = it },
                 label = { Text("Name") },
-                singleLine = true
+                singleLine = true,
+                // The blank case used to be invisible: the button looked
+                // armed and did nothing. Say so on the field instead.
+                isError = blank,
+                // The slot is passed unconditionally (empty when the name is
+                // fine) rather than as a null: Material reserves the
+                // supporting-text row for as long as the slot exists, so the
+                // dialog keeps one height and the Create button does not jump
+                // under the user's thumb the moment they type a first letter.
+                supportingText = {
+                    if (blank) {
+                        Text("Enter a name for the new profile.")
+                    }
+                }
             )
         },
         confirmButton = {
-            Button(onClick = { if (name.isNotBlank()) onCreate(name.trim()) }) { Text("Create") }
+            // Was `onClick = { if (name.isNotBlank()) onCreate(name.trim()) }`
+            // with no `enabled`: a blank name made the button a silent no-op,
+            // and because the dialog only closes once the suspend create has
+            // returned, a second tap launched a second creation. Both guards
+            // belong in `enabled`, where they are also visible to the user.
+            Button(
+                enabled = !blank && !creating,
+                onClick = { onCreate(name.trim()) }
+            ) { Text("Create") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
@@ -556,6 +600,7 @@ private fun QuickCreateProfileDialog(
 fun ShieldsSheet(viewModel: BrowserViewModel, onDismiss: () -> Unit) {
     val shields = viewModel.shieldsState
     val extras = LocalRoomExtras.current
+    var confirmClearSiteData by remember { mutableStateOf(false) }
     ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
         Column(
             Modifier
@@ -574,9 +619,26 @@ fun ShieldsSheet(viewModel: BrowserViewModel, onDismiss: () -> Unit) {
             TextButton(onClick = { viewModel.toggleShieldsForSite(!shields.shieldsDisabled) }) {
                 Text(if (shields.shieldsDisabled) "Enable protection for this site" else "Disable protection for this site")
             }
-            TextButton(onClick = { viewModel.clearSiteDataForCurrentSite() }) {
+            // Sitting in a sheet titled with the current host, next to two
+            // rows that really are per-site, this row read as "clear THIS
+            // site's data". It never was: clearSiteDataForCurrentSite() ends
+            // in ProfileEngine.clearEngineStorage(), which calls
+            // removeAllCookies + WebStorage.deleteAllData +
+            // clearHttpAuthUsernamePassword + clearFormData for the whole
+            // profile — WebView has no per-origin equivalent (see
+            // PROFILE_ISOLATION.md). The label itself is load-bearing
+            // elsewhere so it stays; the line under it and the confirmation
+            // are where the real scope is now stated, and a wipe that signs
+            // the user out of every site must not fire on one tap.
+            TextButton(onClick = { confirmClearSiteData = true }) {
                 Text("Clear site data")
             }
+            Text(
+                "Clears cookies, local storage, saved form data and cached files for EVERY site in this profile — WebView cannot narrow this to one host, so you are signed out everywhere.",
+                style = MaterialTheme.typography.bodySmall,
+                color = extras.textSecondary,
+                modifier = Modifier.padding(start = 12.dp, end = 8.dp, bottom = 4.dp)
+            )
             Spacer(Modifier.height(8.dp))
             Text(
                 "JavaScript: ${if (viewModel.profileSettings().javascriptEnabled) "allowed by profile settings" else "blocked by profile settings"}",
@@ -591,6 +653,24 @@ fun ShieldsSheet(viewModel: BrowserViewModel, onDismiss: () -> Unit) {
             }) { Text("Toggle cookies for this site") }
             Spacer(Modifier.height(24.dp))
         }
+    }
+    if (confirmClearSiteData) {
+        com.roombrowser.main.ui.ConfirmDialog(
+            title = "Clear data for every site?",
+            text = "This signs you out of all sites in this profile, not only " +
+                "${shields.host.ifBlank { "this one" }}: every cookie, local " +
+                "storage entry, saved form entry and stored HTTP credential " +
+                "goes. Bookmarks and history are untouched. It cannot be undone.",
+            // NOT "Clear site data": that exact string is the sheet's own
+            // button, and a distinct confirm label keeps the two separately
+            // addressable for anything matching on text.
+            confirmLabel = "Clear all site data",
+            onDismiss = { confirmClearSiteData = false },
+            onConfirm = {
+                viewModel.clearSiteDataForCurrentSite()
+                confirmClearSiteData = false
+            }
+        )
     }
 }
 
@@ -713,7 +793,14 @@ fun QrShareDialog(content: String, onDismiss: () -> Unit) {
         onDismissRequest = onDismiss,
         title = { Text("QR Code") },
         text = {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            // An AlertDialog body does not scroll on its own. In landscape,
+            // or at a large font scale, the dialog is capped well below the
+            // 240dp code plus its title and button row — the bottom of the
+            // code was simply clipped off with no way to reach it.
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
                 if (content != "about:home") {
                     AndroidView(
                         factory = { ctx ->
@@ -738,13 +825,30 @@ fun ReaderScreen(
     content: BrowserViewModel.ReaderContent,
     onClose: () -> Unit
 ) {
+    val extras = LocalRoomExtras.current
     var fontSize by remember { mutableFloatStateOf(16f) }
-    var dark by remember { mutableStateOf(false) }
+    // The reading surface used to be two hardcoded hexes (#FCF8F0 / #101014)
+    // with `dark` starting at false, so reader mode opened bright cream on a
+    // dark device and ignored the profile's Theme Studio spec entirely —
+    // while the control row below it, styled from the real scheme, sat on
+    // that foreign background. `dark` is now an OVERRIDE of the theme's own
+    // mode rather than an absolute: left alone the page is the themed
+    // background, flipped it is the scheme's inverseSurface, which Theme.kt
+    // populates as the opposite-luminance surface of whatever palette is
+    // active. Either way the colors come from the spec.
+    var dark by remember { mutableStateOf(extras.dark) }
     var lineSpacing by remember { mutableFloatStateOf(1.4f) }
+    val inverted = dark != extras.dark
+    val pageColor = if (inverted) MaterialTheme.colorScheme.inverseSurface else extras.background
+    val inkColor = if (inverted) MaterialTheme.colorScheme.inverseOnSurface else extras.textPrimary
+    // No inverse counterpart exists for the secondary text role, so the
+    // byline is derived from the ink it sits next to instead of the flat
+    // Color.Gray it used to be — that gray was unreadable on a dark page.
+    val bylineColor = if (inverted) inkColor.copy(alpha = 0.72f) else extras.textSecondary
     androidx.compose.foundation.layout.Box(
         Modifier
             .fillMaxSize()
-            .background(if (dark) androidx.compose.ui.graphics.Color(0xFF101014) else androidx.compose.ui.graphics.Color(0xFFFCF8F0))
+            .background(pageColor)
     ) {
         Column(
             Modifier
@@ -758,13 +862,13 @@ fun ReaderScreen(
             Text(
                 content.title,
                 style = MaterialTheme.typography.headlineSmall,
-                color = if (dark) androidx.compose.ui.graphics.Color.White else androidx.compose.ui.graphics.Color.Black
+                color = inkColor
             )
             if (content.byline.isNotBlank()) {
                 Text(
                     content.byline,
                     style = MaterialTheme.typography.labelMedium,
-                    color = androidx.compose.ui.graphics.Color.Gray
+                    color = bylineColor
                 )
             }
             Spacer(Modifier.height(12.dp))
@@ -775,7 +879,7 @@ fun ReaderScreen(
                     .trim(),
                 fontSize = fontSize.sp,
                 lineHeight = (fontSize * lineSpacing).sp,
-                color = if (dark) androidx.compose.ui.graphics.Color(0xFFDDDDDD) else androidx.compose.ui.graphics.Color(0xFF222222)
+                color = inkColor
             )
         }
         Row(

@@ -1,4 +1,4 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class, kotlinx.coroutines.DelicateCoroutinesApi::class)
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 
 package com.roombrowser.agent.ui
 
@@ -54,16 +54,20 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import com.roombrowser.RoomBrowserApp
 import com.roombrowser.agent.AgentSettingsController
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.domain.agent.ToolCapableModels
@@ -189,9 +193,15 @@ private fun ProviderEditorRoot(
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    var name by remember(editing) { mutableStateOf(editing?.name ?: "") }
-    var baseUrl by remember(editing) { mutableStateOf(editing?.baseUrl ?: "") }
-    var protocol by remember(editing) {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    // rememberSaveable for everything the user TYPED or PICKED: plain remember
+    // dies with the composition, so a rotation (or a process death while the
+    // user was off looking up an API key in another app) silently emptied a
+    // half-filled form and dropped them back on "Add AI provider". The ONE
+    // deliberate exception is [apiKey] below — read its comment.
+    var name by rememberSaveable(editing) { mutableStateOf(editing?.name ?: "") }
+    var baseUrl by rememberSaveable(editing) { mutableStateOf(editing?.baseUrl ?: "") }
+    var protocol by rememberSaveable(editing) {
         mutableStateOf(
             // Explicit mapping — a plain else→OPENAI would silently CORRUPT
             // an edited Ollama-native provider (its protocol would flip to
@@ -213,18 +223,31 @@ private fun ProviderEditorRoot(
             baseUrl = "local://engine"
         }
     }
+    /* The API key stays on PLAIN remember on purpose: saved instance state is
+     * handed to the system, which writes it to disk (and into the recents
+     * snapshot), so a secret typed here must never enter it. Losing it on a
+     * rotation is the right trade — the field is optional, an edited provider
+     * keeps its stored ciphertext when left blank, and the label says "(kept)".
+     * Same rule as the password vault's own screens. */
     var apiKey by remember(editing) { mutableStateOf("") }
     var keyVisible by remember { mutableStateOf(false) }
-    var toolMode by remember(editing) { mutableStateOf(ToolMode.fromStored(editing?.toolMode)) }
+    var toolMode by rememberSaveable(editing) { mutableStateOf(ToolMode.fromStored(editing?.toolMode)) }
+    /* NOT saved, and not an oversight: [models] is whatever the provider's
+     * /models answered and [presetModels] is derived from the preset table, so
+     * both are re-fetchable facts rather than user input (and PresetModel is
+     * neither Parcelable nor Serializable — saving it would throw). [fetching],
+     * [fetchError] and [saveError] describe an operation that did NOT survive
+     * the restore: a restored `fetching = true` would spin a progress
+     * indicator over a request that no longer exists. */
     var models by remember(editing) { mutableStateOf<List<String>>(emptyList()) }
-    var modelQuery by remember(editing) { mutableStateOf("") }
+    var modelQuery by rememberSaveable(editing) { mutableStateOf("") }
     /* Whether the fetched list is narrowed to models that can call tools. On
      * by default, because a model that cannot act fails silently — it answers
      * in prose and the run ends without doing anything. */
-    var toolsOnly by remember(editing) { mutableStateOf(true) }
+    var toolsOnly by rememberSaveable(editing) { mutableStateOf(true) }
     var fetching by remember { mutableStateOf(false) }
     var fetchError by remember { mutableStateOf<String?>(null) }
-    var model by remember(editing) { mutableStateOf(editing?.defaultModel ?: "") }
+    var model by rememberSaveable(editing) { mutableStateOf(editing?.defaultModel ?: "") }
     var saveError by remember { mutableStateOf<String?>(null) }
     var hasKey by remember(editing) { mutableStateOf(editing != null && editing.apiKeyEnc.isNotBlank()) }
     // Preset-supplied model pick-list for the current provider (e.g. AgentRouter
@@ -288,29 +311,44 @@ private fun ProviderEditorRoot(
                 ) {
                     Button(
                         onClick = {
-                            // App-level dispatch (Main.immediate starts the body
-                            // SYNCHRONOUSLY inside this click handler) + the
-                            // persistence primitives are internally NonCancellable
-                            // (AgentProviderStore.save / saveAgentSettings):
-                            // finishing this editor at ANY moment — user taps Back,
-                            // the window is torn down, a UI test clicks Close
-                            // milliseconds after Save — can no longer abort the
-                            // DB writes.
-                            kotlinx.coroutines.GlobalScope.launch(
-                                kotlinx.coroutines.Dispatchers.Main.immediate
-                            ) {
+                            // The persistence write must outlive this window —
+                            // the user may tap Back in the same breath as Save —
+                            // so it runs on the graph's APPLICATION scope, which
+                            // is owned by something (AppGraph) and documented as
+                            // outliving a screen. GlobalScope used to stand here:
+                            // structurally detached from onDestroy AND from
+                            // controller.shutdown(), it kept this composition's
+                            // state and the controller's OkHttpClient reachable
+                            // for the whole write and then ran its completion
+                            // handlers against a window that could already be
+                            // dead. saveProvider/setDefaultNow are plain suspend
+                            // functions that do NOT use the controller's own
+                            // scope (and are internally NonCancellable), so a
+                            // shut-down controller still commits them.
+                            // The typed values are snapshotted FIRST so the
+                            // long-lived job never reads Compose state.
+                            val appScope =
+                                (context.applicationContext as RoomBrowserApp).graph.appScope
+                            val draftId = editing?.id
+                            val draftName = name
+                            val draftBaseUrl = baseUrl
+                            val draftApiKey = apiKey
+                            val draftModel = model
+                            val draftProtocol = protocol
+                            val draftToolMode = toolMode.name
+                            appScope.launch {
                                 android.util.Log.d(
                                     "RoomAgent",
-                                    "save start: name=$name model=$model url=$baseUrl"
+                                    "save start: name=$draftName model=$draftModel url=$draftBaseUrl"
                                 )
                                 val result = controller.saveProvider(
-                                    id = editing?.id,
-                                    name = name,
-                                    baseUrl = baseUrl,
-                                    apiKey = apiKey,
-                                    defaultModel = model,
-                                    protocol = protocol,
-                                    toolMode = toolMode.name
+                                    id = draftId,
+                                    name = draftName,
+                                    baseUrl = draftBaseUrl,
+                                    apiKey = draftApiKey,
+                                    defaultModel = draftModel,
+                                    protocol = draftProtocol,
+                                    toolMode = draftToolMode
                                 )
                                 result.fold(
                                     onSuccess = { provider ->
@@ -320,11 +358,21 @@ private fun ProviderEditorRoot(
                                         )
                                         // Make the freshly saved provider the default.
                                         controller.setDefaultNow(provider, provider.defaultModel)
-                                        onDone()
+                                        // The REACTION belongs to the activity:
+                                        // `scope` dies with the composition, so a
+                                        // gone editor simply never runs this, and
+                                        // the lifecycle check keeps finish() off
+                                        // an already destroyed window.
+                                        if (lifecycle.currentState.isAtLeast(Lifecycle.State.CREATED)) {
+                                            scope.launch { onDone() }
+                                        }
                                     },
                                     onFailure = {
                                         android.util.Log.e("RoomAgent", "save failed", it)
-                                        saveError = it.message ?: "could not save"
+                                        val message = it.message ?: "could not save"
+                                        if (lifecycle.currentState.isAtLeast(Lifecycle.State.CREATED)) {
+                                            scope.launch { saveError = message }
+                                        }
                                     }
                                 )
                             }

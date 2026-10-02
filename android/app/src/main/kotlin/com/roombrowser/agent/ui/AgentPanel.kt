@@ -14,6 +14,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -38,6 +39,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.AttachFile
@@ -53,7 +55,6 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardReturn
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Stop
@@ -124,8 +125,9 @@ import kotlinx.coroutines.withContext
  *
  *  - COLLAPSED: a status pill (bottom-right) that streams live progress
  *    ("clicking [12] Sign in…") while the page stays visible behind it
- *  - EXPANDED: a 72%-height panel with the conversation, tool-step cards,
- *    streaming answers, approvals and the composer
+ *  - EXPANDED: a panel with the conversation, tool-step cards, streaming
+ *    answers, approvals and the composer — 72% of the window where there is
+ *    room for that, nearly all of a short (landscape) one
  *
  * The user keeps seeing the browser being driven autonomously — the same
  * interaction model as chat.z.ai's agent mode, adapted to a phone browser.
@@ -158,14 +160,23 @@ fun AgentPanelHost(
         if (expanded) agent.refreshProviders()
     }
 
-    Box(Modifier.fillMaxSize()) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        // The panel's height follows the window it is given instead of being
+        // a flat 72% of it. 72% reads well on a portrait phone and strands
+        // the composer in landscape: 72% of a ~320dp-tall window is ~230dp,
+        // and the header plus one conversation row leave the input — the one
+        // control the panel exists for — a sliver at the bottom edge. Short
+        // windows therefore get almost the whole slot. maxHeight is this
+        // Box's own measured space, so it is already net of the browser
+        // chrome and the system bars, unlike a screen-size constant.
+        val panelHeightFraction = if (maxHeight < 480.dp) 0.94f else 0.72f
         if (expanded) {
             BackHandler { onExpandedChange(false) }
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .fillMaxHeight(0.72f),
+                    .fillMaxHeight(panelHeightFraction),
                 shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
                 color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 3.dp,
@@ -830,6 +841,11 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
                             .semantics { contentDescription = "agent_stop" }
                     ) { Icon(Icons.Filled.Stop, contentDescription = null) }
                 } else {
+                    // AutoMirrored, like the GO_BACK arrow this file already
+                    // maps: a paper plane aimed at the end of the line is
+                    // backwards in an RTL layout, where "onward" points left.
+                    // Icons.Filled.Send never flips; the AutoMirrored twin
+                    // does.
                     FilledIconButton(
                         onClick = {
                             agent.send(input, includePage, attachments)
@@ -840,7 +856,7 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
                         modifier = Modifier
                             .size(48.dp)
                             .semantics { contentDescription = "agent_send" }
-                    ) { Icon(Icons.Filled.Send, contentDescription = null) }
+                    ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null) }
                 }
             }
         }

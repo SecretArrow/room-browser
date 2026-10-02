@@ -120,15 +120,31 @@ fun BrowserContent(
                     .background(extras.addressBar)
                     .border(0.5.dp, extras.border, RoundedCornerShape(extras.radius.dp))
                     .heightIn(min = 46.dp)
-                    .padding(horizontal = 12.dp, vertical = 11.dp)
+                    // No vertical padding: the 48dp site-controls target
+                    // below now sets this pill's height. The 11.dp that used
+                    // to be here existed only to pad a 24dp icon box out to
+                    // the 46dp pill, and keeping both would have made the
+                    // pill 70dp tall. The row around it is 48dp either way
+                    // (the reload/bookmark IconButtons are 48dp), so the
+                    // omnibox chrome does not change height at all.
+                    .padding(horizontal = 12.dp)
                     .semantics { contentDescription = "Address bar: ${if (page.isHomepage) "search or type URL" else page.url}" },
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // Site controls (shields, connection info, per-site
                 // toggles) — the lock is the trigger, as in every browser.
+                //
+                // 48dp, not the 24dp it used to be: this is the ONLY way to
+                // the shields sheet, and a 24dp target is half the 48dp
+                // minimum Material and the accessibility scanner both ask
+                // for — it took a precise tap, and a near miss landed on the
+                // URL field instead and opened the keyboard. Only the TARGET
+                // grew; the glyph is still 17dp, so it sits 12dp further
+                // from the pill's edge now that it is centred in a real
+                // button footprint.
                 Box(
                     modifier = Modifier
-                        .size(24.dp)
+                        .size(48.dp)
                         .clip(CircleShape)
                         .clickable(onClick = onShowShields)
                         .semantics { contentDescription = "Site controls" },

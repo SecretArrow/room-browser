@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -131,7 +132,16 @@ private fun CenteredEmptyState(title: String, subtitle: String, modifier: Modifi
     }
 }
 
-/** 40dp touch target that only shows a small glyph — no visual bulk. */
+/**
+ * Small glyph with a full-size touch target — no visual bulk.
+ *
+ * The box used to be exactly 40dp, and because the `clickable` sits inside
+ * it that 40dp WAS the hit rect: every Close / Delete affordance in this
+ * file — the only way to close a tab from the list, the only way to remove
+ * a bookmark or a history row — sat 8dp under the 48dp accessibility
+ * minimum. Only the hit rect grows here; the glyph is still 17dp, so
+ * nothing on screen gets heavier.
+ */
 @Composable
 private fun QuietIconButton(
     contentDescription: String,
@@ -140,13 +150,46 @@ private fun QuietIconButton(
 ) {
     Box(
         Modifier
-            .size(40.dp)
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
             .clip(CircleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Icon(icon, contentDescription = contentDescription, tint = LocalRoomExtras.current.icon, modifier = Modifier.size(17.dp))
     }
+}
+
+/**
+ * The two bulk closes behind a tab card's menu, with the copy for the
+ * confirmation each one has to pass first.
+ *
+ * [onlyLeft] is the argument `BrowserViewModel.closeOtherTabs` takes: null
+ * sweeps every other tab, true only the ones positioned before this card.
+ * Both are destructive at a scale the per-card Close button is not —
+ * "Reopen closed tab" restores exactly one tab, so a sweep of a dozen is
+ * effectively irreversible.
+ */
+private enum class BulkTabClose(
+    val onlyLeft: Boolean?,
+    val menuLabel: String,
+    val title: String,
+    val prompt: String,
+    val confirmLabel: String
+) {
+    OTHERS(
+        onlyLeft = null,
+        menuLabel = "Close other tabs",
+        title = "Close every other tab?",
+        prompt = "Every tab in this profile except this one is closed. Reopen closed tab brings back only the last one.",
+        confirmLabel = "Close others"
+    ),
+    LEFT(
+        onlyLeft = true,
+        menuLabel = "Close tabs to the left",
+        title = "Close the tabs before this one?",
+        prompt = "Every tab positioned before this one is closed. Reopen closed tab brings back only the last one.",
+        confirmLabel = "Close left"
+    )
 }
 
 /** Tab grid / list (spec section 12) — per-profile tab collection. */
@@ -157,6 +200,10 @@ fun TabGridScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
     val extras = LocalRoomExtras.current
     val grid = viewModel.profileSettings().tabLayout ==
         com.roombrowser.domain.model.TabLayout.GRID
+    // Which card asked for which sweep. It is held by the SCREEN, not by the
+    // card: a dialog composed from inside a lazy grid item dies with the item,
+    // and the confirm handler needs the tab id anyway.
+    var pendingBulkClose by remember { mutableStateOf<Pair<String, BulkTabClose>?>(null) }
     Column(Modifier.fillMaxSize().background(extras.background)) {
         LibraryTopBar(
             title = "Tabs (${tabs.size})",
@@ -198,6 +245,7 @@ fun TabGridScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                         // this card's tab first so the menu acts on the card
                         // it was opened from.
                         onDuplicate = { viewModel.selectTab(tab.id); viewModel.duplicateTab() },
+                        onCloseOthers = { sweep -> pendingBulkClose = tab.id to sweep },
                         onGroup = { viewModel.groupTab(tab.id, it) }
                     )
                 }
@@ -268,6 +316,24 @@ fun TabGridScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             }
         }
     }
+    pendingBulkClose?.let { (tabId, sweep) ->
+        com.roombrowser.main.ui.ConfirmDialog(
+            title = sweep.title,
+            text = sweep.prompt,
+            confirmLabel = sweep.confirmLabel,
+            onDismiss = { pendingBulkClose = null },
+            onConfirm = {
+                // closeOtherTabs() sweeps around the ACTIVE tab, so the card
+                // the menu was opened from has to become active first — the
+                // same select-then-act shape Duplicate uses above. selectTab
+                // assigns activeTabId synchronously, so the sweep that
+                // follows already sees the new anchor.
+                viewModel.selectTab(tabId)
+                viewModel.closeOtherTabs(sweep.onlyLeft)
+                pendingBulkClose = null
+            }
+        )
+    }
 }
 
 @Composable
@@ -282,6 +348,7 @@ private fun TabCard(
     onClose: () -> Unit,
     onPin: () -> Unit,
     onDuplicate: () -> Unit,
+    onCloseOthers: (BulkTabClose) -> Unit,
     onGroup: (String?) -> Unit
 ) {
     var menuOpen by remember { mutableStateOf(false) }
@@ -389,6 +456,20 @@ private fun TabCard(
                     DropdownMenuItem(
                         text = { Text("Duplicate") },
                         onClick = { menuOpen = false; onDuplicate() }
+                    )
+                    // BrowserViewModel.closeOtherTabs() shipped with no caller
+                    // at all — these two items are its only entry point, and
+                    // without them the only way to clear a crowded switcher
+                    // was to tap Close once per card. Both go through a
+                    // confirmation (owned by TabGridScreen): a sweep can take
+                    // out a dozen tabs and Reopen closed tab restores one.
+                    DropdownMenuItem(
+                        text = { Text(BulkTabClose.OTHERS.menuLabel) },
+                        onClick = { menuOpen = false; onCloseOthers(BulkTabClose.OTHERS) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(BulkTabClose.LEFT.menuLabel) },
+                        onClick = { menuOpen = false; onCloseOthers(BulkTabClose.LEFT) }
                     )
                     DropdownMenuItem(
                         text = { Text("Group: Shopping") },
@@ -602,6 +683,13 @@ fun DownloadsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     var detailsFor by remember { mutableStateOf<Long?>(null) }
+    // Both Delete affordances (the row's overflow menu and the details sheet)
+    // route through this instead of calling the view model: deleting a
+    // download is not "remove it from this list", it is
+    // DownloadEngine.delete() unlinking the published file off the device,
+    // and it had no confirmation at all behind a menu item sitting one row
+    // below "Copy link".
+    var confirmDeleteFor by remember { mutableStateOf<Long?>(null) }
 
     Column(Modifier.fillMaxSize().background(extras.background)) {
         LibraryTopBar(title = "Downloads", onClose = onClose)
@@ -623,7 +711,7 @@ fun DownloadsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                         onOpen = { viewModel.openDownload(download.id) },
                         onShare = { viewModel.shareDownload(download.id) },
                         onCopyLink = { copyDownloadLink(clipboard, context, download.url) },
-                        onDelete = { viewModel.deleteDownload(download.id) },
+                        onDelete = { confirmDeleteFor = download.id },
                         onDetails = { detailsFor = download.id }
                     )
                 }
@@ -647,7 +735,29 @@ fun DownloadsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             onRetry = { viewModel.retryDownload(shown.id) },
             onOpen = { viewModel.openDownload(shown.id) },
             onShare = { viewModel.shareDownload(shown.id) },
-            onDelete = { viewModel.deleteDownload(shown.id); detailsFor = null }
+            // The sheet stays up behind the dialog: cancelling returns the
+            // user to the record they were reading, not to the bare list.
+            onDelete = { confirmDeleteFor = shown.id }
+        )
+    }
+
+    // Resolved from the live list for the same reason the sheet is: the row
+    // may finish, fail or vanish while the question is on screen.
+    val pendingDelete = downloads.firstOrNull { it.id == confirmDeleteFor }
+    if (pendingDelete != null) {
+        com.roombrowser.main.ui.ConfirmDialog(
+            title = "Delete download?",
+            text = "\"${pendingDelete.fileName}\" is removed from this device, not just from this list. This cannot be undone.",
+            // Deliberately NOT the bare word "Delete": the menu item that
+            // opens this dialog is already labelled that, and a distinct
+            // confirm label keeps the two addressable apart.
+            confirmLabel = "Delete download",
+            onDismiss = { confirmDeleteFor = null },
+            onConfirm = {
+                viewModel.deleteDownload(pendingDelete.id)
+                confirmDeleteFor = null
+                detailsFor = null
+            }
         )
     }
 }

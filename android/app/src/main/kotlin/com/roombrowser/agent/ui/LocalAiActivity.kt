@@ -189,6 +189,16 @@ class LocalAiActivity : ComponentActivity() {
     override fun onDestroy() {
         onDeviceDownloads.shutdown()
         controller.shutdown()
+        // BACKSTOP for the native model handle. The try-model flow releases it
+        // when its result dialog is dismissed (see OnDeviceEngineSection), but
+        // that dialog's state is plain `remember`: a rotation or a swipe-away
+        // can take the window down with the model still loaded, and LlamaEngine
+        // is a process-lifetime `object` holding a native GGUF handle — hundreds
+        // of MB to several GB that the GC and onTrimMemory cannot see and that
+        // nothing else in the DEFAULT process would ever free. Idempotent (a
+        // no-op on a zero handle), and no race with the agent: that one loads
+        // into its OWN engine instance over in the ':browser' process.
+        runCatching { LlamaEngine.unload() }
         super.onDestroy()
     }
 
@@ -680,9 +690,23 @@ private fun OnDeviceEngineSection(
         tryOutput = output
         tryingId = null
     }
+    // Dismissing the result dialog is also where the model is RELEASED: the
+    // test needed it loaded, and nothing after it does. The only unload() in
+    // this file used to be on the DELETE path, so a single "Try" left a native
+    // GGUF handle — hundreds of MB to several GB, invisible to the GC and to
+    // onTrimMemory — resident in the default process for as long as the process
+    // lived. Nothing breaks by letting go: a chat turn loads the model it names
+    // on demand (LocalLlamaGateway, in the ':browser' process), and tapping Try
+    // again simply loads again.
+    fun dismissTryResult() {
+        tryOutput = null
+        // unload() is idempotent and safe when nothing is loaded (it returns on
+        // a zero handle) — a try that failed before loading lands here too.
+        runCatching { LlamaEngine.unload() }
+    }
     tryOutput?.let { output ->
         AlertDialog(
-            onDismissRequest = { tryOutput = null },
+            onDismissRequest = { dismissTryResult() },
             title = { Text("Model test — ${tryResultId ?: ""}") },
             text = {
                 Text(
@@ -695,7 +719,7 @@ private fun OnDeviceEngineSection(
                 )
             },
             confirmButton = {
-                TextButton(onClick = { tryOutput = null }) { Text("Close") }
+                TextButton(onClick = { dismissTryResult() }) { Text("Close") }
             }
         )
     }

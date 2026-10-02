@@ -265,12 +265,30 @@ fun RoomBrowserTheme(
     if (!view.isInEditMode) {
         DisposableEffect(extras0.dark) {
             val window = (view.context as? Activity)?.window
-            if (window != null) {
-                val controller = WindowCompat.getInsetsController(window, view)
+            val controller = window?.let { WindowCompat.getInsetsController(it, view) }
+            // SAVE/RESTORE, not fire-and-forget — the same idiom
+            // FullscreenMediaHost uses for systemBarsBehavior. The old
+            // onDispose restored nothing, so this mutation outlived the
+            // composition that made it: a nested theme scope, or a dark→light
+            // spec swap, left the WINDOW carrying the departed composition's
+            // bar-icon contrast (light icons over a light status bar = an
+            // invisible clock, battery and navigation buttons) until something
+            // else happened to set it again.
+            val previousLightStatusBars = controller?.isAppearanceLightStatusBars
+            val previousLightNavigationBars = controller?.isAppearanceLightNavigationBars
+            if (controller != null) {
                 controller.isAppearanceLightStatusBars = !extras0.dark
                 controller.isAppearanceLightNavigationBars = !extras0.dark
             }
-            onDispose { }
+            onDispose {
+                if (controller != null &&
+                    previousLightStatusBars != null &&
+                    previousLightNavigationBars != null
+                ) {
+                    controller.isAppearanceLightStatusBars = previousLightStatusBars
+                    controller.isAppearanceLightNavigationBars = previousLightNavigationBars
+                }
+            }
         }
     }
     RoomPreviewTheme(spec, content)
