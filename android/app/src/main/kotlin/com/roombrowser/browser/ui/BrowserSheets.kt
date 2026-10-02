@@ -111,11 +111,22 @@ import kotlinx.coroutines.launch
  * The refresh slot doubles as a STOP control while a page is loading
  * (the standard browser pattern), and greys out on the start page where
  * there is nothing to reload.
+ *
+ * IT IS ALSO THE AGENT'S SLOT WHEN THE PILL IS OFF. With "Show AI Agent
+ * button" switched off there is no floating pill, and the agent would have
+ * no entry point inside the page at all — so this one slot becomes the way
+ * in, carrying the pill's own icon. Reload is not lost with it: the omnibox
+ * row above has carried the same Reload / Stop control all along, so the
+ * only thing that moves is which thumb reaches it. The swap follows the
+ * setting alone rather than the pill's live visibility (`showAgentButton ||
+ * running`), because a slot that changes identity mid-task is worse than one
+ * that is predictable.
  */
 @Composable
 fun BrowserBottomBar(
     viewModel: BrowserViewModel,
     onOpenTabs: () -> Unit,
+    onOpenAgent: () -> Unit,
     onShowPageActions: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -159,19 +170,35 @@ fun BrowserBottomBar(
                 )
             }
             // Refresh — becomes Stop while a page is loading; disabled on
-            // the start page (nothing to reload there).
-            IconButton(
-                onClick = { if (page.loading) viewModel.stopLoading() else viewModel.reload() },
-                enabled = !page.isHomepage,
-                modifier = Modifier.semantics {
-                    contentDescription = if (page.loading) "Stop loading" else "Reload page"
+            // the start page (nothing to reload there). It yields the slot to
+            // the agent whenever the floating pill is switched off (see the
+            // header comment): one entry point has to exist, and the omnibox
+            // row already carries an identical Reload / Stop.
+            if (viewModel.agent.settings.showAgentButton) {
+                IconButton(
+                    onClick = { if (page.loading) viewModel.stopLoading() else viewModel.reload() },
+                    enabled = !page.isHomepage,
+                    modifier = Modifier.semantics {
+                        contentDescription = if (page.loading) "Stop loading" else "Reload page"
+                    }
+                ) {
+                    Icon(
+                        if (page.loading) Icons.Filled.Close else Icons.Filled.Refresh,
+                        contentDescription = null,
+                        tint = if (page.isHomepage) extras.icon.copy(alpha = 0.35f) else extras.icon
+                    )
                 }
-            ) {
-                Icon(
-                    if (page.loading) Icons.Filled.Close else Icons.Filled.Refresh,
-                    contentDescription = null,
-                    tint = if (page.isHomepage) extras.icon.copy(alpha = 0.35f) else extras.icon
-                )
+            } else {
+                IconButton(
+                    onClick = onOpenAgent,
+                    modifier = Modifier.semantics { contentDescription = "Open Room Agent" }
+                ) {
+                    Icon(
+                        Icons.Filled.AutoAwesome,
+                        contentDescription = null,
+                        tint = extras.icon
+                    )
+                }
             }
             // Tabs with live count badge
             Box {

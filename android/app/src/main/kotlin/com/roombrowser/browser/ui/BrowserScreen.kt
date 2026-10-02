@@ -221,6 +221,7 @@ fun BrowserScreen(
                     ),
                     viewModel = viewModel,
                     onOpenTabs = { route = BrowserRoute.Tabs },
+                    onOpenAgent = { agentPanelExpanded = true },
                     onShowPageActions = { showPageActions = true }
                 )
             }

@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *     -> click the in-page link -> /page2 (real WebView navigation)
  *     -> bottom-bar "Go back" (desc) -> page ONE is visible again
  *     -> bottom-bar "Go forward" (desc) -> page TWO is visible again
- *     -> bottom-bar "Reload page" (desc) -> server hit counter for /page2 rises
+ *     -> omnibox "Reload" (desc) -> server hit counter for /page2 rises
  *     -> SYSTEM Back on a page with no back history left:
  *        "Exit Room Browser?" confirmation appears (app does NOT leave)
  *        -> "Cancel" -> still on page TWO, dialog gone
@@ -244,7 +244,8 @@ class BrowserNavigationE2eTest {
             "'Go back' button" to By.desc("Go back"),
             "'Wallet' button" to By.desc("Wallet"),
             "'Go forward' button" to By.desc("Go forward"),
-            "'Reload page' button" to By.desc("Reload page"),
+            "'Reload' button (omnibox row)" to By.desc("Reload"),
+            "'Open Room Agent' button" to By.desc("Open Room Agent"),
             "'Exit Room Browser?' dialog" to By.text("Exit Room Browser?"),
             "'Back to start page' action" to By.text("Back to start page"),
             "omni_field" to By.desc("omni_field"),
@@ -518,11 +519,18 @@ class BrowserNavigationE2eTest {
             hasText("ROOM-E2E-PAGE-TWO", 20_000)
         )
 
-        // ---- 5. Bottom-bar Reload: the server must see a fresh hit --------
+        // ---- 5. Reload: the server must see a fresh hit -------------------
+        // NOT the bottom-bar slot any more: that slot belongs to the agent
+        // whenever "Show AI Agent button" is off, which is the default and
+        // therefore this run's state (the pill has no other entry point
+        // inside the page). What the step verifies is unchanged — a reload
+        // re-requests the page — so it drives the control that is always
+        // there, the one in the omnibox row. Same dual role as the bar's:
+        // it reads "Stop loading" while a load is in flight.
         val hitsBefore = page2Hits.get()
         assertTrue(
-            "Bottom-bar 'Reload page' must be clickable\n${uiTree()}",
-            clickDesc("Reload page", 10_000)
+            "Reload must be clickable\n${uiTree()}",
+            clickDesc("Reload", 10_000)
         )
         assertTrue(
             "Reload must re-request /page2 (hits before=$hitsBefore, now=${page2Hits.get()})\n${uiTree()}",

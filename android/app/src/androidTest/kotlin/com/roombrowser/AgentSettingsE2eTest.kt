@@ -985,6 +985,23 @@ class AgentSettingsE2eTest {
             !hasDesc("AI Agent", 4_000)
         )
 
+        // ---- 8b. The agent's slot in the bottom bar ------------------------
+        // With the pill off there is no floating button, so the bottom bar's
+        // refresh slot becomes the way in — the pill's own icon, one tap to
+        // the panel. A toggle that removes the only entry point is worse than
+        // no toggle, so the swap is asserted rather than assumed.
+        assertTrue(
+            "With the pill off, the bottom bar must offer the agent; UI:\n" + uiTree(),
+            hasDesc("Open Room Agent", 8_000)
+        )
+        assertTrue(
+            "That slot must open the agent panel",
+            clickDesc("Open Room Agent", 6_000) &&
+                (hasDesc("agent_model", 10_000) || hasText("Room Agent", 10_000))
+        )
+        device.pressBack()
+        device.waitForIdle(1_000)
+
         // ---- 9. AgentSessionsActivity opens from the page menu -------------
         assertTrue(
             "AI Agent chats must open",
