@@ -27,8 +27,11 @@ package com.roombrowser.browser.wallet.dapp
  *    `signMessage`/`signPersonalMessage({message})`,
  *    `signAndExecuteTransactionBlock`/`signAndExecuteTransaction({...})`.
  *  - `window.keplr` — Keplr-compatible Cosmos provider: `enable(chainId)`,
- *    `getKey(chainId)`, `signAmino`, `signDirect`, `signArbitrary`, and the
- *    `keplr_keystorechange` event (fired whenever the accounts change).
+ *    `getKey(chainId)`, `getOfflineSigner`/`getOfflineSignerOnlyAmino`/
+ *    `getOfflineSignerAuto`, `signAmino`, `signDirect`, `signArbitrary`, and
+ *    the `keplr_keystorechange` event (fired whenever the accounts change).
+ *    The offline signers are ALSO on the global (`window.getOfflineSigner`
+ *    and friends), which is the name CosmJS documents and most dApps call.
  *  - `window.BitcoinProvider` — `connect`, `getAccounts`, `signMessage`.
  *    `signTransaction` is deliberately absent-in-effect: it rejects with
  *    4200 (see the comment at its definition).
@@ -51,9 +54,11 @@ package com.roombrowser.browser.wallet.dapp
  *    as kind "rpc" so the page always sees the wallet's ACTIVE network —
  *    no prompt is ever needed for reads.
  *  - Native pushes `window.__roomWalletEmit(event, payloadJson)` for
- *    `accountsChanged` (`["0x…"]`) and `chainChanged` (`"0x…"`); solana/sui
- *    listeners receive the mapped `accountChanged` event with the first
- *    address as payload, Cosmos listeners get `keplr_keystorechange`, and an
+ *    `accountsChanged` (`["0x…"]`) and `chainChanged` (`"0x…"`). Only the EVM
+ *    provider is told the EVM address list; the other families get the same
+ *    event with a null payload — the "whatever you cached is stale" signal —
+ *    because an EVM address is not an account on their chain. Cosmos
+ *    listeners get `keplr_keystorechange`, and an
  *    unhandled event name surfaces on `window.ethereum`'s EIP-1193 `message`
  *    listeners as `{type, data}`.
  *  - A rejected call carrying 4900/4901 means native lost the wallet or the
@@ -686,10 +691,54 @@ object RoomWalletScript {
       return { signed: signDoc, signature: String(signature) };
     }
 
+    // CosmJS's entry point, and the FIRST call nearly every Cosmos dApp
+    // makes: `window.getOfflineSigner(chainId)`, then `getAccounts()` on the
+    // result, then `SigningStargateClient.connectWithSigner(rpc, signer)`.
+    // Without it the dApp dies on `window.getOfflineSigner is not a function`
+    // before it can even ask to connect — the whole family, not one site.
+    //
+    // getAccounts goes through the native getKey rather than the page's own
+    // cached address, because that is the path the engine permission-checks:
+    // a dApp that never called enable() is refused (4100) instead of being
+    // handed an address it was never granted. The signing half delegates
+    // straight back to window.keplr, so a CosmJS client ends up signing
+    // through the same reviewed signAmino/signDirect the dApp would call.
+    function keplrOfflineSigner(chainId) {
+      var id = typeof chainId === 'string' ? chainId : null;
+      return {
+        getAccounts: function () {
+          return window.keplr.getKey(id).then(function (key) {
+            var address = key && typeof key.bech32Address === 'string' ? key.bech32Address : null;
+            if (address === null) throw bridgeError(-32603, 'Cosmos key returned no address');
+            // pubKey is null for the reason keplrKey documents: the engine
+            // does not publish public keys. Address-only flows work; a
+            // CosmJS client that needs the pubkey to BUILD a sign doc cannot
+            // be served by this wallet yet.
+            return [{
+              address: address,
+              algo: key && typeof key.algo === 'string' ? key.algo : 'secp256k1',
+              pubkey: key ? key.pubKey : null
+            }];
+          });
+        },
+        signAmino: function (signer, signDoc) {
+          return window.keplr.signAmino(id, signer, signDoc);
+        },
+        signDirect: function (signer, signDoc) {
+          return window.keplr.signDirect(id, signer, signDoc);
+        }
+      };
+    }
+
     window.keplr = {
       isRoomBrowser: true,
       version: '0.1.0-roombrowser',
       mode: 'extension',
+      getOfflineSigner: keplrOfflineSigner,
+      getOfflineSignerOnlyAmino: keplrOfflineSigner,
+      getOfflineSignerAuto: function (chainId) {
+        return Promise.resolve(keplrOfflineSigner(chainId));
+      },
       enable: function (chainId) {
         var params = { chainId: typeof chainId === 'string' ? chainId : null };
         return send(CHAIN_COSMOS, 'request', 'enable', params).then(function (value) {
@@ -763,6 +812,18 @@ object RoomWalletScript {
       off: cosmosEvents.removeListener,
       removeListener: cosmosEvents.removeListener
     };
+
+    // The same signer, on the global. CosmJS's own documentation and a large
+    // body of dApp code call window.getOfflineSigner directly, so exposing it
+    // only under window.keplr would leave those apps broken in exactly the
+    // way this is here to fix.
+    try {
+      window.getOfflineSigner = keplrOfflineSigner;
+      window.getOfflineSignerOnlyAmino = keplrOfflineSigner;
+      window.getOfflineSignerAuto = function (chainId) {
+        return Promise.resolve(keplrOfflineSigner(chainId));
+      };
+    } catch (e) {}
 
     var bitcoinEvents = eventsFor('bitcoin');
 

@@ -1132,4 +1132,29 @@ class WalletBridgeProtocolTest {
         assertThat(script).contains("state.solanaPublicKey = null;")
         assertThat(script).contains("state.aptosAddress = null;")
     }
+
+    /**
+     * CosmJS's entry point. Without `getOfflineSigner` a Cosmos dApp dies on
+     * "window.getOfflineSigner is not a function" before it can ask to
+     * connect at all — the whole family, not one site.
+     */
+    @Test
+    fun `cosmos dApps get the offline signer CosmJS asks for`() {
+        val script = RoomWalletScript.SCRIPT
+        assertThat(script).contains("function keplrOfflineSigner(")
+        // On the provider, under all three Keplr names...
+        assertThat(script).contains("getOfflineSigner: keplrOfflineSigner")
+        assertThat(script).contains("getOfflineSignerOnlyAmino: keplrOfflineSigner")
+        assertThat(script).contains("getOfflineSignerAuto: function (chainId)")
+        // ...and on the global, which is the name CosmJS documents.
+        assertThat(script).contains("window.getOfflineSigner = keplrOfflineSigner")
+        assertThat(script).contains("window.getOfflineSignerOnlyAmino = keplrOfflineSigner")
+        assertThat(script).contains("window.getOfflineSignerAuto = function (chainId)")
+        // getAccounts is permission-checked: it goes through the native
+        // getKey rather than serving the page's own cached address.
+        assertThat(script).contains("return window.keplr.getKey(id).then(")
+        // Signing delegates back to the reviewed keplr methods.
+        assertThat(script).contains("return window.keplr.signAmino(id, signer, signDoc);")
+        assertThat(script).contains("return window.keplr.signDirect(id, signer, signDoc);")
+    }
 }
