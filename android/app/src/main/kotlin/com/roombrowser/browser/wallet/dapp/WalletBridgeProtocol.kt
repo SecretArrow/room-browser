@@ -321,6 +321,33 @@ object WalletBridgeProtocol {
     fun isReadonlyRpcMethod(method: String): Boolean = method in READONLY_RPC_METHODS
 
     /**
+     * The answer to a chain-IDENTITY call, or null when [method] is not one.
+     *
+     * These two are answered from the wallet's own configuration instead of
+     * being relayed, and that is a correctness fix rather than an
+     * optimisation. `eth_chainId` is what a dApp calls immediately after
+     * `eth_requestAccounts`, and wagmi-based apps (Uniswap among them) treat
+     * a failure there as the connect itself failing — the user sees
+     * "Error connecting" and "Try again", which retries the same doomed
+     * round trip forever.
+     *
+     * A relayed `eth_chainId` fails whenever the active network's RPC is
+     * unreachable: rate-limited, blocked on the user's network, or simply
+     * down. None of that has anything to do with which chain this wallet
+     * signs for, and a wallet whose own chain id depends on a third-party
+     * endpoint is a wallet that cannot be connected to while that endpoint
+     * is blocked. The chain is a local fact, so it is answered locally.
+     */
+    fun localChainAnswer(method: String, network: NetworkConfig?): String? {
+        val chainId = network?.chainId?.toLongOrNull() ?: return null
+        return when (method) {
+            "eth_chainId" -> JsonPrimitive("0x" + chainId.toString(16)).toString()
+            "net_version" -> JsonPrimitive(chainId.toString()).toString()
+            else -> null
+        }
+    }
+
+    /**
      * RPC relay params as a positional list (what JSON-RPC expects).
      * An array becomes its elements, a missing/null params becomes an empty
      * list; any other shape (a page calling the interface directly with a

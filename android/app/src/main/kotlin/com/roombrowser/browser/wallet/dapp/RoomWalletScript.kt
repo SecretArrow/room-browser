@@ -216,6 +216,54 @@ object RoomWalletScript {
       return null;
     }
 
+    // Base58 (Bitcoin alphabet) decode, for PublicKey.toBytes(). Returns
+    // null rather than a wrong answer for anything that is not valid base58.
+    var B58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    function base58ToBytes(text) {
+      try {
+        var bytes = [0];
+        for (var i = 0; i < text.length; i++) {
+          var value = B58_ALPHABET.indexOf(text.charAt(i));
+          if (value < 0) return null;
+          var carry = value;
+          for (var j = 0; j < bytes.length; j++) {
+            carry += bytes[j] * 58;
+            bytes[j] = carry & 0xff;
+            carry >>= 8;
+          }
+          while (carry > 0) { bytes.push(carry & 0xff); carry >>= 8; }
+        }
+        for (var k = 0; k < text.length && text.charAt(k) === '1'; k++) bytes.push(0);
+        return new Uint8Array(bytes.reverse());
+      } catch (e) {
+        return null;
+      }
+    }
+
+    // Phantom hands dApps a PublicKey OBJECT, never a string:
+    // `(await window.solana.connect()).publicKey.toBase58()` is the first
+    // thing nearly every Solana dApp does, and against a bare string that
+    // is a TypeError which the dApp reports as a failed connection. This is
+    // the subset of the PublicKey surface dApps actually call.
+    function solanaPublicKeyOf(base58) {
+      if (typeof base58 !== 'string' || !base58) return null;
+      var decoded = null;
+      return {
+        toBase58: function () { return base58; },
+        toString: function () { return base58; },
+        toJSON: function () { return base58; },
+        equals: function (other) {
+          if (other === null || other === undefined) return false;
+          if (typeof other === 'string') return other === base58;
+          try { return String(other.toBase58()) === base58; } catch (e) { return false; }
+        },
+        toBytes: function () {
+          if (decoded === null) decoded = base58ToBytes(base58);
+          return decoded;
+        }
+      };
+    }
+
     // EIP-1193: the provider announces `connect` the first time it knows a
     // chain id (from a read or a native chainChanged push).
     function noteChainId(value) {
@@ -293,7 +341,7 @@ object RoomWalletScript {
           var address = addressOf(value);
           if (address === null) return;
           if (entry.chain === CHAIN_SOLANA) {
-            state.solanaPublicKey = address;
+            state.solanaPublicKey = solanaPublicKeyOf(address);
           } else if (entry.chain === CHAIN_APTOS) {
             state.aptosAddress = address;
           } else if (entry.chain === CHAIN_COSMOS) {
@@ -333,9 +381,24 @@ object RoomWalletScript {
           return;
         }
         cacheFromResult(entry, value);
-        entry.resolve(value);
+        entry.resolve(solanaShaped(entry, value));
       } catch (e) {}
     };
+
+    // The Solana connect result carries its key in the same shape the
+    // provider getter does. Rewritten in place, so the cached state and the
+    // resolved value are the same object and `provider.publicKey === (await
+    // connect()).publicKey` stays true — which is what it is on Phantom.
+    function solanaShaped(entry, value) {
+      try {
+        if (entry.chain !== CHAIN_SOLANA) return value;
+        if (value && typeof value === 'object' && typeof value.publicKey === 'string') {
+          var key = solanaPublicKeyOf(value.publicKey);
+          if (key !== null) value.publicKey = key;
+        }
+      } catch (e) {}
+      return value;
+    }
 
     function addListener(group, event, cb) {
       try {
@@ -378,17 +441,23 @@ object RoomWalletScript {
             state.selectedAddress = payload.length ? String(payload[0]) : null;
           }
           dispatch('evm', 'accountsChanged', payload);
-          var first = Array.isArray(payload) && payload.length ? String(payload[0]) : null;
-          dispatch('solana', 'accountChanged', first);
-          dispatch('sui', 'accountChanged', first);
-          // Every other family's cached address belonged to the account that
-          // just went away: drop it and let the dApp re-read (that is what
-          // Keplr's keystorechange means).
+          // The payload is the EVM address list, and the EVM provider is the
+          // only one that can be told it. Broadcasting it to the other
+          // families handed a Solana dApp a hex string where Phantom gives
+          // it a PublicKey — an account that cannot exist on its chain, in
+          // place of the account it actually holds. They get the null
+          // "re-read" signal instead, which is the one thing this push does
+          // prove about them: whatever they cached is no longer current.
+          state.solanaPublicKey = null;
+          state.aptosAddress = null;
           state.cosmosAddress = null;
           state.bitcoinAddress = null;
           state.tronAddress = null;
+          dispatch('solana', 'accountChanged', null);
+          dispatch('sui', 'accountChanged', null);
+          dispatch('bitcoin', 'accountsChanged', null);
+          // Keplr's re-read signal; it carries no payload by design.
           dispatch('cosmos', 'keplr_keystorechange', null);
-          dispatch('bitcoin', 'accountsChanged', payload);
         } else if (event === 'chainChanged') {
           if (typeof payload === 'string') noteChainId(payload);
           dispatch('evm', 'chainChanged', payload);

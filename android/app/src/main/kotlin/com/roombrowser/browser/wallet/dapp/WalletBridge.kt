@@ -205,6 +205,10 @@ class WalletBridge(
      * Read-only relay to the chain's active network. Needs only a
      * NetworkConfig + method + params — the engine is not involved, so it
      * works even while no engine is bound.
+     *
+     * Chain-identity calls never reach the network: see
+     * [WalletBridgeProtocol.localChainAnswer] for why answering them from
+     * local configuration is a correctness fix and not a shortcut.
      */
     private fun relay(call: WalletRpcCall) {
         if (call.chainType != ChainType.EVM || !WalletBridgeProtocol.isReadonlyRpcMethod(call.method)) {
@@ -219,20 +223,42 @@ class WalletBridge(
             return
         }
         val network = activeNetworkProvider(ChainType.EVM)
-        val endpoint = network?.rpcUrls?.firstOrNull { it.isNotBlank() }
-        if (endpoint == null) {
+        WalletBridgeProtocol.localChainAnswer(call.method, network)?.let { answer ->
+            respondSuccess(call.id, answer)
+            return
+        }
+        // Every configured endpoint is a candidate, in the order the network
+        // lists them. Only the first was ever tried, which made the others
+        // decorative: a network whose primary RPC is rate-limited or blocked
+        // failed every read even though a working endpoint was configured
+        // right behind it. ONLY a connectivity failure moves on to the next
+        // URL — an RPC that answered, however unhappily, is the chain's
+        // verdict and is passed through rather than masked by a retry.
+        val endpoints = network?.rpcUrls?.filter { it.isNotBlank() }.orEmpty()
+        if (endpoints.isEmpty()) {
             respondError(call.id, WalletBridgeError(WalletBridgeError.CHAIN_DISCONNECTED, "No active EVM network"))
             return
         }
         relayScope.launch {
-            try {
-                val result = rpc.call(endpoint, call.method, params)
-                respondSuccess(call.id, result.toString())
-            } catch (e: WalletException) {
-                respondError(call.id, WalletBridgeProtocol.relayError(e))
-            } catch (e: Exception) {
-                respondError(call.id, WalletBridgeError(WalletBridgeError.INTERNAL, "RPC relay failed"))
+            for (endpoint in endpoints) {
+                try {
+                    val result = rpc.call(endpoint, call.method, params)
+                    respondSuccess(call.id, result.toString())
+                    return@launch
+                } catch (e: WalletException.NetworkUnavailable) {
+                    // The only retryable case: nothing answered.
+                } catch (e: WalletException) {
+                    respondError(call.id, WalletBridgeProtocol.relayError(e))
+                    return@launch
+                } catch (e: Exception) {
+                    // Transport-level failure outside the typed hierarchy —
+                    // also nothing answered.
+                }
             }
+            respondError(
+                call.id,
+                WalletBridgeError(WalletBridgeError.CHAIN_DISCONNECTED, "No RPC endpoint answered")
+            )
         }
     }
 

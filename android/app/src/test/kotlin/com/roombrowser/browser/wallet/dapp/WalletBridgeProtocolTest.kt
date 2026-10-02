@@ -3,6 +3,7 @@ package com.roombrowser.browser.wallet.dapp
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.browser.wallet.DappRequest
 import com.roombrowser.domain.wallet.model.ChainType
+import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
@@ -604,6 +605,68 @@ class WalletBridgeProtocolTest {
         )
     }
 
+    /**
+     * Chain identity is answered from local configuration, never relayed.
+     * A wallet whose `eth_chainId` depends on a third-party RPC cannot be
+     * connected to while that RPC is blocked — which is exactly how a
+     * wagmi dApp (Uniswap) reports "Error connecting, try again".
+     */
+    @Test
+    fun `chain identity is answered locally, in each method's own shape`() {
+        val mainnet = evmNetwork(chainId = "1")
+        // eth_chainId is a JSON-quoted hex quantity with no leading zeros.
+        assertThat(WalletBridgeProtocol.localChainAnswer("eth_chainId", mainnet))
+            .isEqualTo("\"0x1\"")
+        // net_version is the DECIMAL chain id as a string — not the hex form.
+        assertThat(WalletBridgeProtocol.localChainAnswer("net_version", mainnet))
+            .isEqualTo("\"1\"")
+
+        val polygon = evmNetwork(chainId = "137")
+        assertThat(WalletBridgeProtocol.localChainAnswer("eth_chainId", polygon))
+            .isEqualTo("\"0x89\"")
+        assertThat(WalletBridgeProtocol.localChainAnswer("net_version", polygon))
+            .isEqualTo("\"137\"")
+
+        // No leading zeros: chain 16 must be 0x10, never 0x010.
+        assertThat(WalletBridgeProtocol.localChainAnswer("eth_chainId", evmNetwork(chainId = "16")))
+            .isEqualTo("\"0x10\"")
+    }
+
+    @Test
+    fun `only the two identity methods are answered locally`() {
+        val network = evmNetwork(chainId = "1")
+        // Real reads still go to the chain: a cached block number or balance
+        // would be a lie, and those are the calls the relay exists for.
+        for (method in listOf("eth_blockNumber", "eth_getBalance", "eth_call", "eth_gasPrice", "eth_estimateGas")) {
+            assertThat(WalletBridgeProtocol.localChainAnswer(method, network)).isNull()
+        }
+        // Unknown methods are not identity calls either.
+        assertThat(WalletBridgeProtocol.localChainAnswer("eth_sendTransaction", network)).isNull()
+    }
+
+    @Test
+    fun `chain identity falls back to the relay when there is no usable chain id`() {
+        // No active network: null, so the caller reports CHAIN_DISCONNECTED
+        // rather than inventing a chain id out of nothing.
+        assertThat(WalletBridgeProtocol.localChainAnswer("eth_chainId", null)).isNull()
+        // A custom network with a non-numeric id has no hex form; it must
+        // not be guessed at, and must not throw.
+        assertThat(WalletBridgeProtocol.localChainAnswer("eth_chainId", evmNetwork(chainId = "mainnet")))
+            .isNull()
+        assertThat(WalletBridgeProtocol.localChainAnswer("net_version", evmNetwork(chainId = "mainnet")))
+            .isNull()
+    }
+
+    /** A minimal EVM network for the chain-identity tests. */
+    private fun evmNetwork(chainId: String) = NetworkConfig(
+        id = "EVM:$chainId",
+        chainType = ChainType.EVM,
+        chainId = chainId,
+        name = "test",
+        rpcUrls = listOf("https://rpc.invalid"),
+        nativeSymbol = "ETH"
+    )
+
     // ------------------------------------------------------------------
     // Success-value shapes + permission keys
     // ------------------------------------------------------------------
@@ -1024,5 +1087,49 @@ class WalletBridgeProtocolTest {
         assertThat(script).contains("defaultAddress")
         assertThat(script).contains("toSun")
         assertThat(script).contains("fromSun")
+    }
+
+    /**
+     * Phantom hands dApps a PublicKey OBJECT. `(await connect()).publicKey
+     * .toBase58()` is the first thing nearly every Solana dApp does, and a
+     * bare base58 string turns that into a TypeError the dApp reports as a
+     * failed connection.
+     */
+    @Test
+    fun `solana connect results carry a publicKey object, not a bare string`() {
+        val script = RoomWalletScript.SCRIPT
+        assertThat(script).contains("function solanaPublicKeyOf(")
+        assertThat(script).contains("function base58ToBytes(")
+        // The surface dApps actually call.
+        assertThat(script).contains("toBase58")
+        assertThat(script).contains("toBytes")
+        assertThat(script).contains("equals")
+        // The provider getter and the resolved connect value are shaped by
+        // the same factory, so they cannot disagree.
+        assertThat(script).contains("state.solanaPublicKey = solanaPublicKeyOf(address)")
+        assertThat(script).contains("entry.resolve(solanaShaped(entry, value))")
+    }
+
+    /**
+     * The accountsChanged payload is the EVM address list. Handing it to a
+     * Solana provider gave that dApp a hex string where Phantom gives it a
+     * PublicKey — an account that cannot exist on its chain. The other
+     * families get the null re-read signal instead.
+     */
+    @Test
+    fun `an evm account change is never handed to the non-evm providers`() {
+        val script = RoomWalletScript.SCRIPT
+        assertThat(script).contains("dispatch('evm', 'accountsChanged', payload)")
+        assertThat(script).contains("dispatch('solana', 'accountChanged', null)")
+        assertThat(script).contains("dispatch('sui', 'accountChanged', null)")
+        assertThat(script).contains("dispatch('bitcoin', 'accountsChanged', null)")
+        assertThat(script).contains("dispatch('cosmos', 'keplr_keystorechange', null)")
+        // The EVM payload must not be threaded into any non-EVM dispatch.
+        assertThat(script).doesNotContain("dispatch('solana', 'accountChanged', first)")
+        assertThat(script).doesNotContain("dispatch('bitcoin', 'accountsChanged', payload)")
+        // Every family's cache is dropped, so a stale key cannot be served
+        // after the account it belonged to is gone.
+        assertThat(script).contains("state.solanaPublicKey = null;")
+        assertThat(script).contains("state.aptosAddress = null;")
     }
 }
