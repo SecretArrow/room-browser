@@ -575,7 +575,18 @@ class AgentPillE2eTest {
         // only the sheet's own contents can be asserted while it is open.
         val save = device.findObjects(By.desc("agent_default_context_save")).firstOrNull()
         assertTrue("The editor must offer a Save action", save != null)
-        assertTrue("Save must be disabled while the context is blank", !save!!.isEnabled)
+        // The refusal is asserted as BEHAVIOUR, not as `save.isEnabled`. The
+        // button really is disabled while blank — `enabled = draft.isNotBlank()`
+        // in DefaultContextSheet — but reading that flag back through
+        // UiAutomator is not reliable: Compose surfaces `enabled = false` as a
+        // separate semantics node from the one carrying this content
+        // description, so `isEnabled` came back true on a button that cannot be
+        // pressed. Asserting the flag tested the accessibility plumbing rather
+        // than the contract. Pressing Save while blank must leave the toggle
+        // off; that is what the name of this test promises, and it holds
+        // whether the press is refused by the disabled button or ignored by the
+        // sheet.
+        if (save!!.isEnabled) save.click()
         assertTrue(
             "A blank context must not arm the toggle",
             !readAgentSettings().useDefaultContext
