@@ -361,6 +361,63 @@ class AgentSettingsE2eTest {
         try { Thread.sleep(300) } catch (_: InterruptedException) { }
     }
 
+    /** True when a node's VISIBLE rect is empty — i.e. it is composed, and
+     *  therefore still in the a11y tree, but scrolled out of the viewport. */
+    private fun isClippedAway(node: UiObject2): Boolean = try {
+        val b = node.visibleBounds
+        b.width() <= 0 || b.height() <= 0
+    } catch (_: Exception) {
+        true
+    }
+
+    /** Slow ~80px downward drag: reveals EARLIER messages in the chat list.
+     *  Deliberately small (the CI panel's chat viewport is only ~157px tall
+     *  on the 320x640 mdpi profile) and slow, so it cannot fling past the
+     *  target; the caller re-checks visibility after every step. */
+    private fun nudgeChatDown() {
+        val cx = device.displayWidth / 2
+        val cy = device.displayHeight / 2
+        device.swipe(cx, cy - 40, cx, cy + 40, 200)
+        device.waitForIdle(500)
+        try { Thread.sleep(200) } catch (_: InterruptedException) { }
+    }
+
+    /**
+     * Taps a chat bubble's copy affordance and waits for its "Copied" label.
+     *
+     * `clickDesc` will happily FIND an off-screen node, but it cannot TAP one.
+     * The chat auto-scrolls to the bottom as the reply streams in, which can
+     * carry the USER bubble's copy icon just above the panel's top edge;
+     * LazyColumn still composes that item, so it stays in the a11y tree with
+     * an EMPTY visible rect. `UiObject2.click()` then falls back to the centre
+     * of the UNCLIPPED rect — a y outside the list — and the tap is lost
+     * without an error (CI run 37040458144: `No overlap between
+     * Rect(256,234-304,255) and Rect(0,258-320,415). Ignoring.` immediately
+     * followed by `Clicking on (280, 244).`). The label lives ~1.8s, so the
+     * symptom is a missing "Copied" rather than a failed click.
+     *
+     * So: nudge the list until the affordance is genuinely on screen, then tap
+     * its VISIBLE centre through the shell (see `clickCenter` for why injected
+     * gestures are avoided on the CI runner). Poll for the label straight
+     * away — an idle-wait here would eat most of the window it observes.
+     */
+    private fun copyAndSeeFeedback(desc: String): Boolean {
+        repeat(3) {
+            var node = device.wait(Until.findObject(By.desc(desc)), 3_000) ?: return@repeat
+            var nudges = 0
+            while (isClippedAway(node) && nudges < 4) {
+                nudgeChatDown()
+                nudges++
+                node = device.wait(Until.findObject(By.desc(desc)), 2_000) ?: return@repeat
+            }
+            if (isClippedAway(node)) return@repeat
+            val b = node.visibleBounds
+            device.executeShellCommand("input tap ${b.centerX()} ${b.centerY()}")
+            if (device.wait(Until.hasObject(By.text("Copied")), 2_500)) return true
+        }
+        return false
+    }
+
     /**
      * The engine surface must be up CONTINUOUSLY for [stableMs] — a surface
      * that dies (':browser' process self-restart while rebinding to this
@@ -790,7 +847,7 @@ class AgentSettingsE2eTest {
         )
         assertTrue(
             "copying the previously sent text must show the Copied feedback",
-            clickDesc("agent_copy_user", 5_000) && hasText("Copied", 3_000)
+            copyAndSeeFeedback("agent_copy_user")
         )
 
         // ---- 8. Show/hide the floating agent button ------------------------
