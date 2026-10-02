@@ -381,16 +381,36 @@ class AgentSettingsE2eTest {
      * bounds, so the ancestors are the answer.
      */
     private fun copyAffordanceReport(desc: String): String {
-        val node = device.findObjects(By.desc(desc)).firstOrNull()
-            ?: return "$desc: NOT IN THE TREE"
         val sb = StringBuilder("screen=${device.displayWidth}x${device.displayHeight}")
-        sb.append("\n$desc bounds=${node.bounds} visible=${node.visibleBounds}")
+        // Two facts that decide how to read the geometry: whether the IME is
+        // up (it resizes the panel, and 415 is exactly 640 - a mdpi keyboard),
+        // and which window actually owns the focus.
+        sb.append("\nime: ").append(
+            try {
+                device.executeShellCommand(
+                    "dumpsys input_method | grep -E 'mInputShown|mIsInputViewShown'"
+                ).trim()
+            } catch (_: Exception) { "?" }
+        )
+        sb.append("\nfocus: ").append(
+            try {
+                device.executeShellCommand(
+                    "dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'"
+                ).trim()
+            } catch (_: Exception) { "?" }
+        )
+        val node = device.findObjects(By.desc(desc)).firstOrNull()
+            ?: return "$sb\n$desc: NOT IN THE TREE"
+        // NOTE: UiObject2 has no getBounds() in this version — only the
+        // VISIBLE rect. The unclipped rect is in the logcat line that
+        // `AccessibilityNodeInfoHelper` prints when it rejects the node.
+        sb.append("\n$desc visible=").append(node.visibleBounds)
         var parent = try { node.parent } catch (_: Exception) { null }
         var depth = 0
         while (parent != null && depth < 8) {
             sb.append("\n  ^$depth ").append(try { parent.className } catch (_: Exception) { "?" })
-                .append(" bounds=").append(try { parent.bounds } catch (_: Exception) { "?" })
                 .append(" visible=").append(try { parent.visibleBounds } catch (_: Exception) { "?" })
+                .append(" clickable=").append(try { parent.isClickable } catch (_: Exception) { false })
                 .append(" text=").append(try { parent.text } catch (_: Exception) { null })
             parent = try { parent.parent } catch (_: Exception) { null }
             depth++
