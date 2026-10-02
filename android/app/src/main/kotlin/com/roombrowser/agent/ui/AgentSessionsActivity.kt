@@ -6,8 +6,10 @@ import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -31,11 +33,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -43,15 +48,21 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.roombrowser.agent.AgentChatExport
 import com.roombrowser.agent.AgentSettingsController
 import com.roombrowser.data.db.AgentSessionEntity
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.RoomBrowserTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -118,16 +129,65 @@ private fun AgentSessionsRoot(
     // dialog — the actual delete runs after the user confirms.
     var deleteTarget by remember { mutableStateOf<AgentSessionEntity?>(null) }
 
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val hostState = remember { SnackbarHostState() }
+    // Preparing the document needs database reads, so it happens AFTER the
+    // user has chosen a destination rather than before the picker opens. The
+    // other order would gather every message on a tap the user might cancel,
+    // and would hold a stale copy across a picker the user can leave open.
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val outcome = runCatching {
+                val text = controller.buildChatExport()
+                withContext(Dispatchers.IO) {
+                    val out = context.contentResolver.openOutputStream(uri)
+                        ?: error("the chosen location could not be opened for writing")
+                    out.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+                }
+            }
+            hostState.showSnackbar(
+                outcome.fold(
+                    onSuccess = { "Chats exported" },
+                    // The user is told WHAT failed, not just that something
+                    // did: "no space left" and "permission denied" are the
+                    // same sentence otherwise, and only one is worth retrying
+                    // somewhere else.
+                    onFailure = { "Export failed: ${it.message ?: it.javaClass.simpleName}" }
+                )
+            )
+        }
+    }
+
     Scaffold(
         // Insets are applied EXPLICITLY below (TopAppBar handles the status
         // bar itself) — deterministic on every API level.
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        snackbarHost = { SnackbarHost(hostState) },
         topBar = {
             TopAppBar(
                 title = { Text("Agent chats") },
                 navigationIcon = {
                     IconButton(onClick = onClose) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close")
+                    }
+                },
+                actions = {
+                    // An ICON, not a row: this is a rarely used action on a
+                    // screen whose whole point is the list. It is hidden
+                    // while there is nothing to export, so it can never
+                    // offer the user an empty file.
+                    if (controller.sessions.isNotEmpty()) {
+                        IconButton(onClick = {
+                            exportLauncher.launch(
+                                AgentChatExport.fileName(System.currentTimeMillis())
+                            )
+                        }) {
+                            Icon(Icons.Filled.FileDownload, contentDescription = "Export chats")
+                        }
                     }
                 }
             )

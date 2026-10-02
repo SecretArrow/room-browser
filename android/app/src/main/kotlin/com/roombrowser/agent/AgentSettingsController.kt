@@ -88,6 +88,55 @@ class AgentSettingsController(
         scope.cancel()
     }
 
+    /**
+     * Renders this profile's agent chats for export.
+     *
+     * Messages are read on demand rather than taken from [sessions]: that
+     * list carries only the chat headers, and an export that quietly
+     * contained the titles and none of the conversation would be worse than
+     * no export at all.
+     *
+     * A null profile id is the "no profile selected" state the rest of this
+     * screen already handles — the document still renders, and says so by
+     * being empty, rather than throwing at the user who just picked a file.
+     */
+    suspend fun buildChatExport(now: Long = System.currentTimeMillis()): String {
+        val pid = profileId.orEmpty()
+        val chats = if (pid.isBlank()) emptyList() else repo.sessions(pid)
+        val sessionModels = mutableListOf<AgentChatExport.Session>()
+        for (session in chats) {
+            val messages = repo.messages(session.id).map { m ->
+                AgentChatExport.Message(
+                    role = m.role,
+                    at = m.createdAt,
+                    content = m.content,
+                    toolName = m.toolName,
+                    toolArgs = m.toolArgs,
+                    toolResult = m.toolResult
+                )
+            }
+            sessionModels.add(
+                AgentChatExport.Session(
+                    title = session.title,
+                    model = session.model,
+                    updatedAt = session.updatedAt,
+                    messages = messages
+                )
+            )
+        }
+        val label = runCatching {
+            graph.profileRepo.profiles().firstOrNull { it.id.value == pid }?.name
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: "this profile"
+        return AgentChatExport.render(
+            header = AgentChatExport.Header(
+                profileLabel = label,
+                exportedAt = now,
+                providers = providers.map { "${it.name} (${it.protocol})" }
+            ),
+            sessions = sessionModels
+        )
+    }
+
     private fun refreshSelection() {
         val list = providers
         val preferred = settings.defaultProviderId?.let { id -> list.firstOrNull { it.id == id } }
