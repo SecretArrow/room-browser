@@ -42,6 +42,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -75,7 +76,9 @@ import com.roombrowser.domain.agent.RetryPolicy
 import com.roombrowser.domain.agent.RetryStatusCode
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.LocalRoomExtras
+import com.roombrowser.ui.common.RoomBottomSheetShape
 import com.roombrowser.ui.common.RoomBrowserTheme
+import com.roombrowser.ui.common.RoomSheetHeader
 import com.roombrowser.ui.common.SectionHeader
 import com.roombrowser.ui.common.SettingActionRow
 import com.roombrowser.ui.common.SettingSwitchRow
@@ -292,7 +295,7 @@ private fun AgentSettingsRoot(
                         IconButton(
                             onClick = { confirmDeleteProvider = provider },
                             modifier = Modifier.semantics { contentDescription = "delete_provider_${provider.id}" }
-                        ) { Icon(Icons.Filled.Delete, contentDescription = "Delete provider") }
+                        ) { Icon(Icons.Filled.Delete, contentDescription = null) }
                     }
                 }
             }
@@ -317,7 +320,7 @@ private fun AgentSettingsRoot(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                    .padding(horizontal = 16.dp, vertical = 16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("Provider · model", style = MaterialTheme.typography.bodyLarge)
@@ -855,54 +858,66 @@ private fun DecisionModelDialog(
         loading = false
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Decision model") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text(
-                    if (loading) "Reading ${provider.name}…"
-                    else if (models.isEmpty()) {
-                        "No models listed by ${provider.name}. Pull one first (for example " +
-                            "`ollama pull nimble`), or type its tag below."
-                    } else "Installed on ${provider.name}:",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                models.forEach { tag ->
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clickable { onPick(tag) }
-                            .padding(vertical = 10.dp)
-                            .semantics { contentDescription = "decision_model_$tag" },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(selected = tag == selected, onClick = { onPick(tag) })
-                        Spacer(Modifier.width(8.dp))
-                        Text(tag, style = MaterialTheme.typography.bodyLarge)
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                androidx.compose.material3.OutlinedTextField(
-                    value = typed,
-                    onValueChange = { typed = it },
-                    modifier = Modifier
+    // A SHEET, not an AlertDialog: the body is a list of the models actually
+    // installed on the server plus a field to type one, which is the app's
+    // model-picker shape (the agent panel's ModelPickerSheet is the same
+    // control). An AlertDialog sized to its content turns a long tag list
+    // into a cramped scroll box a few rows tall.
+    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                // The body scrolls: with many installed models the typed-tag
+                // field and its button would otherwise sit below the fold.
+                .verticalScroll(rememberScrollState())
+        ) {
+            RoomSheetHeader("Decision model")
+            Text(
+                if (loading) "Reading ${provider.name}…"
+                else if (models.isEmpty()) {
+                    "No models listed by ${provider.name}. Pull one first (for example " +
+                        "`ollama pull nimble`), or type its tag below."
+                } else "Installed on ${provider.name}:",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            models.forEach { tag ->
+                Row(
+                    Modifier
                         .fillMaxWidth()
-                        .semantics { contentDescription = "decision_model_input" },
-                    singleLine = true,
-                    placeholder = { Text("nimble") }
-                )
+                        .clickable { onPick(tag) }
+                        .padding(vertical = 10.dp)
+                        .semantics { contentDescription = "decision_model_$tag" },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(selected = tag == selected, onClick = { onPick(tag) })
+                    Spacer(Modifier.width(8.dp))
+                    Text(tag, style = MaterialTheme.typography.bodyLarge)
+                }
             }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = { onPick(typed.trim()) },
-                enabled = typed.isNotBlank()
-            ) { Text("Use tag") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
-    )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = typed,
+                onValueChange = { typed = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentDescription = "decision_model_input" },
+                singleLine = true,
+                placeholder = { Text("nimble") }
+            )
+            Spacer(Modifier.height(16.dp))
+            Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp)) {
+                Button(
+                    onClick = { onPick(typed.trim()) },
+                    enabled = typed.isNotBlank(),
+                    modifier = Modifier.weight(1f)
+                ) { Text("Use tag") }
+                TextButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("Cancel") }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
 }
 
 /**

@@ -315,7 +315,7 @@ private fun ErrorPage(error: PageError, onRetry: () -> Unit) {
                 modifier = Modifier.size(32.dp)
             )
         }
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(20.dp))
         Text(title, style = MaterialTheme.typography.headlineSmall, color = extras.textPrimary)
         Spacer(Modifier.height(10.dp))
         Text(
@@ -324,7 +324,7 @@ private fun ErrorPage(error: PageError, onRetry: () -> Unit) {
             color = extras.textSecondary,
             modifier = Modifier.padding(horizontal = 8.dp)
         )
-        Spacer(Modifier.height(26.dp))
+        Spacer(Modifier.height(24.dp))
         Button(onClick = onRetry) { Text("Try Again") }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(onClick = {
@@ -527,7 +527,10 @@ private fun Homepage(
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
+                        // The one card radius, like every other row surface in
+                        // the app — this was a hardcoded 14dp, the odd one out
+                        // against the library rows and the quick-access tiles.
+                        .clip(RoomCardShape)
                         .clickable { viewModel.loadUrl(item.url) }
                         .padding(horizontal = 8.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically

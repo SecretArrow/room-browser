@@ -79,6 +79,7 @@ import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBottomSheetShape
 import com.roombrowser.ui.common.RoomCard
+import com.roombrowser.ui.common.RoomCardShape
 import com.roombrowser.ui.common.RoomSheetHeader
 import com.roombrowser.ui.common.SectionHeader
 import com.roombrowser.ui.common.StatTile
@@ -256,7 +257,9 @@ fun TabGridScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 listItems(tabs, key = { it.id }) { tab ->
-                    val rowShape = RoundedCornerShape((extras.radius * 0.9f).dp)
+                    // The app's one card radius (RoomCardShape), not a second
+                    // 0.9-of-the-theme-radius scale of its own.
+                    val rowShape = RoomCardShape
                     Row(
                         Modifier
                             .fillMaxWidth()
@@ -353,7 +356,8 @@ private fun TabCard(
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val extras = LocalRoomExtras.current
-    val shape = RoundedCornerShape((extras.radius * 0.9f).dp)
+    // Same card radius as the tab list row and every other card surface.
+    val shape = RoomCardShape
     Column(
         Modifier
             .clip(shape)
@@ -429,11 +433,14 @@ private fun TabCard(
                 }
             }
             Box(Modifier.align(Alignment.BottomEnd)) {
-                // 40dp touch target wrapping a small visual chip
+                // 48dp touch target wrapping a small visual chip. It was 40dp —
+                // the same sub-minimum the QuietIconButton in this file was
+                // raised from — and a near miss here does not do nothing: it
+                // lands on the card, which opens the tab the menu was for.
                 Box(
                     Modifier
                         .padding(2.dp)
-                        .size(40.dp)
+                        .size(48.dp)
                         .clip(CircleShape)
                         .clickable(onClick = { menuOpen = true }),
                     contentAlignment = Alignment.Center
@@ -539,7 +546,7 @@ fun BookmarksScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             val byFolder = bookmarks.groupBy { it.folder }
             LazyColumn(
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 byFolder.forEach { (folder, items) ->
                     if (folder != null) {
@@ -583,7 +590,7 @@ fun HistoryScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
         } else {
             LazyColumn(
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 listItems(history, key = { it.id }) { entry ->
                     LibraryListRow(

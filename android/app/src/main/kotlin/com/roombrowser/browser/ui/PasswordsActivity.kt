@@ -518,7 +518,9 @@ private fun LockedVaultPane(
     ) {
         Box(
             Modifier
-                .size(72.dp)
+                // 64dp — the same hero tile the error page and the network
+                // warning use; this was the app's one 72dp tile for no reason.
+                .size(64.dp)
                 .clip(RoomCardShape)
                 .background(extras.surfaceAlt.copy(alpha = 0.7f)),
             contentAlignment = Alignment.Center
@@ -565,7 +567,7 @@ private fun DomainHeader(domain: String) {
         domain,
         style = MaterialTheme.typography.labelMedium,
         color = extras.primary,
-        modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 2.dp)
+        modifier = Modifier.padding(start = 20.dp, top = 16.dp, bottom = 2.dp)
     )
 }
 
@@ -589,7 +591,9 @@ private fun CredentialRow(
     RoomCard(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 5.dp),
+            // 8dp between cards, the same rhythm as every other card list in
+            // the app — 5dp read as one merged block of logins.
+            .padding(horizontal = 16.dp, vertical = 8.dp),
         withGradient = false
     ) {
         Column(Modifier.padding(start = 12.dp, top = 10.dp, end = 4.dp, bottom = 4.dp)) {

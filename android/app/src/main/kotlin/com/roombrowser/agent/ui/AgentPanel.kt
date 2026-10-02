@@ -125,6 +125,7 @@ import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBottomSheetShape
+import com.roombrowser.ui.common.RoomCardShape
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -649,7 +650,9 @@ private fun ThinkingBlock(thinking: String) {
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
+            // A panel surface, so it takes the app's card radius rather than a
+            // hardcoded 10dp of its own.
+            .clip(RoomCardShape)
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
     ) {
         Row(
@@ -686,7 +689,7 @@ private fun ThinkingBlock(thinking: String) {
 @Composable
 private fun ToolCard(entry: AgentEntry.Tool) {
     Surface(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoomCardShape,
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -770,7 +773,7 @@ private fun NoticeLine(entry: AgentEntry.Notice) {
 @Composable
 private fun ApprovalCard(approval: com.roombrowser.agent.AgentApproval, agent: BrowserAgentController) {
     Surface(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoomCardShape,
         color = MaterialTheme.colorScheme.tertiaryContainer,
         contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
         modifier = Modifier.fillMaxWidth()
@@ -1117,7 +1120,7 @@ private fun DefaultContextSheet(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(16.dp))
             OutlinedTextField(
                 value = draft,
                 onValueChange = { draft = it },
@@ -1128,7 +1131,7 @@ private fun DefaultContextSheet(
                     .fillMaxWidth()
                     .semantics { contentDescription = "agent_default_context_field" }
             )
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(16.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(
                     onClick = { onSave(draft.trim()) },
