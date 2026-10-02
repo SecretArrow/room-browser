@@ -400,7 +400,7 @@ private fun TabCard(
                     Modifier
                         .align(Alignment.TopStart)
                         .padding(6.dp)
-                        .clip(RoundedCornerShape(50))
+                        .clip(RoundedCornerShape(6.dp))
                         .background(extras.primary.copy(alpha = 0.85f))
                         .padding(horizontal = 9.dp, vertical = 3.dp),
                     verticalAlignment = Alignment.CenterVertically

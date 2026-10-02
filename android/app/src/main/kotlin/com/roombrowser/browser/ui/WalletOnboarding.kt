@@ -46,6 +46,8 @@ import androidx.compose.ui.unit.dp
 import com.roombrowser.browser.wallet.WalletEngineApi
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.ui.common.LocalRoomExtras
+import com.roombrowser.ui.common.RoomCardShape
+
 import kotlinx.coroutines.launch
 
 /**
@@ -167,7 +169,7 @@ private fun WalletOnboardingChoice(onCreate: () -> Unit, onImport: () -> Unit) {
         Box(
             Modifier
                 .size(72.dp)
-                .clip(RoundedCornerShape(24.dp))
+                .clip(RoomCardShape)
                 .background(extras.surfaceAlt.copy(alpha = 0.7f)),
             contentAlignment = Alignment.Center
         ) {

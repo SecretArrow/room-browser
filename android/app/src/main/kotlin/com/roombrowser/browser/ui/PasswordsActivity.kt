@@ -99,6 +99,7 @@ import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBottomSheetShape
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomCard
+import com.roombrowser.ui.common.RoomCardShape
 import com.roombrowser.ui.common.RoomSheetHeader
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -518,7 +519,7 @@ private fun LockedVaultPane(
         Box(
             Modifier
                 .size(72.dp)
-                .clip(RoundedCornerShape(24.dp))
+                .clip(RoomCardShape)
                 .background(extras.surfaceAlt.copy(alpha = 0.7f)),
             contentAlignment = Alignment.Center
         ) {

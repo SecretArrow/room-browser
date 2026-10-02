@@ -406,9 +406,16 @@ private fun AgentSettingsRoot(
             // Included page = GREEN (user request: "jika include page
             // di-ikutkan maka warna hijau") — local twin of SettingSwitchRow
             // with a green checked switch, matching the panel chip.
-            IncludePageSwitchRow(
+            ContextSwitchRow(
+                label = "Include current page by default",
+                description = "Attach a page snapshot to the first message of each turn",
+                semanticsLabel = "Include current page by default switch",
                 checked = controller.settings.includePageContext,
                 onCheckedChange = { checked -> controller.updateSettings { s -> s.copy(includePageContext = checked) } }
+            )
+            DefaultContextSection(
+                controller = controller,
+                onNotice = { notice = it }
             )
 
             SliderRow(
@@ -520,14 +527,25 @@ private val IncludeGreenLightContainer = Color(0xFFB9F6CA)
 private val IncludeGreenLightContent = Color(0xFF0A3818)
 
 /**
- * "Include current page by default" — a local twin of the shared
- * [com.roombrowser.ui.common.SettingSwitchRow] whose switch is GREEN when
- * checked (user request: an included page reads green, matching the panel's
- * "Include page" chip). Layout, padding and semantics match the shared row
- * one-for-one; only the checked switch colors differ.
+ * One "does this text go out with my message?" switch.
+ *
+ * The page snapshot and the saved Default Context are the same control with
+ * the same meaning — this text is part of the request — so they are one
+ * composable with two labels rather than two rows free to drift apart.
+ * Layout, padding and semantics match the shared
+ * [com.roombrowser.ui.common.SettingSwitchRow] one-for-one; only the checked
+ * switch colors differ.
+ *
+ * Checked is GREEN because the user asked for an included context to read
+ * green ("jika include page di-ikutkan maka warna hijau"). On a screen with
+ * several switches, colour is what answers "what am I actually sending?" at
+ * a glance.
  */
 @Composable
-private fun IncludePageSwitchRow(
+private fun ContextSwitchRow(
+    label: String,
+    description: String,
+    semanticsLabel: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
 ) {
@@ -537,14 +555,14 @@ private fun IncludePageSwitchRow(
             .fillMaxWidth()
             .clickable { onCheckedChange(!checked) }
             .padding(horizontal = 16.dp, vertical = 12.dp)
-            .semantics { contentDescription = "Include current page by default switch, ${if (checked) "on" else "off"}" },
+            .semantics { contentDescription = "$semanticsLabel, ${if (checked) "on" else "off"}" },
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(Modifier.weight(1f)) {
-            Text("Include current page by default", style = MaterialTheme.typography.bodyLarge, color = extras.textPrimary)
+            Text(label, style = MaterialTheme.typography.bodyLarge, color = extras.textPrimary)
             Spacer(Modifier.height(2.dp))
             Text(
-                "Attach a page snapshot to the first message of each turn",
+                description,
                 style = MaterialTheme.typography.bodySmall,
                 color = extras.textSecondary
             )
@@ -560,6 +578,138 @@ private fun IncludePageSwitchRow(
                 uncheckedThumbColor = extras.icon
             )
         )
+    }
+}
+
+/**
+ * Default Context — the standing text the agent carries into EVERY request.
+ *
+ * WHAT IT IS: a USER message put in front of each turn (see
+ * `BrowserAgentController.runTurn`), not part of the system prompt. Two
+ * consequences follow, and the row states both rather than leaving the user
+ * to guess: the text is visible in the conversation the provider receives,
+ * and it can never outrank the app's own instructions — a page cannot
+ * promote its own text into this slot.
+ *
+ * THE SWITCH AND THE TEXT ARE SEPARATE ON PURPOSE. Muting a standing context
+ * for one session must not mean deleting it and retyping it afterwards, so
+ * "off" keeps the text and only
+ * [com.roombrowser.data.repo.AgentSettings.useDefaultContext] changes.
+ * Blank text makes the switch inert rather than an error: turning it ON with
+ * nothing saved opens the editor instead, so the switch can never claim to be
+ * sending something it is not.
+ */
+@Composable
+private fun DefaultContextSection(
+    controller: AgentSettingsController,
+    onNotice: (String) -> Unit
+) {
+    val saved = controller.settings.defaultContext
+    var editing by remember { mutableStateOf(false) }
+    var draft by remember(saved) { mutableStateOf(saved) }
+    val active = controller.settings.useDefaultContext && saved.isNotBlank()
+    val extras = LocalRoomExtras.current
+
+    ContextSwitchRow(
+        label = "Default context",
+        description = if (saved.isBlank()) {
+            "Save a standing message the agent applies to every request"
+        } else {
+            "Send your saved standing context with every request"
+        },
+        semanticsLabel = "Default context switch",
+        checked = controller.settings.useDefaultContext,
+        onCheckedChange = { on ->
+            if (on && saved.isBlank()) {
+                // Nothing saved to send: open the editor instead of leaving a
+                // switch on over an empty message.
+                draft = ""
+                editing = true
+            } else {
+                controller.updateSettings { s -> s.copy(useDefaultContext = on) }
+                onNotice(if (on) "Default context on" else "Default context off")
+            }
+        }
+    )
+
+    if (editing) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentDescription = "agent_default_context_field" },
+                placeholder = {
+                    Text("e.g. Answer in Indonesian. This profile is for the staging cluster.")
+                },
+                minLines = 3,
+                maxLines = 8
+            )
+            Row {
+                TextButton(onClick = {
+                    val text = draft.trim()
+                    controller.updateSettings { s ->
+                        s.copy(defaultContext = text, useDefaultContext = text.isNotEmpty())
+                    }
+                    editing = false
+                    onNotice(if (text.isEmpty()) "Default context cleared" else "Default context saved")
+                }) { Text("Save and use") }
+                TextButton(onClick = {
+                    draft = saved
+                    editing = false
+                }) { Text("Cancel") }
+                if (saved.isNotBlank()) {
+                    TextButton(onClick = {
+                        controller.updateSettings { s ->
+                            s.copy(defaultContext = "", useDefaultContext = false)
+                        }
+                        draft = ""
+                        editing = false
+                        onNotice("Default context cleared")
+                    }) { Text("Clear") }
+                }
+            }
+        }
+    } else {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = when {
+                    saved.isBlank() -> "No default context saved"
+                    active -> "Active: $saved"
+                    else -> "Saved, not sent: $saved"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (active) {
+                    if (extras.dark) IncludeGreenDarkContent else IncludeGreenLightContent
+                } else {
+                    extras.textSecondary
+                },
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { contentDescription = "agent_default_context_state" }
+            )
+            IconButton(onClick = {
+                draft = saved
+                editing = true
+            }) { Icon(Icons.filled.Edit, contentDescription = "Edit default context") }
+            if (saved.isNotBlank()) {
+                IconButton(onClick = {
+                    controller.updateSettings { s ->
+                        s.copy(defaultContext = "", useDefaultContext = false)
+                    }
+                    draft = ""
+                    onNotice("Default context cleared")
+                }) { Icon(Icons.filled.Delete, contentDescription = "Clear default context") }
+            }
+        }
     }
 }
 

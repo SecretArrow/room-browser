@@ -63,7 +63,43 @@ data class AgentSettings(
     val maxSteps: Int = 25,
     val confirmActions: Boolean = false,
     val includePageContext: Boolean = true,
+    /**
+     * The user's standing context for the AI Agent — the text that is put in
+     * front of EVERY request while [useDefaultContext] is on, so the agent
+     * keeps answering inside the same frame ("I am working on a Solidity
+     * audit", "answer in Indonesian", "this profile is for the staging
+     * cluster") without it being retyped or re-attached each turn.
+     *
+     * It is a USER message, not part of the system prompt. That matters for
+     * two reasons: it is visible in the conversation history the provider
+     * receives (so a later turn cannot silently lose it), and it sits
+     * strictly below the system prompt's authority — a page or an attachment
+     * can never promote text into the instruction slot reserved for the
+     * app's own prompt.
+     *
+     * Blank means "nothing saved yet"; [useDefaultContext] is the switch, so
+     * an empty context is inert rather than an error.
+     */
+    val defaultContext: String = "",
+    /** Whether [defaultContext] is sent. Off until the user turns it on. */
+    val useDefaultContext: Boolean = false,
     val systemPromptOverride: String? = null,
+    /**
+     * Where the user last dragged the floating AI Agent pill, as a FRACTION
+     * (0..1) of the draggable range on each axis — not pixels.
+     *
+     * Fractions, because the pixel answer is wrong on the next device state:
+     * a position saved in portrait would put the pill off-screen in
+     * landscape, and a position saved on a 1080p phone would sit in a corner
+     * on a tablet. A fraction of the range survives rotation, multi-window
+     * resize, split screen and a different phone with no migration at all.
+     *
+     * Null means "never dragged" — the pill keeps its designed home at the
+     * bottom-end corner, which is also the position that cannot collide with
+     * the browser's own bottom chrome.
+     */
+    val agentButtonXFrac: Float? = null,
+    val agentButtonYFrac: Float? = null,
     /**
      * The local decision gate: ask an Ollama decision model (protocol
      * `OLLAMA`, model `nimble` or another `/v1/systemone` model) what should

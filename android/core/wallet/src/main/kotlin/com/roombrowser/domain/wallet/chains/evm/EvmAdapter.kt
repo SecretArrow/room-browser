@@ -10,6 +10,7 @@ import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
 import com.roombrowser.domain.wallet.rpc.JsonRpcClient
+import com.roombrowser.domain.wallet.rpc.RpcEndpointChain
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -37,6 +38,18 @@ import java.math.BigInteger
 class EvmAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationPathIndex {
 
     fun chainType(): ChainType = ChainType.EVM
+
+    /**
+     * This network's endpoints as a failover chain.
+     *
+     * Every RPC call in this adapter goes through one of these instead of
+     * `network.rpcUrls.firstOrNull()`, which is what used to make the second
+     * url in a network's list dead weight: a network whose primary endpoint
+     * had died or was serving a broken certificate could not be used at all,
+     * even with a working endpoint recorded right beside it. See
+     * [RpcEndpointChain].
+     */
+    fun endpointsOf(network: NetworkConfig): RpcEndpointChain = RpcEndpointChain.of(rpc, network)
 
     // ------------------------------------------------------------------
     // Keys & addresses
@@ -171,13 +184,13 @@ class EvmAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
         maxPriorityFeePerGas: BigInteger?,
         nonce: BigInteger?
     ): Pair<PreparedTransaction, String> {
-        val endpoint = network.rpcUrls.firstOrNull()
-            ?: throw WalletException.InvalidParams("Network has no RPC endpoint")
+        val chain = endpointsOf(network)
+        if (chain.urls.isEmpty()) throw WalletException.InvalidParams("Network has no RPC endpoint")
         val chainId = network.chainId.toLongOrNull()
             ?: throw WalletException.InvalidParams("Invalid EVM chainId ${network.chainId}")
 
-        val resolvedNonce = nonce ?: getTransactionCount(endpoint, from)
-        val resolvedGas = gasLimit ?: estimateGas(endpoint, from, to, value, data)
+        val resolvedNonce = nonce ?: getTransactionCount(chain, from)
+        val resolvedGas = gasLimit ?: estimateGas(chain, from, to, value, data)
 
         // Fee strategy: explicit 1559 fields → 1559. Explicit gasPrice →
         // legacy. Otherwise prefer 1559 (with base-fee lookup) and fall back
@@ -187,13 +200,13 @@ class EvmAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
         var resolvedPriority = maxPriorityFeePerGas
         var resolvedGasPrice = gasPrice
         if (resolvedMaxFee == null && resolvedPriority == null && resolvedGasPrice == null) {
-            val fees = suggestFees(endpoint)
+            val fees = suggestFees(chain)
             if (fees != null) {
                 use1559 = true
                 resolvedMaxFee = fees.first
                 resolvedPriority = fees.second
             } else {
-                resolvedGasPrice = getGasPrice(endpoint)
+                resolvedGasPrice = getGasPrice(chain)
             }
         }
         if (use1559 && resolvedMaxFee != null && resolvedPriority == null) {
@@ -226,7 +239,7 @@ class EvmAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
         } else {
             RawTransaction.createTransaction(
                 resolvedNonce,
-                resolvedGasPrice ?: getGasPrice(endpoint),
+                resolvedGasPrice ?: getGasPrice(chain),
                 resolvedGas,
                 toNorm ?: "",
                 value,
@@ -254,10 +267,9 @@ class EvmAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
     }
 
     suspend fun broadcastRaw(network: NetworkConfig, signedRawHex: String): BroadcastResult {
-        val endpoint = network.rpcUrls.firstOrNull()
-            ?: return BroadcastResult.Error("Network has no RPC endpoint")
         return try {
-            val result = rpc.call(endpoint, "eth_sendRawTransaction", listOf(JsonPrimitive(signedRawHex)))
+            val result = endpointsOf(network)
+                .call("eth_sendRawTransaction", listOf(JsonPrimitive(signedRawHex)))
             BroadcastResult.Ok(result.jsonPrimitive.content)
         } catch (e: WalletException) {
             BroadcastResult.Error(e.message ?: "Broadcast failed")
@@ -269,37 +281,36 @@ class EvmAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
     // ------------------------------------------------------------------
 
     suspend fun getBalance(network: NetworkConfig, address: String): BigInteger? {
-        val endpoint = network.rpcUrls.firstOrNull() ?: return null
-        val result = rpc.call(
-            endpoint, "eth_getBalance",
+        val result = endpointsOf(network).call(
+            "eth_getBalance",
             listOf(JsonPrimitive(address), JsonPrimitive("latest"))
         )
         return Numeric.decodeQuantity(result.jsonPrimitive.content)
     }
 
-    suspend fun getChainId(endpoint: String): Long {
-        val result = rpc.call(endpoint, "eth_chainId")
+    suspend fun getChainId(chain: RpcEndpointChain): Long {
+        val result = chain.call("eth_chainId")
         return Numeric.decodeQuantity(result.jsonPrimitive.content).toLong()
     }
 
-    suspend fun getTransactionCount(endpoint: String, address: String): BigInteger {
-        val result = rpc.call(
-            endpoint, "eth_getTransactionCount",
+    suspend fun getTransactionCount(chain: RpcEndpointChain, address: String): BigInteger {
+        val result = chain.call(
+            "eth_getTransactionCount",
             listOf(JsonPrimitive(address), JsonPrimitive("pending"))
         )
         return Numeric.decodeQuantity(result.jsonPrimitive.content)
     }
 
-    suspend fun getGasPrice(endpoint: String): BigInteger {
-        val result = rpc.call(endpoint, "eth_gasPrice")
+    suspend fun getGasPrice(chain: RpcEndpointChain): BigInteger {
+        val result = chain.call("eth_gasPrice")
         return Numeric.decodeQuantity(result.jsonPrimitive.content)
     }
 
     /** Returns (maxFeePerGas, maxPriorityFeePerGas) or null when unsupported. */
-    suspend fun suggestFees(endpoint: String): Pair<BigInteger, BigInteger>? = try {
-        val priorityHex = rpc.call(endpoint, "eth_maxPriorityFeePerGas").jsonPrimitive.content
+    suspend fun suggestFees(chain: RpcEndpointChain): Pair<BigInteger, BigInteger>? = try {
+        val priorityHex = chain.call("eth_maxPriorityFeePerGas").jsonPrimitive.content
         val priority = Numeric.decodeQuantity(priorityHex)
-        val base = baseFee(endpoint)
+        val base = baseFee(chain)
         if (base != null) {
             // maxFee = 2 * base + priority (2x headroom, standard practice)
             base.multiply(BigInteger.TWO).add(priority) to priority
@@ -310,9 +321,9 @@ class EvmAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
         null
     }
 
-    private suspend fun baseFee(endpoint: String): BigInteger? = try {
-        val block = rpc.callObject(
-            endpoint, "eth_getBlockByNumber",
+    private suspend fun baseFee(chain: RpcEndpointChain): BigInteger? = try {
+        val block = chain.callObject(
+            "eth_getBlockByNumber",
             listOf(JsonPrimitive("latest"), JsonPrimitive(false))
         )
         block["baseFeePerGas"]?.jsonPrimitive?.content?.let { Numeric.decodeQuantity(it) }
@@ -321,7 +332,7 @@ class EvmAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
     }
 
     suspend fun estimateGas(
-        endpoint: String,
+        chain: RpcEndpointChain,
         from: String,
         to: String?,
         value: BigInteger,
@@ -333,7 +344,7 @@ class EvmAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
             put("value", JsonPrimitive(Numeric.encodeQuantity(value)))
             if (data != "0x" && data.isNotBlank()) put("data", JsonPrimitive(data))
         }
-        val result = rpc.call(endpoint, "eth_estimateGas", listOf(txObject))
+        val result = chain.call("eth_estimateGas", listOf(txObject))
         return Numeric.decodeQuantity(result.jsonPrimitive.content)
     }
 
@@ -360,13 +371,13 @@ class EvmAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
         ?.let { Numeric.toBigIntNoPrefix(it.removePrefix("0x")) }
 
     suspend fun ethCall(network: NetworkConfig, to: String, dataHex: String): String? {
-        val endpoint = network.rpcUrls.firstOrNull() ?: return null
         val callObject = buildJsonObject {
             put("to", JsonPrimitive(to))
             put("data", JsonPrimitive(dataHex))
         }
         return try {
-            val result = rpc.call(endpoint, "eth_call", listOf(callObject, JsonPrimitive("latest")))
+            val result = endpointsOf(network)
+                .call("eth_call", listOf(callObject, JsonPrimitive("latest")))
             result.jsonPrimitive.content
         } catch (_: WalletException) {
             null

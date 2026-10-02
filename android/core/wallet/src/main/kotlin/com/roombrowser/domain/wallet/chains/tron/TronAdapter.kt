@@ -12,6 +12,7 @@ import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
 import com.roombrowser.domain.wallet.rpc.JsonRpcClient
+import com.roombrowser.domain.wallet.rpc.RpcEndpointChain
 import com.roombrowser.domain.wallet.wire.ProtoReader
 import com.roombrowser.domain.wallet.wire.ProtoWriter
 import kotlinx.serialization.json.JsonArray
@@ -43,6 +44,17 @@ import java.math.BigInteger
 class TronAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationPathIndex {
 
     fun chainType(): ChainType = ChainType.TRON
+
+    /**
+     * This network's endpoints as a failover chain.
+     *
+     * Every fullnode call in this adapter goes through one of these instead
+     * of `network.rpcUrls.firstOrNull()`, which is what used to make the
+     * second url in a network's list dead weight: a network whose primary
+     * fullnode had died could not be used at all, even with a working node
+     * recorded right beside it. See [RpcEndpointChain].
+     */
+    fun endpointsOf(network: NetworkConfig): RpcEndpointChain = RpcEndpointChain.of(rpc, network)
 
     fun deriveAccount(seed: ByteArray, index: Int): DerivedTronKey {
         val path = "m/44'/195'/0'/0/$index"
@@ -240,8 +252,8 @@ class TronAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivation
         toAddress: String,
         amountSun: Long
     ): BroadcastResult {
-        val endpoint = network.rpcUrls.firstOrNull()
-            ?: return BroadcastResult.Error("Network has no RPC endpoint")
+        val chain = endpointsOf(network)
+        if (chain.urls.isEmpty()) return BroadcastResult.Error("Network has no RPC endpoint")
         val request = buildJsonObject {
             put("owner_address", JsonPrimitive(addressToHex(ourAddress)))
             put("to_address", JsonPrimitive(addressToHex(toAddress)))
@@ -249,7 +261,7 @@ class TronAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivation
             put("visible", JsonPrimitive(false))
         }
         val unsigned = try {
-            rpc.postJson("$endpoint/wallet/createtransaction", request).jsonObject
+            chain.firstWorking { url -> rpc.postJson("$url/wallet/createtransaction", request) }.jsonObject
         } catch (e: WalletException) {
             return BroadcastResult.Error("Build transfer failed: ${e.message}")
         }
@@ -266,8 +278,8 @@ class TronAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivation
         amount: BigInteger,
         decimals: Int
     ): BroadcastResult {
-        val endpoint = network.rpcUrls.firstOrNull()
-            ?: return BroadcastResult.Error("Network has no RPC endpoint")
+        val chain = endpointsOf(network)
+        if (chain.urls.isEmpty()) return BroadcastResult.Error("Network has no RPC endpoint")
         val selector = Hex.encode(Hashes.keccak256("transfer(address,uint256)".toByteArray(Charsets.US_ASCII))).substring(0, 8)
         val data = Hex.decode(
             selector +
@@ -285,7 +297,7 @@ class TronAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivation
             put("visible", JsonPrimitive(false))
         }
         val result = try {
-            rpc.postJson("$endpoint/wallet/triggersmartcontract", request).jsonObject
+            chain.firstWorking { url -> rpc.postJson("$url/wallet/triggersmartcontract", request) }.jsonObject
         } catch (e: WalletException) {
             return BroadcastResult.Error("Build TRC-20 call failed: ${e.message}")
         }
@@ -300,18 +312,18 @@ class TronAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivation
         ourAddress: String,
         unsignedTx: JsonObject
     ): BroadcastResult {
-        val endpoint = network.rpcUrls.firstOrNull()
-            ?: return BroadcastResult.Error("Network has no RPC endpoint")
+        val chain = endpointsOf(network)
+        if (chain.urls.isEmpty()) return BroadcastResult.Error("Network has no RPC endpoint")
         return try {
             val (signed, _) = signTransaction(privateKey, ourAddress, unsignedTx)
-            broadcast(endpoint, signed)
+            broadcast(chain, signed)
         } catch (e: WalletException) {
             BroadcastResult.Error(e.message ?: "Sign failed")
         }
     }
 
-    suspend fun broadcast(endpoint: String, signedTx: JsonObject): BroadcastResult = try {
-        val result = rpc.postJson("$endpoint/wallet/broadcasttransaction", signedTx).jsonObject
+    suspend fun broadcast(chain: RpcEndpointChain, signedTx: JsonObject): BroadcastResult = try {
+        val result = chain.firstWorking { url -> rpc.postJson("$url/wallet/broadcasttransaction", signedTx) }.jsonObject
         val code = result["result"]?.let { (it as? JsonPrimitive)?.content }
             ?: result["code"]?.jsonPrimitive?.content
         when {
@@ -329,13 +341,14 @@ class TronAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivation
     // ------------------------------------------------------------------
 
     suspend fun getTrxBalance(network: NetworkConfig, address: String): Long? {
-        val endpoint = network.rpcUrls.firstOrNull() ?: return null
+        val chain = endpointsOf(network)
+        if (chain.urls.isEmpty()) return null
         return try {
             val request = buildJsonObject {
                 put("address", JsonPrimitive(addressToHex(address)))
                 put("visible", JsonPrimitive(false))
             }
-            val result = rpc.postJson("$endpoint/wallet/getaccount", request).jsonObject
+            val result = chain.firstWorking { url -> rpc.postJson("$url/wallet/getaccount", request) }.jsonObject
             result["balance"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
         } catch (_: WalletException) {
             null
@@ -345,7 +358,8 @@ class TronAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivation
     suspend fun getTrc20Balance(
         network: NetworkConfig, contractAddress: String, holder: String
     ): BigInteger? {
-        val endpoint = network.rpcUrls.firstOrNull() ?: return null
+        val chain = endpointsOf(network)
+        if (chain.urls.isEmpty()) return null
         return try {
             val selector = Hex.encode(Hashes.keccak256("balanceOf(address)".toByteArray(Charsets.US_ASCII))).substring(0, 8)
             val data = Hex.decode(selector + addressToHex(holder).removePrefix("0x").padStart(64, '0'))
@@ -356,7 +370,7 @@ class TronAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivation
                 put("data", JsonPrimitive(Hex.encode(data)))
                 put("visible", JsonPrimitive(false))
             }
-            val result = rpc.postJson("$endpoint/wallet/triggerconstantcontract", request).jsonObject
+            val result = chain.firstWorking { url -> rpc.postJson("$url/wallet/triggerconstantcontract", request) }.jsonObject
             val constant = result["constant_result"]?.let { it as? JsonArray }?.firstOrNull()?.jsonPrimitive?.content
                 ?: return null
             BigInteger(constant.removePrefix("0x").padStart(1, '0'), 16)

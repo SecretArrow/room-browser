@@ -11,6 +11,7 @@ import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
 import com.roombrowser.domain.wallet.rpc.JsonRpcClient
+import com.roombrowser.domain.wallet.rpc.RpcEndpointChain
 import com.roombrowser.domain.wallet.wire.ProtoReader
 import com.roombrowser.domain.wallet.wire.ProtoWriter
 import kotlinx.serialization.json.Json
@@ -40,6 +41,31 @@ import java.math.BigInteger
 class CosmosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationPathIndex {
 
     fun chainType(): ChainType = ChainType.COSMOS
+
+    /**
+     * This network's LCD bases as a failover chain.
+     *
+     * Signing is offline, so the LCD is the only remote this adapter talks
+     * to — account queries, balances and broadcast all go through it, and
+     * they used to take `network.lcdUrl` and nothing else. Cosmos keeps its
+     * REST bases in `lcdUrl` rather than in `rpcUrls` (which are Tendermint
+     * RPC endpoints this adapter never calls), so that is what the chain is
+     * built from; an empty chain is the old "no LCD endpoint" case. See
+     * [RpcEndpointChain].
+     *
+     * [NetworkConfig.lcdFallbackUrls] is appended because one LCD host is a
+     * single point of failure for the whole chain — when the primary rots,
+     * the network goes from working to unusable with a healthy spare sitting
+     * unread in the config. Every host is tried in turn before the call is
+     * reported failed.
+     */
+    fun endpointsOf(network: NetworkConfig): RpcEndpointChain = RpcEndpointChain(
+        rpc = rpc,
+        key = network.id,
+        urls = (listOfNotNull(network.lcdUrl) + network.lcdFallbackUrls)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+    )
 
     fun deriveAccount(seed: ByteArray, network: NetworkConfig, index: Int): DerivedCosmosKey {
         val coinType = network.coinType ?: 118
@@ -221,10 +247,10 @@ class CosmosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivati
         amount: String,
         denom: String
     ): BroadcastResult {
-        val lcd = network.lcdUrl?.trimEnd('/')
-            ?: return BroadcastResult.Error("Network has no LCD endpoint")
+        val lcd = endpointsOf(network)
+        if (lcd.urls.isEmpty()) return BroadcastResult.Error("Network has no LCD endpoint")
         val account = try {
-            rpc.getJson("$lcd/cosmos/auth/v1beta1/accounts/$fromAddress").jsonObject
+            lcd.firstWorking { url -> rpc.getJson("${url.trimEnd('/')}/cosmos/auth/v1beta1/accounts/$fromAddress") }.jsonObject
         } catch (e: WalletException) {
             return BroadcastResult.Error("Account query failed: ${e.message}")
         }
@@ -272,12 +298,12 @@ class CosmosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivati
         return broadcastTx(lcd, txRaw)
     }
 
-    suspend fun broadcastTx(lcd: String, txRaw: ByteArray): BroadcastResult = try {
+    suspend fun broadcastTx(chain: RpcEndpointChain, txRaw: ByteArray): BroadcastResult = try {
         val request = buildJsonObject {
             put("tx_bytes", JsonPrimitive(java.util.Base64.getEncoder().encodeToString(txRaw)))
             put("mode", JsonPrimitive("BROADCAST_MODE_SYNC"))
         }
-        val response = rpc.postJson("$lcd/cosmos/tx/v1beta1/txs", request).jsonObject
+        val response = chain.firstWorking { url -> rpc.postJson("${url.trimEnd('/')}/cosmos/tx/v1beta1/txs", request) }.jsonObject
         val txResponse = response["tx_response"]?.jsonObject
         val hash = txResponse?.get("txhash")?.jsonPrimitive?.content
             ?: return BroadcastResult.Error("Broadcast returned no txhash")
@@ -297,9 +323,10 @@ class CosmosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivati
     // ------------------------------------------------------------------
 
     suspend fun getBalance(network: NetworkConfig, address: String): String? {
-        val lcd = network.lcdUrl?.trimEnd('/') ?: return null
+        val lcd = endpointsOf(network)
+        if (lcd.urls.isEmpty()) return null
         return try {
-            val balances = rpc.getJson("$lcd/cosmos/bank/v1beta1/balances/$address").jsonObject
+            val balances = lcd.firstWorking { url -> rpc.getJson("${url.trimEnd('/')}/cosmos/bank/v1beta1/balances/$address") }.jsonObject
             val first = balances["balances"]?.jsonArray?.firstOrNull()?.jsonObject ?: return "0"
             val amount = first["amount"]?.jsonPrimitive?.content ?: "0"
             val denom = first["denom"]?.jsonPrimitive?.content ?: ""
@@ -331,8 +358,15 @@ class CosmosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivati
                 chainType = ChainType.COSMOS,
                 chainId = "cosmoshub-4",
                 name = "Cosmos Hub",
-                rpcUrls = listOf("https://rpc.cosmos.network"),
-                lcdUrl = "https://api.cosmos.network",
+                rpcUrls = listOf(
+                    "https://cosmos-rpc.publicnode.com",
+                    "https://rpc.cosmos.directory/cosmoshub"
+                ),
+                lcdUrl = "https://cosmos-rest.publicnode.com",
+                lcdFallbackUrls = listOf(
+                    "https://cosmos-api.polkachu.com",
+                    "https://rest.cosmos.directory/cosmoshub"
+                ),
                 nativeSymbol = "ATOM",
                 nativeDecimals = 6,
                 explorerUrl = "https://www.mintscan.io/cosmos",
@@ -344,8 +378,15 @@ class CosmosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivati
                 chainType = ChainType.COSMOS,
                 chainId = "osmosis-1",
                 name = "Osmosis",
-                rpcUrls = listOf("https://rpc.osmosis.zone"),
-                lcdUrl = "https://lcd.osmosis.zone",
+                rpcUrls = listOf(
+                    "https://osmosis-rpc.publicnode.com",
+                    "https://rpc.cosmos.directory/osmosis"
+                ),
+                lcdUrl = "https://osmosis-rest.publicnode.com",
+                lcdFallbackUrls = listOf(
+                    "https://lcd.osmosis.zone",
+                    "https://osmosis-api.polkachu.com"
+                ),
                 nativeSymbol = "OSMO",
                 nativeDecimals = 6,
                 explorerUrl = "https://www.mintscan.io/osmosis",
@@ -357,8 +398,12 @@ class CosmosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivati
                 chainType = ChainType.COSMOS,
                 chainId = "celestia",
                 name = "Celestia",
-                rpcUrls = listOf("https://celestia-rpc.polkachu.com"),
+                rpcUrls = listOf(
+                    "https://celestia-rpc.polkachu.com",
+                    "https://celestia-rpc.publicnode.com"
+                ),
                 lcdUrl = "https://celestia-api.polkachu.com",
+                lcdFallbackUrls = listOf("https://celestia-rest.publicnode.com"),
                 nativeSymbol = "TIA",
                 nativeDecimals = 6,
                 explorerUrl = "https://www.mintscan.io/celestia",
@@ -370,8 +415,12 @@ class CosmosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivati
                 chainType = ChainType.COSMOS,
                 chainId = "injective-1",
                 name = "Injective",
-                rpcUrls = listOf("https://injective-rpc.polkachu.com"),
-                lcdUrl = "https://injective-api.polkachu.com",
+                rpcUrls = listOf(
+                    "https://injective-rpc.publicnode.com",
+                    "https://rpc.cosmos.directory/injective"
+                ),
+                lcdUrl = "https://injective-rest.publicnode.com",
+                lcdFallbackUrls = listOf("https://injective-api.polkachu.com"),
                 nativeSymbol = "INJ",
                 nativeDecimals = 18,
                 explorerUrl = "https://explorer.injective.network",

@@ -67,7 +67,7 @@ class JsonRpcClient(
             } catch (e: java.io.IOException) {
                 throw WalletException.NetworkUnavailable("RPC unreachable (${e.message})")
             }
-            val parsed = json.parseToJsonElement(responseText).jsonObject
+            val parsed = parseObject(responseText, endpoint)
             parsed["error"]?.let { err ->
                 val obj = (err as? JsonObject)
                 val code = obj?.get("code")?.jsonPrimitive?.content?.toIntOrNull() ?: -1
@@ -119,7 +119,48 @@ class JsonRpcClient(
 
     private suspend fun executeForJson(request: Request): JsonElement {
         val text = execute(request)
-        return json.parseToJsonElement(text)
+        return parse(text, request.url.toString())
+    }
+
+    /**
+     * Parses a response body, turning "this is not JSON at all" into an
+     * endpoint error rather than a crash.
+     *
+     * WHY THIS IS NOT JUST DEFENSIVE CODING: a dead host does not always fail
+     * the connection. It answers 200 with an HTML parking page, a proxy error
+     * page, or a truncated body — and `parseToJsonElement` then throws a
+     * [kotlinx.serialization.SerializationException], which is not a
+     * [WalletException] and therefore used to escape the adapter's failover
+     * and abort the whole call. The endpoint that could never have answered
+     * JSON-RPC took the working endpoint down with it, which is precisely the
+     * failure this client's error mapping exists to prevent.
+     *
+     * 502 is the honest code to report: a gateway returned something unusable.
+     * It sits in the HTTP range on purpose, so [RpcEndpointChain] reads it as
+     * "this endpoint could not answer" and moves to the next one.
+     *
+     * The result is [JsonElement] and not [JsonObject] because several REST
+     * endpoints this client serves answer with a top-level ARRAY — Bitcoin's
+     * `/address/{a}/utxo` and the EVM chainlist catalog among them. Callers
+     * that need an object ask for one; forcing it here would have rejected
+     * healthy responses.
+     */
+    private fun parse(text: String, endpoint: String): JsonElement = try {
+        json.parseToJsonElement(text)
+    } catch (e: Exception) {
+        throw WalletException.RpcError(
+            502,
+            "RPC endpoint did not return JSON (${e.message?.lineSequence()?.firstOrNull() ?: "unreadable"})"
+        )
+    }
+
+    /** [parse] for the JSON-RPC shape, which is always a single object. */
+    private fun parseObject(text: String, endpoint: String): JsonObject = try {
+        parse(text, endpoint).jsonObject
+    } catch (e: WalletException) {
+        throw e
+    } catch (e: Exception) {
+        throw WalletException.RpcError(502, "RPC endpoint returned a non-object response")
     }
 
     private suspend fun execute(request: Request): String = withContext(Dispatchers.IO) {

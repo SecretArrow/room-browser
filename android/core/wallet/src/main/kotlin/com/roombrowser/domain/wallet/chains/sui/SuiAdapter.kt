@@ -13,6 +13,7 @@ import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
 import com.roombrowser.domain.wallet.rpc.JsonRpcClient
+import com.roombrowser.domain.wallet.rpc.RpcEndpointChain
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
@@ -45,6 +46,18 @@ import kotlinx.serialization.json.put
 class SuiAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationPathIndex {
 
     fun chainType(): ChainType = ChainType.SUI
+
+    /**
+     * This network's endpoints as a failover chain.
+     *
+     * Every RPC call in this adapter goes through one of these instead of
+     * `network.rpcUrls.firstOrNull()`. A public fullnode that is throttling or
+     * down would otherwise make the network unusable even when a working
+     * endpoint is listed beside it, and a transfer needs several calls (gas
+     * object, gas price, execution) that should all follow the same choice.
+     * See [RpcEndpointChain].
+     */
+    fun endpointsOf(network: NetworkConfig): RpcEndpointChain = RpcEndpointChain.of(rpc, network)
 
     fun deriveAccount(seed: ByteArray, index: Int): DerivedSuiKey {
         // Canonical Sui derivation: the index is the FINAL (address) level and
@@ -297,16 +310,16 @@ class SuiAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
         txBytesBase64: String,
         signatureBase64: String
     ): BroadcastResult {
-        val endpoint = network.rpcUrls.firstOrNull()
-            ?: return BroadcastResult.Error("Network has no RPC endpoint")
+        val chain = endpointsOf(network)
+        if (chain.urls.isEmpty()) return BroadcastResult.Error("Network has no RPC endpoint")
         return try {
             val options = buildJsonObject {
                 put("showEffects", JsonPrimitive(true))
                 put("showEvents", JsonPrimitive(true))
             }
             val signatures = kotlinx.serialization.json.buildJsonArray { add(JsonPrimitive(signatureBase64)) }
-            val result = rpc.call(
-                endpoint, "sui_executeTransactionBlock",
+            val result = chain.call(
+                "sui_executeTransactionBlock",
                 listOf(
                     JsonPrimitive(txBytesBase64),
                     signatures,
@@ -334,11 +347,11 @@ class SuiAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
         toAddress: String,
         amountMist: Long
     ): BroadcastResult {
-        val endpoint = network.rpcUrls.firstOrNull()
-            ?: return BroadcastResult.Error("Network has no RPC endpoint")
-        val gasCoin = pickGasCoin(endpoint, fromAddress)
+        val chain = endpointsOf(network)
+        if (chain.urls.isEmpty()) return BroadcastResult.Error("Network has no RPC endpoint")
+        val gasCoin = pickGasCoin(chain, fromAddress)
             ?: return BroadcastResult.Error("No SUI gas object found")
-        val gasPrice = getReferenceGasPrice(endpoint) ?: 1000
+        val gasPrice = getReferenceGasPrice(chain) ?: 1000
         val budget = 10_000_000L // 0.01 SUI — safe default for a simple transfer
 
         val toBytes = Hex.decode(toAddress.removePrefix("0x"))
@@ -380,11 +393,11 @@ class SuiAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
 
     data class GasCoinRef(val objectId: String, val version: Long, val digest: String, val balanceMist: Long)
 
-    private suspend fun pickGasCoin(endpoint: String, owner: String): GasCoinRef? = try {
+    private suspend fun pickGasCoin(chain: RpcEndpointChain, owner: String): GasCoinRef? = try {
         val filter = buildJsonObject { put("StructType", JsonPrimitive("0x2::coin::Coin<0x2::sui::SUI>")) }
         val options = buildJsonObject { put("showContent", JsonPrimitive(true)) }
-        val result = rpc.call(
-            endpoint, "suix_getOwnedObjects",
+        val result = chain.call(
+            "suix_getOwnedObjects",
             listOf(JsonPrimitive(owner), filter, options)
         ).jsonObject
         val coins = result["data"]?.jsonArray?.mapNotNull { el ->
@@ -401,8 +414,8 @@ class SuiAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
         null
     }
 
-    suspend fun getReferenceGasPrice(endpoint: String): Long? = try {
-        rpc.call(endpoint, "suix_getReferenceGasPrice").jsonPrimitive.content.toLongOrNull()
+    suspend fun getReferenceGasPrice(chain: RpcEndpointChain): Long? = try {
+        chain.call("suix_getReferenceGasPrice").jsonPrimitive.content.toLongOrNull()
     } catch (_: WalletException) {
         null
     }
@@ -412,9 +425,10 @@ class SuiAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
     // ------------------------------------------------------------------
 
     suspend fun getBalance(network: NetworkConfig, address: String): Long? {
-        val endpoint = network.rpcUrls.firstOrNull() ?: return null
+        val chain = endpointsOf(network)
+        if (chain.urls.isEmpty()) return null
         return try {
-            val result = rpc.callObject(endpoint, "suix_getBalance", listOf(JsonPrimitive(address)))
+            val result = chain.callObject("suix_getBalance", listOf(JsonPrimitive(address)))
             result["totalBalance"]?.jsonPrimitive?.content?.toLongOrNull()
         } catch (_: WalletException) {
             null

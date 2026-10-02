@@ -76,7 +76,7 @@ class WalletBackupTest {
         val passphrase = "correct horse battery".toCharArray()
         val file = WalletBackup.seal(contents(), header(), passphrase)
 
-        val opened = WalletBackup.open(file, "correct horse battery".toCharArray())
+        val opened = WalletBackup.open(file, "correct horse battery".toCharArray()).document
 
         // Round trip through open(), not through the raw cipher: what this
         // proves is that THIS file is readable by THIS code.
@@ -144,7 +144,7 @@ class WalletBackupTest {
             "correct horse battery".toCharArray()
         )
 
-        val opened = WalletBackup.open(file, "correct horse battery".toCharArray())
+        val opened = WalletBackup.open(file, "correct horse battery".toCharArray()).document
 
         assertThat(opened).contains("NOT restored by the recovery phrase")
         assertThat(opened).contains("private key: 0xdeadbeef")
@@ -167,7 +167,7 @@ class WalletBackupTest {
             "correct horse battery".toCharArray()
         )
 
-        val opened = WalletBackup.open(file, "correct horse battery".toCharArray())
+        val opened = WalletBackup.open(file, "correct horse battery".toCharArray()).document
 
         assertThat(opened).contains("Recovery phrase: none")
         assertThat(opened).contains("private key: 0xkey")
@@ -251,5 +251,107 @@ class WalletBackupTest {
         val name = WalletBackup.fileName("***", at)
 
         assertThat(name).isEqualTo("room-browser-wallet-keys-wallet-20251002-101320.txt")
+    }
+
+    // ------------------------------------------------------------ read back
+
+    @Test
+    fun `the document is what the user reads, with the data block below it`() {
+        val document = WalletBackup.document(contents(), header())
+
+        // Both halves are present, in the order the format promises: a human
+        // reads the top, an import reads the fenced block underneath it.
+        assertThat(document).contains("Recovery phrase (12 words)")
+        assertThat(document.indexOf("12. accident"))
+            .isLessThan(document.indexOf("-----BEGIN ROOM BROWSER WALLET DATA-----"))
+        assertThat(document).contains("-----END ROOM BROWSER WALLET DATA-----")
+    }
+
+    @Test
+    fun `a file this build wrote restores the exact contents it was given`() {
+        val file = WalletBackup.seal(contents(), header(), "correct horse battery".toCharArray())
+
+        val restored = WalletBackup.open(file, "correct horse battery".toCharArray())
+
+        // The structured path is lossless, and it is lossless about the things
+        // the readable text cannot carry — the creation time above all, which
+        // the legacy path below has to invent.
+        assertThat(restored.legacy).isFalse()
+        assertThat(restored.payload.toContents()).isEqualTo(contents())
+        assertThat(restored.payload.createdAt).isEqualTo(at)
+    }
+
+    @Test
+    fun `a file older than the data block is marked legacy and keeps its imported keys`() {
+        // Exactly what a v1 export decrypted to: the readable document and
+        // nothing else. `render` is that shape, so this is the real thing and
+        // not a hand-written approximation of it.
+        val v1 = WalletBackup.render(
+            contents(
+                accounts = listOf(
+                    WalletBackup.KeyEntry("EVM", "EVM 1", "0xderived", "m/44'/60'/0'/0/0"),
+                    WalletBackup.KeyEntry(
+                        "EVM", "Imported", "0ximported", "", privateKey = "0xdeadbeef"
+                    )
+                )
+            ),
+            header()
+        )
+
+        val restored = WalletBackup.readPlaintext(v1)
+
+        assertThat(restored.legacy).isTrue()
+        assertThat(restored.document).isEqualTo(v1)
+        assertThat(restored.payload.walletLabel).isEqualTo("Main")
+        assertThat(restored.payload.mnemonic).isEqualTo(phrase)
+        // The imported key is the whole reason the legacy path exists: nothing
+        // can re-derive it, so a build that refused v1 files would leave those
+        // funds behind.
+        assertThat(restored.payload.accounts).containsExactly(
+            WalletBackup.KeyEntry("EVM", "Imported", "0ximported", "", privateKey = "0xdeadbeef")
+        )
+        // The derived row is deliberately NOT carried: the phrase above is
+        // about to re-create it, and a second copy would duplicate the row.
+        assertThat(restored.payload.accounts.map { it.address }).doesNotContain("0xderived")
+    }
+
+    @Test
+    fun `a truncated data block is refused rather than half parsed`() {
+        val full = WalletBackup.document(contents(), header())
+        val cut = full.substringBefore("-----END ROOM BROWSER WALLET DATA-----")
+
+        val thrown = assertThrows(WalletBackupFormatException::class.java) {
+            WalletBackup.readPlaintext(cut)
+        }
+        // The readable half is intact, so the failure has to point at the
+        // block — otherwise the user goes looking for a problem with the
+        // words they can see.
+        assertThat(thrown).hasMessageThat().contains("cut off")
+    }
+
+    @Test
+    fun `a damaged data block is a format error, not a crash`() {
+        val full = WalletBackup.document(contents(), header())
+        // Close the fence as normal but drop the JSON's closing brace: the
+        // block is found, and it does not parse.
+        val damaged = full.replace(Regex("\\n\\}\\n-----END"), "\n-----END")
+        assertThat(damaged).isNotEqualTo(full)
+
+        val thrown = assertThrows(WalletBackupFormatException::class.java) {
+            WalletBackup.readPlaintext(damaged)
+        }
+        assertThat(thrown).hasMessageThat().contains("damaged")
+    }
+
+    @Test
+    fun `a v1 document with nothing restorable is refused, not read as an empty wallet`() {
+        val nothing = WalletBackup.render(
+            contents(mnemonic = null, accounts = emptyList()),
+            header()
+        )
+
+        assertThrows(WalletBackupFormatException::class.java) {
+            WalletBackup.readPlaintext(nothing)
+        }
     }
 }

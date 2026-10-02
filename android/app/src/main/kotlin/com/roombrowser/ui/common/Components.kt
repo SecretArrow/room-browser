@@ -61,6 +61,22 @@ import androidx.compose.ui.graphics.RenderEffect as ComposeRenderEffect
 val RoomBottomSheetShape = RoundedCornerShape(topStart = 10.dp, topEnd = 10.dp)
 
 /**
+ * The app's one CARD radius: panels, error surfaces, onboarding cards, icon
+ * tiles. 0.8 of the profile's radius — 16dp at the default 20 — against the
+ * full radius those surfaces used to carry.
+ *
+ * WHY SMALLER THAN THE THEME RADIUS, when the radius is a user setting: a
+ * card is a large surface, and a large corner on a large surface reads as a
+ * bubble — the content inside appears to float rather than sit. The profile
+ * radius still drives the scale ([MaterialTheme.shapes]), so this tracks it,
+ * it just tracks it at a calmer point. Buttons and rows keep the fuller
+ * radius, where the surface is small enough that a rounder corner is
+ * proportionate rather than bulbous.
+ */
+val RoomCardShape: RoundedCornerShape
+    @Composable get() = RoundedCornerShape((LocalRoomExtras.current.radius * 0.8f).dp)
+
+/**
  * The single sheet drag handle. Every real sheet is a ModalBottomSheet, which
  * draws M3's own centered handle above its content — so sheets never call
  * this themselves. It exists for the sheet-like surfaces that are NOT
@@ -342,7 +358,7 @@ fun EmptyState(title: String, subtitle: String? = null) {
         Box(
             Modifier
                 .size(56.dp)
-                .clip(RoundedCornerShape(20.dp))
+                .clip(RoomCardShape)
                 .background(extras.surfaceAlt.copy(alpha = 0.7f)),
             contentAlignment = Alignment.Center
         ) {

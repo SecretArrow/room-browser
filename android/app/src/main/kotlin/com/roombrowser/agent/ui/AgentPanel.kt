@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,7 +25,9 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -44,6 +47,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
@@ -82,6 +86,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -92,9 +97,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -104,6 +113,8 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.roombrowser.agent.AgentAttachment
 import com.roombrowser.agent.AgentEntry
@@ -118,6 +129,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 /**
  * The floating AI Agent panel — the agent-mode chat experience layered over
@@ -177,7 +189,10 @@ fun AgentPanelHost(
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .fillMaxHeight(panelHeightFraction),
-                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+                // The panel is a sheet in everything but name (it carries the sheet's
+                // own drag handle), so it wears the sheet's shape — the 28dp it
+                // used to carry was the app's most oversized corner.
+                shape = RoomBottomSheetShape,
                 color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 3.dp,
                 shadowElevation = 16.dp
@@ -210,15 +225,119 @@ fun AgentPanelHost(
             // "Show AI Agent button" in Browser/AI settings). While a task
             // is actively running the pill always shows, so live progress
             // stays visible; it hides again when the turn finishes.
-            AgentStatusPill(
+            //
+            // Its home is the bottom-end corner, and it stays THERE until the
+            // user drags it — the saved position is a fraction of the
+            // draggable range, so a position set in portrait survives
+            // landscape, a resize and a different phone (see AgentSettings).
+            DraggableAgentPill(
                 agent = agent,
                 onClick = { onExpandedChange(true) },
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 16.dp, bottom = 10.dp)
+                bounds = with(androidx.compose.ui.platform.LocalDensity.current) {
+                    IntSize(maxWidth.roundToPx(), maxHeight.roundToPx())
+                },
+                modifier = Modifier.align(Alignment.TopStart)
             )
         }
     }
+}
+
+/** Breathing room kept between the pill and every edge of its box. */
+private val AGENT_PILL_MARGIN = 12.dp
+
+/**
+ * The AI Agent pill, positionable by a LONG-PRESS drag.
+ *
+ * WHY LONG PRESS, and not a plain drag: the pill is mostly a button — a
+ * plain drag would steal the tap that opens the panel, because every finger
+ * wobbles a pixel or two and a drag detector that claims the gesture on
+ * movement alone turns a slightly imprecise tap into a reposition. Requiring
+ * the press to be HELD first makes the two gestures unambiguous, and it is
+ * the convention the platform already taught every user for moving an icon
+ * (and the mouse equivalent on desktop: press, hold, move).
+ *
+ * WHY FRACTIONS: the position is stored as a fraction of the range the pill
+ * can move through, never as pixels. Pixels are wrong the moment the box
+ * changes shape — a portrait position is off-screen in landscape, and a
+ * position from a 1080p phone lands in a corner of a tablet. A fraction
+ * needs no migration and no per-orientation copy.
+ *
+ * THE PILL CANNOT LEAVE THE VIEWPORT: both fractions are clamped to 0..1 as
+ * they are applied AND as they are stored, so no drag, rotation or resize
+ * can strand it at an edge where it cannot be grabbed again.
+ */
+@Composable
+private fun DraggableAgentPill(
+    agent: BrowserAgentController,
+    onClick: () -> Unit,
+    bounds: IntSize,
+    modifier: Modifier = Modifier
+) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val marginPx = with(density) { AGENT_PILL_MARGIN.roundToPx() }
+    var pillSize by remember { mutableStateOf(IntSize.Zero) }
+
+    // The distance the pill's top-left corner may travel. Zero on an axis
+    // means the pill already fills it — the drag is then a no-op there
+    // rather than a division by zero.
+    val rangeX = (bounds.width - pillSize.width - marginPx * 2).coerceAtLeast(0)
+    val rangeY = (bounds.height - pillSize.height - marginPx * 2).coerceAtLeast(0)
+
+    var fracX by remember { mutableFloatStateOf((agent.settings.agentButtonXFrac ?: 1f).coerceIn(0f, 1f)) }
+    var fracY by remember { mutableFloatStateOf((agent.settings.agentButtonYFrac ?: 1f).coerceIn(0f, 1f)) }
+    // A long press that has already claimed the gesture must not ALSO deliver
+    // a click on release: holding the pill still and letting go would
+    // otherwise open the panel, which reads as the app ignoring the drag.
+    var longPressClaimed by remember { mutableStateOf(false) }
+
+    AgentStatusPill(
+        agent = agent,
+        onClick = {
+            if (longPressClaimed) longPressClaimed = false else onClick()
+        },
+        modifier = modifier
+            .onSizeChanged { pillSize = it }
+            .offset {
+                IntOffset(
+                    marginPx + (rangeX * fracX).roundToInt(),
+                    marginPx + (rangeY * fracY).roundToInt()
+                )
+            }
+            // Restores the designed corner without a drag. Screen-reader users
+            // have no long-press-drag, so the position is also reachable as a
+            // named action rather than being mouse-only.
+            .semantics {
+                customActions = listOf(
+                    CustomAccessibilityAction("Reset agent button position") {
+                        fracX = 1f
+                        fracY = 1f
+                        agent.updateSettings {
+                            it.copy(agentButtonXFrac = null, agentButtonYFrac = null)
+                        }
+                        true
+                    }
+                )
+            }
+            .pointerInput(rangeX, rangeY) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { longPressClaimed = true },
+                    onDragEnd = {
+                        // Persist on RELEASE, not per frame: a drag is dozens
+                        // of events and every one of them would otherwise be a
+                        // Room write.
+                        agent.updateSettings {
+                            it.copy(agentButtonXFrac = fracX, agentButtonYFrac = fracY)
+                        }
+                    },
+                    onDragCancel = { longPressClaimed = false },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        if (rangeX > 0) fracX = (fracX + dragAmount.x / rangeX).coerceIn(0f, 1f)
+                        if (rangeY > 0) fracY = (fracY + dragAmount.y / rangeY).coerceIn(0f, 1f)
+                    }
+                )
+            }
+    )
 }
 
 // ------------------------------------------------------------------- pill
@@ -231,7 +350,7 @@ private fun AgentStatusPill(
 ) {
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.primaryContainer,
         contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
         tonalElevation = 6.dp,
@@ -702,6 +821,18 @@ private val IncludeGreenLightContent = Color(0xFF0A3818)
 private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Modifier) {
     var input by rememberSaveable { mutableStateOf("") }
     var includePage by rememberSaveable { mutableStateOf(agent.settings.includePageContext) }
+    // Keyed on the SETTING, not merely remembered: the default context is also
+    // editable from AI Agent settings and from the sheet below, and this panel
+    // stays composed underneath those. Reading the setting back means an edit
+    // made anywhere shows up here instead of the composer going stale.
+    var useDefaultContext by remember(agent.settings.useDefaultContext) {
+        mutableStateOf(agent.settings.useDefaultContext)
+    }
+    var defaultContext by remember(agent.settings.defaultContext) {
+        mutableStateOf(agent.settings.defaultContext)
+    }
+    var editingContext by remember { mutableStateOf(false) }
+    val dark = LocalRoomExtras.current.dark
     // Content URIs are not saveable — attachments intentionally reset on
     // process death (they are re-read and sent with the next turn anyway).
     var attachments by remember { mutableStateOf<List<AgentAttachment>>(emptyList()) }
@@ -732,32 +863,78 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
 
     Surface(color = MaterialTheme.colorScheme.surface) {
         Column(modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-            // Row 1 — controls: "Include page" toggle + file upload. The text
-            // field lives on its own full-width row below, so it now reaches
+            // Row 1 — controls: the two context switches + file upload. The
+            // text field lives on its own full-width row below, so it reaches
             // the panel edges ("lebar sampai ke pinggir layar").
+            //
+            // The chips SCROLL rather than squeeze: two labels plus a 48dp
+            // attach button do not fit a 320dp phone at a large font scale,
+            // and a wrapped or truncated "Default context" is unreadable in
+            // exactly the state the user needs to read it in.
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // Included page = GREEN (user request: "jika include page
-                // di-ikutkan maka warna hijau") — green container + green
-                // label/leading icon, and the page icon swaps for a check so
-                // the state is unmistakable even without color vision.
-                val dark = LocalRoomExtras.current.dark
-                FilterChip(
-                    selected = includePage,
-                    onClick = { includePage = !includePage },
-                    label = { Text("Include page") },
-                    leadingIcon = {
-                        Icon(
-                            if (includePage) Icons.Filled.Check else Icons.Filled.Description,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
+                Row(
+                    Modifier
+                        .weight(1f)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // DEFAULT CONTEXT — the standing instruction the agent
+                    // carries into every request until it is switched off.
+                    //
+                    // Tap toggles it. Tapping it while nothing is saved opens
+                    // the editor instead, because "on" and "empty" is not a
+                    // state worth being able to reach: the switch would turn
+                    // green and change nothing about the requests. Long press
+                    // edits from either state.
+                    FilterChip(
+                        selected = useDefaultContext,
+                        onClick = {
+                            if (defaultContext.isBlank()) {
+                                editingContext = true
+                            } else {
+                                val next = !useDefaultContext
+                                useDefaultContext = next
+                                agent.updateSettings { it.copy(useDefaultContext = next) }
+                            }
+                        },
+                        label = { Text("Default context") },
+                        leadingIcon = {
+                            Icon(
+                                if (useDefaultContext) Icons.Filled.Check else Icons.Filled.BookmarkBorder,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        },
+                        modifier = Modifier
+                            .semantics { contentDescription = "agent_default_context" },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = if (dark) IncludeGreenDarkContainer else IncludeGreenLightContainer,
+                            selectedLabelColor = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent,
+                            selectedLeadingIconColor = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent
                         )
-                    },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = if (dark) IncludeGreenDarkContainer else IncludeGreenLightContainer,
-                        selectedLabelColor = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent,
-                        selectedLeadingIconColor = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent
                     )
-                )
+                    // Included page = GREEN (user request: "jika include page
+                    // di-ikutkan maka warna hijau") — green container + green
+                    // label/leading icon, and the page icon swaps for a check so
+                    // the state is unmistakable even without color vision.
+                    FilterChip(
+                        selected = includePage,
+                        onClick = { includePage = !includePage },
+                        label = { Text("Include page") },
+                        leadingIcon = {
+                            Icon(
+                                if (includePage) Icons.Filled.Check else Icons.Filled.Description,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = if (dark) IncludeGreenDarkContainer else IncludeGreenLightContainer,
+                            selectedLabelColor = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent,
+                            selectedLeadingIconColor = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent
+                        )
+                    )
+                }
                 Spacer(Modifier.width(8.dp))
                 FilledTonalIconButton(
                     onClick = { attachLauncher.launch(arrayOf("*/*")) },
@@ -773,6 +950,33 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
                         Icon(Icons.Filled.AttachFile, contentDescription = null, modifier = Modifier.size(20.dp))
                     }
                 }
+            }
+
+            // What the two switches will actually send, in one line, whenever
+            // either is on. A green chip says "this is enabled"; it does not
+            // say WHAT is enabled, and the default context is text the user
+            // wrote days ago and cannot see from here. Tapping the line opens
+            // the editor.
+            val activeContexts = buildList {
+                if (useDefaultContext && defaultContext.isNotBlank()) {
+                    add("Context: " + defaultContext.replace(Regex("\\s+"), " ").trim())
+                }
+                if (includePage) add("This page")
+            }
+            if (activeContexts.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    activeContexts.joinToString("  ·  "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { editingContext = true }
+                        .padding(vertical = 4.dp)
+                        .semantics { contentDescription = "agent_active_contexts" }
+                )
             }
 
             // Picked files — removable chips, horizontally scrollable.
@@ -817,7 +1021,7 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
                     onValueChange = { input = it },
                     placeholder = { Text("Ask the agent to browse…") },
                     maxLines = 4,
-                    shape = RoundedCornerShape(22.dp),
+                    shape = MaterialTheme.shapes.small,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(
                         onSend = {
@@ -858,6 +1062,89 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
                             .semantics { contentDescription = "agent_send" }
                     ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null) }
                 }
+            }
+        }
+    }
+
+    if (editingContext) {
+        DefaultContextSheet(
+            initial = defaultContext,
+            onDismiss = { editingContext = false },
+            onSave = { text ->
+                defaultContext = text
+                // Saving a non-blank context switches it ON: writing the text
+                // down IS the intent to use it, and leaving the switch off
+                // would make "Save" look like it did nothing. Clearing to
+                // blank switches it off for the same reason in reverse.
+                val enabled = text.isNotBlank()
+                useDefaultContext = enabled
+                agent.updateSettings { it.copy(defaultContext = text, useDefaultContext = enabled) }
+                editingContext = false
+            }
+        )
+    }
+}
+
+/**
+ * Edit / replace / clear the standing context.
+ *
+ * A sheet rather than an AlertDialog because the field is a paragraph: a
+ * dialog sized to its content on a phone gives a four-line box, and this is
+ * the one place in the panel where the user writes prose. [onClear] is a
+ * first-class action rather than "save an empty string", so emptying the
+ * context is one deliberate tap instead of a select-all and a delete.
+ */
+@Composable
+private fun DefaultContextSheet(
+    initial: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var draft by remember { mutableStateOf(initial) }
+    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp)
+        ) {
+            Text("Default context", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Sent with every request until you turn it off — the same " +
+                    "instruction, not a one-off. Use it for how you want answers " +
+                    "(language, format, level of detail) or what you are working on.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(14.dp))
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                placeholder = { Text("e.g. Answer in Indonesian, be concise, and assume I am on Android.") },
+                minLines = 4,
+                maxLines = 10,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentDescription = "agent_default_context_field" }
+            )
+            Spacer(Modifier.height(14.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(
+                    onClick = { onSave(draft.trim()) },
+                    enabled = draft.isNotBlank(),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .semantics { contentDescription = "agent_default_context_save" }
+                ) { Text("Save and use") }
+                OutlinedButton(
+                    onClick = { onSave("") },
+                    enabled = initial.isNotBlank() || draft.isNotBlank(),
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .semantics { contentDescription = "agent_default_context_clear" }
+                ) { Text("Clear") }
             }
         }
     }

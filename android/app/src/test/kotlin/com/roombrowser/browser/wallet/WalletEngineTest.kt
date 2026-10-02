@@ -183,7 +183,7 @@ class WalletEngineTest {
         }
 
         override suspend fun evmFeeEstimate(
-            endpoint: String,
+            network: NetworkConfig,
             from: String,
             to: String?,
             value: BigInteger

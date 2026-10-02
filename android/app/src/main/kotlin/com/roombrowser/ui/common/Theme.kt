@@ -230,6 +230,20 @@ object RoomMotion {
     )
 }
 
+/**
+ * The shape scale, derived from the profile's one radius setting.
+ *
+ * [Shapes.extraLarge] is what Material 3 hands to `AlertDialog`, `ModalBottomSheet`
+ * and the large surface components, and it is the tier that made dialogs look
+ * oversized: M3's spec value is 28dp, and the scale here pushed it to
+ * `radius + 8` — 28dp at the default radius, i.e. a corner almost a third of
+ * the way down a 100dp dialog. It is deliberately the SMALLEST tier relative
+ * to its own size now, because a dialog is a small panel: the bigger the
+ * surface, the less of it a big corner can afford to eat before the content
+ * starts looking like it is floating in a bubble. Sheets keep their own,
+ * even flatter shape ([RoomBottomSheetShape]) since they are anchored to the
+ * screen edge.
+ */
 private fun shapesFor(radius: Int): Shapes {
     val r = radius.coerceIn(4, 32)
     return Shapes(
@@ -237,7 +251,7 @@ private fun shapesFor(radius: Int): Shapes {
         small = RoundedCornerShape((r * 0.6f).toInt().coerceAtLeast(6)),
         medium = RoundedCornerShape((r * 0.75f).toInt().coerceAtLeast(8)),
         large = RoundedCornerShape(r),
-        extraLarge = RoundedCornerShape((r + 8).coerceAtMost(36))
+        extraLarge = RoundedCornerShape((r * 0.8f).toInt().coerceIn(10, 16))
     )
 }
 

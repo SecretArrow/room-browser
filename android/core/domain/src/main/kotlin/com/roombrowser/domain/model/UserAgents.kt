@@ -225,4 +225,40 @@ object UserAgents {
             UaMode.CUSTOM -> settings.customUserAgent?.takeIf { it.isNotBlank() }
         }
     }
+
+    /**
+     * The engine's OWN user agent with its WebView markers removed — what the
+     * DEFAULT mode actually sends.
+     *
+     * A WebView announces itself twice in its stock UA: the `wv` token and the
+     * `Version/4.0` product. Sites read both, and a growing number of them
+     * answer the WebView identity with a code path that is not the one a
+     * browser gets — most visibly the video sites, where the substitute player
+     * is the one that stalls on "initializing", loads slowly or never starts at
+     * all. That is not a bug in the page: it is the page taking the engine at
+     * its word.
+     *
+     * WHY STRIP RATHER THAN SUBSTITUTE A FIXED CHROME UA: the rest of this
+     * string is the honest answer — the Chrome version the device's engine
+     * actually is, and the platform it actually runs on. Replacing it wholesale
+     * with a hard-coded "Chrome 131" would make every profile claim a version
+     * that will be years stale, and it would fight the per-profile identity
+     * system, which is where a chosen UA belongs (PRESET, CUSTOM, and the
+     * device list all supply their own and are not touched by this). Removing
+     * two tokens leaves a UA that is true about everything it says and silent
+     * about the one thing that changes how a site behaves.
+     *
+     * A string without those tokens — a desktop profile, an already-clean UA,
+     * or anything unrecognisable — is returned unchanged.
+     */
+    fun webViewNeutralUserAgent(engineUserAgent: String?): String? {
+        val raw = engineUserAgent?.takeIf { it.isNotBlank() } ?: return engineUserAgent
+        val cleaned = raw
+            .replace("; wv)", ")")
+            .replace(" wv)", ")")
+            .replace("Version/4.0 ", "")
+            .replace(Regex("\\s{2,}"), " ")
+            .trim()
+        return cleaned.ifBlank { raw }
+    }
 }

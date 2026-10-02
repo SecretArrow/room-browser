@@ -71,6 +71,7 @@ import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.ui.common.LoadingBar
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomCard
+import com.roombrowser.ui.common.RoomCardShape
 import com.roombrowser.ui.common.StatTile
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -303,7 +304,7 @@ private fun ErrorPage(error: PageError, onRetry: () -> Unit) {
         Box(
             Modifier
                 .size(64.dp)
-                .clip(RoundedCornerShape(22.dp))
+                .clip(RoomCardShape)
                 .background(extras.surfaceAlt),
             contentAlignment = Alignment.Center
         ) {
@@ -481,7 +482,7 @@ private fun Homepage(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
                             .weight(1f, fill = false)
-                            .clip(RoundedCornerShape(18.dp))
+                            .clip(RoomCardShape)
                             .clickable { viewModel.loadUrl(url) }
                             .padding(6.dp)
                     ) {

@@ -695,9 +695,8 @@ open class WalletEngine(
             if (network.chainType != chainType || account.chainType != chainType) return null
             when (chainType) {
                 ChainType.EVM -> {
-                    val endpoint = network.rpcUrls.firstOrNull() ?: return null
                     val value = parseAmountToBaseUnits(amount, network.nativeDecimals) ?: return null
-                    evmFeeEstimate(endpoint, account.address, to.takeIf { it.isNotBlank() }, value)
+                    evmFeeEstimate(network, account.address, to.takeIf { it.isNotBlank() }, value)
                         ?.let { wei ->
                             FeeEstimate(
                                 label = "Estimated gas fee",
@@ -718,16 +717,21 @@ open class WalletEngine(
     /**
      * EVM gas*price estimate in base units. Internal open: JVM tests inject
      * the result (the real path is two RPC calls).
+     *
+     * Takes the NETWORK, not one endpoint url: the estimate must fail over
+     * across the network's endpoints like every other RPC call, and the chain
+     * that knows how to do that is built by the adapter.
      */
     internal open suspend fun evmFeeEstimate(
-        endpoint: String,
+        network: NetworkConfig,
         from: String,
         to: String?,
         value: BigInteger
     ): BigInteger? {
-        val fees = registry.evm.suggestFees(endpoint) ?: return null
+        val chain = registry.evm.endpointsOf(network)
+        val fees = registry.evm.suggestFees(chain) ?: return null
         val gas = try {
-            registry.evm.estimateGas(endpoint, from, to, value, "0x")
+            registry.evm.estimateGas(chain, from, to, value, "0x")
         } catch (_: WalletException) {
             return null
         }
@@ -1251,9 +1255,11 @@ open class WalletEngine(
                 val signed = registry.solana.signTransaction(
                     ed25519Seed(account), account.address, base64Tx
                 )
-                val endpoint = network.rpcUrls.firstOrNull()
-                    ?: throw WalletException.InvalidParams("Network has no RPC endpoint")
-                return when (val sent = registry.solana.broadcast(endpoint, signed)) {
+                val chain = registry.solana.endpointsOf(network)
+                if (chain.urls.isEmpty()) {
+                    throw WalletException.InvalidParams("Network has no RPC endpoint")
+                }
+                return when (val sent = registry.solana.broadcast(chain, signed)) {
                     is BroadcastResult.Ok ->
                         DappTransactionResult(hash = sent.hash, signature = null, feeLabel = "5000 lamports")
                     is BroadcastResult.Error ->
@@ -1333,14 +1339,16 @@ open class WalletEngine(
                         hash = null, signature = signature.signatureBase64, feeLabel = null
                     )
                 }
-                val lcd = network.lcdUrl
-                    ?: throw WalletException.InvalidParams("Network has no LCD endpoint")
+                val lcdChain = registry.cosmos.endpointsOf(network)
+                if (lcdChain.urls.isEmpty()) {
+                    throw WalletException.InvalidParams("Network has no LCD endpoint")
+                }
                 val txRaw = ProtoWriter()
                     .writeBytes(1, body)
                     .writeBytes(2, authInfo)
                     .writeBytes(3, decodeBase64(signature.signatureBase64))
                     .bytes()
-                return when (val sent = registry.cosmos.broadcastTx(lcd, txRaw)) {
+                return when (val sent = registry.cosmos.broadcastTx(lcdChain, txRaw)) {
                     is BroadcastResult.Ok ->
                         DappTransactionResult(hash = sent.hash, signature = null, feeLabel = "2500 fee")
                     is BroadcastResult.Error ->
@@ -1350,12 +1358,14 @@ open class WalletEngine(
             ChainType.TRON -> {
                 val tx = json.parseToJsonElement(request.txParamsJson) as? JsonObject
                     ?: throw WalletException.InvalidParams("tx params must be a JSON object")
-                val endpoint = network.rpcUrls.firstOrNull()
-                    ?: throw WalletException.InvalidParams("Network has no RPC endpoint")
+                val tronChain = registry.tron.endpointsOf(network)
+                if (tronChain.urls.isEmpty()) {
+                    throw WalletException.InvalidParams("Network has no RPC endpoint")
+                }
                 val (signed, _) = registry.tron.signTransaction(
                     secpPrivateKey(account), account.address, tx
                 )
-                return when (val sent = registry.tron.broadcast(endpoint, signed)) {
+                return when (val sent = registry.tron.broadcast(tronChain, signed)) {
                     is BroadcastResult.Ok ->
                         DappTransactionResult(hash = sent.hash, signature = null, feeLabel = "bandwidth + energy")
                     is BroadcastResult.Error ->

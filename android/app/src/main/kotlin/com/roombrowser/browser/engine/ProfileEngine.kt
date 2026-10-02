@@ -49,6 +49,30 @@ object ProfileEngine {
     private var boundProfileId: ProfileId? = null
 
     /**
+     * The engine's own stock UA, captured the first time [configure] runs.
+     *
+     * CAPTURED, not re-read, because WebSettings has no "what would you have
+     * sent" getter: once a UA has been assigned, `userAgentString` returns the
+     * assignment. This matters for the DEFAULT mode, which must be able to
+     * clear an identity a previous configure installed (a profile switching
+     * from CUSTOM back to DEFAULT) — reading the property back at that moment
+     * would return the custom UA and leave it in place, which is exactly the
+     * bug the surrounding comment warns about.
+     *
+     * The first configure() of a process always runs against a freshly
+     * constructed WebView, so that first read is the engine's default.
+     */
+    @Volatile
+    private var stockUserAgentCapture: String? = null
+
+    private fun stockUserAgent(settings: WebSettings): String {
+        stockUserAgentCapture?.let { return it }
+        val captured = settings.userAgentString.orEmpty()
+        stockUserAgentCapture = captured
+        return captured
+    }
+
+    /**
      * The device shim currently installed per WebView, so reconfiguring a
      * live WebView replaces its script instead of adding another one.
      */
@@ -242,7 +266,16 @@ object ProfileEngine {
         // restarted. Same rule the desktop-mode toggle applies below
         // (UaMode.DEFAULT -> null); assigning null is how WebSettings resets
         // to the engine's own UA.
-        s.userAgentString = UserAgents.effectiveUserAgent(settings)
+        //
+        // DEFAULT no longer means "the engine's UA verbatim": the engine's own
+        // string identifies it as a WebView, and video sites in particular
+        // serve a degraded player to that identity — the load-forever,
+        // never-starts behaviour this mode was reported for. The markers come
+        // off; see UserAgents.webViewNeutralUserAgent for why stripping is
+        // preferred to substituting a fixed Chrome string.
+        val chosen = UserAgents.effectiveUserAgent(settings)
+        s.userAgentString = chosen
+            ?: UserAgents.webViewNeutralUserAgent(stockUserAgent(s))
         s.textZoom = (settings.fontScale * 100f).toInt().coerceIn(50, 200)
 
         applyDeviceShim(

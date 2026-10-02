@@ -200,4 +200,78 @@ class UserAgentsTest {
         // The mobile subset is the whole catalogue while every preset is Android.
         assertThat(UserAgents.androidPresets).isEqualTo(UserAgents.all)
     }
+
+    // ----------------------------------------------------- neutralising the engine
+
+    /** A stock WebView UA, in the shape a real device reports it. */
+    private val engineUa =
+        "Mozilla/5.0 (Linux; Android 14; SM-S918B Build/UP1A.231005.007; wv) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/131.0.6778.135 " +
+            "Mobile Safari/537.36"
+
+    @Test
+    fun `the neutralised engine UA stops announcing itself as a WebView`() {
+        val cleaned = UserAgents.webViewNeutralUserAgent(engineUa)!!
+
+        // The two tokens sites branch on: `wv` in the platform comment and the
+        // `Version/4.0` product. Either one alone gets a page the substitute
+        // player, which is what stalls video sites.
+        assertThat(cleaned).doesNotContain("wv")
+        assertThat(cleaned).doesNotContain("Version/4.0")
+        // No stray double space where the product was removed.
+        assertThat(cleaned).doesNotContain("  ")
+        assertThat(cleaned).isEqualTo(
+            "Mozilla/5.0 (Linux; Android 14; SM-S918B Build/UP1A.231005.007) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.135 " +
+                "Mobile Safari/537.36"
+        )
+    }
+
+    @Test
+    fun `neutralising keeps the engine's real Chrome version`() {
+        val cleaned = UserAgents.webViewNeutralUserAgent(engineUa)!!
+
+        // Substituting a fixed "Chrome 131" would go stale within months and
+        // would fight the per-profile identity system. Only the two WebView
+        // markers go.
+        assertThat(cleaned).contains("Chrome/131.0.6778.135")
+        assertThat(cleaned).contains("Android 14")
+        assertThat(cleaned).contains("SM-S918B")
+    }
+
+    @Test
+    fun `a UA without WebView markers is returned unchanged`() {
+        val alreadyClean = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+        assertThat(UserAgents.webViewNeutralUserAgent(alreadyClean)).isEqualTo(alreadyClean)
+        assertThat(UserAgents.webViewNeutralUserAgent(UserAgents.desktopModeUserAgent))
+            .isEqualTo(UserAgents.desktopModeUserAgent)
+    }
+
+    @Test
+    fun `a missing or blank engine UA passes through rather than inventing one`() {
+        assertThat(UserAgents.webViewNeutralUserAgent(null)).isNull()
+        assertThat(UserAgents.webViewNeutralUserAgent("")).isEmpty()
+        assertThat(UserAgents.webViewNeutralUserAgent("   ")).isEqualTo("   ")
+    }
+
+    @Test
+    fun `a UA that is nothing but WebView markers is left as the engine sent it`() {
+        // Degenerate, but the alternative is handing the engine an empty
+        // userAgentString, which WebView treats as "send nothing".
+        val weird = "wv"
+        assertThat(UserAgents.webViewNeutralUserAgent(weird)).isEqualTo(weird)
+    }
+
+    @Test
+    fun `DEFAULT mode resolves to the neutralised engine string, not the stock one`() {
+        val settings = ProfileSettings(uaMode = UaMode.DEFAULT)
+
+        // effectiveUserAgent returning null is the signal "the engine decides";
+        // it is the caller (ProfileEngine) that neutralises. This test pins the
+        // contract the caller depends on.
+        assertThat(UserAgents.effectiveUserAgent(settings)).isNull()
+        assertThat(UserAgents.webViewNeutralUserAgent(engineUa)).isNotNull()
+    }
 }

@@ -39,6 +39,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBrowserTheme
+import com.roombrowser.ui.common.RoomCardShape
+
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -150,7 +152,7 @@ private fun NetworkWarningScreen(
         Box(
             Modifier
                 .size(64.dp)
-                .clip(RoundedCornerShape(22.dp))
+                .clip(RoomCardShape)
                 .background(extras.surfaceAlt),
             contentAlignment = Alignment.Center
         ) {

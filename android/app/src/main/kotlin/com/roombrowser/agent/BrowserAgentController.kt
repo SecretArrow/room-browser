@@ -540,6 +540,28 @@ class BrowserAgentController(
                     history.add(ChatMessage(role = "user", content = "$it\n\n(The user's request follows.)"))
                 }
             }
+            // The user's standing context, re-sent on EVERY turn rather than
+            // once when it was written: a provider keeps no memory between
+            // turns, so a context that is only in the first request is gone by
+            // the third. It is placed BELOW the page snapshot so that "this is
+            // my standing instruction" is the most recent thing the model read
+            // before the actual request, and above the request itself so the
+            // request remains the last word.
+            //
+            // It is a USER message, never merged into the system prompt: the
+            // system prompt is the app's own instruction set, and text the
+            // user can retype at any time does not belong in the slot that
+            // defines what the agent fundamentally is.
+            val standing = settings.defaultContext.trim()
+            if (settings.useDefaultContext && standing.isNotEmpty()) {
+                history.add(
+                    ChatMessage(
+                        role = "user",
+                        content = "Standing context — apply it to this and every " +
+                            "following request until I say otherwise:\n$standing"
+                    )
+                )
+            }
             renderAttachments(attachments).takeIf { it.isNotEmpty() }?.let {
                 history.add(ChatMessage(role = "user", content = it))
             }

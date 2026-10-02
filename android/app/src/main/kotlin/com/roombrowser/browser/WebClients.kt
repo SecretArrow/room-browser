@@ -114,6 +114,10 @@ class RoomWebViewClient(
         view: WebView,
         request: WebResourceRequest
     ): WebResourceResponse? {
+        // Recorded BEFORE the main-frame early return: this is the earliest
+        // main-frame signal there is, and it covers redirect hops that
+        // onPageStarted does not report. Background thread — see [mainFrameUrl].
+        if (request.isForMainFrame) mainFrameUrl = request.url.toString()
         if (request.isForMainFrame) return null
         val url = request.url
         val host = url.host?.lowercase() ?: return null
@@ -173,15 +177,25 @@ class RoomWebViewClient(
                 upgradeFallbacks.register(upgraded.url, url)
                 callbacks.onHttpsUpgrade(host)
                 callbacks.recordBlockEvent(host, StatCategories.HTTPS_UPGRADE)
+                // We are the ones starting this load: it IS the main frame
+                // now, and an SSL failure on the way must be attributed to it
+                // (see [mainFrameUrl]).
+                mainFrameUrl = upgraded.url
                 view.post { view.loadUrl(upgraded.url) }
                 return true
             }
         }
+        // Reaching here means the engine loads this url: it is the main frame.
+        mainFrameUrl = url
         return false
     }
 
     override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
         CookieManager.getInstance().flush()
+        // Main-frame-only callback, and the authoritative one: whatever the
+        // engine is actually navigating to (including a url we never saw in
+        // shouldOverrideUrlLoading, such as a cross-host redirect target).
+        mainFrameUrl = url
         // Early history feedback: the back/forward buttons light up as soon
         // as a navigation begins, then doUpdateVisitedHistory re-reports the
         // authoritative state when the entry lands.
@@ -191,6 +205,7 @@ class RoomWebViewClient(
 
     override fun onPageFinished(view: WebView, url: String) {
         CookieManager.getInstance().flush()
+        mainFrameUrl = url
         callbacks.onHistoryChanged(view, view.canGoBack(), view.canGoForward())
         callbacks.onPageFinished(view, url, view.title ?: url)
     }
@@ -284,6 +299,67 @@ class RoomWebViewClient(
         }
     }
 
+    /**
+     * The most recent MAIN-FRAME url this client has seen.
+     *
+     * WHY IT EXISTS: [onReceivedSslError] is the one WebView callback that
+     * does not say which frame it fired for — a `SslError` carries a url and
+     * nothing else. Without this, a single third-party sub-resource with a
+     * broken certificate (an ad iframe, a tracker pixel, a CDN with an
+     * expired cert) replaced an otherwise perfectly good page with the
+     * full-screen "Connection Not Secure" error — the reported symptom, and
+     * not something any other browser does: Chrome blocks the one resource
+     * and keeps the page.
+     *
+     * HOW IT IS FILLED: every callback that CAN identify a main frame does.
+     * [shouldOverrideUrlLoading] and [shouldInterceptRequest] both receive an
+     * `isForMainFrame` flag, and [onPageStarted]/[onPageFinished] are
+     * main-frame-only callbacks by definition. Sub-resource loads never reach
+     * any of them, which is exactly what makes the comparison meaningful.
+     *
+     * `@Volatile`: [shouldInterceptRequest] runs on a background thread while
+     * the SSL callback runs on the UI thread.
+     */
+    @Volatile
+    private var mainFrameUrl: String? = null
+
+    /**
+     * Which frame a failing certificate belongs to — the discriminator
+     * [onReceivedSslError] has to reconstruct for itself.
+     *
+     * Compares the SCHEME + HOST + PORT of the failing url against the
+     * main-frame urls we recorded and against the engine's committed url
+     * ([WebView.getUrl]). Port is included because a service on another port
+     * of the same host can present a different certificate; scheme is
+     * included because an https sub-resource under an http page is a
+     * different origin with a different certificate.
+     *
+     * An unparseable or unknown failing url answers TRUE — treat it as a main
+     * frame. The safe direction to be wrong in: a false "main frame" shows the
+     * user an error page they can act on, while a false "sub-resource" would
+     * silently swallow a failed navigation and leave the old page on screen
+     * with no explanation at all.
+     */
+    private fun isMainFrameSslFailure(view: WebView, failingUrl: String?): Boolean {
+        val failing = authorityOf(failingUrl) ?: return true
+        return authorityOf(mainFrameUrl) == failing || authorityOf(view.url) == failing
+    }
+
+    /** `scheme://host:port`, with the scheme's default port filled in. */
+    private fun authorityOf(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
+        val scheme = uri.scheme?.lowercase() ?: return null
+        val host = uri.host?.lowercase() ?: return null
+        val port = when {
+            uri.port > 0 -> uri.port
+            scheme == "https" -> 443
+            scheme == "http" -> 80
+            else -> -1
+        }
+        return "$scheme://$host:$port"
+    }
+
     override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
         // HTTPS-First fallback: an https endpoint without a valid TLS setup
         // behind one of OUR upgrades → retry the original http URL once.
@@ -298,9 +374,22 @@ class RoomWebViewClient(
             view.post { view.loadUrl(original) }
             return
         }
+        // A certificate that is bad for a SUB-RESOURCE is that resource's
+        // problem, not the page's: cancel it and let the page carry on. This
+        // is a refusal, never an acceptance — the resource is not loaded, and
+        // nothing here ever calls handler.proceed(), so certificate
+        // validation is untouched.
+        if (!isMainFrameSslFailure(view, error.url)) {
+            handler.cancel()
+            return
+        }
         // Never proceed automatically — the user decides via the error page.
+        // The url reported is the one that FAILED, not view.url: for a
+        // main-frame navigation view.url is still the previous page, and
+        // telling the user that address is insecure when it is not would be
+        // the same class of lie this method just stopped telling.
         handler.cancel()
-        callbacks.onSslError(view, view.url ?: "", error)
+        callbacks.onSslError(view, error.url ?: view.url ?: "", error)
     }
 
     /**
@@ -548,19 +637,37 @@ class RoomWebChromeClient(
         val kinds = mutableSetOf<PermissionKind>()
         if (PermissionRequest.RESOURCE_VIDEO_CAPTURE in resources) kinds += PermissionKind.CAMERA
         if (PermissionRequest.RESOURCE_AUDIO_CAPTURE in resources) kinds += PermissionKind.MICROPHONE
-        // RESOURCE_PROTECTED_MEDIA_ID and RESOURCE_MIDI_SYSEX have no kind
-        // here, and a request the sheet cannot NAME is refused rather than
-        // raised as a bodyless "Site permission" whose Allow grants the whole
-        // resources array. Refused rather than ignored: an unanswered
-        // PermissionRequest hangs the page for the life of its document.
+
+        // PROTECTED MEDIA (EME) — answered here, on the spot, never put to the
+        // user. This is the request a video site makes before it will hand the
+        // engine a DRM-protected stream, and denying it is why video on the
+        // sites that use it failed to start or stalled on "initializing".
         //
-        // The cost is real and worth stating: protected media is how a page
-        // asks to decode DRM content, so a site that needs Widevine cannot
-        // play here. Giving it a consent surface of its own is the way to
-        // allow it — not a blank sheet — and that surface would also have to
-        // say that the engine needs a provisioned DRM provider.
+        // WHY IT NEEDS NO CONSENT SURFACE, unlike camera and microphone: the
+        // resource is not a window onto anything the user owns. It is a request
+        // to decode content the page is already delivering, using the device's
+        // DRM module and keys the page obtained from its own licence server. No
+        // data about the user leaves the device because of it, so there is
+        // nothing for a prompt to protect — which is why every mainstream
+        // browser, this app's own desktop-mode UA included, answers it without
+        // asking. Refusing it was never a privacy decision; it was a limitation
+        // of a sheet that could only answer the WHOLE resource array at once.
+        //
+        // The mixed case stays with the sheet: a request that wants a camera or
+        // a microphone AND protected media is answered as one decision, because
+        // PermissionRequest is single-shot and a partial grant would leave the
+        // camera half of it hanging.
         if (kinds.isEmpty()) {
-            request.deny()
+            // Refused rather than ignored: an unanswered PermissionRequest
+            // hangs the page for the life of its document.
+            if (PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID in resources) {
+                request.grant(arrayOf(PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID))
+            } else {
+                // RESOURCE_MIDI_SYSEX is the remaining case: it has no kind
+                // here either, and refusal is the honest answer — the app has
+                // no MIDI device story.
+                request.deny()
+            }
             return
         }
         // No WebView on this callback — firingEngine() is the only handle on

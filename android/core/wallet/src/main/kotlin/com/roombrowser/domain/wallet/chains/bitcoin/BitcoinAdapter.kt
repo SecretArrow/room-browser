@@ -13,6 +13,7 @@ import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
 import com.roombrowser.domain.wallet.rpc.JsonRpcClient
+import com.roombrowser.domain.wallet.rpc.RpcEndpointChain
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -35,6 +36,27 @@ import java.math.BigInteger
 class BitcoinAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationPathIndex {
 
     fun chainType(): ChainType = ChainType.BITCOIN
+
+    /**
+     * This network's mempool API bases as a failover chain.
+     *
+     * Every call in this adapter used to go through `apiBase()`, which took
+     * `network.rpcUrls.firstOrNull()` and nothing else, so the second url in
+     * a network's list was dead weight: a network whose primary indexer had
+     * died could not be read or broadcast at all, even with a working host
+     * recorded beside it. A network carrying no url of its own keeps the
+     * public mempool.space/blockstream host as the chain's only endpoint —
+     * the fallback `apiBase()` used to provide. See [RpcEndpointChain].
+     */
+    fun endpointsOf(network: NetworkConfig): RpcEndpointChain {
+        val chain = RpcEndpointChain.of(rpc, network)
+        if (chain.urls.isNotEmpty()) return chain
+        return RpcEndpointChain(
+            rpc = rpc,
+            key = network.id,
+            urls = listOf(if (network.isTestnet) "https://blockstream.info/testnet/api" else "https://mempool.space/api")
+        )
+    }
 
     fun deriveAccount(seed: ByteArray, network: NetworkConfig, index: Int, legacy: Boolean = false): DerivedBitcoinKey {
         val coinType = if (network.isTestnet) 1L else 0L
@@ -146,10 +168,10 @@ class BitcoinAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivat
         amountSats: Long,
         feeRatePerVbyte: Long? = null
     ): PreparedSend {
-        val api = apiBase(network)
-        val utxos = fetchUtxos(api, fromAddress).filter { it.confirmed }
+        val chain = endpointsOf(network)
+        val utxos = fetchUtxos(chain, fromAddress).filter { it.confirmed }
         if (utxos.isEmpty()) throw WalletException.NetworkUnavailable("No confirmed UTXOs for $fromAddress")
-        val feeRate = feeRatePerVbyte ?: fetchFeeRate(api) ?: 12L
+        val feeRate = feeRatePerVbyte ?: fetchFeeRate(chain) ?: 12L
         val pubkey = Bip32PrivateKey.publicKeyPoint(privateKey).getEncoded(true)
         val pubkeyHash = Hashes.ripemd160(Hashes.sha256(pubkey))
 
@@ -320,8 +342,8 @@ class BitcoinAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivat
     // Network API (mempool.space / blockstream)
     // ------------------------------------------------------------------
 
-    suspend fun fetchUtxos(api: String, address: String): List<Utxo> = try {
-        val result = rpc.getJson("$api/address/$address/utxo")
+    suspend fun fetchUtxos(chain: RpcEndpointChain, address: String): List<Utxo> = try {
+        val result = chain.firstWorking { url -> rpc.getJson("${url.trimEnd('/')}/address/$address/utxo") }
         result.jsonArray.mapNotNull { el ->
             val obj = el.jsonObject
             Utxo(
@@ -335,17 +357,17 @@ class BitcoinAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivat
         emptyList()
     }
 
-    suspend fun fetchFeeRate(api: String): Long? = try {
-        val result = rpc.getJson("$api/v1/fees/recommended").jsonObject
+    suspend fun fetchFeeRate(chain: RpcEndpointChain): Long? = try {
+        val result = chain.firstWorking { url -> rpc.getJson("${url.trimEnd('/')}/v1/fees/recommended") }.jsonObject
         result["hourFee"]?.jsonPrimitive?.content?.toLongOrNull()?.coerceAtLeast(1)
     } catch (_: WalletException) {
         null
     }
 
     suspend fun getBalanceSats(network: NetworkConfig, address: String): Long {
-        val api = apiBase(network)
+        val chain = endpointsOf(network)
         return try {
-            val result = rpc.getJson("$api/address/$address").jsonObject
+            val result = chain.firstWorking { url -> rpc.getJson("${url.trimEnd('/')}/address/$address") }.jsonObject
             val stats = result["chain_stats"]?.jsonObject
             val funded = stats?.get("funded_txo_sum")?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
             val spent = stats?.get("spent_txo_sum")?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
@@ -356,15 +378,12 @@ class BitcoinAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivat
     }
 
     suspend fun broadcast(network: NetworkConfig, rawTxHex: String): BroadcastResult = try {
-        val tx = rpc.postJsonText("${apiBase(network)}/tx", "\"$rawTxHex\"")
+        val tx = endpointsOf(network)
+            .firstWorking { url -> rpc.postJsonText("${url.trimEnd('/')}/tx", "\"$rawTxHex\"") }
         BroadcastResult.Ok(tx.trim().trim('"'))
     } catch (e: WalletException) {
         BroadcastResult.Error(e.message ?: "Broadcast failed")
     }
-
-    fun apiBase(network: NetworkConfig): String =
-        network.rpcUrls.firstOrNull()?.trimEnd('/')
-            ?: (if (network.isTestnet) "https://blockstream.info/testnet/api" else "https://mempool.space/api")
 
     data class DerivedBitcoinKey(
         val privateKey: BigInteger,

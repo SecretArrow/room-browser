@@ -37,6 +37,21 @@ data class NetworkConfig(
     val explorerUrl: String? = null,
     /** Extra endpoints some chains need (LCD for Cosmos, indexer for BTC). */
     val lcdUrl: String? = null,
+    /**
+     * Further LCD hosts for the same chain — see [lcdUrl].
+     *
+     * Cosmos is the chain family that needs these: its REST endpoint is the
+     * ONLY way this app talks to the chain (accounts, balances, broadcast),
+     * and a Cosmos host is a single point of failure in a way an EVM one is
+     * not, because there is no second protocol to fall back to. Listing a
+     * spare here is what lets `RpcEndpointChain` fail over to it instead of
+     * leaving the network unusable while a perfectly good endpoint sits one
+     * field away, unread.
+     *
+     * Ordered after [lcdUrl] but not inferior to it: the chain tries the
+     * last-known-good host first regardless of position.
+     */
+    val lcdFallbackUrls: List<String> = emptyList(),
     val indexerUrl: String? = null,
     val isTestnet: Boolean = false,
     /** bech32 human-readable part for Cosmos chains (e.g. "cosmos", "osmo"). */

@@ -12,6 +12,7 @@ import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
 import com.roombrowser.domain.wallet.rpc.JsonRpcClient
+import com.roombrowser.domain.wallet.rpc.RpcEndpointChain
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
@@ -33,6 +34,18 @@ import kotlinx.serialization.json.put
 class SolanaAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationPathIndex {
 
     fun chainType(): ChainType = ChainType.SOLANA
+
+    /**
+     * This network's endpoints as a failover chain.
+     *
+     * Every RPC call in this adapter goes through one of these instead of
+     * `network.rpcUrls.firstOrNull()`. Solana's bundled networks list a single
+     * public endpoint today, but a user's custom network may list several, and
+     * a public host that is rate-limiting or down should not make the network
+     * unusable while a working endpoint sits beside it in the same list. See
+     * [RpcEndpointChain].
+     */
+    fun endpointsOf(network: NetworkConfig): RpcEndpointChain = RpcEndpointChain.of(rpc, network)
 
     fun deriveAccount(seed: ByteArray, index: Int): DerivedSolanaKey {
         val key = Slip10Ed25519Key.derive(seed, "m/44'/501'/$index'/0'")
@@ -158,9 +171,9 @@ class SolanaAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivati
         toAddress: String,
         lamports: Long
     ): BroadcastResult {
-        val endpoint = network.rpcUrls.firstOrNull()
-            ?: return BroadcastResult.Error("Network has no RPC endpoint")
-        val blockhash = getLatestBlockhash(endpoint)
+        val chain = endpointsOf(network)
+        if (chain.urls.isEmpty()) return BroadcastResult.Error("Network has no RPC endpoint")
+        val blockhash = getLatestBlockhash(chain)
             ?: return BroadcastResult.Error("Could not fetch a recent blockhash")
         val fromKey = Base58.decode(fromAddress)
         val toKey = Base58.decode(toAddress)
@@ -184,15 +197,12 @@ class SolanaAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivati
             .writeUleb128(1).writeRaw(signature)
             .writeRaw(message)
             .bytes()
-        return broadcast(endpoint, java.util.Base64.getEncoder().encodeToString(tx))
+        return broadcast(chain, java.util.Base64.getEncoder().encodeToString(tx))
     }
 
-    suspend fun broadcast(endpoint: String, base64Tx: String): BroadcastResult = try {
+    suspend fun broadcast(chain: RpcEndpointChain, base64Tx: String): BroadcastResult = try {
         val config = buildJsonObject { put("encoding", JsonPrimitive("base64")) }
-        val result = rpc.call(
-            endpoint, "sendTransaction",
-            listOf(JsonPrimitive(base64Tx), config)
-        )
+        val result = chain.call("sendTransaction", listOf(JsonPrimitive(base64Tx), config))
         BroadcastResult.Ok(result.jsonPrimitive.content)
     } catch (e: WalletException) {
         BroadcastResult.Error(e.message ?: "Broadcast failed")
@@ -203,18 +213,16 @@ class SolanaAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivati
     // ------------------------------------------------------------------
 
     suspend fun getBalance(network: NetworkConfig, address: String): Long? {
-        val endpoint = network.rpcUrls.firstOrNull() ?: return null
+        val chain = endpointsOf(network)
+        if (chain.urls.isEmpty()) return null
         val config = buildJsonObject { put("commitment", JsonPrimitive("confirmed")) }
-        val result = rpc.callObject(
-            endpoint, "getBalance",
-            listOf(JsonPrimitive(address), config)
-        )
+        val result = chain.callObject("getBalance", listOf(JsonPrimitive(address), config))
         return result["value"]?.jsonPrimitive?.content?.toLongOrNull()
     }
 
-    suspend fun getLatestBlockhash(endpoint: String): ByteArray? = try {
+    suspend fun getLatestBlockhash(chain: RpcEndpointChain): ByteArray? = try {
         val config = buildJsonObject { put("commitment", JsonPrimitive("confirmed")) }
-        val result = rpc.callObject(endpoint, "getLatestBlockhash", listOf(config))
+        val result = chain.callObject("getLatestBlockhash", listOf(config))
         val blockhash = result["value"]?.jsonObject?.get("blockhash")?.jsonPrimitive?.content ?: return null
         Base58.decode(blockhash)
     } catch (_: WalletException) {
@@ -225,12 +233,13 @@ class SolanaAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivati
 
     /** SPL token holdings (uiAmount + mint) for the dashboard token list. */
     suspend fun getSplTokens(network: NetworkConfig, owner: String): List<SplToken> {
-        val endpoint = network.rpcUrls.firstOrNull() ?: return emptyList()
+        val chain = endpointsOf(network)
+        if (chain.urls.isEmpty()) return emptyList()
         return try {
             val filter = buildJsonObject { put("programId", JsonPrimitive(TOKEN_PROGRAM)) }
             val config = buildJsonObject { put("encoding", JsonPrimitive("jsonParsed")) }
-            val result = rpc.call(
-                endpoint, "getTokenAccountsByOwner",
+            val result = chain.call(
+                "getTokenAccountsByOwner",
                 listOf(JsonPrimitive(owner), filter, config)
             )
             result.jsonArray.mapNotNull { element ->
@@ -248,9 +257,9 @@ class SolanaAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivati
         }
     }
 
-    suspend fun getSignatureStatus(endpoint: String, signature: String): String? = try {
+    suspend fun getSignatureStatus(chain: RpcEndpointChain, signature: String): String? = try {
         val signatures = kotlinx.serialization.json.buildJsonArray { add(JsonPrimitive(signature)) }
-        val result = rpc.call(endpoint, "getSignatureStatuses", listOf(signatures))
+        val result = chain.call("getSignatureStatuses", listOf(signatures))
         result.jsonArray.firstOrNull()?.jsonObject?.get("confirmationStatus")?.jsonPrimitive?.content
     } catch (_: WalletException) {
         null

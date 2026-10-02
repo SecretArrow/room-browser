@@ -11,6 +11,7 @@ import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
 import com.roombrowser.domain.wallet.rpc.JsonRpcClient
+import com.roombrowser.domain.wallet.rpc.RpcEndpointChain
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -32,6 +33,18 @@ import kotlinx.serialization.json.put
 class AptosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationPathIndex {
 
     fun chainType(): ChainType = ChainType.APTOS
+
+    /**
+     * This network's endpoints as a failover chain.
+     *
+     * Aptos talks to a fullnode over REST rather than JSON-RPC, so calls go
+     * through [RpcEndpointChain.firstWorking] with the same paths as before.
+     * Picking the base url through the chain is what makes a network's second
+     * endpoint matter: the fullnode may be rate-limiting, down, or answering
+     * with a broken certificate, and any of those should fall through to a
+     * working host instead of failing the call. See [RpcEndpointChain].
+     */
+    fun endpointsOf(network: NetworkConfig): RpcEndpointChain = RpcEndpointChain.of(rpc, network)
 
     fun deriveAccount(seed: ByteArray, index: Int): DerivedAptosKey {
         val key = Slip10Ed25519Key.derive(seed, "m/54'/6'/0'/0'/$index'")
@@ -152,11 +165,12 @@ class AptosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivatio
         maxGasAmount: Long = 200_000,
         expirationSecondsFromNow: Long = 600
     ): SubmittedTransaction {
-        val rest = restBase(network)
-        val account = getAccount(rest, ourAddress)
+        val chain = endpointsOf(network)
+        if (chain.urls.isEmpty()) throw WalletException.InvalidParams("Network has no REST endpoint")
+        val account = getAccount(chain, ourAddress)
             ?: throw WalletException.NetworkUnavailable("Account not found on chain")
         val sequence = account["sequence_number"]?.jsonPrimitive?.content ?: "0"
-        val price = gasUnitPrice ?: estimateGasPrice(rest)
+        val price = gasUnitPrice ?: estimateGasPrice(chain)
         val expiration = System.currentTimeMillis() / 1000 + expirationSecondsFromNow
         val request = buildJsonObject {
             put("sender", JsonPrimitive(ourAddress))
@@ -166,7 +180,7 @@ class AptosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivatio
             put("expiration_timestamp_secs", JsonPrimitive(expiration.toString()))
             put("payload", payload)
         }
-        val signingMessageHex = postSigningMessage(rest, request)
+        val signingMessageHex = postSigningMessage(chain, request)
         val signingMessage = Hex.decode(signingMessageHex)
         val signature = Ed25519.sign(seed32, signingMessage)
         val submission = buildJsonObject {
@@ -177,7 +191,9 @@ class AptosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivatio
             })
             put("transaction", request)
         }
-        val response = rpc.postJson("$rest/transactions", submission).jsonObject
+        val response = chain.firstWorking { url ->
+            rpc.postJson("${url.trimEnd('/')}/transactions", submission)
+        }.jsonObject
         val hash = response["hash"]?.jsonPrimitive?.content
             ?: throw WalletException.RpcError(-1, "Submission did not return a hash")
         return SubmittedTransaction(
@@ -194,17 +210,20 @@ class AptosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivatio
     // Reads
     // ------------------------------------------------------------------
 
-    suspend fun getAccount(restBase: String, address: String): kotlinx.serialization.json.JsonObject? =
+    suspend fun getAccount(chain: RpcEndpointChain, address: String): kotlinx.serialization.json.JsonObject? =
         try {
-            rpc.getJson("$restBase/accounts/$address").jsonObject
+            chain.firstWorking { url -> rpc.getJson("${url.trimEnd('/')}/accounts/$address") }.jsonObject
         } catch (_: WalletException) {
             null
         }
 
     suspend fun getBalance(network: NetworkConfig, address: String): Long? {
-        val rest = restBase(network)
+        val chain = endpointsOf(network)
+        if (chain.urls.isEmpty()) throw WalletException.InvalidParams("Network has no REST endpoint")
         return try {
-            val resource = rpc.getJson("$rest/accounts/$address/resource/0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>").jsonObject
+            val resource = chain.firstWorking { url ->
+                rpc.getJson("${url.trimEnd('/')}/accounts/$address/resource/0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>")
+            }.jsonObject
             val amount = resource["data"]?.jsonObject?.get("coin")?.jsonObject?.get("value")?.jsonPrimitive?.content
             amount?.toLongOrNull()
         } catch (_: WalletException) {
@@ -212,25 +231,25 @@ class AptosAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivatio
         }
     }
 
-    suspend fun estimateGasPrice(restBase: String): Long = try {
-        val result = rpc.getJson("$restBase/estimate_gas_price").jsonObject
+    suspend fun estimateGasPrice(chain: RpcEndpointChain): Long = try {
+        val result = chain.firstWorking { url ->
+            rpc.getJson("${url.trimEnd('/')}/estimate_gas_price")
+        }.jsonObject
         result["gas_estimate"]?.jsonPrimitive?.content?.toLongOrNull() ?: 100
     } catch (_: WalletException) {
         100
     }
 
     private suspend fun postSigningMessage(
-        restBase: String,
+        chain: RpcEndpointChain,
         request: kotlinx.serialization.json.JsonObject
     ): String {
-        val response = rpc.postJson("$restBase/transactions/signing_message", request).jsonObject
+        val response = chain.firstWorking { url ->
+            rpc.postJson("${url.trimEnd('/')}/transactions/signing_message", request)
+        }.jsonObject
         return response["message"]?.jsonPrimitive?.content
             ?: throw WalletException.RpcError(-1, "Fullnode did not return a signing message")
     }
-
-    fun restBase(network: NetworkConfig): String =
-        network.rpcUrls.firstOrNull()?.trimEnd('/')
-            ?: throw WalletException.InvalidParams("Network has no REST endpoint")
 
     data class DerivedAptosKey(
         val seed: ByteArray,
