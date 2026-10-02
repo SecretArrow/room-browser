@@ -4,6 +4,7 @@ import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.LocalAiTuning
 import com.roombrowser.domain.agent.PromptToolGateway
+import com.roombrowser.domain.agent.RetryPolicy
 import com.roombrowser.domain.agent.ToolMode
 import okhttp3.OkHttpClient
 
@@ -32,6 +33,10 @@ import okhttp3.OkHttpClient
  * models directory (`{noBackupFilesDir}/on_device_models`, the same
  * directory OnDeviceModelStore manages). Every pre-existing call site
  * compiles unchanged.
+ *
+ * [retry] follows the same rule and defaults to null, meaning "no policy
+ * configured" — the provider is called exactly as before. Only the live
+ * paths pass `AgentSettings.retryPolicy()`.
  */
 object AgentGateways {
 
@@ -42,25 +47,34 @@ object AgentGateways {
         protocol: String,
         tuning: LocalAiTuning? = null,
         appContext: android.content.Context? = null,
-        toolMode: ToolMode = ToolMode.DEFAULT
-    ): AgentGateway = withToolMode(
-        gateway = when (protocol) {
-            AgentProviderEntity.PROTOCOL_OPENCODE -> OpenCodeAgentGateway(callFactory, baseUrl, apiKey)
-            AgentProviderEntity.PROTOCOL_OLLAMA -> OllamaAgentGateway(callFactory, baseUrl, apiKey, tuning)
-            AgentProviderEntity.PROTOCOL_LOCAL -> localGateway(appContext)
-            AgentProviderEntity.PROTOCOL_ANTHROPIC -> AnthropicAgentGateway(callFactory, baseUrl, apiKey)
-            else -> OkHttpAgentGateway(callFactory, baseUrl, apiKey)
-        },
-        protocol = protocol,
-        toolMode = toolMode
-    )
+        toolMode: ToolMode = ToolMode.DEFAULT,
+        retry: RetryPolicy? = null
+    ): AgentGateway {
+        val gateway = withToolMode(
+            gateway = when (protocol) {
+                AgentProviderEntity.PROTOCOL_OPENCODE -> OpenCodeAgentGateway(callFactory, baseUrl, apiKey)
+                AgentProviderEntity.PROTOCOL_OLLAMA -> OllamaAgentGateway(callFactory, baseUrl, apiKey, tuning)
+                AgentProviderEntity.PROTOCOL_LOCAL -> localGateway(appContext)
+                AgentProviderEntity.PROTOCOL_ANTHROPIC -> AnthropicAgentGateway(callFactory, baseUrl, apiKey)
+                else -> OkHttpAgentGateway(callFactory, baseUrl, apiKey)
+            },
+            protocol = protocol,
+            toolMode = toolMode
+        )
+        // OUTERMOST on purpose: a retry is a second attempt at the whole
+        // turn, tool-mode round trips included — not a resumed half-turn.
+        // Null means "no policy configured", which is not the same as a
+        // disabled policy: the decorator is skipped entirely.
+        return if (retry != null) RetryingAgentGateway(gateway, retry) else gateway
+    }
 
     fun forProvider(
         callFactory: OkHttpClient,
         provider: AgentProviderEntity,
         apiKey: String,
         tuning: LocalAiTuning? = null,
-        appContext: android.content.Context? = null
+        appContext: android.content.Context? = null,
+        retry: RetryPolicy? = null
     ): AgentGateway = forProvider(
         callFactory = callFactory,
         baseUrl = provider.baseUrl,
@@ -68,7 +82,8 @@ object AgentGateways {
         protocol = provider.protocol,
         tuning = tuning,
         appContext = appContext,
-        toolMode = ToolMode.fromStored(provider.toolMode)
+        toolMode = ToolMode.fromStored(provider.toolMode),
+        retry = retry
     )
 
     /**

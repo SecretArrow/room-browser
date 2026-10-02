@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -37,9 +38,11 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
@@ -62,10 +65,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.agent.AgentSettingsController
 import com.roombrowser.data.db.AgentProviderEntity
+import com.roombrowser.domain.agent.RetryCodes
+import com.roombrowser.domain.agent.RetryPolicy
+import com.roombrowser.domain.agent.RetryStatusCode
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBrowserTheme
@@ -421,6 +428,10 @@ private fun AgentSettingsRoot(
 
             SystemPromptSection(controller, onApplied = { notice = "System prompt applied" })
 
+            // ================= Retry on error =================
+            SectionHeader("Retry on error")
+            RetrySection(controller)
+
             // ================= Local decision gate =================
             SectionHeader("Local decision gate")
             DecisionGateSection(controller, onNotice = { notice = it })
@@ -710,6 +721,155 @@ private fun DecisionModelDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
+}
+
+/**
+ * Retry-on-error: the switch, the attempt budget, and the status codes.
+ *
+ * The two groups are separated by a heading rather than merged into one
+ * alphabetical list because they mean different things. A transient status
+ * describes a condition that can be gone a second later, so a retry is the
+ * obvious move; a permanent one describes a request the server has already
+ * judged, so a retry buys the same verdict for the user's money. The second
+ * group is offered because the user asked for the whole table — it is not
+ * offered as a recommendation, and the heading says so.
+ *
+ * Nothing here is hidden behind a dialog: a retry spends the user's quota at
+ * a third party, and the codes it will spend it on are the setting, so they
+ * are on the screen where the switch that enables them is.
+ */
+@Composable
+private fun RetrySection(controller: AgentSettingsController) {
+    SettingSwitchRow(
+        title = "Retry failed requests",
+        subtitle = "Send the request again when a provider call fails, up to the " +
+            "attempt limit below — off by default, because a retry spends your " +
+            "quota at the provider",
+        checked = controller.settings.retryOnError,
+        onCheckedChange = { checked ->
+            controller.updateSettings { s -> s.copy(retryOnError = checked) }
+        }
+    )
+    if (!controller.settings.retryOnError) return
+
+    RetryAttemptsField(controller)
+
+    SettingSwitchRow(
+        title = "Retry connection failures",
+        subtitle = "Also retry when no status came back at all — refused connection, " +
+            "DNS, TLS, or a stream that died before the first token",
+        checked = controller.settings.retryConnectionFailures,
+        onCheckedChange = { checked ->
+            controller.updateSettings { s -> s.copy(retryConnectionFailures = checked) }
+        }
+    )
+
+    RetryCodeGroup(
+        controller = controller,
+        heading = "Transient — retrying usually helps",
+        codes = RetryCodes.TRANSIENT
+    )
+    RetryCodeGroup(
+        controller = controller,
+        heading = "Permanent — the server already decided; a retry usually " +
+            "just costs another call",
+        codes = RetryCodes.PERMANENT
+    )
+}
+
+/**
+ * The attempt budget as a typed field, not a slider: the useful values are
+ * 1-10 and a slider on a ten-stop range cannot express "3" any better than
+ * the number three can.
+ *
+ * The text is committed only while it parses to a value in range, so a
+ * half-typed "1" on the way to "10" writes a setting the loop can honour
+ * rather than a zero or a 100. Out of range leaves it visibly in error and
+ * the stored value untouched.
+ */
+@Composable
+private fun RetryAttemptsField(controller: AgentSettingsController) {
+    var text by remember { mutableStateOf(controller.settings.retryMaxAttempts.toString()) }
+    val parsed = text.toIntOrNull()
+    val inRange = parsed != null &&
+        parsed in RetryPolicy.MIN_ATTEMPTS..RetryPolicy.MAX_ATTEMPTS
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+        OutlinedTextField(
+            value = text,
+            onValueChange = { typed ->
+                text = typed.filter { it.isDigit() }.take(2)
+                text.toIntOrNull()
+                    ?.takeIf { it in RetryPolicy.MIN_ATTEMPTS..RetryPolicy.MAX_ATTEMPTS }
+                    ?.let { n ->
+                        controller.updateSettings { s -> s.copy(retryMaxAttempts = n) }
+                    }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { contentDescription = "retry_attempts" },
+            label = { Text("Attempts") },
+            supportingText = {
+                Text(
+                    if (inRange) {
+                        "Total tries per request, counting the first. " +
+                            "1 means no retry. Waits double between tries."
+                    } else {
+                        "Enter a number from ${RetryPolicy.MIN_ATTEMPTS} to " +
+                            "${RetryPolicy.MAX_ATTEMPTS}."
+                    }
+                )
+            },
+            isError = !inRange,
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
+    }
+}
+
+/** One group of status codes, each row an independently ticked checkbox. */
+@Composable
+private fun RetryCodeGroup(
+    controller: AgentSettingsController,
+    heading: String,
+    codes: List<RetryStatusCode>
+) {
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+        Text(
+            heading,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(4.dp))
+        codes.forEach { entry ->
+            val checked = entry.code in controller.settings.retryStatusCodes
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        controller.updateSettings { s ->
+                            // Sorted on write: the stored JSON stays stable,
+                            // so an unchanged set does not look like an edit.
+                            val next = if (checked) {
+                                s.retryStatusCodes - entry.code
+                            } else {
+                                (s.retryStatusCodes + entry.code).sorted()
+                            }
+                            s.copy(retryStatusCodes = next)
+                        }
+                    }
+                    .padding(vertical = 8.dp)
+                    .semantics { contentDescription = "retry_code_${entry.code}" },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(checked = checked, onCheckedChange = null)
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    "${entry.code}  ${entry.reason}",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+    }
 }
 
 @Composable

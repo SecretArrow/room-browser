@@ -3,6 +3,7 @@ package com.roombrowser.data.repo
 import com.roombrowser.data.db.AppStateDao
 import com.roombrowser.data.db.AppStateEntity
 import com.roombrowser.domain.agent.LocalAiTuning
+import com.roombrowser.domain.agent.RetryPolicy
 import com.roombrowser.domain.model.BrowserGlobalSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -96,8 +97,40 @@ data class AgentSettings(
      * surfaced in the chat when it turns on and in the panel on every turn
      * while it is on.
      */
-    val yolo: Boolean = false
-)
+    val yolo: Boolean = false,
+    /**
+     * Send a provider request again when it fails.
+     *
+     * Off by default: a retry spends the user's quota at a third party, so
+     * it is opted into rather than inherited. The four fields below are one
+     * feature — the switch is the gate and the other three only shape what
+     * it does.
+     */
+    val retryOnError: Boolean = false,
+    /** Total attempts, counting the first. 1 means "no retry". */
+    val retryMaxAttempts: Int = RetryPolicy.DEFAULT_ATTEMPTS,
+    /**
+     * Which HTTP statuses are worth another try. Sorted on write so the
+     * stored JSON is stable — an unordered set would re-encode differently
+     * on every save and make the row look changed when it is not.
+     */
+    val retryStatusCodes: List<Int> = RetryPolicy.DEFAULT_STATUS_CODES.sorted(),
+    /**
+     * Also retry failures that carried no HTTP status at all — refused
+     * connection, DNS, TLS, or a stream that died before the first token.
+     * This is the case that actually happens on a phone moving between
+     * networks, so it is on whenever the feature is.
+     */
+    val retryConnectionFailures: Boolean = true
+) {
+    /** This setting as the transport-layer rule the gateways consume. */
+    fun retryPolicy(): RetryPolicy = RetryPolicy(
+        enabled = retryOnError,
+        maxAttempts = retryMaxAttempts,
+        statusCodes = retryStatusCodes.toSet(),
+        retryConnectionFailures = retryConnectionFailures
+    )
+}
 
 @Serializable
 data class IpCache(val ip: String?, val checkedAt: Long)

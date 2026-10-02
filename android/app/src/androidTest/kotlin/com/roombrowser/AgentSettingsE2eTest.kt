@@ -220,6 +220,9 @@ class AgentSettingsE2eTest {
             "'Add provider' text" to By.text("Add provider"),
             "'AI Agent Settings' title" to By.text("AI Agent Settings"),
             "'Show AI Agent button' switch" to By.descContains("Show AI Agent button"),
+            "retry switch" to By.descContains("Retry failed requests switch"),
+            "retry_attempts field" to By.desc("retry_attempts"),
+            "retry_code_400 box" to By.desc("retry_code_400"),
             "agent hint text" to By.textContains("Ask the agent")
         )
         for ((label, selector) in probes) {
@@ -679,13 +682,31 @@ class AgentSettingsE2eTest {
             flipSwitch("YOLO: always allow", wantOn = false)
         )
 
+        // ---- 6d. Retry on error --------------------------------------------
+        // The section sits between the behavior switches above and the gate's
+        // policy field below, so it is checked here — on the way down. It is
+        // PRESENCE ONLY, and deliberately so: flipSwitch only ever scrolls
+        // downwards, so a switch flipped ON here and then carried off the top
+        // of the viewport could never be flipped back, and turning retry on
+        // would leave it on for every other test in the run (the setting is
+        // app-global). What the section DOES is pinned by
+        // RetryingAgentGatewayTest, which drives the decorator directly.
+        var retrySeen = false
+        for (i in 1..12) {
+            if (hasDescContains("Retry failed requests switch", 700)) { retrySeen = true; break }
+            dragUpQuarter()
+        }
+        assertTrue(
+            "The retry switch must be on the agent settings screen",
+            retrySeen
+        )
+
         var policySeen = false
         for (i in 1..18) {
             if (hasDesc("decision_gate_policy", 700)) { policySeen = true; break }
             dragUpQuarter()
         }
         assertTrue("The gate's policy field must be reachable", policySeen)
-
         // ---- 7. Back to the browser: the panel shows the model -------------
         // RACE GUARD: right after saving, the EDITER window can still be
         // finishing — the first node matching desc "Close" may belong to the
