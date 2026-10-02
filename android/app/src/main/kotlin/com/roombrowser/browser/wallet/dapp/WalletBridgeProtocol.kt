@@ -363,9 +363,17 @@ object WalletBridgeProtocol {
      * Maps a [JsonRpcClient] failure to the EIP-1193-style error the page
      * sees: transport failures are CHAIN_DISCONNECTED (4901), provider
      * errors keep their code and message, bad endpoints are INVALID_PARAMS.
+     *
+     * A rejected certificate is a transport failure from the page's point of
+     * view — every endpoint for this chain has been tried by the time one
+     * surfaces — so it reads as CHAIN_DISCONNECTED rather than INTERNAL. The
+     * page cannot act on the distinction, and 4901 is the code wallets are
+     * expected to send for "cannot reach the chain right now".
      */
     fun relayError(e: WalletException): WalletBridgeError = when (e) {
         is WalletException.NetworkUnavailable ->
+            WalletBridgeError(WalletBridgeError.CHAIN_DISCONNECTED, "Chain disconnected")
+        is WalletException.TlsFailure ->
             WalletBridgeError(WalletBridgeError.CHAIN_DISCONNECTED, "Chain disconnected")
         is WalletException.RpcError ->
             WalletBridgeError(e.code, e.message?.takeIf { it.isNotBlank() } ?: "RPC error")

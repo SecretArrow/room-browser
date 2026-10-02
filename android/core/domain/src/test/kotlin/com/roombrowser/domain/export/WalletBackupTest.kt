@@ -206,8 +206,14 @@ class WalletBackupTest {
 
     @Test
     fun `a file from a newer Room Browser is refused rather than guessed at`() {
+        // Derived from the current constant rather than hardcoded: this test
+        // exists to pin the REFUSAL, and a literal here would quietly stop
+        // testing anything the first time the format is bumped — it would
+        // replace a string the sealed file no longer contains, leaving a file
+        // this build happily accepts.
+        val newer = WalletBackup.FORMAT_VERSION + 1
         val file = WalletBackup.seal(contents(), header(), "correct horse battery".toCharArray())
-            .replace("\"formatVersion\": 1", "\"formatVersion\": 99")
+            .replace("\"formatVersion\": ${WalletBackup.FORMAT_VERSION}", "\"formatVersion\": $newer")
 
         val thrown = assertThrows(WalletBackupFormatException::class.java) {
             WalletBackup.open(file, "correct horse battery".toCharArray())

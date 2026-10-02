@@ -65,7 +65,7 @@ class JsonRpcClient(
             } catch (e: WalletException) {
                 throw e
             } catch (e: java.io.IOException) {
-                throw WalletException.NetworkUnavailable("RPC unreachable (${e.message})")
+                throw transportFailure("RPC", e)
             }
             val parsed = parseObject(responseText, endpoint)
             parsed["error"]?.let { err ->
@@ -113,7 +113,7 @@ class JsonRpcClient(
         } catch (e: WalletException) {
             throw e
         } catch (e: java.io.IOException) {
-            throw WalletException.NetworkUnavailable("Request unreachable (${e.message})")
+            throw transportFailure("Request", e)
         }
     }
 
@@ -172,9 +172,35 @@ class JsonRpcClient(
         } catch (e: WalletException) {
             throw e
         } catch (e: java.io.IOException) {
-            throw WalletException.NetworkUnavailable("Request unreachable (${e.message})")
+            throw transportFailure("Request", e)
         }
     }
+
+    /**
+     * Maps a transport failure onto a [WalletException].
+     *
+     * TLS GETS ITS OWN CASE because it is the one transport failure whose
+     * cause is at the far end. OkHttp reports an expired chain, an untrusted
+     * issuer and a hostname mismatch as an [javax.net.ssl.SSLException]
+     * (`SSLHandshakeException`, `SSLPeerUnverifiedException`) — all of which
+     * are IOExceptions, so this branch has to come first or it never runs.
+     * Without it the user is told "network unavailable" and goes to check
+     * their own Wi-Fi for a fault that belongs to the endpoint.
+     *
+     * Nothing here relaxes certificate validation. The failure is named and
+     * reported, never bypassed; [RpcEndpointChain] then tries the network's
+     * next endpoint, which is exactly what the second url in a network's list
+     * is for. A host with a mis-configured certificate is the common case of
+     * endpoint rot, not an attack to be worked around.
+     */
+    private fun transportFailure(noun: String, e: java.io.IOException): WalletException =
+        if (e is javax.net.ssl.SSLException) {
+            WalletException.TlsFailure(
+                "$noun endpoint presented a certificate this device rejected (${e.message})"
+            )
+        } else {
+            WalletException.NetworkUnavailable("$noun unreachable (${e.message})")
+        }
 
     companion object {
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()

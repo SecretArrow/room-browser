@@ -2,7 +2,6 @@ package com.roombrowser.browser
 
 import android.content.Intent
 import android.graphics.Bitmap
-import android.net.Uri
 import android.net.http.SslError
 import android.os.Handler
 import android.os.Looper
@@ -324,41 +323,15 @@ class RoomWebViewClient(
     private var mainFrameUrl: String? = null
 
     /**
-     * Which frame a failing certificate belongs to — the discriminator
-     * [onReceivedSslError] has to reconstruct for itself.
+     * Which frame a failing certificate belongs to.
      *
-     * Compares the SCHEME + HOST + PORT of the failing url against the
-     * main-frame urls we recorded and against the engine's committed url
-     * ([WebView.getUrl]). Port is included because a service on another port
-     * of the same host can present a different certificate; scheme is
-     * included because an https sub-resource under an http page is a
-     * different origin with a different certificate.
-     *
-     * An unparseable or unknown failing url answers TRUE — treat it as a main
-     * frame. The safe direction to be wrong in: a false "main frame" shows the
-     * user an error page they can act on, while a false "sub-resource" would
-     * silently swallow a failed navigation and leave the old page on screen
-     * with no explanation at all.
+     * The decision itself lives in [SslFrameMatch], where it can be tested;
+     * this only supplies the two urls it compares against. See that object
+     * for why the comparison is scheme+host+port and why an unknown failing
+     * url errs towards "main frame".
      */
-    private fun isMainFrameSslFailure(view: WebView, failingUrl: String?): Boolean {
-        val failing = authorityOf(failingUrl) ?: return true
-        return authorityOf(mainFrameUrl) == failing || authorityOf(view.url) == failing
-    }
-
-    /** `scheme://host:port`, with the scheme's default port filled in. */
-    private fun authorityOf(url: String?): String? {
-        if (url.isNullOrBlank()) return null
-        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
-        val scheme = uri.scheme?.lowercase() ?: return null
-        val host = uri.host?.lowercase() ?: return null
-        val port = when {
-            uri.port > 0 -> uri.port
-            scheme == "https" -> 443
-            scheme == "http" -> 80
-            else -> -1
-        }
-        return "$scheme://$host:$port"
-    }
+    private fun isMainFrameSslFailure(view: WebView, failingUrl: String?): Boolean =
+        SslFrameMatch.isMainFrameFailure(failingUrl, mainFrameUrl, view.url)
 
     override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
         // HTTPS-First fallback: an https endpoint without a valid TLS setup

@@ -112,6 +112,22 @@ data class FeeEstimate(
 /** Standard wallet errors surfaced to the dApp bridge and dashboard. */
 sealed class WalletException(message: String) : Exception(message) {
     class NetworkUnavailable(message: String = "Network unavailable") : WalletException(message)
+
+    /**
+     * The endpoint was reached, and its certificate was rejected.
+     *
+     * Separate from [NetworkUnavailable] because the two send the user to
+     * different places: "network unavailable" is a problem on this device,
+     * while a rejected certificate is a problem at the endpoint — an expired
+     * chain, a hostname that does not match, or a TLS-intercepting proxy on
+     * the path. Reporting the first when the truth is the second costs the
+     * user a pointless round of checking their own connection.
+     *
+     * It is still a TRANSPORT failure for failover purposes, and deliberately
+     * so: certificate validation is never bypassed here, so the only correct
+     * response to a bad certificate is to try the network's next endpoint.
+     */
+    class TlsFailure(message: String) : WalletException(message)
     class RpcError(val code: Int, message: String) : WalletException(message)
     class UserRejected(message: String = "User rejected the request") : WalletException(message)
     class Unauthorized(message: String) : WalletException(message)

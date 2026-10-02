@@ -17,6 +17,15 @@ import org.junit.Assert.assertThrows
  * WHICH endpoint the chain decides to try, never whether some public host is
  * up today. A test that needed a live RPC would be a test that fails for
  * reasons that have nothing to do with this class.
+ *
+ * The `<Unit>` on `runBlocking<Unit>` is load-bearing, not noise. A test
+ * written `fun x() = runBlocking { ... }` whose last statement is a Truth
+ * assertion infers its return type from that assertion, so the method returns
+ * a `Subject` rather than void — and JUnit4 answers a non-void test method
+ * with `InvalidTestClassError`, which fails the WHOLE CLASS as one
+ * `initializationError` and runs none of it. Every assertion in such a method
+ * silently stops being a test. The explicit type argument is the same fix the
+ * instrumented tests use (see DatabaseIsolationTest).
  */
 class RpcEndpointChainTest {
 
@@ -34,7 +43,7 @@ class RpcEndpointChainTest {
     // ------------------------------------------------------------- ordering
 
     @Test
-    fun `the first endpoint is used when it answers`() = runBlocking {
+    fun `the first endpoint is used when it answers`() = runBlocking<Unit> {
         val tried = mutableListOf<String>()
 
         val result = chain(listOf("https://a", "https://b")).firstWorking { url ->
@@ -47,7 +56,7 @@ class RpcEndpointChainTest {
     }
 
     @Test
-    fun `a dead endpoint hands over to the next one`() = runBlocking {
+    fun `a dead endpoint hands over to the next one`() = runBlocking<Unit> {
         val tried = mutableListOf<String>()
 
         val result = chain(listOf("https://dead", "https://alive")).firstWorking { url ->
@@ -61,7 +70,7 @@ class RpcEndpointChainTest {
     }
 
     @Test
-    fun `an endpoint answering with an HTTP status is also a dead endpoint`() = runBlocking {
+    fun `an endpoint answering with an HTTP status is also a dead endpoint`() = runBlocking<Unit> {
         // 525 is the Cloudflare "TLS handshake failed" that several bundled
         // endpoints really answer with: the host is up, its own upstream
         // certificate is not, and it never gets as far as speaking JSON-RPC.
@@ -78,7 +87,7 @@ class RpcEndpointChainTest {
     }
 
     @Test
-    fun `a node that answers no is not asked twice`() = runBlocking {
+    fun `a node that answers no is not asked twice`() = runBlocking<Unit> {
         // `execution reverted` is an ANSWER. Retrying it on a second node
         // produces the same answer, more slowly, and hides the real problem
         // behind a timeout.
@@ -98,7 +107,7 @@ class RpcEndpointChainTest {
     }
 
     @Test
-    fun `every endpoint failing reports how many were tried`() = runBlocking {
+    fun `every endpoint failing reports how many were tried`() = runBlocking<Unit> {
         val thrown = assertThrows(WalletException.NetworkUnavailable::class.java) {
             runBlocking {
                 chain(listOf("https://a", "https://b", "https://c")).firstWorking { url ->
@@ -114,7 +123,46 @@ class RpcEndpointChainTest {
     }
 
     @Test
-    fun `one endpoint failing reports its own error unchanged`() = runBlocking {
+    fun `an endpoint with a rejected certificate hands over to the next one`() = runBlocking<Unit> {
+        // The certificate is refused, never bypassed — so the chain moves on.
+        // This is what the second url in a network's list is for, and it is
+        // the case that matters most in practice: a host whose own upstream
+        // certificate has expired is a common way for a free endpoint to rot.
+        val tried = mutableListOf<String>()
+
+        val result = chain(listOf("https://expired", "https://alive")).firstWorking { url ->
+            tried.add(url)
+            if (url == "https://expired") {
+                throw WalletException.TlsFailure("certificate rejected for $url")
+            }
+            "answer from $url"
+        }
+
+        assertThat(result).isEqualTo("answer from https://alive")
+        assertThat(tried).containsExactly("https://expired", "https://alive").inOrder()
+    }
+
+    @Test
+    fun `every endpoint rejecting its certificate is still reported as a certificate problem`() = runBlocking<Unit> {
+        // The aggregate step is where the distinction is easiest to lose: a
+        // list whose every endpoint failed on a bad certificate is still a
+        // certificate problem, and flattening it to NetworkUnavailable here
+        // would send the user to check their own connection for a fault that
+        // belongs to all three hosts.
+        val thrown = assertThrows(WalletException.TlsFailure::class.java) {
+            runBlocking {
+                chain(listOf("https://a", "https://b", "https://c")).firstWorking { url ->
+                    throw WalletException.TlsFailure("certificate rejected for $url")
+                }
+            }
+        }
+
+        assertThat(thrown).hasMessageThat().contains("certificate rejected for https://c")
+        assertThat(thrown).hasMessageThat().contains("all 3 endpoints failed")
+    }
+
+    @Test
+    fun `one endpoint failing reports its own error unchanged`() = runBlocking<Unit> {
         val thrown = assertThrows(WalletException.NetworkUnavailable::class.java) {
             runBlocking {
                 chain(listOf("https://only")).firstWorking { url ->
@@ -141,7 +189,7 @@ class RpcEndpointChainTest {
     // ----------------------------------------------------------- memoisation
 
     @Test
-    fun `the endpoint that answered is tried first next time`() = runBlocking {
+    fun `the endpoint that answered is tried first next time`() = runBlocking<Unit> {
         val first = chain(listOf("https://dead", "https://alive"))
         first.firstWorking { url ->
             if (url == "https://dead") throw WalletException.NetworkUnavailable("down")
@@ -156,7 +204,7 @@ class RpcEndpointChainTest {
     }
 
     @Test
-    fun `a remembered endpoint the user removed is not used`() = runBlocking {
+    fun `a remembered endpoint the user removed is not used`() = runBlocking<Unit> {
         chain(listOf("https://a", "https://b")).firstWorking { "ok" } // memo now says https://a
 
         val edited = chain(listOf("https://b", "https://c"))
@@ -167,7 +215,7 @@ class RpcEndpointChainTest {
     }
 
     @Test
-    fun `a failed memory falls through to the rest of the list`() = runBlocking {
+    fun `a failed memory falls through to the rest of the list`() = runBlocking<Unit> {
         chain(listOf("https://a", "https://b")).firstWorking { "ok" } // memo says https://a
 
         val tried = mutableListOf<String>()
@@ -193,6 +241,15 @@ class RpcEndpointChainTest {
         )).isTrue()
         assertThat(RpcEndpointChain.isEndpointFailure(
             WalletException.RpcError(429, "rate limited")
+        )).isTrue()
+
+        // A rejected certificate is a transport failure too, and this is the
+        // reason TlsFailure exists as its own class rather than being folded
+        // into NetworkUnavailable: it must still fail over. Certificate
+        // validation is not bypassed anywhere, so the ONLY correct response
+        // to a host with a bad certificate is to try the network's next one.
+        assertThat(RpcEndpointChain.isEndpointFailure(
+            WalletException.TlsFailure("certificate rejected")
         )).isTrue()
 
         // An application answer: retrying cannot change it.

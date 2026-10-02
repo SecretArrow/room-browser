@@ -85,9 +85,15 @@ class RpcEndpointChain(
         }
         val failure = last ?: WalletException.NetworkUnavailable("No RPC endpoint answered")
         throw if (tried > 1) {
-            WalletException.NetworkUnavailable(
-                "${failure.message ?: "RPC unreachable"} — all $tried endpoints failed"
-            )
+            val all = "${failure.message ?: "RPC unreachable"} — all $tried endpoints failed"
+            // The class is carried over, not flattened to NetworkUnavailable:
+            // a list of endpoints that every one of them failed on a rejected
+            // certificate is still a certificate problem, and relabelling it
+            // here would undo the distinction at the last step.
+            when (failure) {
+                is WalletException.TlsFailure -> WalletException.TlsFailure(all)
+                else -> WalletException.NetworkUnavailable(all)
+            }
         } else {
             failure
         }
@@ -131,6 +137,7 @@ class RpcEndpointChain(
          */
         fun isEndpointFailure(e: WalletException): Boolean = when (e) {
             is WalletException.NetworkUnavailable -> true
+            is WalletException.TlsFailure -> true
             is WalletException.RpcError -> e.code >= 400
             else -> false
         }
