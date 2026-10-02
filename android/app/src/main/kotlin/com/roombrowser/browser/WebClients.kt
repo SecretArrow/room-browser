@@ -448,6 +448,21 @@ class RoomWebChromeClient(
         val kinds = mutableSetOf<PermissionKind>()
         if (PermissionRequest.RESOURCE_VIDEO_CAPTURE in resources) kinds += PermissionKind.CAMERA
         if (PermissionRequest.RESOURCE_AUDIO_CAPTURE in resources) kinds += PermissionKind.MICROPHONE
+        // RESOURCE_PROTECTED_MEDIA_ID and RESOURCE_MIDI_SYSEX have no kind
+        // here, and a request the sheet cannot NAME is refused rather than
+        // raised as a bodyless "Site permission" whose Allow grants the whole
+        // resources array. Refused rather than ignored: an unanswered
+        // PermissionRequest hangs the page for the life of its document.
+        //
+        // The cost is real and worth stating: protected media is how a page
+        // asks to decode DRM content, so a site that needs Widevine cannot
+        // play here. Giving it a consent surface of its own is the way to
+        // allow it — not a blank sheet — and that surface would also have to
+        // say that the engine needs a provisioned DRM provider.
+        if (kinds.isEmpty()) {
+            request.deny()
+            return
+        }
         // No WebView on this callback — firingEngine() is the only handle on
         // the tab that asked. The host denies anything but the ACTIVE engine.
         callbacks.onPermissionRequest(firingEngine(), request, kinds, callbacks.currentUrl() ?: "")

@@ -100,6 +100,25 @@ class BrowserNavigationE2eTest {
                         </script>
                         """.trimIndent()
                     )
+                    path.startsWith("/media") -> html(
+                        """
+                        <h1>ROOM-E2E-MEDIA</h1>
+                        <div id="out">MEDIA-WAITING</div>
+                        <script>
+                          var out = document.getElementById('out');
+                          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                            out.textContent = 'MEDIA-UNAVAILABLE';
+                          } else {
+                            navigator.mediaDevices.getUserMedia({ audio: true, video: true })
+                              .then(function (s) {
+                                out.textContent = 'MEDIA-STREAM';
+                                s.getTracks().forEach(function (t) { t.stop(); });
+                              })
+                              .catch(function (e) { out.textContent = 'MEDIA-DENIED-' + e.name; });
+                          }
+                        </script>
+                        """.trimIndent()
+                    )
                     else -> MockResponse().setResponseCode(404)
                 }
             }
@@ -530,6 +549,44 @@ class BrowserNavigationE2eTest {
             "Denying must SETTLE the page's request (permission denied), not drop it\n${uiTree()}",
             waitUntil(20_000) {
                 device.findObjects(By.text("GEO-DENIED-1")).isNotEmpty()
+            }
+        )
+    }
+
+    /**
+     * The camera/microphone half of the same contract.
+     *
+     * Deny again, for the same reason the location test denies: Allow is two
+     * answers (the user's and Android's) and the second one opens a system
+     * dialog that only a device with a camera can settle. Deny is one answer,
+     * and the page must receive it as NotAllowedError — the rejection that
+     * proves the request was ANSWERED rather than left pending.
+     *
+     * The sheet's title is asserted as well as the denial: the title is what
+     * distinguishes a camera grant from a location grant, and a sheet that
+     * said the wrong one would be a consent screen that lies.
+     */
+    @Test
+    fun a_camera_request_is_raised_as_a_sheet_and_settled_by_deny() {
+        val base = server.url("/").toString().trimEnd('/')
+        assertTrue("Engine must be reachable from the launcher", openEngineFromLauncher())
+
+        assertTrue(
+            "The media page must load\n${uiTree()}",
+            openEngineAt("$base/media", marker = "ROOM-E2E-MEDIA")
+        )
+
+        assertTrue(
+            "The camera/microphone sheet must be raised\n${uiTree()}",
+            hasText("Share your camera and microphone?", 20_000)
+        )
+
+        assertTrue("Deny must be tappable\n${uiTree()}", clickText("Deny", 10_000))
+
+        assertTrue(
+            "Denying must REJECT the page's getUserMedia, not drop it\n${uiTree()}",
+            waitUntil(20_000) {
+                device.findObjects(By.text("MEDIA-DENIED-NotAllowedError")).isNotEmpty()
             }
         )
     }
