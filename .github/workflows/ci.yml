@@ -594,16 +594,20 @@ jobs:
       - name: Compute release tag
         id: tag
         run: |
+          # Whatever path cut this release, it is a STABLE release. The
+          # tag-vs-main branch used to also emit `prerelease`, and main always
+          # emitted `true` — so v1.0.98 through v1.0.102 were published as
+          # pre-releases although nothing about them was less finished than a
+          # tag-pushed build: same keystore, same gates, same APKs. Only the
+          # display name still records which path cut it.
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF_NAME}"
-            echo "prerelease=false"                        >> "$GITHUB_OUTPUT"
             echo "name=Room Browser ${GITHUB_REF_NAME}"    >> "$GITHUB_OUTPUT"
           else
             git fetch --tags -f origin
             LATEST=$(git tag --list 'v1.0.*' | sed 's/^v1\.0\.//' | sort -n | tail -1)
             NEXT=$(( ${LATEST:-0} + 1 ))
             TAG="v1.0.$NEXT"
-            echo "prerelease=true"                         >> "$GITHUB_OUTPUT"
             echo "name=Room Browser $TAG (main)"           >> "$GITHUB_OUTPUT"
           fi
           echo "tag=$TAG"              >> "$GITHUB_OUTPUT"
@@ -734,7 +738,17 @@ jobs:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.name }}
           draft: false
-          prerelease: ${{ steps.tag.outputs.prerelease }}
+          # Stable, always — see the note in "Compute release tag". Set
+          # explicitly rather than from a step output: a step output that is
+          # empty for any reason would arrive here as neither true nor false
+          # and the action would fall back to its own default, which is how a
+          # flag silently stops meaning anything.
+          prerelease: false
+          # The newest release is also the repository's "Latest". Without
+          # this the badge can stay on an older tag, because a release that
+          # was created as a pre-release is never promoted by publishing a
+          # later one alone.
+          make_latest: true
           generate_release_notes: true
           files: release-out/*
           body: |
