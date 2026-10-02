@@ -330,10 +330,11 @@ class RoomWebChromeClient(
     private val callbacks: ChromeCallbacks,
     /**
      * The engine this instance is installed on, or null for an engine-less
-     * instance (the host builds one per engine; null therefore means "not
-     * engine-bound", and callbacks treat it as the pre-fix shape — the active
-     * tab). WEAK: the engine owns its client, and a client must never keep a
-     * destroyed engine alive.
+     * instance. The host builds one per engine (createWebView passes the
+     * engine it just made), so null here means the client was built without
+     * one — and the host REFUSES such a request rather than attributing it to
+     * whichever tab happens to be in front. WEAK: the engine owns its client,
+     * and a client must never keep a destroyed engine alive.
      */
     engine: WebView? = null
 ) : WebChromeClient() {
@@ -342,7 +343,7 @@ class RoomWebChromeClient(
 
     /** The engine that fired, or null when this instance is not engine-bound
      *  or its engine has been collected (a collected engine cannot call back;
-     *  the host's ownership guards treat null as the active tab). */
+     *  the host refuses a request it cannot attribute). */
     private fun firingEngine(): WebView? = engineRef.get()
 
     interface ChromeCallbacks {

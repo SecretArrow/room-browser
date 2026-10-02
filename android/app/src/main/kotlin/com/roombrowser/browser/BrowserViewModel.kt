@@ -228,8 +228,6 @@ class BrowserViewModel(
 
     lateinit var webViewClient: RoomWebViewClient
         private set
-    lateinit var webChromeClient: RoomWebChromeClient
-        private set
 
     /** Fullscreen media view state. */
     var customView by mutableStateOf<View?>(null)
@@ -664,7 +662,6 @@ class BrowserViewModel(
 
     init {
         webViewClient = RoomWebViewClient(profile, graph.filterEngine, clientCallbacks)
-        webChromeClient = RoomWebChromeClient(profile, chromeCallbacks)
         viewModelScope.launch { initialize() }
         observeFlows()
     }
@@ -687,7 +684,6 @@ class BrowserViewModel(
             profile = graph.profileRepo.getProfile(profileId) ?: profile
             themeSpec = BuiltInThemes.resolveOrDefault(profile.themeJson)
             webViewClient = RoomWebViewClient(profile, graph.filterEngine, clientCallbacks)
-            webChromeClient = RoomWebChromeClient(profile, chromeCallbacks)
             globalSettings = appState.globalSettingsSnapshot()
             httpClient = dnsMonitor.apply(globalSettings, profile)
             agent.updateClient(httpClient)
@@ -784,7 +780,6 @@ class BrowserViewModel(
                     themeSpec = BuiltInThemes.resolveOrDefault(p.themeJson)
                     if (settingsChanged) {
                         webViewClient = RoomWebViewClient(profile, graph.filterEngine, clientCallbacks)
-                        webChromeClient = RoomWebChromeClient(profile, chromeCallbacks)
                         reconfigureAllWebViews()
                     }
                 }
@@ -1131,7 +1126,15 @@ class BrowserViewModel(
     private fun createWebView(): WebView {
         val webView = ProfileEngine.createWebView(getApplication(), profile)
         webView.webViewClient = webViewClient
-        webView.webChromeClient = webChromeClient
+        // ONE CHROME CLIENT PER ENGINE, bound to the engine it serves. The two
+        // permission callbacks (onPermissionRequest,
+        // onGeolocationPermissionsShowPrompt) carry no WebView of their own —
+        // the bound engine is the only handle on the tab that asked, and
+        // without it the host has to refuse, which is what it did: an unbound
+        // client made every camera, microphone and location request a silent
+        // denial. Rebuilding the client on a profile change therefore does
+        // nothing for engines that already exist; this is where they get one.
+        webView.webChromeClient = RoomWebChromeClient(profile, chromeCallbacks, webView)
         // Password-manager page bridge: page JS sees window.RoomVault (the
         // document-start detection script comes from ProfileEngine.configure).
         // Every call is host-validated against THIS WebView's URL inside
