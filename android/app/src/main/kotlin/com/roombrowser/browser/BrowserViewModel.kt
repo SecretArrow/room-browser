@@ -13,6 +13,8 @@ import android.view.View
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -423,6 +425,29 @@ class BrowserViewModel(
                 pageState = pageState.copy(canGoBack = canGoBack, canGoForward = canGoForward)
             }
         }
+        override fun onReceivedHttpError(
+            view: WebView,
+            request: WebResourceRequest?,
+            errorResponse: WebResourceResponse?
+        ) {
+            // An HTTP error is NOT an engine error: no onReceivedError fires,
+            // onPageFinished still arrives, the URL is right — and the screen
+            // shows an empty document. Without this line a 404 and a rendered
+            // page look identical in the trace, which is exactly the
+            // ambiguity that stalled the geolocation/camera suite.
+            Log.d(
+                NAV_TAG,
+                "vm=$navId onReceivedHttpError url=${request?.url} " +
+                    "code=${errorResponse?.statusCode} active=${view === activeWebView}"
+            )
+        }
+
+        override fun onPageCommitVisible(view: WebView, url: String) {
+            // The first frame the engine is willing to show. Its absence
+            // after onPageFinished means the document never painted.
+            Log.d(NAV_TAG, "vm=$navId onPageCommitVisible url=$url")
+        }
+
         override fun onReceivedError(view: WebView, url: String, errorCode: Int, description: String?) {
             // The error surface belongs to the ACTIVE tab — a background
             // failure must not paint an error page over the page on screen.
@@ -1248,7 +1273,17 @@ class BrowserViewModel(
      */
     fun consumePendingActionFor(webView: WebView) {
         pendingEngineActions.remove(webView)?.let { action ->
-            Log.d(NAV_TAG, "vm=$navId deferred engine action fired (attached)")
+            // Size is logged WITH the fire: a WebView that never got measured
+            // still runs its load and still reports onPageFinished, but lays
+            // out nothing — no rendering, no JS-visible layout, and no
+            // accessibility nodes for UiAutomator to find. A "0x0" here is
+            // the difference between "the page is slow" and "the page has
+            // nowhere to draw", which the two look identical without.
+            Log.d(
+                NAV_TAG,
+                "vm=$navId deferred engine action fired (attached) " +
+                    "size=${webView.width}x${webView.height} shown=${webView.isShown}"
+            )
             webView.post(action)
         }
     }

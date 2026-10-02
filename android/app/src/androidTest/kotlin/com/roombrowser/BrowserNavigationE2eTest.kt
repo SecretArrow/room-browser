@@ -17,6 +17,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -51,6 +52,12 @@ class BrowserNavigationE2eTest {
     private val page1Hits = AtomicInteger(0)
     private val page2Hits = AtomicInteger(0)
 
+    /** Every path this test's server was actually asked for, and how often. */
+    private val hitsByPath = ConcurrentHashMap<String, AtomicInteger>()
+
+    private fun countHit(path: String): AtomicInteger =
+        hitsByPath.computeIfAbsent(path) { AtomicInteger(0) }
+
     @Before
     fun setUp() {
         // Determinism: the runner's shared IP makes every fresh-profile boot
@@ -60,6 +67,7 @@ class BrowserNavigationE2eTest {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val path = (request.path ?: "").substringBefore('?')
+                countHit(path).incrementAndGet()
                 return when {
                     path.startsWith("/page1") -> {
                         page1Hits.incrementAndGet()
@@ -254,6 +262,15 @@ class BrowserNavigationE2eTest {
         sb.append("VISIBLE TEXTS: ").append(texts).append('\n')
         sb.append("page1Hits=").append(page1Hits.get())
             .append(" page2Hits=").append(page2Hits.get()).append('\n')
+        // The server is the only witness that cannot lie about whether the
+        // engine ever ASKED for the page. Without it a blank document, a
+        // blocked request and a page that rendered offscreen all read the
+        // same from the device side: onPageFinished, right URL, no text.
+        sb.append("server hits: ").append(
+            hitsByPath.entries.sortedBy { it.key }
+                .joinToString(" ") { "${it.key}=${it.value.get()}" }
+                .ifEmpty { "(none)" }
+        ).append('\n')
         sb.toString().take(8000)
     } catch (t: Throwable) {
         "probe dump failed: $t"
