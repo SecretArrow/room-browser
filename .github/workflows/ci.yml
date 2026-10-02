@@ -355,6 +355,14 @@ jobs:
     name: Desktop build (Windows x64, C + WebView2)
     runs-on: windows-latest
     timeout-minutes: 30
+    # Deliberately OUT of the main-branch pipeline. A desktop artifact is
+    # optional (see the release job's Android-first policy) but the job is
+    # not free: `release` cannot START until every job in its `needs` has
+    # finished, so a Windows MSVC + WebView2 build that outruns the Android
+    # gates delays the APK even though its own failure could never block it.
+    # It still runs where a desktop artifact is actually published — a tag —
+    # and on manual dispatch.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -481,6 +489,8 @@ jobs:
     name: Desktop build (Ubuntu x64, C + WebKitGTK)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Same gate as desktop-windows: see the note there.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -754,15 +764,16 @@ jobs:
           body: |
             ## Room Browser ${{ steps.tag.outputs.tag }}
 
-            **Android: SIGNED release APKs (R8-minified, release keystore), ARM-focused — install directly, no manual signing step. Desktop: Windows portable zip + Ubuntu deb/tar.gz (pure-C browser).**
+            **Android: SIGNED release APKs (R8-minified, release keystore), ARM-focused — install directly, no manual signing step.**
 
             | Artifact | Target |
             |---|---|
             | `room-browser-v*-arm64-v8a-release.apk` | modern 64-bit ARM devices (recommended) |
             | `room-browser-v*-armeabi-v7a-release.apk` | older 32-bit ARM devices |
-            | `*-windows-x64.zip` | Windows 10/11 — portable zip (exe + WebView2Loader.dll) |
-            | `*_amd64.deb` | Ubuntu/Debian — `apt` package (pulls GTK3 + WebKitGTK deps) |
-            | `*-linux-x64.tar.gz` | any modern Linux with GTK3 + WebKitGTK |
+
+            The desktop edition (Windows portable zip, Ubuntu deb/tar.gz) is
+            built on a TAG only, so a build from `main` will not carry it.
+            When a tag release does, its files appear in the asset list above.
 
             The APKs are signed by CI with the project's release keystore and
             verified with `apksigner` before publishing, so they upgrade in
@@ -777,9 +788,8 @@ jobs:
 
             ### CI gates passed
             - Android Lint (with auto-fix stage)
-            - Unit tests (domain + app + desktop C core)
+            - Unit tests (domain + app)
             - E2E instrumented tests on emulator (profile CRUD, cross-process browsing, storage isolation)
-            - Desktop `--version` smoke tests (Windows MSVC + Ubuntu gcc builds)
 
             > Note: this repository moved — releases are signed with the NEW
             > repository keystore. Updating over an APK from the previous
