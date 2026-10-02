@@ -313,7 +313,11 @@ fun PageActionsSheet(
 
             SheetSectionLabel("AI Agent")
             SheetAction(Icons.Filled.AutoAwesome, "AI Agents") { onOpenAgent() }
-            SheetAction(Icons.Filled.SmartToy, "AI Agent settings (providers & models)") { onOpenAgentSettings() }
+            // The parenthetical "(providers & models)" is gone on purpose:
+            // this row sits directly under "AI Agents" in the same section,
+            // so the suffix was repeating the section, widening the row and
+            // wrapping the label on a narrow screen — for no information.
+            SheetAction(Icons.Filled.SmartToy, "AI Agent Settings") { onOpenAgentSettings() }
             SheetAction(Icons.Filled.History, "AI Agent chats") { onOpenAgentSessions() }
 
             SheetSectionLabel("Settings")
