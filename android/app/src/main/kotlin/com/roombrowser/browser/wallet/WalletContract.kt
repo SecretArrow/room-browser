@@ -1,6 +1,7 @@
 package com.roombrowser.browser.wallet
 
 import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.domain.export.WalletBackup
 import com.roombrowser.domain.wallet.model.BalanceResult
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.FeeEstimate
@@ -349,6 +350,23 @@ interface WalletEngineApi {
 
     /** Requires an unlocked session. */
     suspend fun revealMnemonic(): String?
+
+    /**
+     * Everything a wallet-keys export needs: the phrase, plus every account
+     * with its path and — for imported ones only — its private key.
+     *
+     * [mnemonic] is for the ONBOARDING REVEAL, the one caller that holds the
+     * phrase already: creating a wallet deliberately does not unlock the
+     * session, so requiring an unlock there would put the export out of reach
+     * at the exact moment a user is most likely to want it. Every other
+     * caller passes null and must be unlocked.
+     *
+     * Returns contents that may be empty for a wallet built purely from
+     * imported keys with nothing imported yet — callers check
+     * [WalletBackup.Contents.isEmpty] rather than writing a file that
+     * restores nothing.
+     */
+    suspend fun backupContents(mnemonic: String? = null): WalletBackup.Contents
 
     // -- accounts ------------------------------------------------------------
 

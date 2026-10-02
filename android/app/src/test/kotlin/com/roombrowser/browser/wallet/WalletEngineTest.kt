@@ -275,6 +275,82 @@ class WalletEngineTest {
     }
 
     @Test
+    fun `backupContents refuses a locked session unless the caller holds the phrase`() =
+        runTest(testDispatcher) {
+            seedWallet(profile, ABANDON, listOf(ChainType.EVM))
+            engine.bind(profile)
+            advanceUntilIdle()
+
+            // Locked, and the phrase is in the vault: reading it here would
+            // be the gate leaking.
+            assertThrowsSuspend<WalletLockedException> { engine.backupContents() }
+
+            // The onboarding reveal passes the phrase it is already holding.
+            // That is the entire reason an export can exist at the one moment
+            // the user has the phrase in front of them, while the session is
+            // still locked by design.
+            val contents = engine.backupContents(ABANDON)
+            assertThat(contents.mnemonic).isEqualTo(ABANDON)
+            assertThat(contents.accounts.map { it.chain }).contains("EVM")
+        }
+
+    @Test
+    fun `backupContents carries the phrase and the paths but no derived keys`() =
+        runTest(testDispatcher) {
+            seedWallet(profile, ABANDON, listOf(ChainType.EVM, ChainType.SOLANA))
+            engine.bind(profile)
+            advanceUntilIdle()
+            engine.unlock()
+
+            val contents = engine.backupContents()
+
+            assertThat(contents.mnemonic).isEqualTo(ABANDON)
+            assertThat(contents.walletLabel).isEqualTo("Seeded")
+            assertThat(contents.isEmpty).isFalse()
+            assertThat(contents.accounts).hasSize(2)
+            // A derived key is reproduced by the phrase; writing it into the
+            // file would be a second copy of the secret for no benefit.
+            assertThat(contents.accounts.map { it.privateKey }).containsExactly(null, null)
+            assertThat(contents.accounts.none { it.path.isBlank() }).isTrue()
+        }
+
+    @Test
+    fun `backupContents includes an imported key, which the phrase cannot restore`() =
+        runTest(testDispatcher) {
+            seedWallet(profile, ABANDON, listOf(ChainType.EVM))
+            engine.bind(profile)
+            advanceUntilIdle()
+            engine.unlock()
+            engine.importAccount(ChainType.EVM, SEED, "imported")
+            advanceUntilIdle()
+
+            val imported = engine.backupContents().accounts.single { it.label == "imported" }
+
+            // Nothing re-derives this one: a backup that omitted it would
+            // restore a wallet that looks complete and cannot spend from it.
+            assertThat(imported.privateKey).isNotNull()
+            assertThat(imported.privateKey).isNotEmpty()
+            assertThat(imported.path).isEmpty()
+        }
+
+    @Test
+    fun `backupContents of a key-only wallet has no phrase but keeps its keys`() =
+        runTest(testDispatcher) {
+            fake.createKeylessWallet(profile, "Key only")
+            engine.bind(profile)
+            advanceUntilIdle()
+            engine.unlock()
+            engine.importAccount(ChainType.EVM, SEED, "imported")
+            advanceUntilIdle()
+
+            val contents = engine.backupContents()
+
+            assertThat(contents.mnemonic).isNull()
+            // Not empty: the imported key IS the backup for this wallet.
+            assertThat(contents.isEmpty).isFalse()
+        }
+
+    @Test
     fun `createWallet and importWallet fail closed while LOCKED but run on a fresh profile`() = runTest(testDispatcher) {
         seedWallet(profile, ABANDON, listOf(ChainType.EVM))
         engine.bind(profile)

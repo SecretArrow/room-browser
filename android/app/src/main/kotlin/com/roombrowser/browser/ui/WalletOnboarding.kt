@@ -14,11 +14,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -35,6 +37,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -71,6 +75,7 @@ private enum class WalletOnboardingStep { CHOICE, CREATE_INTRO, REVEAL, CONFIRM_
 @Composable
 internal fun WalletOnboarding(
     engine: WalletEngineApi,
+    profileName: String,
     onMessage: (String) -> Unit,
     onFlowStarted: () -> Unit = {},
     onWalletReady: () -> Unit
@@ -78,6 +83,10 @@ internal fun WalletOnboarding(
     var step by remember { mutableStateOf(WalletOnboardingStep.CHOICE) }
     // Transient ONLY: the fresh mnemonic never leaves composition state.
     var mnemonic by remember { mutableStateOf<String?>(null) }
+    // The name the user typed, kept here rather than read back off
+    // engine.wallet: that flow trails the create by one Room invalidation, so
+    // a backup named from it could briefly call the wallet "Wallet".
+    var createdLabel by remember { mutableStateOf("") }
 
     when (step) {
         WalletOnboardingStep.CHOICE -> WalletOnboardingChoice(
@@ -93,8 +102,9 @@ internal fun WalletOnboarding(
         WalletOnboardingStep.CREATE_INTRO -> WalletCreateIntro(
             engine = engine,
             onMessage = onMessage,
-            onCreated = { freshMnemonic ->
+            onCreated = { freshMnemonic, typedLabel ->
                 mnemonic = freshMnemonic
+                createdLabel = typedLabel
                 step = WalletOnboardingStep.REVEAL
             },
             onBack = { step = WalletOnboardingStep.CHOICE }
@@ -104,6 +114,10 @@ internal fun WalletOnboarding(
             if (words != null) {
                 WalletRevealScreen(
                     mnemonic = words,
+                    engine = engine,
+                    walletLabel = createdLabel,
+                    profileName = profileName,
+                    onMessage = onMessage,
                     onConfirmed = { step = WalletOnboardingStep.CONFIRM_QUIZ }
                 )
             } else {
@@ -222,7 +236,7 @@ private fun WalletChainChips(selected: Set<ChainType>, onToggle: (ChainType) -> 
 private fun WalletCreateIntro(
     engine: WalletEngineApi,
     onMessage: (String) -> Unit,
-    onCreated: (String) -> Unit,
+    onCreated: (mnemonic: String, label: String) -> Unit,
     onBack: () -> Unit
 ) {
     val extras = LocalRoomExtras.current
@@ -278,11 +292,12 @@ private fun WalletCreateIntro(
                 onClick = {
                     creating = true
                     scope.launch {
+                        val typed = label.trim().ifBlank { "Wallet" }
                         runCatching {
-                            engine.createWallet(label = label.trim(), enabledChains = chains.toList())
+                            engine.createWallet(label = typed, enabledChains = chains.toList())
                         }.onSuccess { freshMnemonic ->
                             creating = false
-                            onCreated(freshMnemonic)
+                            onCreated(freshMnemonic, typed)
                         }.onFailure { e ->
                             creating = false
                             onMessage("Could not create wallet — ${e.message}")
@@ -310,12 +325,28 @@ private fun WalletCreateIntro(
  * user presses "Reveal" (a fixed-width mask — never a hint at word length).
  * No copy affordance exists on this screen. The mnemonic is present only
  * as this composition's transient state.
+ *
+ * This is also where the phrase can be written out to an encrypted backup
+ * file. It is the only moment the phrase is in the user's hands — the app
+ * will not show it again — so an export offered anywhere else would be
+ * offered to someone who no longer has anything to compare it against.
+ * The backup reads the phrase straight from this composition rather than
+ * from the vault, which is what lets it work while the session is still
+ * locked (creating a wallet deliberately does not unlock it).
  */
 @Composable
-private fun WalletRevealScreen(mnemonic: String, onConfirmed: () -> Unit) {
+private fun WalletRevealScreen(
+    mnemonic: String,
+    engine: WalletEngineApi,
+    walletLabel: String,
+    profileName: String,
+    onMessage: (String) -> Unit,
+    onConfirmed: () -> Unit
+) {
     val extras = LocalRoomExtras.current
     val words = remember(mnemonic) { mnemonic.trim().split(Regex("\\s+")).filter { it.isNotEmpty() } }
     var revealed by remember { mutableStateOf(false) }
+    var backupOpen by remember { mutableStateOf(false) }
 
     Column(
         Modifier
@@ -379,8 +410,34 @@ private fun WalletRevealScreen(mnemonic: String, onConfirmed: () -> Unit) {
                     .heightIn(min = 48.dp)
             ) { Text("I wrote it down") }
         }
+        Spacer(Modifier.height(10.dp))
+        // Gated on `revealed` like the confirmation button beside it: a
+        // backup taken before the user has looked at the phrase is a file
+        // they cannot check against anything.
+        OutlinedButton(
+            onClick = { backupOpen = true },
+            enabled = revealed,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .semantics { contentDescription = "Export wallet keys" }
+        ) {
+            Icon(Icons.Filled.FileDownload, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Export keys to an encrypted file")
+        }
         Spacer(Modifier.height(24.dp))
     }
+
+    WalletBackupFlow(
+        open = backupOpen,
+        engine = engine,
+        walletLabel = walletLabel,
+        profileLabel = profileName,
+        mnemonicInHand = mnemonic,
+        onMessage = onMessage,
+        onDone = { backupOpen = false }
+    )
 }
 
 /**

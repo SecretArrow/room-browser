@@ -369,6 +369,15 @@ class WalletE2eTest {
         return false
     }
 
+    /** Scroll-aware presence check, the read-only twin of [clickTextWithScroll]. */
+    private fun hasTextWithScroll(text: String, attempts: Int = 12): Boolean {
+        for (i in 1..attempts) {
+            if (hasText(text, 1_500)) return true
+            dragUpQuarter()
+        }
+        return false
+    }
+
     /**
      * Clicks the node showing [text] (scrolling to it when needed) and
      * VERIFIES the effect — a tap on bounds captured mid-fling or across a
@@ -1298,6 +1307,15 @@ class WalletE2eTest {
         // below the fold under the one-time-phrase copy.
         assertTrue("Reveal must be tappable", clickTextWithScroll("Reveal"))
         assertTrue("Hide phrase must show once revealed", hasText("Hide phrase", 5_000))
+        // The export button is the last row of this screen, under the grid.
+        // Scroll-aware for the same reason as Reveal above: off-screen nodes
+        // are not in the a11y tree, so a plain By.text probe would fail on a
+        // button that is present and correct. Placed before readWordCells
+        // because that reader walks the grid back toward the top by itself.
+        assertTrue(
+            "The reveal screen must offer the encrypted-keys export",
+            hasTextWithScroll("Export keys to an encrypted file")
+        )
         // The scroll-collecting reader walks the grid toward the top in one
         // bounded pass; a second pass covers reveal-recomposition lag on the
         // 2-core runner. (No outer waitUntil — each pass already carries its

@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Public
@@ -343,6 +344,7 @@ private fun WalletRoot(
                 // manual retry, exactly like the entry path.
                 onboardingPinned || lockState == WalletLockState.NO_WALLET -> WalletOnboarding(
                     engine = engine,
+                    profileName = profileName,
                     onMessage = { onMessage(it) },
                     onFlowStarted = { onboardingFlowStartedHere = true },
                     onWalletReady = {
@@ -473,6 +475,7 @@ private fun WalletDashboard(
     var chainlistOpen by remember { mutableStateOf(false) }
     var sendChain by remember { mutableStateOf<ChainType?>(null) }
     var receiveChain by remember { mutableStateOf<ChainType?>(null) }
+    var backupOpen by remember { mutableStateOf(false) }
 
     // Populate balances once per dashboard entry (offline-tolerant: absent
     // balances simply render as "—").
@@ -635,6 +638,16 @@ private fun WalletDashboard(
                         leadingIcon = Icons.Filled.Add,
                         onClick = { addAccountOpen = true }
                     )
+                    // The wallet outlives the phone only if its keys are
+                    // written down somewhere else. Onboarding offers this at
+                    // the reveal; this is the same export for a wallet that
+                    // was created before the user thought about it.
+                    SettingActionRow(
+                        title = "Export wallet keys",
+                        subtitle = "Recovery phrase and imported keys, sealed with a password",
+                        leadingIcon = Icons.Filled.FileDownload,
+                        onClick = { backupOpen = true }
+                    )
                 }
                 SectionHeader("Networks")
                 chains.forEach { chain ->
@@ -732,6 +745,18 @@ private fun WalletDashboard(
             onDismiss = { receiveChain = null }
         )
     }
+
+    // Null mnemonic: the phrase comes from the vault, so this path needs the
+    // unlocked session the dashboard is only rendered behind.
+    WalletBackupFlow(
+        open = backupOpen,
+        engine = engine,
+        walletLabel = walletLabel,
+        profileLabel = profileName,
+        mnemonicInHand = null,
+        onMessage = onMessage,
+        onDone = { backupOpen = false }
+    )
 }
 
 /**
