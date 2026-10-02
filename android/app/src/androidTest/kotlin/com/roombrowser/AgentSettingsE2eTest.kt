@@ -362,7 +362,7 @@ class AgentSettingsE2eTest {
     }
 
     /** True when a node's VISIBLE rect is empty — i.e. it is composed, and
-     *  therefore still in the a11y tree, but scrolled out of the viewport. */
+     *  therefore still in the a11y tree, but out of the viewport. */
     private fun isClippedAway(node: UiObject2): Boolean = try {
         val b = node.visibleBounds
         b.width() <= 0 || b.height() <= 0
@@ -370,9 +370,36 @@ class AgentSettingsE2eTest {
         true
     }
 
-    /** Slow ~80px downward drag: reveals EARLIER messages in the chat list.
-     *  Deliberately small (the CI panel's chat viewport is only ~157px tall
-     *  on the 320x640 mdpi profile) and slow, so it cannot fling past the
+    /**
+     * Where the copy affordance actually IS, plus its ancestor chain.
+     *
+     * Worth the noise: the copy round-trip failed three runs running with the
+     * same geometry (`Rect(256, 234 - 304, 255)` against a `Rect(0, 258 - 320,
+     * 415)` container) while the feature's own code was untouched, so the
+     * question is not whether the click lands but WHAT is laying the button
+     * out there. `visibleBoundsFor` rejects a node against its ancestors'
+     * bounds, so the ancestors are the answer.
+     */
+    private fun copyAffordanceReport(desc: String): String {
+        val node = device.findObjects(By.desc(desc)).firstOrNull()
+            ?: return "$desc: NOT IN THE TREE"
+        val sb = StringBuilder("screen=${device.displayWidth}x${device.displayHeight}")
+        sb.append("\n$desc bounds=${node.bounds} visible=${node.visibleBounds}")
+        var parent = try { node.parent } catch (_: Exception) { null }
+        var depth = 0
+        while (parent != null && depth < 8) {
+            sb.append("\n  ^$depth ").append(try { parent.className } catch (_: Exception) { "?" })
+                .append(" bounds=").append(try { parent.bounds } catch (_: Exception) { "?" })
+                .append(" visible=").append(try { parent.visibleBounds } catch (_: Exception) { "?" })
+                .append(" text=").append(try { parent.text } catch (_: Exception) { null })
+            parent = try { parent.parent } catch (_: Exception) { null }
+            depth++
+        }
+        return sb.toString()
+    }
+
+    /** Slow ~80px downward drag: reveals EARLIER content in a scrollable
+     *  surface. Deliberately small and slow, so it cannot fling past the
      *  target; the caller re-checks visibility after every step. */
     private fun nudgeChatDown() {
         val cx = device.displayWidth / 2
@@ -385,21 +412,21 @@ class AgentSettingsE2eTest {
     /**
      * Taps a chat bubble's copy affordance and waits for its "Copied" label.
      *
-     * `clickDesc` will happily FIND an off-screen node, but it cannot TAP one.
-     * The chat auto-scrolls to the bottom as the reply streams in, which can
-     * carry the USER bubble's copy icon just above the panel's top edge;
-     * LazyColumn still composes that item, so it stays in the a11y tree with
-     * an EMPTY visible rect. `UiObject2.click()` then falls back to the centre
-     * of the UNCLIPPED rect — a y outside the list — and the tap is lost
-     * without an error (CI run 37040458144: `No overlap between
-     * Rect(256,234-304,255) and Rect(0,258-320,415). Ignoring.` immediately
-     * followed by `Clicking on (280, 244).`). The label lives ~1.8s, so the
-     * symptom is a missing "Copied" rather than a failed click.
+     * `clickDesc` will happily FIND a node it cannot TAP: when a node's
+     * visible rect is empty, `UiObject2.click()` silently falls back to the
+     * centre of the UNCLIPPED rect and the tap lands somewhere else entirely.
+     * The label lives ~1.8s, so the symptom is a missing "Copied" rather than
+     * a failed click — which is exactly what CI reported, three runs running:
+     * `Clicking on (280, 244)` against a node whose rect is
+     * `Rect(256, 234 - 304, 255)`, with no "Copied" in the following 3s.
      *
-     * So: nudge the list until the affordance is genuinely on screen, then tap
-     * its VISIBLE centre through the shell (see `clickCenter` for why injected
-     * gestures are avoided on the CI runner). Poll for the label straight
-     * away — an idle-wait here would eat most of the window it observes.
+     * So: try to bring it into view, then tap its VISIBLE centre through the
+     * shell (see `clickCenter` for why injected gestures are avoided on the
+     * CI runner), and poll for the label straight away — an idle-wait here
+     * would eat most of the window it observes. [copyAffordanceReport] is the
+     * assertion's message, because the geometry above is stable across runs
+     * and therefore NOT a scroll position: something is laying the button out
+     * there, and the report names it.
      */
     private fun copyAndSeeFeedback(desc: String): Boolean {
         repeat(3) {
@@ -846,7 +873,8 @@ class AgentSettingsE2eTest {
             hasDesc("agent_copy_assistant", 5_000)
         )
         assertTrue(
-            "copying the previously sent text must show the Copied feedback",
+            "copying the previously sent text must show the Copied feedback; " +
+                copyAffordanceReport("agent_copy_user") + "; UI:\n" + uiTree(),
             copyAndSeeFeedback("agent_copy_user")
         )
 
