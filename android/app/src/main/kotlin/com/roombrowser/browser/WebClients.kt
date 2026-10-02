@@ -85,6 +85,14 @@ class RoomWebViewClient(
          *  controls are never stale. */
         fun onHistoryChanged(view: WebView, canGoBack: Boolean, canGoForward: Boolean)
         fun onReceivedError(view: WebView, url: String, errorCode: Int, description: String?)
+        /** An HTTP status error on the MAIN frame (4xx/5xx). Separate from
+         *  [onReceivedError] on purpose: the engine reports it as a SUCCESSFUL
+         *  navigation, so a 404 arrives as a clean onPageFinished with the
+         *  right URL and an empty document. Reported for the trace only. */
+        fun onReceivedHttpError(view: WebView, url: String, statusCode: Int)
+        /** The engine has a first frame to show for [url]. Its absence after
+         *  onPageFinished means the document never painted. Trace only. */
+        fun onPageCommitVisible(view: WebView, url: String)
         fun onSslError(view: WebView, url: String, error: SslError)
         fun openInNewTab(url: String, isPrivate: Boolean)
     }
@@ -172,6 +180,32 @@ class RoomWebViewClient(
         CookieManager.getInstance().flush()
         callbacks.onHistoryChanged(view, view.canGoBack(), view.canGoForward())
         callbacks.onPageFinished(view, url, view.title ?: url)
+    }
+
+    /**
+     * An HTTP status error is NOT an engine error: no [onReceivedError] fires,
+     * [onPageFinished] still arrives with the right URL, and the screen shows
+     * an empty document. Forwarded so the trace can tell a 404 apart from a
+     * page that rendered — from the device side those two are identical.
+     */
+    override fun onReceivedHttpError(
+        view: WebView,
+        request: WebResourceRequest,
+        errorResponse: WebResourceResponse
+    ) {
+        if (request.isForMainFrame) {
+            callbacks.onReceivedHttpError(
+                view,
+                request.url.toString(),
+                errorResponse.statusCode
+            )
+        }
+    }
+
+    /** The engine has a first frame to show. Its absence after
+     *  [onPageFinished] means the document never painted. */
+    override fun onPageCommitVisible(view: WebView, url: String) {
+        callbacks.onPageCommitVisible(view, url)
     }
 
     /**

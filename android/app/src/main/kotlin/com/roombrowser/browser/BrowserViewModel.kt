@@ -13,8 +13,6 @@ import android.view.View
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -425,11 +423,7 @@ class BrowserViewModel(
                 pageState = pageState.copy(canGoBack = canGoBack, canGoForward = canGoForward)
             }
         }
-        override fun onReceivedHttpError(
-            view: WebView,
-            request: WebResourceRequest?,
-            errorResponse: WebResourceResponse?
-        ) {
+        override fun onReceivedHttpError(view: WebView, url: String, statusCode: Int) {
             // An HTTP error is NOT an engine error: no onReceivedError fires,
             // onPageFinished still arrives, the URL is right — and the screen
             // shows an empty document. Without this line a 404 and a rendered
@@ -437,8 +431,8 @@ class BrowserViewModel(
             // ambiguity that stalled the geolocation/camera suite.
             Log.d(
                 NAV_TAG,
-                "vm=$navId onReceivedHttpError url=${request?.url} " +
-                    "code=${errorResponse?.statusCode} active=${view === activeWebView}"
+                "vm=$navId onReceivedHttpError url=$url code=$statusCode " +
+                    "active=${view === activeWebView}"
             )
         }
 
