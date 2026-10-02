@@ -784,6 +784,3 @@ jobs:
             > Note: this repository moved — releases are signed with the NEW
             > repository keystore. Updating over an APK from the previous
             > repository requires a one-time uninstall/reinstall.
-
-            ⚠️ Debug edition: debug-signed per-ABI APKs. The release-signed
-            > build ships separately once ordered with its passphrase.
