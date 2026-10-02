@@ -699,7 +699,7 @@ private fun DefaultContextSection(
             IconButton(onClick = {
                 draft = saved
                 editing = true
-            }) { Icon(Icons.filled.Edit, contentDescription = "Edit default context") }
+            }) { Icon(Icons.Filled.Edit, contentDescription = "Edit default context") }
             if (saved.isNotBlank()) {
                 IconButton(onClick = {
                     controller.updateSettings { s ->
@@ -707,7 +707,7 @@ private fun DefaultContextSection(
                     }
                     draft = ""
                     onNotice("Default context cleared")
-                }) { Icon(Icons.filled.Delete, contentDescription = "Clear default context") }
+                }) { Icon(Icons.Filled.Delete, contentDescription = "Clear default context") }
             }
         }
     }

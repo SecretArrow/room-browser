@@ -398,8 +398,24 @@ open class WalletEngine(
     ): WalletAccountRecord? {
         val profileId = requireBound()
         requireUnlocked()
+        val (address, storedKey) = parseImportedKey(chainType, privateKey)
+        return repo.addImportedAccount(profileId, chainType, address, storedKey, label)
+    }
+
+    /**
+     * Turns a pasted private key into (address, canonical stored form) using
+     * the chain's own rules.
+     *
+     * Shared by [importAccount] and [restoreFromBackup] so the two can never
+     * disagree about what a valid key is: a backup written by this app and
+     * typed back in by hand must be accepted or rejected by the same code.
+     * [parseSecp256k1Key]/[parseEd25519Seed] throw
+     * [WalletException.InvalidParams] with the chain's own wording, which is
+     * what a caller reports.
+     */
+    private fun parseImportedKey(chainType: ChainType, privateKey: String): Pair<String, String> {
         val trimmed = privateKey.trim()
-        val (address, storedKey) = when (chainType) {
+        return when (chainType) {
             ChainType.EVM -> {
                 val key = parseSecp256k1Key(trimmed, chainType)
                 registry.evm.addressFromPrivateKey(key) to canonicalSecpKey(key)
@@ -435,7 +451,117 @@ open class WalletEngine(
                 registry.tron.addressFromPrivateKey(key) to canonicalSecpKey(key)
             }
         }
-        return repo.addImportedAccount(profileId, chainType, address, storedKey, label)
+    }
+
+    /**
+     * Restores a wallet from an opened backup file. See [WalletEngineApi].
+     *
+     * ORDER MATTERS AND IS LOAD-BEARING. The wallet row is written first and
+     * the accounts hang off it, so there is no window where accounts exist
+     * without a wallet to own them. The phrase goes in before any imported
+     * key, so a file that names a chain this build does not know still
+     * restores its derived accounts.
+     *
+     * FAILURE OF ONE KEY IS NOT FAILURE OF THE RESTORE: each imported key is
+     * attempted on its own and a bad one is recorded in
+     * [RestoreReport.skipped]. A restore that aborts on the first unparseable
+     * row would leave a half-built wallet behind AND lose the readable
+     * accounts, which is the worst of both.
+     *
+     * Refuses to run over an existing wallet: this replaces nothing. The
+     * caller deletes first, as a separate confirmed step.
+     */
+    override suspend fun restoreFromBackup(
+        payload: WalletBackup.Payload,
+        enabledChains: List<ChainType>
+    ): RestoreReport {
+        val profileId = requireBound()
+        requireNotLocked()
+        if (repo.wallet(profileId) != null) {
+            throw WalletException.InvalidParams(
+                "This profile already has a wallet. Delete it first if you mean to replace it."
+            )
+        }
+        val phrase = payload.mnemonic?.trim()?.takeIf { it.isNotEmpty() }
+        if (phrase != null && !Mnemonics.isValid(phrase)) {
+            throw WalletException.InvalidParams(
+                "The recovery phrase in this file is not a valid BIP39 phrase"
+            )
+        }
+        val label = payload.walletLabel.trim().takeIf { it.isNotEmpty() } ?: "Wallet"
+
+        // A wallet with a phrase gets its index-0 accounts derived exactly as
+        // a freshly imported wallet would; one without is created empty and
+        // filled entirely by the imported keys below.
+        val normalized = phrase?.let { Mnemonics.normalize(it) }
+        repo.createWallet(profileId, label, normalized)
+        if (normalized != null) {
+            seedInitialAccounts(profileId, normalized, enabledChains)
+        }
+
+        // Compare against what is on disk, not against the file: the phrase
+        // just derived a row per enabled chain, and a file that also lists
+        // one of those addresses as an imported key would otherwise create a
+        // second account pointing at the same address.
+        val taken = repo.accounts(profileId)
+            .map { it.chainType to it.address.lowercase() }
+            .toMutableSet()
+        val skipped = mutableListOf<RestoreReport.SkippedKey>()
+        var imported = 0
+        payload.accounts.forEach { entry ->
+            val key = entry.privateKey?.trim()
+            if (key.isNullOrEmpty()) return@forEach  // derived rows carry no key by design
+            val chain = ChainType.fromName(entry.chain)
+                ?: ChainType.entries.firstOrNull {
+                    it.displayName.equals(entry.chain, ignoreCase = true)
+                }
+            if (chain == null) {
+                skipped.add(
+                    RestoreReport.SkippedKey(entry.chain, entry.label, "unknown chain for this build")
+                )
+                return@forEach
+            }
+            val parsed = runCatching { parseImportedKey(chain, key) }
+            val address = parsed.getOrNull()?.first
+            if (address == null) {
+                val reason = parsed.exceptionOrNull()?.message ?: "not a valid private key"
+                skipped.add(RestoreReport.SkippedKey(entry.chain, entry.label, reason))
+                return@forEach
+            }
+            if (!taken.add(chain to address.lowercase())) {
+                // Already restored by the phrase above (or repeated in the
+                // file). Not a failure: the account exists, which is what the
+                // file asked for.
+                return@forEach
+            }
+            runCatching {
+                repo.addImportedAccount(
+                    profileId,
+                    chain,
+                    address,
+                    parsed.getOrThrow().second,
+                    entry.label.takeIf { it.isNotBlank() } ?: "${chain.displayName} (imported)"
+                )
+            }.onSuccess {
+                imported++
+            }.onFailure { failure ->
+                taken.remove(chain to address.lowercase())
+                skipped.add(
+                    RestoreReport.SkippedKey(
+                        entry.chain,
+                        entry.label,
+                        failure.message ?: failure.javaClass.simpleName
+                    )
+                )
+            }
+        }
+        return RestoreReport(
+            walletLabel = label,
+            phraseRestored = normalized != null,
+            derivedAccountCount = if (normalized == null) 0 else enabledChains.size,
+            importedAccountCount = imported,
+            skipped = skipped
+        )
     }
 
     override suspend fun renameAccount(accountId: String, label: String) {

@@ -71,7 +71,9 @@ import kotlinx.coroutines.launch
  */
 
 /** The onboarding flow's internal steps (the engine's lock state drives entry/exit). */
-private enum class WalletOnboardingStep { CHOICE, CREATE_INTRO, REVEAL, CONFIRM_QUIZ, IMPORT_FORM }
+private enum class WalletOnboardingStep {
+    CHOICE, CREATE_INTRO, REVEAL, CONFIRM_QUIZ, IMPORT_FORM, RESTORE_BACKUP
+}
 
 /** Entry point — rendered by WalletRoot while no wallet exists for the profile. */
 @Composable
@@ -99,6 +101,10 @@ internal fun WalletOnboarding(
             onImport = {
                 onFlowStarted()
                 step = WalletOnboardingStep.IMPORT_FORM
+            },
+            onRestore = {
+                onFlowStarted()
+                step = WalletOnboardingStep.RESTORE_BACKUP
             }
         )
         WalletOnboardingStep.CREATE_INTRO -> WalletCreateIntro(
@@ -125,7 +131,8 @@ internal fun WalletOnboarding(
             } else {
                 WalletOnboardingChoice(
                     onCreate = { step = WalletOnboardingStep.CREATE_INTRO },
-                    onImport = { step = WalletOnboardingStep.IMPORT_FORM }
+                    onImport = { step = WalletOnboardingStep.IMPORT_FORM },
+                    onRestore = { step = WalletOnboardingStep.RESTORE_BACKUP }
                 )
             }
         }
@@ -142,7 +149,8 @@ internal fun WalletOnboarding(
             } else {
                 WalletOnboardingChoice(
                     onCreate = { step = WalletOnboardingStep.CREATE_INTRO },
-                    onImport = { step = WalletOnboardingStep.IMPORT_FORM }
+                    onImport = { step = WalletOnboardingStep.IMPORT_FORM },
+                    onRestore = { step = WalletOnboardingStep.RESTORE_BACKUP }
                 )
             }
         }
@@ -151,12 +159,25 @@ internal fun WalletOnboarding(
             onImported = onWalletReady,
             onBack = { step = WalletOnboardingStep.CHOICE }
         )
+        // A backup file carries more than a phrase can: the phrase restores
+        // derived accounts, and the file also restores the individually
+        // imported private keys that no phrase can bring back. A user who
+        // kept a backup should not have to retype anything.
+        WalletOnboardingStep.RESTORE_BACKUP -> WalletBackupImportFlow(
+            engine = engine,
+            onRestored = onWalletReady,
+            onCancel = { step = WalletOnboardingStep.CHOICE }
+        )
     }
 }
 
 /** Step 1: create vs. import. */
 @Composable
-private fun WalletOnboardingChoice(onCreate: () -> Unit, onImport: () -> Unit) {
+private fun WalletOnboardingChoice(
+    onCreate: () -> Unit,
+    onImport: () -> Unit,
+    onRestore: () -> Unit
+) {
     val extras = LocalRoomExtras.current
     Column(
         Modifier
@@ -207,6 +228,13 @@ private fun WalletOnboardingChoice(onCreate: () -> Unit, onImport: () -> Unit) {
                 .fillMaxWidth()
                 .heightIn(min = 48.dp)
         ) { Text("Import with recovery phrase") }
+        Spacer(Modifier.height(10.dp))
+        OutlinedButton(
+            onClick = onRestore,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+        ) { Text("Restore from a backup file") }
         Spacer(Modifier.height(24.dp))
     }
 }

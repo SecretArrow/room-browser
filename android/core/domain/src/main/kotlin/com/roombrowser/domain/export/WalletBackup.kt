@@ -351,6 +351,20 @@ object WalletBackup {
     }
 
     /**
+     * The human-readable half of a decrypted document: everything above the
+     * fenced data block.
+     *
+     * For a screen that shows the user what it just read, the block is noise
+     * — it is the same keys again, in JSON, addressed to the importer. The
+     * fence markers stay private to this file so no caller has to know what
+     * they are to show the part a person reads.
+     */
+    fun readablePart(document: String): String {
+        val begin = document.indexOf(DATA_BEGIN)
+        return if (begin < 0) document else document.substring(0, begin).trimEnd()
+    }
+
+    /**
      * Recovers contents from a v1 document by reading the text the user
      * reads.
      *

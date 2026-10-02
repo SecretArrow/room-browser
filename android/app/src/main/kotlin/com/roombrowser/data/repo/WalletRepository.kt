@@ -91,21 +91,31 @@ class WalletRepository(
         withContext(Dispatchers.IO) { walletDao.byProfile(profileId.value)?.toSummary() }
 
     /**
-     * Creates the profile's wallet from a mnemonic: the mnemonic is
+     * Creates the profile's wallet: the mnemonic (when there is one) is
      * encrypted under the profile's wallet key and ONLY the ciphertext is
      * stored. Deriving the first accounts is the engine's job — this layer
      * just persists the wallet.
      *
+     * A null [mnemonic] stores no phrase at all: that is a keys-only wallet,
+     * one whose every account is an individually imported private key. The
+     * column is already nullable and the app already renders that shape
+     * ("Recovery phrase: none" in an export), so this is the persistence half
+     * of a case that exists rather than a new one. A BLANK string is rejected
+     * instead: it is indistinguishable from "no phrase" to a reader but means
+     * a caller forgot to pass one.
+     *
      * @throws IllegalStateException when a wallet already exists for the
-     * profile (one wallet per profile in v1).
-     * @throws IllegalArgumentException when [mnemonic] is blank.
+     *   profile (one wallet per profile in v1).
+     * @throws IllegalArgumentException when [mnemonic] is blank but not null.
      */
     override suspend fun createWallet(
         profileId: ProfileId,
         label: String,
-        mnemonic: String
+        mnemonic: String?
     ): WalletSummary {
-        require(mnemonic.isNotBlank()) { "Wallet mnemonic must not be blank" }
+        require(mnemonic == null || mnemonic.isNotBlank()) {
+            "Wallet mnemonic must not be blank (pass null for a keys-only wallet)"
+        }
         return withContext(Dispatchers.IO) {
             walletDao.byProfile(profileId.value)?.let {
                 throw IllegalStateException("A wallet already exists for this profile")
@@ -114,7 +124,7 @@ class WalletRepository(
                 id = UUID.randomUUID().toString(),
                 profileId = profileId.value,
                 label = label,
-                mnemonicEnc = crypto.encrypt(profileId.safeSuffix, mnemonic),
+                mnemonicEnc = mnemonic?.let { crypto.encrypt(profileId.safeSuffix, it) },
                 createdAt = System.currentTimeMillis()
             )
             walletDao.upsert(entity)

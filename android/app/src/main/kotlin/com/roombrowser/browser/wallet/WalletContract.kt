@@ -51,6 +51,35 @@ data class WalletAccountRecord(
     enum class Source { DERIVED, IMPORTED }
 }
 
+/**
+ * What a restore actually did, so the screen that ran it can report facts
+ * rather than "restored" or "failed".
+ *
+ * A backup is a file from outside the app and it can be partially wrong: a
+ * row naming a chain this build does not have, a private key that is not a
+ * key, a derived account whose path this build would derive differently. Each
+ * of those loses one account, not the wallet, and the difference between
+ * "your wallet is back, minus this one key (here is why)" and "restore
+ * failed" is the difference between a user who checks their addresses and a
+ * user who is left with nothing and no explanation.
+ */
+data class RestoreReport(
+    /** The label the restored wallet carries; falls back to "Wallet". */
+    val walletLabel: String,
+    /** True when a recovery phrase was present and its accounts were derived. */
+    val phraseRestored: Boolean,
+    /** How many index-0 accounts the phrase re-derived. */
+    val derivedAccountCount: Int,
+    /** How many imported private keys were accepted. */
+    val importedAccountCount: Int,
+    /** Keys that could not be restored, each with the reason. */
+    val skipped: List<SkippedKey>
+) {
+    data class SkippedKey(val chain: String, val label: String, val reason: String)
+
+    val restoredAnything: Boolean get() = phraseRestored || importedAccountCount > 0
+}
+
 /** A network row: the [NetworkConfig] plus per-profile UI state. */
 data class NetworkRecord(
     val config: NetworkConfig,
@@ -222,8 +251,25 @@ interface WalletRepositoryApi {
 
     suspend fun wallet(profileId: ProfileId): WalletSummary?
 
-    /** Creates the profile's wallet from a mnemonic. Fails if one already exists. */
-    suspend fun createWallet(profileId: ProfileId, label: String, mnemonic: String): WalletSummary
+    /**
+     * Creates the profile's wallet. Fails if one already exists.
+     *
+     * [mnemonic] is null for a KEYS-ONLY wallet — one whose accounts were all
+     * imported as individual private keys and which therefore has no phrase
+     * to derive from. That is a real shape, not a degenerate one: the backup
+     * format can write such a wallet ([WalletBackup.Contents.isEmpty] is
+     * false for it), so refusing to create one would leave the app able to
+     * write a file it cannot read back. A blank string is rejected rather
+     * than treated as "no phrase", because that is a caller bug, not a
+     * wallet without a phrase.
+     *
+     * @throws IllegalArgumentException when [mnemonic] is blank but not null.
+     */
+    suspend fun createWallet(
+        profileId: ProfileId,
+        label: String,
+        mnemonic: String?
+    ): WalletSummary
 
     /** Deletes the wallet, its accounts, networks, permissions and activity rows. */
     suspend fun deleteWallet(profileId: ProfileId)
@@ -367,6 +413,29 @@ interface WalletEngineApi {
      * restores nothing.
      */
     suspend fun backupContents(mnemonic: String? = null): WalletBackup.Contents
+
+    /**
+     * Restores a wallet from a backup file the user opened.
+     *
+     * [payload] comes from [WalletBackup.Restored.payload]; the caller has
+     * already decrypted the file and shown the user what it read, so this
+     * method is the second half of a decision the user has already made.
+     *
+     * ONE WALLET PER PROFILE, and this does not replace one: restoring over a
+     * live wallet would silently orphan whatever it holds, so an existing
+     * wallet is refused. The caller deletes first if that is what the user
+     * asked for, which is a separate, separately-confirmed step.
+     *
+     * What it restores: the phrase (re-deriving index-0 accounts for
+     * [enabledChains]) and every imported private key in the file. A key the
+     * chain cannot parse is reported in [RestoreReport.skipped] rather than
+     * failing the whole restore — a file with one bad row should not cost the
+     * user the other nineteen.
+     */
+    suspend fun restoreFromBackup(
+        payload: WalletBackup.Payload,
+        enabledChains: List<ChainType>
+    ): RestoreReport
 
     // -- accounts ------------------------------------------------------------
 

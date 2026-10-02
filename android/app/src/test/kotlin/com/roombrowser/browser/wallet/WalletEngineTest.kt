@@ -1,6 +1,7 @@
 package com.roombrowser.browser.wallet
 
 import com.google.common.truth.Truth.assertThat
+import com.roombrowser.domain.export.WalletBackup
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.wallet.chains.ChainRegistry
 import com.roombrowser.domain.wallet.chains.evm.EvmAdapter
@@ -1248,6 +1249,158 @@ class WalletEngineTest {
             fake.addDerivedAccount(profileId, chain, address, path, "${chain.displayName} 1")
         }
     }
+
+    // ------------------------------------------------------------------
+    // Restore from a backup file
+    // ------------------------------------------------------------------
+
+    private fun backupPayload(
+        mnemonic: String? = ABANDON,
+        accounts: List<WalletBackup.KeyEntry> = emptyList()
+    ) = WalletBackup.Payload(
+        walletLabel = "Restored",
+        createdAt = 0L,
+        mnemonic = mnemonic,
+        accounts = accounts
+    )
+
+    @Test
+    fun `restore rebuilds the phrase accounts and the imported keys alike`() = runTest(testDispatcher) {
+        engine.bind(profile)
+        advanceUntilIdle()
+
+        val report = engine.restoreFromBackup(
+            backupPayload(
+                accounts = listOf(
+                    // A derived row carries no private key: the phrase above
+                    // recreates it, so it is listed for the reader and nothing
+                    // more. Restoring it again would be a duplicate account.
+                    WalletBackup.KeyEntry("EVM", "EVM 1", EVM0, "m/44'/60'/0'/0/0"),
+                    // An imported key, which nothing but this row can restore.
+                    WalletBackup.KeyEntry("EVM", "Cold", "0xwhatever", "", privateKey = SEED)
+                )
+            ),
+            enabledChains = listOf(ChainType.EVM)
+        )
+        advanceUntilIdle()
+
+        assertThat(report.phraseRestored).isTrue()
+        assertThat(report.derivedAccountCount).isEqualTo(1)
+        assertThat(report.importedAccountCount).isEqualTo(1)
+        assertThat(report.skipped).isEmpty()
+
+        val stored = fake.accountsOf(profile)
+        // Two accounts, not three: the file listed a derived row too, and it
+        // is not restored a second time beside the one the phrase made.
+        assertThat(stored).hasSize(2)
+        assertThat(stored.map { it.source }).containsExactly(
+            WalletAccountRecord.Source.DERIVED,
+            WalletAccountRecord.Source.IMPORTED
+        )
+        // The imported key lands at the address THIS app computes for it, not
+        // at the one the file claimed: a backup is an untrusted file, and an
+        // account labelled with an address its key does not control is a trap
+        // the user would only discover when a send failed.
+        val imported = stored.first { it.source == WalletAccountRecord.Source.IMPORTED }
+        assertThat(imported.address).isEqualTo(EVM_IMPORT)
+        assertThat(imported.address).isNotEqualTo("0xwhatever")
+        // Stored canonically, so re-exporting writes the same 64 hex digits
+        // and a restore round-trips through a backup unchanged.
+        assertThat(fake.revealPrivateKey(imported.id)).isEqualTo(SEED)
+    }
+
+    @Test
+    fun `restore refuses to run over an existing wallet`() = runTest(testDispatcher) {
+        seedWallet(profile, ABANDON, listOf(ChainType.EVM))
+        engine.bind(profile)
+        engine.unlock()
+        advanceUntilIdle()
+
+        // Replacing a live wallet is not a restore, it is a deletion, and
+        // deletions are confirmed separately. Nothing may be written here.
+        assertThrowsSuspend<WalletException.InvalidParams> {
+            engine.restoreFromBackup(backupPayload(), enabledChains = listOf(ChainType.EVM))
+        }
+        assertThat(fake.accountsOf(profile)).hasSize(1)
+    }
+
+    @Test
+    fun `a key this build cannot parse is reported, not fatal`() = runTest(testDispatcher) {
+        engine.bind(profile)
+        advanceUntilIdle()
+
+        val report = engine.restoreFromBackup(
+            backupPayload(
+                accounts = listOf(
+                    WalletBackup.KeyEntry("EVM", "Bad", "0xbad", "", privateKey = "not-a-key"),
+                    WalletBackup.KeyEntry("Nostromo", "Alien", "0xalien", "", privateKey = SEED),
+                    WalletBackup.KeyEntry("EVM", "Good", "0xgood", "", privateKey = SEED)
+                )
+            ),
+            enabledChains = listOf(ChainType.EVM)
+        )
+        advanceUntilIdle()
+
+        // One bad key and one unknown chain must not cost the user the key
+        // that was fine: that is the whole reason restore reports instead of
+        // throwing.
+        assertThat(report.importedAccountCount).isEqualTo(1)
+        assertThat(report.skipped.map { it.label }).containsExactly("Bad", "Alien")
+        assertThat(report.skipped.map { it.reason })
+            .containsExactly("Invalid EVM private key", "unknown chain for this build")
+    }
+
+    @Test
+    fun `a backup with no phrase is still a wallet worth restoring`() = runTest(testDispatcher) {
+        engine.bind(profile)
+        advanceUntilIdle()
+
+        // The keys-only wallet: every account is an individually imported
+        // key, so the phrase column stays empty and the keys are everything.
+        val report = engine.restoreFromBackup(
+            backupPayload(mnemonic = null, accounts = listOf(
+                WalletBackup.KeyEntry("EVM", "Solo", "0xwho", "", privateKey = SEED)
+            )),
+            enabledChains = listOf(ChainType.EVM)
+        )
+        advanceUntilIdle()
+
+        assertThat(report.phraseRestored).isFalse()
+        assertThat(report.derivedAccountCount).isEqualTo(0)
+        assertThat(report.importedAccountCount).isEqualTo(1)
+        assertThat(engine.wallet.value).isNotNull()
+        assertThat(engine.wallet.value!!.hasMnemonic).isFalse()
+    }
+
+    @Test
+    fun `an invalid phrase is refused before anything is written`() = runTest(testDispatcher) {
+        engine.bind(profile)
+        advanceUntilIdle()
+
+        assertThrowsSuspend<WalletException.InvalidParams> {
+            engine.restoreFromBackup(
+                backupPayload(mnemonic = "not actually a bip39 phrase at all"),
+                enabledChains = listOf(ChainType.EVM)
+            )
+        }
+        // No half-built wallet left behind for a later call to trip over.
+        assertThat(fake.wallet(profile)).isNull()
+        assertThat(fake.accountsOf(profile)).isEmpty()
+    }
+
+    @Test
+    fun `restore fails closed while the session is locked`() = runTest(testDispatcher) {
+        seedWallet(otherProfile, ABANDON, listOf(ChainType.EVM))
+        engine.bind(otherProfile)
+        advanceUntilIdle()
+
+        // A restored wallet is key material being written; it must not happen
+        // behind the gate any more than an import does.
+        assertThrowsSuspend<WalletLockedException> {
+            engine.restoreFromBackup(backupPayload(), enabledChains = listOf(ChainType.EVM))
+        }
+        assertThat(fake.accountsOf(otherProfile)).hasSize(1)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1307,10 +1460,11 @@ private open class FakeWalletRepository : WalletRepositoryApi {
     override suspend fun createWallet(
         profileId: ProfileId,
         label: String,
-        mnemonic: String
+        mnemonic: String?
     ): WalletSummary {
         check(wallets[profileId.value] == null) { "Wallet already exists" }
-        return createWalletForTests(profileId, label, mnemonic)
+        return if (mnemonic == null) createKeylessWallet(profileId, label)
+        else createWalletForTests(profileId, label, mnemonic)
     }
 
     /** Test helper: a wallet row with NO mnemonic (key-only import case). */
