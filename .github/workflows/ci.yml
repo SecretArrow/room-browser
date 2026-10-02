@@ -24,14 +24,14 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------
-  # AUTO-FIX: runs lintFix first; if it auto-corrects anything, the fixes
-  # are committed & pushed (PAT_TOKEN re-triggers a clean pipeline run).
+  # AUTO-FIX: runs lintFix CONCURRENTLY with every other job; if it
+  # auto-corrects anything, the fixes are committed & pushed (PAT_TOKEN
+  # re-triggers a clean pipeline run that validates the fixed tree).
+  # Nothing waits on this job — see the note on `e2e`.
   # ---------------------------------------------------------------------
   autofix:
     name: Auto-fix (lintFix)
     runs-on: ubuntu-latest
-    outputs:
-      pushed_with_pat: ${{ steps.push.outputs.pushed_with_pat }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -104,7 +104,12 @@ jobs:
             exit 0
           fi
           git add -A
-          git commit -m "chore(ci): auto-fix lint findings [skip ci]"
+          # NO "[skip ci]" here, and that is load-bearing: the other jobs no
+          # longer wait for this one, so the run that is in flight right now
+          # is testing the PRE-fix tree. Without a fresh run the pipeline
+          # could report green while main's HEAD is the fixed commit that
+          # nothing ever validated. The PAT push below is what starts it.
+          git commit -m "chore(ci): auto-fix lint findings"
           # Prefer PAT_TOKEN: pushes with it re-trigger the workflow so the
           # fixed tree gets a full clean pipeline run (GITHUB_TOKEN would not).
           if [ -n "${{ secrets.PAT_TOKEN }}" ]; then
@@ -119,12 +124,10 @@ jobs:
 
   # ---------------------------------------------------------------------
   # QUALITY GATE: lint + unit tests + debug build on JVM only.
-  # Skipped when auto-fix already pushed (fresh run is on its way).
+  # Starts WITH autofix, not after it — see the note on `e2e` below.
   # ---------------------------------------------------------------------
   quality:
     name: Lint + unit tests + debug build
-    needs: autofix
-    if: needs.autofix.outputs.pushed_with_pat != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -240,15 +243,15 @@ jobs:
   # ---------------------------------------------------------------------
   e2e:
     name: E2E instrumented tests (emulator)
-    # Runs ALONGSIDE quality, not after it. e2e checks out and builds on its
-    # own and consumes nothing quality produces, so `needs: quality` bought
-    # no correctness — it only put the 50-minute emulator run behind a
-    # 17-minute wait, and the emulator is the whole critical path to a
-    # release. `release` still requires BOTH results, so a red quality still
-    # blocks publishing; it just no longer delays finding out. The cost, on
-    # purpose: when quality fails this run, the emulator has already run.
-    needs: autofix
-    if: needs.autofix.outputs.pushed_with_pat != 'true'
+    # Runs ALONGSIDE quality AND autofix, not after either. e2e checks out and
+    # builds on its own and consumes nothing the other jobs produce, so every
+    # `needs:` edge into it bought no correctness — each one only put the
+    # 50-minute emulator run further behind, and the emulator is the whole
+    # critical path to a release. `release` still requires all four results,
+    # so a red quality still blocks publishing; it just no longer delays
+    # finding out, and it no longer waits ~4 minutes for autofix to finish
+    # doing nothing. The cost, on purpose: when quality fails this run, the
+    # emulator has already run.
     runs-on: ubuntu-latest
     # A hung emulator boot or a stalled SDK download would otherwise hold a
     # runner for the 360-minute default.
@@ -350,8 +353,6 @@ jobs:
   # ---------------------------------------------------------------------
   desktop-windows:
     name: Desktop build (Windows x64, C + WebView2)
-    needs: autofix
-    if: needs.autofix.outputs.pushed_with_pat != 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -478,8 +479,6 @@ jobs:
   # ---------------------------------------------------------------------
   desktop-linux:
     name: Desktop build (Ubuntu x64, C + WebKitGTK)
-    needs: autofix
-    if: needs.autofix.outputs.pushed_with_pat != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
