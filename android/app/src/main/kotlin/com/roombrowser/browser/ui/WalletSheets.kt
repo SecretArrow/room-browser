@@ -6,6 +6,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Search
@@ -36,9 +38,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -50,6 +56,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -71,6 +79,7 @@ import com.roombrowser.qr.QrCodeGenerator
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBottomSheetShape
+import com.roombrowser.ui.common.RoomCardShape
 import com.roombrowser.ui.common.RoomSheetHeader
 import com.roombrowser.ui.common.SettingActionRow
 import kotlinx.coroutines.delay
@@ -152,9 +161,19 @@ private fun HostBadge(host: String) {
     }
 }
 
-/** One labeled key/value line inside a confirmation sheet. */
+/**
+ * One labeled key/value line inside a confirmation sheet. [muted] drops the
+ * value to the secondary colour for facts that are pending or unavailable —
+ * the value still reads as a value, without competing with the facts that are
+ * actually known.
+ */
 @Composable
-private fun SheetDataRow(label: String, value: String) {
+private fun SheetDataRow(
+    label: String,
+    value: String,
+    monospace: Boolean = false,
+    muted: Boolean = false
+) {
     val extras = LocalRoomExtras.current
     Column(Modifier.padding(vertical = 3.dp)) {
         Text(
@@ -164,9 +183,82 @@ private fun SheetDataRow(label: String, value: String) {
         )
         Text(
             value,
-            style = MaterialTheme.typography.bodyMedium,
-            color = extras.textPrimary
+            style = if (monospace) {
+                MaterialTheme.typography.bodySmall
+            } else {
+                MaterialTheme.typography.bodyMedium
+            },
+            fontFamily = if (monospace) FontFamily.Monospace else null,
+            color = if (muted) extras.textSecondary else extras.textPrimary
         )
+    }
+}
+
+/**
+ * The facts a confirmation is weighed on, collected into ONE bounded panel.
+ * The same lines loose between a header and two buttons read as background;
+ * grouped under a shared surface they read as the thing being decided.
+ */
+@Composable
+private fun SheetDetailGroup(content: @Composable ColumnScope.() -> Unit) {
+    val extras = LocalRoomExtras.current
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoomCardShape)
+            .background(extras.surfaceAlt.copy(alpha = 0.6f))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        content = content
+    )
+}
+
+/**
+ * The amount a confirmation is about, as the sheet's headline. The one fact
+ * an approval turns on should not be a 13sp line among six others.
+ */
+@Composable
+private fun SheetAmountHero(amount: String, caption: String, muted: Boolean = false) {
+    val extras = LocalRoomExtras.current
+    Column {
+        Text(
+            caption,
+            style = MaterialTheme.typography.labelSmall,
+            color = extras.textSecondary
+        )
+        Text(
+            amount,
+            style = MaterialTheme.typography.headlineSmall,
+            color = if (muted) extras.textSecondary else extras.textPrimary
+        )
+    }
+}
+
+/**
+ * Icon-only action with a Material 3 tooltip. The tooltip is what makes a bare
+ * glyph legible — on hover with a pointer, on long-press by touch — and it
+ * doubles as the accessible name, because an icon button that shows only a
+ * picture is a mystery to a screen reader. The 48dp touch target is
+ * IconButton's own.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun WalletIconButton(
+    label: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+    tint: Color = LocalRoomExtras.current.icon
+) {
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+        tooltip = { PlainTooltip { Text(label) } },
+        state = rememberTooltipState()
+    ) {
+        IconButton(
+            onClick = onClick,
+            modifier = Modifier.semantics { contentDescription = label }
+        ) {
+            Icon(icon, contentDescription = null, tint = tint)
+        }
     }
 }
 
@@ -331,8 +423,10 @@ fun ConnectRequestSheet(
             RoomSheetHeader("Connect site")
             HostBadge(request.host)
             Spacer(Modifier.height(8.dp))
-            SheetDataRow("Chain", request.chainType.displayName)
-            SheetDataRow("Origin", request.originUrl)
+            SheetDetailGroup {
+                SheetDataRow("Chain", request.chainType.displayName)
+                SheetDataRow("Origin", request.originUrl)
+            }
             Spacer(Modifier.height(10.dp))
             if (chainAccounts.size > 1) {
                 Text(
@@ -494,16 +588,38 @@ fun SendTransactionSheet(
         ) {
             RoomSheetHeader("Send transaction")
             HostBadge(request.host)
-            Spacer(Modifier.height(8.dp))
-            SheetDataRow("Network", network?.name ?: request.networkId)
-            SheetDataRow("From", shortenAddress(request.accountAddress))
-            if (to != null) SheetDataRow("To", shortenAddress(to))
-            if (value != null) {
-                val formatted = formatTxValue(value, decimals)
-                val symbol = network?.nativeSymbol
-                SheetDataRow("Value", if (symbol == null) formatted else "$formatted $symbol")
+            Spacer(Modifier.height(12.dp))
+            // The amount leads, at headline size: it is the fact the approval
+            // turns on, and it used to be one 13sp line among six.
+            val formatted = value?.let { formatTxValue(it, decimals) }
+            val symbol = network?.nativeSymbol
+            SheetAmountHero(
+                amount = when {
+                    formatted == null -> "No native amount"
+                    symbol == null -> formatted
+                    else -> "$formatted $symbol"
+                },
+                caption = if (formatted == null) "Contract call" else "Amount",
+                muted = formatted == null
+            )
+            Spacer(Modifier.height(12.dp))
+            SheetDetailGroup {
+                SheetDataRow("Network", network?.name ?: request.networkId)
+                SheetDataRow("From", shortenAddress(request.accountAddress))
+                if (to != null) {
+                    // Full, never shortened: a confirmation is the one place
+                    // the whole recipient must be readable — a shortened
+                    // address is exactly what address-poisoning relies on.
+                    SheetDataRow("Recipient", to, monospace = true)
+                }
+                SheetDataRow(
+                    "Fee estimate",
+                    request.feeEstimate?.let { "${it.estimatedCost} (${it.label})" }
+                        ?: "Unavailable — the network did not answer"
+                )
             }
             if (data != null) {
+                Spacer(Modifier.height(10.dp))
                 SheetDataRow(
                     "Data",
                     if (dataExpanded || data.length <= 66) data else data.take(66) + "…"
@@ -513,11 +629,14 @@ fun SendTransactionSheet(
                         Text(if (dataExpanded) "Hide data" else "Show all data")
                     }
                 }
+                // The amount above is the chain's OWN coin; anything the
+                // calldata moves (tokens, approvals) is not on this sheet.
+                WalletInfoNote(
+                    "This request carries contract data, so it can move assets this " +
+                        "sheet does not show — tokens, for example. Only approve it if " +
+                        "you trust the site you are on."
+                )
             }
-            SheetDataRow(
-                "Fee estimate",
-                request.feeEstimate?.let { "${it.estimatedCost} (${it.label})" } ?: "Unavailable"
-            )
             Spacer(Modifier.height(16.dp))
             ApproveRejectButtons(
                 onApprove = { settle(true) },
@@ -555,10 +674,14 @@ fun SwitchChainSheet(
             RoomSheetHeader("Switch network")
             HostBadge(request.host)
             Spacer(Modifier.height(8.dp))
-            SheetDataRow("Current", current?.name ?: "—")
-            SheetDataRow("Requested", target?.name ?: request.targetNetworkId)
+            SheetDetailGroup {
+                SheetDataRow("Current", current?.name ?: "None selected")
+                SheetDataRow("Requested", target?.name ?: request.targetNetworkId)
+                target?.let {
+                    SheetDataRow("Chain ID", it.chainId)
+                }
+            }
             target?.let {
-                SheetDataRow("Chain ID", it.chainId)
                 if (it.isTestnet) {
                     WalletInfoNote("This network is marked as a testnet.")
                 }
@@ -600,11 +723,13 @@ fun AddChainSheet(
             RoomSheetHeader("Add network")
             HostBadge(request.host)
             Spacer(Modifier.height(8.dp))
-            SheetDataRow("Name", proposed.name)
-            SheetDataRow("Chain ID", proposed.chainId)
-            SheetDataRow("Symbol", proposed.nativeSymbol)
-            proposed.rpcUrls.firstOrNull()?.let { SheetDataRow("RPC URL", it) }
-            proposed.explorerUrl?.let { SheetDataRow("Explorer", it) }
+            SheetDetailGroup {
+                SheetDataRow("Name", proposed.name)
+                SheetDataRow("Chain ID", proposed.chainId)
+                SheetDataRow("Symbol", proposed.nativeSymbol)
+                proposed.rpcUrls.firstOrNull()?.let { SheetDataRow("RPC URL", it) }
+                proposed.explorerUrl?.let { SheetDataRow("Explorer", it) }
+            }
             if (proposed.isTestnet) {
                 WalletInfoNote("This network is marked as a testnet.")
             }
@@ -650,12 +775,17 @@ fun WalletDappRequestSheet(
  * Confirm that calls [WalletEngineApi.sendNative]. Errors stay INLINE in the
  * sheet so the typed inputs survive; success hands the hash + explorer URL
  * to [onSent] and closes.
+ *
+ * [initialAccountId] is the account the dashboard shows as active for this
+ * chain: the sheet opens on the same account the user was just looking at,
+ * instead of silently falling back to whichever account happens to be first.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SendSheet(
     engine: WalletEngineApi,
     chainType: ChainType,
+    initialAccountId: String? = null,
     onDismiss: () -> Unit,
     onSent: (hash: String, explorerUrl: String?) -> Unit
 ) {
@@ -664,7 +794,7 @@ fun SendSheet(
     val accounts by engine.accounts.collectAsState()
     val activeNetworks by engine.activeNetworks.collectAsState()
     val chainAccounts = accounts.filter { it.chainType == chainType }
-    var chosenId by remember { mutableStateOf<String?>(null) }
+    var chosenId by remember { mutableStateOf(initialAccountId) }
     val selected = chainAccounts.firstOrNull { it.id == chosenId } ?: chainAccounts.firstOrNull()
     val network = activeNetworks[chainType]
     var to by remember { mutableStateOf("") }
@@ -683,8 +813,9 @@ fun SendSheet(
     val canSubmit = selected != null && network != null && !toBlank && !toInvalid &&
         !amountBlank && !amountInvalid && !sending
 
-    // Fee estimate — debounced restart on every input change; an absent
-    // result simply leaves the "Unavailable" row (offline-tolerant).
+    // Fee estimate — debounced restart on every input change; an absent result
+    // says so in the fee row ("the network did not answer") rather than
+    // leaving a blank the user would read as free.
     LaunchedEffect(selected?.id, network?.id, to, amount) {
         if (selected == null || network == null || toBlank || amountBlank || amountInvalid) {
             fee = null
@@ -708,6 +839,11 @@ fun SendSheet(
             if (network == null) {
                 WalletInfoNote(
                     "No active ${chainType.displayName} network — pick one under Networks first."
+                )
+            }
+            if (chainAccounts.isEmpty()) {
+                WalletInfoNote(
+                    "No ${chainType.displayName} account yet — add one under Add account first."
                 )
             }
             if (chainAccounts.size > 1) {
@@ -756,22 +892,34 @@ fun SendSheet(
                 modifier = Modifier.fillMaxWidth()
             )
             Spacer(Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Fee estimate",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = extras.textSecondary
+            // Network, sender and fee sit together as one "what this
+            // transaction is and what it costs" block — the fee used to be a
+            // bare label/value pair that a user could scroll straight past.
+            SheetDetailGroup {
+                SheetDataRow(
+                    label = "Network",
+                    value = network?.name ?: "No network selected"
                 )
-                Spacer(Modifier.width(8.dp))
+                SheetDataRow(
+                    label = "From",
+                    value = selected?.let { "${it.label} · ${shortenAddress(it.address)}" }
+                        ?: "No account selected"
+                )
                 val currentFee = fee
-                Text(
-                    when {
-                        feeLoading -> "Estimating…"
-                        currentFee != null -> "${currentFee.estimatedCost} (${currentFee.label})"
-                        else -> "Unavailable"
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = extras.textPrimary
+                val feeText = when {
+                    chainAccounts.isEmpty() || network == null -> "Unavailable"
+                    toBlank || amountBlank || amountInvalid -> "Enter an amount to estimate"
+                    feeLoading -> "Estimating…"
+                    currentFee != null -> "${currentFee.estimatedCost} (${currentFee.label})"
+                    else -> "Unavailable — the network did not answer"
+                }
+                // "Unavailable" here is an honest read, not an empty slot:
+                // the estimate could not be fetched, so the user is told that
+                // rather than shown a dash that reads as zero.
+                SheetDataRow(
+                    label = "Fee estimate",
+                    value = feeText,
+                    muted = feeText.startsWith("Unavailable") || feeLoading
                 )
             }
             failure?.let {
@@ -842,20 +990,34 @@ fun SendSheet(
  * Receive: the account picker (when the chain has more than one), the full
  * address, its QR code and a copy button. Addresses are PUBLIC — the copy
  * is a plain clip (no sensitive flag), unlike password copies.
+ *
+ * [initialAccountId] preselects the account the dashboard shows as active for
+ * this chain, so the address on screen is the one the user was just looking
+ * at. The copy button confirms IN PLACE (icon and label both flip for a
+ * moment) because a snackbar at the screen edge is far from the finger that
+ * asked for the copy and easy to miss entirely.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReceiveSheet(
     engine: WalletEngineApi,
     chainType: ChainType,
+    initialAccountId: String? = null,
     onCopyAddress: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     val accounts by engine.accounts.collectAsState()
     val chainAccounts = accounts.filter { it.chainType == chainType }
-    var chosenId by remember { mutableStateOf<String?>(null) }
+    var chosenId by remember { mutableStateOf(initialAccountId) }
     val selected = chainAccounts.firstOrNull { it.id == chosenId } ?: chainAccounts.firstOrNull()
     val address = selected?.address
+    var copied by remember(address) { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1600)
+            copied = false
+        }
+    }
 
     ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
         Column(
@@ -899,14 +1061,20 @@ fun ReceiveSheet(
                 )
                 Spacer(Modifier.height(12.dp))
                 Button(
-                    onClick = { onCopyAddress(address) },
+                    onClick = {
+                        onCopyAddress(address)
+                        copied = true
+                    },
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = 48.dp)
                 ) {
-                    Icon(Icons.Filled.ContentCopy, contentDescription = null)
+                    Icon(
+                        if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
+                        contentDescription = null
+                    )
                     Spacer(Modifier.width(8.dp))
-                    Text("Copy address")
+                    Text(if (copied) "Address copied" else "Copy address")
                 }
                 Spacer(Modifier.height(6.dp))
                 WalletInfoNote(
@@ -1264,7 +1432,14 @@ private fun ChainlistRow(record: NetworkRecord, onChange: (Boolean) -> Unit) {
             .heightIn(min = 48.dp)
             .clip(RoundedCornerShape((extras.radius * 0.7f).dp))
             .clickable { onChange(!record.enabled) }
-            .padding(horizontal = 8.dp, vertical = 6.dp),
+            .padding(horizontal = 8.dp, vertical = 6.dp)
+            // The trailing Switch is display-only (the row is the target), so
+            // it announces nothing on its own — the row carries the state, in
+            // the same words SettingSwitchRow uses.
+            .semantics {
+                contentDescription =
+                    "${record.config.name} network switch, ${if (record.enabled) "on" else "off"}"
+            },
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(Modifier.weight(1f)) {
@@ -1415,19 +1590,13 @@ fun ImportKeySheet(
                     PasswordVisualTransformation()
                 },
                 trailingIcon = {
-                    IconButton(
-                        onClick = { keyVisible = !keyVisible },
-                        modifier = Modifier.semantics {
-                            contentDescription =
-                                if (keyVisible) "Hide private key" else "Show private key"
-                        }
-                    ) {
-                        Icon(
-                            if (keyVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                            contentDescription = null,
-                            tint = extras.icon
-                        )
-                    }
+                    // The shared icon button, so this control carries the same
+                    // tooltip + accessible name as every other icon action.
+                    WalletIconButton(
+                        label = if (keyVisible) "Hide private key" else "Show private key",
+                        icon = if (keyVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                        onClick = { keyVisible = !keyVisible }
+                    )
                 },
                 isError = attempted && keyBlank,
                 supportingText = {

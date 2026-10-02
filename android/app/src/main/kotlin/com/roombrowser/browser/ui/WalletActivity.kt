@@ -9,6 +9,7 @@ import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -31,6 +32,8 @@ import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -39,6 +42,11 @@ import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Language
@@ -47,6 +55,7 @@ import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -58,6 +67,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -70,8 +80,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -88,6 +100,7 @@ import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.theme.BuiltInThemes
 import com.roombrowser.domain.wallet.model.BalanceResult
 import com.roombrowser.domain.wallet.model.ChainType
+import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.security.BiometricGate
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.LocalRoomExtras
@@ -97,6 +110,7 @@ import com.roombrowser.ui.common.RoomCardShape
 import com.roombrowser.ui.common.SectionHeader
 import com.roombrowser.ui.common.SettingActionRow
 import com.roombrowser.ui.common.SettingsGroup
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
@@ -253,6 +267,26 @@ private fun WalletRoot(
         scope.launch { snackbarHostState.showSnackbar(message) }
     }
 
+    // ONE balance-refresh path for the whole screen: the top bar's action and
+    // the dashboard's connection card both drive this one. Two independent
+    // flags would let the top bar look busy while the card claims "offline",
+    // and the card is this screen's single answer to "is the wallet talking
+    // to its chains?" — so the truth lives here, in the one place both read.
+    var refreshing by remember { mutableStateOf(false) }
+    var lastRefreshedAt by remember { mutableStateOf<Long?>(null) }
+    fun refreshBalances() {
+        if (refreshing) return
+        scope.launch {
+            refreshing = true
+            val failure = runCatching { engine.refreshBalances() }.exceptionOrNull()
+            refreshing = false
+            lastRefreshedAt = System.currentTimeMillis()
+            // The card reports a failed READ in place; this only covers the
+            // call itself blowing up (an unbound engine, a dead scope).
+            if (failure != null) onMessage("Balance refresh failed")
+        }
+    }
+
     /** Opens a URL outside the app (explorer links). */
     fun openLink(url: String) {
         val opened = runCatching {
@@ -306,19 +340,11 @@ private fun WalletRoot(
                 },
                 actions = {
                     if (lockState == WalletLockState.UNLOCKED) {
-                        IconButton(
-                            onClick = {
-                                scope.launch {
-                                    runCatching { engine.refreshBalances() }
-                                        .onFailure { onMessage("Balance refresh failed") }
-                                }
-                            },
-                            modifier = Modifier.semantics {
-                                contentDescription = "Refresh balances"
-                            }
-                        ) {
-                            Icon(Icons.Filled.Refresh, contentDescription = null)
-                        }
+                        WalletIconButton(
+                            label = "Refresh balances",
+                            icon = Icons.Filled.Refresh,
+                            onClick = { refreshBalances() }
+                        )
                     }
                 }
             )
@@ -362,7 +388,10 @@ private fun WalletRoot(
                     walletLabel = wallet?.label ?: "Wallet",
                     profileName = profileName,
                     pendingCount = pending.size,
+                    refreshing = refreshing,
+                    lastRefreshedAt = lastRefreshedAt,
                     onMessage = { onMessage(it) },
+                    onRefresh = { refreshBalances() },
                     onSent = { hash, explorerUrl -> onSent(hash, explorerUrl) },
                     onOpenExplorer = { url -> openLink(url) }
                 )
@@ -444,11 +473,18 @@ private fun LockedWalletPane(
 }
 
 /**
- * The unlocked dashboard: header (wallet label + profile), the pending
- * badge, an Accounts / Activity switch, chain-filtered account cards with
- * per-chain Send / Receive, the add-account and network entries, and the
- * local activity list with explorer links. Every sheet open happens in a
- * callback; all lists come straight from the engine's flows.
+ * The unlocked dashboard: the connection card, header (wallet label +
+ * profile), the pending badge, an Accounts / Activity switch, chain-filtered
+ * account cards with per-chain Send / Receive, the add-account and network
+ * entries, and the local activity list with explorer links. Every sheet open
+ * happens in a callback; all lists come straight from the engine's flows.
+ *
+ * THE TWO BITS OF STATE THAT ARE NOT THE ENGINE'S: which account each chain's
+ * Send / Receive acts from, and which address was just copied. The engine
+ * models accounts as a plain list with no "current" one, so the choice is
+ * [activeAccountByChain] here, defaulting to the chain's first account —
+ * exactly what the sheets already defaulted to — and handed to them as a
+ * preselection rather than becoming a second source of truth.
  */
 @Composable
 private fun WalletDashboard(
@@ -456,7 +492,10 @@ private fun WalletDashboard(
     walletLabel: String,
     profileName: String,
     pendingCount: Int,
+    refreshing: Boolean,
+    lastRefreshedAt: Long?,
     onMessage: (String) -> Unit,
+    onRefresh: () -> Unit,
     onSent: (hash: String, explorerUrl: String?) -> Unit,
     onOpenExplorer: (url: String) -> Unit
 ) {
@@ -477,12 +516,34 @@ private fun WalletDashboard(
     var sendChain by remember { mutableStateOf<ChainType?>(null) }
     var receiveChain by remember { mutableStateOf<ChainType?>(null) }
     var backupOpen by remember { mutableStateOf(false) }
+    var activeAccountByChain by remember { mutableStateOf<Map<ChainType, String>>(emptyMap()) }
+    // The address the user just copied, so the card that was tapped can
+    // confirm the copy AT the tap: a snackbar alone lands at the far bottom
+    // of the screen, seconds after the finger moved.
+    var copiedAddress by remember { mutableStateOf<String?>(null) }
 
-    // Populate balances once per dashboard entry (offline-tolerant: absent
-    // balances simply render as "—").
-    LaunchedEffect(Unit) {
-        runCatching { engine.refreshBalances() }
+    /** The account a chain's Send / Receive acts from (its first, by default). */
+    fun activeAccountOf(chain: ChainType): WalletAccountRecord? =
+        accounts.firstOrNull { it.id == activeAccountByChain[chain] }
+            ?: accounts.firstOrNull { it.chainType == chain }
+
+    fun copyAddressWithFeedback(address: String) {
+        // Addresses are public — a plain clip (no sensitive flag).
+        copyAddress(context, address)
+        copiedAddress = address
+        onMessage("Address copied — ${shortenAddress(address)}")
     }
+
+    LaunchedEffect(copiedAddress) {
+        if (copiedAddress != null) {
+            delay(1600)
+            copiedAddress = null
+        }
+    }
+
+    // Populate balances once per dashboard entry (offline-tolerant: a read
+    // that fails renders as that account's own error state).
+    LaunchedEffect(Unit) { onRefresh() }
 
     Column(
         Modifier
@@ -531,6 +592,20 @@ private fun WalletDashboard(
                     }
                 }
             }
+        }
+        // Connection first: before any balance is read, the user should know
+        // whether the reads are working at all. With no accounts there is
+        // nothing to be connected to, and the accounts empty state says so.
+        if (accounts.isNotEmpty()) {
+            WalletConnectionCard(
+                accounts = accounts,
+                balances = balances,
+                activeNetworks = activeNetworks,
+                refreshing = refreshing,
+                lastRefreshedAt = lastRefreshedAt,
+                onRetry = onRefresh,
+                onOpenNetwork = { chain -> networkPickerChain = chain }
+            )
         }
         // Pending badge: the FIRST pending request's sheet is already up;
         // this only announces the queue behind it.
@@ -581,30 +656,38 @@ private fun WalletDashboard(
             val visibleAccounts = accounts.filter { account ->
                 chainFilter == null || account.chainType == chainFilter
             }
-            if (visibleAccounts.isEmpty()) {
-                // Local capture: delegated state can't be smart-cast.
-                val filter = chainFilter
-                if (filter == null) {
-                    EmptyState(
-                        "No accounts yet",
-                        "Accounts appear here once you add one for a chain."
+            // Local capture: delegated state can't be smart-cast.
+            val filter = chainFilter
+            val chains = ChainType.entries.filter { chain ->
+                visibleAccounts.any { it.chainType == chain }
+            }
+            when {
+                chains.isNotEmpty() -> chains.forEach { chain ->
+                    val chainAccounts = visibleAccounts.filter { it.chainType == chain }
+                    val active = activeAccountOf(chain)
+                    val networkName = activeNetworks[chain]?.name
+                    // The header names the NETWORK, not just the chain: which
+                    // chain an address lives on is a property of its format,
+                    // but which network it is being read and spent on is a
+                    // choice — and it is the one that decides fees and
+                    // whether the balance is real money.
+                    SectionHeader(
+                        if (networkName == null) chain.displayName
+                        else "${chain.displayName} · $networkName"
                     )
-                } else {
-                    EmptyState(
-                        "No ${filter.displayName} accounts",
-                        "Switch the chain filter or add an account."
-                    )
-                }
-            } else {
-                val chains = ChainType.entries.filter { chain ->
-                    visibleAccounts.any { it.chainType == chain }
-                }
-                chains.forEach { chain ->
-                    SectionHeader(chain.displayName)
-                    visibleAccounts.filter { it.chainType == chain }.forEach { account ->
+                    chainAccounts.forEach { account ->
                         WalletAccountCard(
                             account = account,
-                            balance = balances[account.id]
+                            balance = balances[account.id],
+                            checking = refreshing,
+                            selectable = chainAccounts.size > 1,
+                            isActive = active?.id == account.id,
+                            copied = copiedAddress == account.address,
+                            onSelect = {
+                                activeAccountByChain =
+                                    activeAccountByChain + (chain to account.id)
+                            },
+                            onCopy = { copyAddressWithFeedback(account.address) }
                         )
                     }
                     Row(
@@ -631,31 +714,59 @@ private fun WalletDashboard(
                         ) { Text("Receive") }
                     }
                 }
-                SectionHeader("Manage")
-                SettingsGroup {
-                    SettingActionRow(
-                        title = "Add account",
-                        subtitle = "Derive a new account or import a private key",
-                        leadingIcon = Icons.Filled.Add,
-                        onClick = { addAccountOpen = true }
-                    )
-                    // The wallet outlives the phone only if its keys are
-                    // written down somewhere else. Onboarding offers this at
-                    // the reveal; this is the same export for a wallet that
-                    // was created before the user thought about it.
-                    SettingActionRow(
-                        title = "Export wallet keys",
-                        subtitle = "Recovery phrase and imported keys, sealed with a password",
-                        leadingIcon = Icons.Filled.FileDownload,
-                        onClick = { backupOpen = true }
-                    )
-                }
+                // No account can be shown yet, and the reason matters: before
+                // the first read lands, "No accounts yet" would tell a user
+                // with accounts that they have none.
+                accounts.isEmpty() && (refreshing || lastRefreshedAt == null) ->
+                    WalletAccountsLoading()
+                filter == null -> EmptyState(
+                    "No accounts yet",
+                    "Use Add account below to derive one from this wallet's recovery " +
+                        "phrase, or to import a private key."
+                )
+                else -> EmptyState(
+                    "No ${filter.displayName} accounts",
+                    "Switch the chain filter above, or add a ${filter.displayName} " +
+                        "account below."
+                )
+            }
+            // Manage and Networks render even with NO accounts, and outside the
+            // chain-filter branch: the empty state above tells the user to add
+            // an account, but the section holding that entry used to live
+            // inside the non-empty branch — so a wallet with nothing in it
+            // offered no way to put anything in.
+            SectionHeader("Manage")
+            SettingsGroup {
+                SettingActionRow(
+                    title = "Add account",
+                    subtitle = "Derive a new account or import a private key",
+                    leadingIcon = Icons.Filled.Add,
+                    onClick = { addAccountOpen = true }
+                )
+                // The wallet outlives the phone only if its keys are
+                // written down somewhere else. Onboarding offers this at
+                // the reveal; this is the same export for a wallet that
+                // was created before the user thought about it.
+                SettingActionRow(
+                    title = "Export wallet keys",
+                    subtitle = "Recovery phrase and imported keys, sealed with a password",
+                    leadingIcon = Icons.Filled.FileDownload,
+                    onClick = { backupOpen = true }
+                )
+            }
+            // Every chain this wallet actually holds an account on, plus any
+            // chain with a selected network — never a filtered view, because
+            // a network is set per chain, not per account.
+            val networkChains = ChainType.entries.filter { chain ->
+                accounts.any { it.chainType == chain } || activeNetworks.containsKey(chain)
+            }
+            if (networkChains.isNotEmpty()) {
                 SectionHeader("Networks")
-                chains.forEach { chain ->
+                networkChains.forEach { chain ->
                     SettingsGroup {
                         SettingActionRow(
                             title = "${chain.displayName} network",
-                            value = activeNetworks[chain]?.name ?: "—",
+                            value = activeNetworks[chain]?.name ?: "None selected",
                             leadingIcon = Icons.Filled.Language,
                             onClick = { networkPickerChain = chain }
                         )
@@ -730,6 +841,9 @@ private fun WalletDashboard(
         SendSheet(
             engine = engine,
             chainType = chain,
+            // The dashboard's active account for this chain is the sheet's
+            // starting point; the picker inside can still change it.
+            initialAccountId = activeAccountOf(chain)?.id,
             onDismiss = { sendChain = null },
             onSent = { hash, explorerUrl -> onSent(hash, explorerUrl) }
         )
@@ -738,11 +852,8 @@ private fun WalletDashboard(
         ReceiveSheet(
             engine = engine,
             chainType = chain,
-            onCopyAddress = { address ->
-                // Addresses are public — a plain clip (no sensitive flag).
-                copyAddress(context, address)
-                onMessage("Address copied")
-            },
+            initialAccountId = activeAccountOf(chain)?.id,
+            onCopyAddress = { address -> copyAddressWithFeedback(address) },
             onDismiss = { receiveChain = null }
         )
     }
@@ -761,14 +872,24 @@ private fun WalletDashboard(
 }
 
 /**
- * One account: label, shortened address, balance from the engine's
- * `balances` map (keyed by account id). "—" while absent; a balance error
- * renders small under the identity block.
+ * One account: label, address, its balance state, and the two actions that
+ * belong to the identity itself — copy the address, and (only when the chain
+ * holds more than one account) make this the account Send / Receive act from.
+ *
+ * The balance is never a bare "—": a read still in flight spins, a read that
+ * failed says so in place, and only a real value reads as one. "—" used to
+ * stand for all three, which is how a failed read passed for a zero balance.
  */
 @Composable
 private fun WalletAccountCard(
     account: WalletAccountRecord,
-    balance: BalanceResult?
+    balance: BalanceResult?,
+    checking: Boolean,
+    selectable: Boolean,
+    isActive: Boolean,
+    copied: Boolean,
+    onSelect: () -> Unit,
+    onCopy: () -> Unit
 ) {
     val extras = LocalRoomExtras.current
     RoomCard(
@@ -778,7 +899,26 @@ private fun WalletAccountCard(
         withGradient = false
     ) {
         Row(
-            Modifier.padding(start = 12.dp, top = 10.dp, end = 12.dp, bottom = 10.dp),
+            Modifier
+                .fillMaxWidth()
+                .then(
+                    if (selectable) {
+                        // selectable, not clickable: the point of the tap is
+                        // WHICH account is chosen, and a screen reader has to
+                        // hear that as a selection, not as an action.
+                        Modifier.selectable(
+                            selected = isActive,
+                            role = Role.RadioButton,
+                            onClick = onSelect
+                        )
+                    } else {
+                        Modifier
+                    }
+                )
+                // Read as one statement ("EVM 1, 0x1234…abcd, 1.25 ETH"); the
+                // copy button keeps its own node, since it is its own action.
+                .semantics(mergeDescendants = true) {}
+                .padding(start = 12.dp, top = 10.dp, end = 4.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
@@ -797,13 +937,24 @@ private fun WalletAccountCard(
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(
-                    account.label.ifBlank { account.chainType.displayName },
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = extras.textPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        account.label.ifBlank { account.chainType.displayName },
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = extras.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (selectable && isActive) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Active",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = extras.primary
+                        )
+                    }
+                }
                 Text(
                     shortenAddress(account.address),
                     style = MaterialTheme.typography.labelMedium,
@@ -820,15 +971,295 @@ private fun WalletAccountCard(
                     )
                 }
             }
-            Text(
-                when (val current = balance) {
-                    is BalanceResult.Ok -> "${current.amount} ${current.symbol}"
-                    else -> "—"
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = extras.textPrimary
-            )
+            Column(horizontalAlignment = Alignment.End) {
+                AccountBalance(balance = balance, checking = checking)
+                WalletIconButton(
+                    label = if (copied) "Address copied" else "Copy address",
+                    icon = if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
+                    tint = if (copied) extras.primary else extras.icon,
+                    onClick = onCopy
+                )
+            }
         }
+    }
+}
+
+/**
+ * The balance slot: a real value, a spinner while the read is in flight, or an
+ * honest word for one that failed or has not run. The account's own error text
+ * (rendered under its address) names WHAT failed; this only avoids pretending
+ * the answer was zero.
+ */
+@Composable
+private fun AccountBalance(balance: BalanceResult?, checking: Boolean) {
+    val extras = LocalRoomExtras.current
+    when {
+        balance is BalanceResult.Ok -> Text(
+            "${balance.amount} ${balance.symbol}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = extras.textPrimary
+        )
+        balance is BalanceResult.Error -> Text(
+            "Unavailable",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.error
+        )
+        checking -> CircularProgressIndicator(
+            modifier = Modifier
+                .size(16.dp)
+                .semantics { contentDescription = "Checking balance" },
+            strokeWidth = 2.dp,
+            color = extras.primary
+        )
+        else -> Text(
+            "Not loaded",
+            style = MaterialTheme.typography.labelSmall,
+            color = extras.textSecondary
+        )
+    }
+}
+
+/**
+ * How the wallet's chain reads are doing after the last balance pass. The
+ * engine exposes no connectivity flag, and a per-account failure arrives as
+ * [BalanceResult.Error] — so the split between SOME reads failing and ALL of
+ * them failing is what separates a flaky endpoint from being offline.
+ */
+private enum class WalletConnection { CHECKING, ONLINE, PARTIAL, OFFLINE }
+
+/** Per-chain read health, for the dot beside a network name. */
+private enum class ChainReach { REACHABLE, PARTIAL, UNREACHABLE, UNKNOWN }
+
+private fun connectionState(
+    accounts: List<WalletAccountRecord>,
+    balances: Map<String, BalanceResult>,
+    refreshing: Boolean
+): WalletConnection {
+    val known = accounts.mapNotNull { balances[it.id] }
+    // Nothing has ever come back: the first pass is still running.
+    if (known.isEmpty()) return WalletConnection.CHECKING
+    val failed = known.count { it is BalanceResult.Error }
+    return when {
+        failed == known.size -> WalletConnection.OFFLINE
+        failed > 0 || refreshing -> WalletConnection.PARTIAL
+        else -> WalletConnection.ONLINE
+    }
+}
+
+private fun chainReach(
+    chainAccounts: List<WalletAccountRecord>,
+    balances: Map<String, BalanceResult>
+): ChainReach {
+    val known = chainAccounts.mapNotNull { balances[it.id] }
+    if (known.isEmpty()) return ChainReach.UNKNOWN
+    val failed = known.count { it is BalanceResult.Error }
+    return when {
+        failed == 0 -> ChainReach.REACHABLE
+        failed == known.size -> ChainReach.UNREACHABLE
+        else -> ChainReach.PARTIAL
+    }
+}
+
+private fun reachLabel(reach: ChainReach): String = when (reach) {
+    ChainReach.REACHABLE -> "Reachable"
+    ChainReach.PARTIAL -> "Partial"
+    ChainReach.UNREACHABLE -> "Unreachable"
+    ChainReach.UNKNOWN -> "Checking…"
+}
+
+/** Dot / label colour for a chain's read health — theme accent and theme error only. */
+@Composable
+private fun reachColor(reach: ChainReach): Color {
+    val extras = LocalRoomExtras.current
+    return when (reach) {
+        ChainReach.REACHABLE -> extras.primary
+        ChainReach.PARTIAL, ChainReach.UNKNOWN -> extras.textSecondary
+        ChainReach.UNREACHABLE -> MaterialTheme.colorScheme.error
+    }
+}
+
+/**
+ * The screen's single answer to "is this wallet talking to its chains?".
+ *
+ * A failed balance read used to be one small line inside one account card plus
+ * a snackbar that had already faded — easy to miss, and a missed read is
+ * indistinguishable from an empty wallet. This states the connection first,
+ * then names each chain's active network and whether the last read from that
+ * chain worked. Each row opens the network picker: "which network, and is it
+ * reachable" is only useful if the answer can be changed from where it is read.
+ */
+@Composable
+private fun WalletConnectionCard(
+    accounts: List<WalletAccountRecord>,
+    balances: Map<String, BalanceResult>,
+    activeNetworks: Map<ChainType, NetworkConfig>,
+    refreshing: Boolean,
+    lastRefreshedAt: Long?,
+    onRetry: () -> Unit,
+    onOpenNetwork: (ChainType) -> Unit
+) {
+    val extras = LocalRoomExtras.current
+    val state = connectionState(accounts, balances, refreshing)
+    val chains = ChainType.entries.filter { chain -> accounts.any { it.chainType == chain } }
+    val updated = lastRefreshedAt?.let { " · Updated ${formatClock(it)}" }.orEmpty()
+    val title = when (state) {
+        WalletConnection.CHECKING -> "Checking balances…"
+        WalletConnection.ONLINE -> "Connected"
+        WalletConnection.PARTIAL -> "Some balances unavailable"
+        WalletConnection.OFFLINE -> "Offline"
+    }
+    val detail = when (state) {
+        WalletConnection.CHECKING -> "Asking each chain for the current balance."
+        WalletConnection.ONLINE -> "Every chain answered the last balance check.$updated"
+        WalletConnection.PARTIAL ->
+            "At least one chain did not answer. Funds are unaffected — retry to refresh."
+        // Deliberately explicit: "offline" must not read as "your money is
+        // gone". The keys and the chain state are untouched; only the view is.
+        WalletConnection.OFFLINE ->
+            "No chain answered the last check. Your keys and funds are unaffected — " +
+                "the balances are simply unknown right now."
+    }
+    val accent = when (state) {
+        WalletConnection.CHECKING, WalletConnection.PARTIAL -> extras.textSecondary
+        WalletConnection.ONLINE -> extras.primary
+        WalletConnection.OFFLINE -> MaterialTheme.colorScheme.error
+    }
+    val retryable = state == WalletConnection.OFFLINE || state == WalletConnection.PARTIAL
+
+    RoomCard(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        withGradient = false
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(38.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(accent.copy(alpha = 0.14f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (state == WalletConnection.CHECKING) {
+                        CircularProgressIndicator(
+                            modifier = Modifier
+                                .size(18.dp)
+                                .semantics { contentDescription = "Checking balances" },
+                            strokeWidth = 2.dp,
+                            color = accent
+                        )
+                    } else {
+                        Icon(
+                            when (state) {
+                                WalletConnection.ONLINE -> Icons.Filled.CloudDone
+                                WalletConnection.PARTIAL -> Icons.Filled.Cloud
+                                else -> Icons.Filled.CloudOff
+                            },
+                            contentDescription = null,
+                            tint = accent,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = extras.textPrimary
+                    )
+                    Text(
+                        detail,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = extras.textSecondary
+                    )
+                }
+                if (retryable) {
+                    TextButton(
+                        onClick = onRetry,
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) { Text("Retry") }
+                }
+            }
+            if (chains.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(extras.border.copy(alpha = 0.5f))
+                )
+                chains.forEach { chain ->
+                    val reach = chainReach(accounts.filter { it.chainType == chain }, balances)
+                    val networkName = activeNetworks[chain]?.name
+                    val statusColor = reachColor(reach)
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .clickable(onClickLabel = "Change network") {
+                                onOpenNetwork(chain)
+                            }
+                            // One node for the whole row, so a screen reader
+                            // reads the chain, its network and the outcome of
+                            // the last read as the one statement they are.
+                            .semantics(mergeDescendants = true) {},
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(statusColor)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "${chain.displayName} · ${networkName ?: "No network selected"}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = extras.textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            reachLabel(reach),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = statusColor
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The accounts list before its first read lands. Rendering the empty state
+ * here would tell a user who HAS accounts that they have none.
+ */
+@Composable
+private fun WalletAccountsLoading() {
+    val extras = LocalRoomExtras.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier
+                .size(18.dp)
+                .semantics { contentDescription = "Checking accounts" },
+            strokeWidth = 2.dp,
+            color = extras.primary
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            "Checking your accounts…",
+            style = MaterialTheme.typography.bodyMedium,
+            color = extras.textSecondary
+        )
     }
 }
 
@@ -898,14 +1329,11 @@ private fun WalletActivityRow(
                 }
             }
             record.explorerUrl?.let { url ->
-                IconButton(
-                    onClick = { onOpenExplorer(url) },
-                    modifier = Modifier.semantics {
-                        contentDescription = "View on explorer"
-                    }
-                ) {
-                    Icon(Icons.Filled.Public, contentDescription = null, tint = extras.icon)
-                }
+                WalletIconButton(
+                    label = "View on explorer",
+                    icon = Icons.Filled.Public,
+                    onClick = { onOpenExplorer(url) }
+                )
             }
         }
     }
@@ -922,6 +1350,10 @@ private fun activityKindIcon(kind: WalletActivityRecord.Kind): ImageVector = whe
 /** Locale-aware short date + time for activity rows. */
 private fun formatTime(epochMillis: Long): String =
     DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(epochMillis))
+
+/** Clock time of the last balance pass, for the connection card's "Updated …". */
+private fun formatClock(epochMillis: Long): String =
+    DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(epochMillis))
 
 /**
  * Places an address on the clipboard. Addresses are PUBLIC identity
