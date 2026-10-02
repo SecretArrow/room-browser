@@ -4,8 +4,35 @@ on:
   push:
     branches: [ main ]
     tags: [ 'v*' ]
+    # A documentation-only push cannot change a byte of the APK, so it skips
+    # the pipeline instead of spending ~40 minutes to publish an identical
+    # build under a new version number.
+    #
+    # Three things make this safe rather than merely cheap:
+    #
+    #   * A push is skipped only when EVERY changed file matches. Touch one
+    #     Kotlin file alongside the docs and the full pipeline still runs.
+    #   * Tags are unaffected: "Path filters are not evaluated for pushes of
+    #     tags", so a `v*` release never skips, whatever its commit holds.
+    #   * .github/** is deliberately absent from this list. A change to the
+    #     pipeline must be validated by the pipeline.
+    #
+    # Both Markdown spellings are listed on purpose. '**.md' is the form
+    # GitHub's own examples use and matches at any depth including the repo
+    # root; '**/*.md' is kept alongside it because a leading '**/' is read by
+    # some glob engines as requiring a directory segment, which would miss
+    # README.md at the root -- exactly the file this is for. paths-ignore is
+    # a union, so the overlap costs nothing.
+    paths-ignore:
+      - '**.md'
+      - '**/*.md'
+      - '.gitignore'
   pull_request:
     branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - '**/*.md'
+      - '.gitignore'
   workflow_dispatch:
 
 permissions:
