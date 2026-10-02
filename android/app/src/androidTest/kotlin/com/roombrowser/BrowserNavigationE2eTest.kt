@@ -242,6 +242,7 @@ class BrowserNavigationE2eTest {
             "'ROOM-E2E-PAGE-TWO'" to By.text("ROOM-E2E-PAGE-TWO"),
             "'Goto page 2' link" to By.text("Goto page 2"),
             "'Go back' button" to By.desc("Go back"),
+            "'Wallet' button" to By.desc("Wallet"),
             "'Go forward' button" to By.desc("Go forward"),
             "'Reload page' button" to By.desc("Reload page"),
             "'Exit Room Browser?' dialog" to By.text("Exit Room Browser?"),
@@ -625,6 +626,46 @@ class BrowserNavigationE2eTest {
         assertLoaded("A second launch must open its URL", "relaunch-2-url-dropped") {
             hasText("ROOM-E2E-PAGE-TWO", 20_000)
         }
+    }
+
+    /**
+     * The bottom bar's fifth slot is the WALLET, and Share did not leave the
+     * app with it.
+     *
+     * Two separate regressions are worth pinning here. The wallet used to be
+     * reachable only from Browser settings, so a swap that quietly dropped the
+     * button would put it back behind three taps with nothing failing. And
+     * since "Share page" left the bar, its Page Actions row is now the ONLY
+     * way to share a link — deleting that row as dead code would remove the
+     * feature, and nothing else asserts it.
+     */
+    @Test
+    fun the_bottom_bar_opens_the_wallet_and_share_survived_the_move() {
+        val base = server.url("/").toString().trimEnd('/')
+        assertTrue("Engine must be reachable from the launcher", openEngineFromLauncher())
+        assertLoaded("Page ONE must load first", "wallet-slot-page-one-missing") {
+            openEngineAt("$base/page1")
+        }
+
+        assertTrue(
+            "The bottom bar must offer the wallet\n${uiTree()}",
+            device.wait(Until.hasObject(By.desc("Wallet")), 10_000)
+        )
+        assertTrue(
+            "Sharing must not also still occupy a bottom-bar slot\n${uiTree()}",
+            device.findObjects(By.desc("Share page")).isEmpty()
+        )
+
+        // The sheet takes the active window, so this must be asserted against
+        // the sheet's own tree, after it is up.
+        assertTrue(
+            "Page Actions must open\n${uiTree()}",
+            clickDesc("Page actions and settings", 10_000)
+        )
+        assertTrue(
+            "Sharing a link must still be reachable from Page Actions\n${uiTree()}",
+            device.wait(Until.hasObject(By.text("Share")), 10_000)
+        )
     }
 
     /**

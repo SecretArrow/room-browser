@@ -29,6 +29,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
@@ -99,7 +100,7 @@ import kotlinx.coroutines.launch
  * tab-count badge) + the redesigned action sheets. All colors follow the
  * per-profile theme.
  *
- * Brave-style navigation bar: Back / Forward / Refresh / Tabs / Share /
+ * Brave-style navigation bar: Back / Forward / Refresh / Tabs / Wallet /
  * More — 6 × 48dp touch targets (288dp) + 2×10dp outer + 2×6dp inner
  * padding = exactly 320dp, the smallest common screen width; 360dp
  * screens get comfortable ~8dp gaps between buttons. Bookmarks and
@@ -198,20 +199,26 @@ fun BrowserBottomBar(
                     }
                 }
             }
+            // The wallet, which used to be buried under Settings. Sharing did
+            // not lose its slot: the Page Actions sheet still has a Share row,
+            // and a bar this wide has to spend its six targets on the things a
+            // user reaches for mid-page rather than on one already one tap
+            // away. The wallet has no other entry point.
             IconButton(
                 onClick = {
-                    val url = viewModel.pageState.url
-                    if (url != "about:home") {
-                        val share = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_TEXT, url)
-                        }
-                        context.startActivity(Intent.createChooser(share, "Share link"))
-                    }
+                    WalletActivity.launch(
+                        context,
+                        profileId = viewModel.profileId.value,
+                        profileName = viewModel.profile.name
+                    )
                 },
-                modifier = Modifier.semantics { contentDescription = "Share page" }
+                modifier = Modifier.semantics { contentDescription = "Wallet" }
             ) {
-                Icon(Icons.Filled.Share, contentDescription = null, tint = extras.icon)
+                Icon(
+                    Icons.Filled.AccountBalanceWallet,
+                    contentDescription = null,
+                    tint = extras.icon
+                )
             }
             IconButton(
                 onClick = onShowPageActions,
