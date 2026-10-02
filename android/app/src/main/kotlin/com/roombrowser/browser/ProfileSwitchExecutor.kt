@@ -7,14 +7,11 @@ import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.webkit.WebView
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.profile.ProfileSwitchStateMachine
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.File
 
 /**
  * Executes the profile-switch security protocol (spec section 48) against
@@ -53,23 +50,55 @@ class ProfileSwitchExecutor(
         val restartActivityClass: Class<*>
     }
 
-    fun switch(from: ProfileId, to: ProfileId, restartIntentExtras: Intent.() -> Unit, host: Host) {
+    /**
+     * Runs the protocol and restarts the process bound to [to].
+     *
+     * [scope] is the CALLER's scope (the activity's `lifecycleScope`) on
+     * purpose. This used to allocate `CoroutineScope(Dispatchers.Main.immediate)`
+     * per switch and never cancel it, so the coroutine — which captures [host],
+     * and through it the Activity and its ViewModel — stayed rooted for as long
+     * as it ran, with no owner able to stop it.
+     *
+     * [onFailed] is how an aborted switch becomes visible. [runStep] rethrows,
+     * and a throw out of a bare `launch` is an UNCAUGHT exception: it killed
+     * the ':browser' process before [scheduleRestart] had run, so a switch that
+     * failed at any step left a dead engine with no restart scheduled and no
+     * message. Now the throw is caught, the process is left alive on the old
+     * profile — which the state machine has already rolled back to — and the
+     * caller gets to re-enable its UI and say so.
+     */
+    fun switch(
+        from: ProfileId,
+        to: ProfileId,
+        restartIntentExtras: Intent.() -> Unit,
+        host: Host,
+        scope: CoroutineScope,
+        onFailed: (Throwable) -> Unit = {}
+    ) {
         check(stateMachine.snapshot().state == ProfileSwitchStateMachine.State.IDLE) {
             "A profile switch is already in progress"
         }
-        val scope = CoroutineScope(Dispatchers.Main.immediate)
         scope.launch {
-            stateMachine.onEvent(ProfileSwitchStateMachine.Event.Begin(from, to))
+            try {
+                stateMachine.onEvent(ProfileSwitchStateMachine.Event.Begin(from, to))
 
-            runStep(ProfileSwitchStateMachine.Step.STOP_NAVIGATION) { host.stopNavigation() }
-            runStep(ProfileSwitchStateMachine.Step.SAVE_TAB_STATE) { host.saveTabState() }
-            runStep(ProfileSwitchStateMachine.Step.DESTROY_BROWSER_CONTEXT) { host.destroyBrowserContext() }
-            runStep(ProfileSwitchStateMachine.Step.FLUSH_PROFILE_STATE) { host.flushProfileState() }
-            runStep(ProfileSwitchStateMachine.Step.RELEASE_PROFILE_RESOURCES) { host.releaseProfileResources() }
+                runStep(ProfileSwitchStateMachine.Step.STOP_NAVIGATION) { host.stopNavigation() }
+                runStep(ProfileSwitchStateMachine.Step.SAVE_TAB_STATE) { host.saveTabState() }
+                runStep(ProfileSwitchStateMachine.Step.DESTROY_BROWSER_CONTEXT) { host.destroyBrowserContext() }
+                runStep(ProfileSwitchStateMachine.Step.FLUSH_PROFILE_STATE) { host.flushProfileState() }
+                runStep(ProfileSwitchStateMachine.Step.RELEASE_PROFILE_RESOURCES) { host.releaseProfileResources() }
 
-            // Steps 6-7 (load new profile + restore its tabs) happen AFTER the restart
-            scheduleRestart(host, to, restartIntentExtras)
-            terminateProcess()
+                // Steps 6-7 (load new profile + restore its tabs) happen AFTER
+                // the restart. The kill is LAST and only on this path: a
+                // scheduleRestart that threw must never be followed by a
+                // process kill with no relaunch scheduled.
+                scheduleRestart(host, to, restartIntentExtras)
+                terminateProcess()
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                onFailed(t)
+            }
         }
     }
 
@@ -123,17 +152,13 @@ class ProfileSwitchExecutor(
         )
         val alarm = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val triggerAt = SystemClock.elapsedRealtime() + RESTART_DELAY_MS
-        runCatching {
-            // WAKEUP (matching BrowserActivity.scheduleSelfRestart): the
-            // process dies immediately after this call — only the alarm can
-            // relaunch the engine, so it must fire even if the device dozes
-            // mid-switch (the CI emulator deferred the non-wakeup variant
-            // by ~5 s while idle).
-            alarm.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pending)
-        }.onFailure {
-            // Fallback for devices that restrict exact alarms
-            alarm.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pending)
-        }
+        // WAKEUP (matching BrowserActivity.scheduleSelfRestart): the process
+        // dies immediately after this call — only the alarm can relaunch the
+        // engine, so it must fire even if the device dozes mid-switch (the CI
+        // emulator deferred the non-wakeup variant by ~5 s while idle).
+        // See [scheduleEngineRestart] for why this is not a bare
+        // setExactAndAllowWhileIdle.
+        alarm.scheduleEngineRestart(triggerAt, pending)
     }
 
     /**

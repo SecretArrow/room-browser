@@ -70,13 +70,34 @@ object ProfileEngine {
      */
     private val walletScripts = java.util.WeakHashMap<WebView, ScriptHandler>()
 
-    /** WebView package name for the diagnostics screen. */
-    fun engineName(context: Context): String = runCatching {
+    /**
+     * WebView package name + version for the diagnostics screen.
+     *
+     * [WebView.getCurrentWebViewPackage] is asked FIRST because it names the
+     * provider this process is actually rendering with, which is the only
+     * answer a diagnostics screen wants; probing package names can only ever
+     * report what is installed. The probe chain remains as a fallback for the
+     * pre-provider-selection window and for vendor builds that return null.
+     *
+     * The old chain was `pm.getPackageInfo(a) ?: pm.getPackageInfo(b)`, which
+     * could never reach `b`: `getPackageInfo` signals "not installed" by
+     * throwing [android.content.pm.PackageManager.NameNotFoundException], not
+     * by returning null, so the elvis was dead and the throw unwound to
+     * `getOrDefault`. On an AOSP device carrying only `com.android.webview`
+     * the screen therefore showed the bare "Android WebView" placeholder.
+     */
+    fun engineName(context: Context): String {
+        runCatching { WebView.getCurrentWebViewPackage() }.getOrNull()?.let { info ->
+            return "${info.packageName} ${info.versionName ?: "?"}"
+        }
         val pm = context.packageManager
-        val info = pm.getPackageInfo("com.google.android.webview", 0)
-            ?: pm.getPackageInfo("com.android.webview", 0)
-        "${info.packageName} ${info.versionName}"
-    }.getOrDefault("Android WebView")
+        listOf("com.google.android.webview", "com.android.webview").forEach { name ->
+            runCatching { pm.getPackageInfo(name, 0) }.getOrNull()?.let { info ->
+                return "${info.packageName} ${info.versionName ?: "?"}"
+            }
+        }
+        return "Android WebView"
+    }
 
     /** A WebView-provider package installed on this device (diagnostics). */
     data class EngineOption(val packageName: String, val versionName: String, val isCurrent: Boolean)
@@ -385,7 +406,22 @@ object ProfileEngine {
         WebStorage.getInstance().deleteAllData()
         WebViewDatabase.getInstance(context).clearHttpAuthUsernamePassword()
         WebViewDatabase.getInstance(context).clearFormData()
-        runCatching { WebView(context).clearCache(true) } // best effort; dirs wiped below too
+        // clearCache(true) is an instance method that wipes the whole
+        // per-suffix HTTP cache, so a throwaway WebView is the only way to ask
+        // for it here — but it has to be DESTROYED again. Without destroy()
+        // every clear-browsing-data and profile-delete run left an undestroyed
+        // WebView behind, each holding a renderer binding and this Context
+        // until the GC happened to collect it. The line itself has to stay:
+        // [wipeWebViewDirs] is a SEPARATE entry point that neither caller of
+        // this function runs, so nothing else clears the cache on this path.
+        runCatching {
+            val scratch = WebView(context)
+            try {
+                scratch.clearCache(true)
+            } finally {
+                scratch.destroy()
+            }
+        }
     }
 
     /** Wipe the profile's WebView data directories from disk (belt & braces). */

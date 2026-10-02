@@ -81,6 +81,22 @@ class DownloadEngine(
         var current: DownloadEngine? = null
             private set
 
+        /**
+         * Clears a progress notification that nothing is behind any more.
+         *
+         * The progress notification is `setOngoing(true)`, which makes it
+         * non-dismissible by design — the user should not be able to swipe
+         * away a running transfer. When the engine process is killed mid
+         * transfer that same flag turns it into litter the user has no way to
+         * remove, with Pause and Cancel buttons that cannot do anything.
+         * [DownloadActionReceiver] calls this when it finds no live engine.
+         */
+        fun dismissOrphanedNotification(context: Context, id: Long) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                ?: return
+            runCatching { nm.cancel(NOTIF_TAG, id.toInt()) }
+        }
+
         /** RFC 6266-ish filename extraction used by WebView download events. */
         fun guessFileName(url: String, contentDisposition: String?, mimeType: String): String {
             val fromDisposition = contentDisposition?.let { disposition ->

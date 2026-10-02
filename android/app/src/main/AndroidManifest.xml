@@ -27,6 +27,22 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.fingerprint" android:required="false" />
 
+    <!--
+      Package visibility (API 30+). Without this the WebView-provider probe in
+      ProfileEngine.installedWebViewEngines() throws NameNotFoundException for
+      every candidate, so the Settings -> Engine list could only ever show the
+      single active provider. Read-only diagnostics: we ask about these five
+      packages by name rather than holding QUERY_ALL_PACKAGES.
+    -->
+    <queries>
+        <package android:name="com.google.android.webview" />
+        <package android:name="com.android.webview" />
+        <package android:name="com.chrome.beta" />
+        <package android:name="com.chrome.dev" />
+        <package android:name="com.android.chrome" />
+    </queries>
+
+
     <application
         android:name=".RoomBrowserApp"
         android:allowBackup="false"
@@ -41,10 +57,29 @@
         android:theme="@style/Theme.RoomBrowser"
         tools:targetApi="35">
 
+        <!--
+          allowBackup="false" is the operative setting: this app holds wallet
+          keys and a password vault, so nothing leaves the device through
+          backup. The two rule files below are therefore INERT today and are
+          kept only as defence in depth, so that re-enabling backup can never
+          silently ship the sensitive directories. usesCleartextTraffic="true"
+          is required of a browser — it must be able to load http:// pages the
+          user navigates to; the wallet's own RPC endpoints are separately
+          restricted to https:// in WalletEngine.isValidNetworkConfig.
+        -->
+
         <!-- Launcher + default browser candidate: profile picker / profile chooser -->
+        <!--
+          singleTask: this activity overrides onNewIntent to route an incoming
+          VIEW/SEND intent into the live profile chooser. Under the default
+          "standard" launch mode that override is dead code — every shared URL
+          would stack a second MainActivity (and a second MainViewModel) on the
+          task instead.
+        -->
         <activity
             android:name=".main.MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -83,9 +118,12 @@
             android:windowSoftInputMode="adjustResize" />
 
         <!-- QR scanner (camera) — separate process keeps camera off the engine process -->
+        <!-- configChanges mirrors the sibling activities: without it a rotation
+             mid-scan recreates the activity and restarts the camera session. -->
         <activity
             android:name=".qr.QrScannerActivity"
-            android:exported="false" />
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode" />
 
         <!--
           AI agent settings / provider editor / chat history — their OWN
@@ -206,9 +244,17 @@
           were being sent to nothing before this receiver existed. Not exported:
           the PendingIntents set the package explicitly, so only this app can
           reach it.
+
+          process=":browser" is load-bearing. The receiver resolves the live
+          queue through DownloadEngine.current, a per-process @Volatile that
+          only BrowserViewModel — which runs in ':browser' — ever assigns. In
+          the default process that field is permanently null, so every
+          notification button silently did nothing: exactly the bug this
+          receiver was added to fix.
         -->
         <receiver
             android:name=".browser.engine.DownloadActionReceiver"
+            android:process=":browser"
             android:exported="false">
             <intent-filter>
                 <action android:name="com.roombrowser.DOWNLOAD_ACTION" />

@@ -31,7 +31,19 @@ class RetentionCleanupWorker(
             graph.browserRepo.purgeOldClosedTabs(days = 30)
             Result.success()
         }.getOrElse {
-            androidx.work.ListenableWorker.Result.retry()
+            // A transient failure (SQLite busy, a profile DB being swapped
+            // under a profile switch) deserves the backoff. A PERMANENT one
+            // — a corrupt database, a schema mismatch — does not: retrying
+            // it forever means this worker wakes the device every backoff
+            // interval for the life of the install and never succeeds. Give
+            // up after MAX_ATTEMPTS and let tomorrow's periodic run try a
+            // fresh attempt chain.
+            if (runAttemptCount >= MAX_ATTEMPTS) Result.failure() else Result.retry()
         }
+    }
+
+    private companion object {
+        /** Retries per periodic run before the attempt chain is abandoned. */
+        const val MAX_ATTEMPTS = 3
     }
 }

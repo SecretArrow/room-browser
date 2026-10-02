@@ -9,6 +9,9 @@ import com.roombrowser.data.repo.ProfileRepositoryImpl
 import com.roombrowser.domain.engine.FilterEngine
 import com.roombrowser.domain.engine.IpConflictDetector
 import com.roombrowser.domain.profile.ProfileManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /**
  * Simple manual dependency graph (no framework needed for this scope).
@@ -17,6 +20,29 @@ import com.roombrowser.domain.profile.ProfileManager
 class AppGraph(context: Context) {
 
     private val appContext = context.applicationContext
+
+    /**
+     * Scope for the few writes that must deliberately OUTLIVE the screen that
+     * started them — a provider saved from the editor the user closes in the
+     * same breath (AgentProviderEditorActivity), and nothing that can wait.
+     *
+     * It exists so such work has an OWNER. The alternative that was there
+     * before — GlobalScope — is attached to nothing: no shutdown path, no
+     * cancellation, nothing any test or any reader can point at to say what is
+     * still running. Lives as long as the process (one per process, like the
+     * rest of the graph) and is never cancelled: the process ending IS its
+     * cancellation.
+     *
+     * Dispatchers.Main.immediate like every state holder in this app — a launch
+     * from a click handler starts its body SYNCHRONOUSLY inside that handler,
+     * so what the user typed is read before anything can change it, while the
+     * suspending persistence primitives switch to their own dispatchers
+     * internally. SupervisorJob: one failed write must not take the scope down
+     * with it.
+     */
+    val appScope: CoroutineScope by lazy {
+        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    }
 
     val database: AppDatabase by lazy { AppDatabase.get(appContext) }
 

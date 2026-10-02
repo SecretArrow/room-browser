@@ -12,6 +12,11 @@ import android.content.Intent
  * them was inert: the notification appeared, the user tapped Pause, and the
  * download carried on. A broadcast receiver is the only way to reach a
  * notification action, and the engine is the only thing that can act on one.
+ *
+ * The receiver is declared with `process=":browser"` for the same reason:
+ * [DownloadEngine.current] is per-process state that only the engine process
+ * ever assigns, so a receiver in the default process would find it null every
+ * single time.
  */
 class DownloadActionReceiver : BroadcastReceiver() {
 
@@ -20,11 +25,16 @@ class DownloadActionReceiver : BroadcastReceiver() {
         val id = intent.getLongExtra("id", -1L)
         val action = intent.getStringExtra("action")
         if (id <= 0L || action == null) return
-        // Null when no engine is alive — the process was restarted and nothing
-        // is transferring, so the notification is a leftover with nothing
-        // behind it. Doing nothing is the honest outcome; the row in the
-        // Downloads screen is where the user can retry it.
-        val engine = DownloadEngine.current ?: return
+        // Null when no engine is alive — the process was killed (low memory,
+        // Doze, or a profile switch) while a transfer was running. The progress
+        // notification is setOngoing(true), so it is still on screen and the
+        // user CANNOT swipe it away; leaving it there with dead buttons is the
+        // one outcome worse than doing nothing. Clear it and let the row in the
+        // Downloads screen be where the transfer is resumed.
+        val engine = DownloadEngine.current ?: run {
+            DownloadEngine.dismissOrphanedNotification(context, id)
+            return
+        }
         when (action) {
             "pause" -> engine.pause(id)
             "resume" -> engine.resume(id)

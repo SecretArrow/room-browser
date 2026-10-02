@@ -14,6 +14,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.browser.ui.BrowserScreen
 import com.roombrowser.browser.ui.LaunchRequest
@@ -138,8 +139,18 @@ class BrowserActivity : FragmentActivity() {
             launchNetworkWarningIfNeeded()
         }
         lifecycleScope.launch {
-            viewModel.networkGateState.collect { gated ->
-                if (gated) launchNetworkWarningIfNeeded()
+            // repeatOnLifecycle, not a bare collect: a bare collector stays
+            // subscribed while the activity is STOPPED, so a gate armed behind
+            // another screen was consumed by a collector that could not act on
+            // it (launchNetworkWarningIfNeeded bails below RESUMED) and the
+            // value was gone by the time the activity came back — the exact
+            // hole onResume exists to patch. Restarting the collection on
+            // STARTED re-reads the StateFlow's current value, so the gate is
+            // re-delivered on every return instead of being dropped once.
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.networkGateState.collect { gated ->
+                    if (gated) launchNetworkWarningIfNeeded()
+                }
             }
         }
 
@@ -283,6 +294,19 @@ class BrowserActivity : FragmentActivity() {
             from = current,
             to = targetProfileId,
             restartIntentExtras = extras,
+            // The activity's own scope: the protocol captures this activity and
+            // its ViewModel, so the activity has to be what owns and can cancel
+            // it (the executor used to make its own scope and never cancel it).
+            scope = lifecycleScope,
+            // An aborted switch leaves this process alive on the OLD profile.
+            // Without this, pendingSwitch stayed true for good and the user
+            // could never try again — on a screen that still showed the old
+            // profile with no explanation.
+            onFailed = { error ->
+                pendingSwitch = false
+                Log.w(TAG, "profile switch aborted: ${error.message}")
+                viewModel.showMessage("Profile switch failed — still on this profile")
+            },
             host = object : ProfileSwitchExecutor.Host {
                 override fun stopNavigation() {
                     viewModel.stopLoading()
@@ -330,23 +354,13 @@ class BrowserActivity : FragmentActivity() {
             android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
         )
         val alarm = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
-        runCatching {
-            // WAKEUP: the process dies the line below — only the alarm can
-            // relaunch the engine, so it must fire even if the screen sleeps
-            // mid-switch (CI showed the non-wakeup variant deferring ~5 s
-            // while idle, leaving a dead surface up that long).
-            alarm.setExactAndAllowWhileIdle(
-                android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                android.os.SystemClock.elapsedRealtime() + 350,
-                pending
-            )
-        }.onFailure {
-            alarm.set(
-                android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                android.os.SystemClock.elapsedRealtime() + 350,
-                pending
-            )
-        }
+        // WAKEUP: the process dies the line below — only the alarm can
+        // relaunch the engine, so it must fire even if the screen sleeps
+        // mid-switch (CI showed the non-wakeup variant deferring ~5 s
+        // while idle, leaving a dead surface up that long). See
+        // [scheduleEngineRestart] for why this is not a bare
+        // setExactAndAllowWhileIdle.
+        alarm.scheduleEngineRestart(android.os.SystemClock.elapsedRealtime() + 350, pending)
         android.os.Process.killProcess(android.os.Process.myPid())
     }
 

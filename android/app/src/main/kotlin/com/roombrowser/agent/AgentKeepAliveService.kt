@@ -86,14 +86,54 @@ class AgentKeepAliveService : Service() {
         super.onDestroy()
     }
 
+    /**
+     * Android 15 caps a `dataSync` foreground service at 6 hours per 24 and
+     * calls this when the budget runs out. The contract is strict: the service
+     * MUST stop itself here, or the system raises
+     * `ForegroundServiceDidNotStopInTimeException` and the process is killed —
+     * taking the whole ':browser' engine, its tabs and any unsaved page state
+     * with it. targetSdk is 35, so the cap applies; without this override a
+     * long agent session was a scheduled crash.
+     *
+     * The wake lock's own 30-minute timeout means a turn should never get
+     * anywhere near the cap, so reaching this point means the turn is wedged
+     * and stopping is the correct outcome anyway. The turn is cancelled first
+     * so the controller unwinds instead of being severed mid-step.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        AgentForeground.stopCurrentTurn?.invoke()
+        requestStop()
+    }
+
     // ------------------------------------------------------------ internals
 
+    /**
+     * Promotes the service, and gives up cleanly if the system refuses.
+     *
+     * [ServiceCompat.startForeground] is not a safe call on API 31+: if the app
+     * has left the foreground between [AgentForeground.begin] and this method
+     * running (the user backgrounds the app the instant they hit send, which is
+     * exactly what the keep-alive exists for), the system throws
+     * `ForegroundServiceStartNotAllowedException`. API 34+ adds a second
+     * refusal — a missing or disallowed service type. Either way the throw used
+     * to escape [onStartCommand], so the service stayed a plain background
+     * service holding a 30-minute PARTIAL_WAKE_LOCK that nothing would release
+     * until the process died: a battery drain with no notification to show for
+     * it. Now the lock goes back immediately and the service stops; the agent
+     * turn keeps running, it just no longer survives the process going away.
+     */
     private fun goForeground(status: String) {
         acquireWakeLock()
         val type = if (Build.VERSION.SDK_INT >= 29) {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
         } else 0
-        ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(status), type)
+        try {
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(status), type)
+        } catch (t: Throwable) {
+            runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
+            wakeLock = null
+            stopSelf()
+        }
     }
 
     private fun acquireWakeLock() {
