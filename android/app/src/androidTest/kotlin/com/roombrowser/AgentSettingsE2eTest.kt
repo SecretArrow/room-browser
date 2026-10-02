@@ -361,11 +361,32 @@ class AgentSettingsE2eTest {
         try { Thread.sleep(300) } catch (_: InterruptedException) { }
     }
 
-    /** True when a node's VISIBLE rect is empty — i.e. it is composed, and
-     *  therefore still in the a11y tree, but out of the viewport. */
-    private fun isClippedAway(node: UiObject2): Boolean = try {
+    /**
+     * True when the node is not USABLY inside its own container.
+     *
+     * An empty `visibleBounds` is NOT the test, and believing it was cost
+     * three runs. A LazyColumn item that is only PARTLY scrolled past the
+     * viewport edge is still composed, and UiAutomator reports a non-empty
+     * — clipped — rect for it, so "the rect is non-empty" reads as visible.
+     * CI evidence (run 37056201693): `agent_copy_user` reported
+     * `Rect(256, 234 - 304, 255)`, while the container it lives in was
+     * `Rect(0, 258 - 320, 415)`; the tap went to (280, 244) — 14px ABOVE
+     * the list, onto the panel header — and no "Copied" ever appeared.
+     *
+     * So the test is the CONTAINER: the node's rect must lie inside its
+     * parent's visible rect before its centre means anything.
+     */
+    private fun isOutOfView(node: UiObject2): Boolean = try {
         val b = node.visibleBounds
-        b.width() <= 0 || b.height() <= 0
+        if (b.width() <= 0 || b.height() <= 0) {
+            true
+        } else {
+            val p = try { node.parent?.visibleBounds } catch (_: Exception) { null }
+            p != null && (
+                b.top < p.top || b.bottom > p.bottom ||
+                    b.left < p.left || b.right > p.right
+                )
+        }
     } catch (_: Exception) {
         true
     }
@@ -380,25 +401,40 @@ class AgentSettingsE2eTest {
      * out there. `visibleBoundsFor` rejects a node against its ancestors'
      * bounds, so the ancestors are the answer.
      */
+    /**
+     * Runs a shell command and keeps only the lines [keep] accepts.
+     *
+     * `executeShellCommand` does not interpret a `|` in this environment —
+     * `dumpsys window | grep X` reaches `dumpsys` as three extra arguments
+     * and answers `Bad window command, or no windows match: |`, and
+     * `dumpsys input_method | grep X` ignores them and dumps the lot. Either
+     * way the filter has to happen on this side of the call.
+     */
+    private fun shellLines(cmd: String, keep: (String) -> Boolean): String = try {
+        device.executeShellCommand(cmd)
+            .split("\n")
+            .filter(keep)
+            .joinToString("\n")
+            .trim()
+            .ifEmpty { "(no match)" }
+    } catch (_: Exception) {
+        "?"
+    }
+
     private fun copyAffordanceReport(desc: String): String {
         val sb = StringBuilder("screen=${device.displayWidth}x${device.displayHeight}")
         // Two facts that decide how to read the geometry: whether the IME is
-        // up (it resizes the panel, and 415 is exactly 640 - a mdpi keyboard),
-        // and which window actually owns the focus.
-        sb.append("\nime: ").append(
-            try {
-                device.executeShellCommand(
-                    "dumpsys input_method | grep -E 'mInputShown|mIsInputViewShown'"
-                ).trim()
-            } catch (_: Exception) { "?" }
-        )
-        sb.append("\nfocus: ").append(
-            try {
-                device.executeShellCommand(
-                    "dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'"
-                ).trim()
-            } catch (_: Exception) { "?" }
-        )
+        // up (it resizes the panel, so the list gets short), and which window
+        // actually owns the focus. `executeShellCommand` does NOT run a shell
+        // here — a `| grep` is passed to the tool as arguments and either
+        // dumps everything or errors — so filter in Kotlin.
+        sb.append("\nime: ").append(shellLines("dumpsys input_method") { line ->
+            line.contains("mInputShown") || line.contains("mIsInputViewShown") ||
+                line.contains("contentTopInsets")
+        })
+        sb.append("\nfocus: ").append(shellLines("dumpsys window") { line ->
+            line.contains("mCurrentFocus") || line.contains("mFocusedApp")
+        })
         val node = device.findObjects(By.desc(desc)).firstOrNull()
             ?: return "$sb\n$desc: NOT IN THE TREE"
         // NOTE: UiObject2 has no getBounds() in this version — only the
@@ -418,13 +454,24 @@ class AgentSettingsE2eTest {
         return sb.toString()
     }
 
-    /** Slow ~80px downward drag: reveals EARLIER content in a scrollable
-     *  surface. Deliberately small and slow, so it cannot fling past the
-     *  target; the caller re-checks visibility after every step. */
-    private fun nudgeChatDown() {
-        val cx = device.displayWidth / 2
-        val cy = device.displayHeight / 2
-        device.swipe(cx, cy - 40, cx, cy + 40, 200)
+    /**
+     * Drags DOWN inside the chat's own container — the gesture that reveals
+     * EARLIER content.
+     *
+     * Both ends come from the CONTAINER's visible rect, not from the screen
+     * centre: the panel is resized while the IME is up, and a screen-centre
+     * drag lands in the composer below the list (or the header above it) and
+     * scrolls nothing. The list is pinned to its newest item, so the user's
+     * own bubble is the FIRST entry — dragging down is always the direction
+     * that brings it back.
+     */
+    private fun nudgeChatDown(node: UiObject2) {
+        val p = try { node.parent?.visibleBounds } catch (_: Exception) { null }
+        if (p == null || p.height() < 40) return
+        val cx = p.centerX()
+        val from = p.top + p.height() / 5
+        val to = p.top + p.height() * 4 / 5
+        device.swipe(cx, from, cx, to, 250)
         device.waitForIdle(500)
         try { Thread.sleep(200) } catch (_: InterruptedException) { }
     }
@@ -432,32 +479,29 @@ class AgentSettingsE2eTest {
     /**
      * Taps a chat bubble's copy affordance and waits for its "Copied" label.
      *
-     * `clickDesc` will happily FIND a node it cannot TAP: when a node's
-     * visible rect is empty, `UiObject2.click()` silently falls back to the
-     * centre of the UNCLIPPED rect and the tap lands somewhere else entirely.
-     * The label lives ~1.8s, so the symptom is a missing "Copied" rather than
-     * a failed click — which is exactly what CI reported, three runs running:
-     * `Clicking on (280, 244)` against a node whose rect is
-     * `Rect(256, 234 - 304, 255)`, with no "Copied" in the following 3s.
+     * The panel scrolls to its newest entry, so after the reply streams in
+     * the user's own bubble — the FIRST entry — is scrolled above the fold.
+     * That is correct chat behaviour, and it is the test's problem to solve,
+     * not the panel's: the affordance is composed (partly on screen) and
+     * tappable only once it is genuinely inside the list's viewport.
      *
-     * So: try to bring it into view, then tap its VISIBLE centre through the
-     * shell (see `clickCenter` for why injected gestures are avoided on the
-     * CI runner), and poll for the label straight away — an idle-wait here
-     * would eat most of the window it observes. [copyAffordanceReport] is the
-     * assertion's message, because the geometry above is stable across runs
-     * and therefore NOT a scroll position: something is laying the button out
-     * there, and the report names it.
+     * So: scroll it into view, tap its VISIBLE centre through the shell (see
+     * `clickCenter` for why injected gestures are avoided on the CI runner),
+     * and poll for the label straight away — an idle-wait here would eat most
+     * of the ~1.8s window it observes. [copyAffordanceReport] is the
+     * assertion's message: it names the geometry and the container the button
+     * has to be inside, so a future failure is readable without another run.
      */
     private fun copyAndSeeFeedback(desc: String): Boolean {
         repeat(3) {
             var node = device.wait(Until.findObject(By.desc(desc)), 3_000) ?: return@repeat
             var nudges = 0
-            while (isClippedAway(node) && nudges < 4) {
-                nudgeChatDown()
+            while (isOutOfView(node) && nudges < 6) {
+                nudgeChatDown(node)
                 nudges++
                 node = device.wait(Until.findObject(By.desc(desc)), 2_000) ?: return@repeat
             }
-            if (isClippedAway(node)) return@repeat
+            if (isOutOfView(node)) return@repeat
             val b = node.visibleBounds
             device.executeShellCommand("input tap ${b.centerX()} ${b.centerY()}")
             if (device.wait(Until.hasObject(By.text("Copied")), 2_500)) return true
