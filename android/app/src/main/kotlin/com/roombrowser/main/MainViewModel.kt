@@ -40,13 +40,27 @@ class PendingExport(val fileName: String, val json: String, val sizeBytes: Int)
  *   export (two fields, min length enforced by the dialog); false = the user
  *   is ENTERING the passphrase an import file was sealed with.
  * @param error inline retry hint (import only), e.g. "Wrong passphrase".
+ * @param id identity of THIS prompt instance. Like [VaultGateRequest.id] it
+ *   exists so an equal-looking prompt is still a NEW prompt: the dialog keys
+ *   its passphrase fields on it. Without it, a second wrong passphrase
+ *   produced a byte-identical copy of the first retry's prompt, the remember
+ *   key never changed and the typed secret stayed in the field instead of
+ *   being cleared. No default — every prompt must claim a fresh id.
  */
 data class PassphrasePrompt(
     val forExport: Boolean,
     val profileName: String,
     val credentialCount: Int,
-    val error: String? = null
+    val error: String? = null,
+    val id: Int
 )
+
+/**
+ * The one-tap follow-up a [MainViewModel.message] can carry. The ViewModel
+ * cannot hold the Activity, so the screen maps this to the real navigation —
+ * same division of labour as [VaultGateRequest].
+ */
+enum class MessageAction { OPEN_NOTIFICATION_SETTINGS }
 
 /**
  * Signals MainScreen that the vault's biometric gate must run NOW (a
@@ -96,6 +110,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var message by mutableStateOf<String?>(null)
         private set
 
+    /**
+     * The follow-up the current [message] offers, or null when the message is
+     * just text. Set beside [message] and cleared by [clearMessage] so a
+     * stale action can never ride along with the next message.
+     */
+    var messageAction by mutableStateOf<MessageAction?>(null)
+        private set
+
     // ---------- Backup v2: shared flow state ----------
 
     /** A finished export, staged until the user saves or shares it. */
@@ -131,6 +153,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var gateSeq = 0
     private var afterGate: (() -> Unit)? = null
+
+    /** Source of [PassphrasePrompt.id] — see that field's doc. */
+    private var promptSeq = 0
+
+    /** Flipped by [claimNotificationPrompt]; see it for why once is enough. */
+    private var notificationPromptClaimed = false
 
     /** Credential array codec for the sealed vault blob — the plaintext
      *  array exists only as the transient string between (de)serialization
@@ -209,29 +237,49 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun renameProfile(id: ProfileId, newName: String) {
+    /**
+     * The "Edit Profile" dialog's single save.
+     *
+     * It used to be two calls — renameProfile() followed by restyleProfile()
+     * — and that was a lost-update race: two coroutines, two independent
+     * get → copy → put round trips on the same row, both reading before
+     * either wrote. Whichever put landed second discarded the other's field,
+     * so the new name OR the new icon/color vanished while the snackbar still
+     * said the save had worked. [ProfileManager.update] does it in one read
+     * and one write, and both former entry points are gone so the race cannot
+     * be reintroduced by calling them in sequence again.
+     */
+    fun updateProfile(id: ProfileId, name: String, icon: String?, colorArgb: Long?) {
         viewModelScope.launch {
-            runCatching { profileManager.rename(id, newName) }
+            runCatching { profileManager.update(id, name, icon, colorArgb) }
                 .onSuccess { message = "Renamed (storage identity unchanged)" }
-                .onFailure { message = it.message ?: "Could not rename profile" }
-        }
-    }
-
-    fun restyleProfile(id: ProfileId, icon: String?, colorArgb: Long?) {
-        viewModelScope.launch {
-            runCatching { profileManager.restyle(id, icon, colorArgb) }
                 .onFailure { message = it.message ?: "Could not update profile" }
         }
     }
 
+    /**
+     * Lock / unlock a profile.
+     *
+     * The bare launch this used to be let ProfileManager's "Profile not
+     * found" escape a coroutine with no handler: tapping the lock entry on a
+     * row the ':browser' process had just deleted CRASHED the launcher
+     * instead of reporting it. Same runCatching shape as every sibling.
+     */
     fun setLocked(id: ProfileId, locked: Boolean) {
-        viewModelScope.launch { profileManager.setLocked(id, locked) }
+        viewModelScope.launch {
+            runCatching { profileManager.setLocked(id, locked) }
+                .onSuccess { message = if (locked) "Profile locked" else "Profile unlocked" }
+                .onFailure { message = it.message ?: "Could not change the profile lock" }
+        }
     }
 
+    /** Same unguarded-throw fix as [setLocked]: a vanished row must report,
+     *  not crash the launcher. */
     fun setDefault(id: ProfileId) {
         viewModelScope.launch {
-            profileManager.setDefault(id)
-            message = "Default profile updated"
+            runCatching { profileManager.setDefault(id) }
+                .onSuccess { message = "Default profile updated" }
+                .onFailure { message = it.message ?: "Could not change the default profile" }
         }
     }
 
@@ -243,11 +291,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Same unguarded-throw fix as [setLocked], plus the success message is
+     * now actually conditional on success: it was posted unconditionally
+     * right after the call, so a reset that threw told the user their
+     * browsing data was gone when nothing had been touched.
+     */
     fun resetProfile(id: ProfileId) {
         viewModelScope.launch {
-            profileManager.resetData(id)
-            message = "Profile browsing data reset"
+            runCatching { profileManager.resetData(id) }
+                .onSuccess { message = "Profile browsing data reset" }
+                .onFailure { message = it.message ?: "Could not reset profile data" }
         }
+    }
+
+    // ---------- Notification permission (API 33+) ----------
+
+    /**
+     * Claims this session's single POST_NOTIFICATIONS prompt: true for the
+     * first caller, false ever after.
+     *
+     * The framework answers a twice-denied permission INSTANTLY with no UI,
+     * so an onCreate that asks unconditionally re-asks on every Activity
+     * recreation — a rotation would re-post the hint below forever. The
+     * ViewModel outlives configuration changes, which makes "once per
+     * session" the natural scope for both the ask and its explanation.
+     */
+    fun claimNotificationPrompt(): Boolean {
+        if (notificationPromptClaimed) return false
+        notificationPromptClaimed = true
+        return true
+    }
+
+    /**
+     * The POST_NOTIFICATIONS prompt came back denied.
+     *
+     * The launcher used to discard that result entirely, so download
+     * completions and the agent's progress notification simply never appeared
+     * and nothing said why. The hint rides the normal snackbar channel and
+     * carries the only tap that can fix it (an app cannot re-prompt once the
+     * user has denied twice — only the system screen can grant it).
+     */
+    fun onNotificationPermissionDenied() {
+        message = "Notifications are off — downloads and agent progress stay silent"
+        messageAction = MessageAction.OPEN_NOTIFICATION_SETTINGS
     }
 
     // ---------- Backup v2: export ----------
@@ -290,7 +377,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     passphrasePrompt = PassphrasePrompt(
                         forExport = true,
                         profileName = draft.profile.name,
-                        credentialCount = creds.size
+                        credentialCount = creds.size,
+                        id = ++promptSeq
                     )
                 }
             }.onFailure {
@@ -471,7 +559,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     passphrasePrompt = PassphrasePrompt(
                         forExport = false,
                         profileName = parsed.payload.profile.name,
-                        credentialCount = 0
+                        credentialCount = 0,
+                        id = ++promptSeq
                     )
                 }
             }
@@ -500,7 +589,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (e: VaultAuthException) {
                 // Wrong passphrase — let the user retry in the same dialog.
-                passphrasePrompt = passphrasePrompt?.copy(error = "Wrong passphrase — try again")
+                // A fresh id goes with it: the retry prompt is otherwise
+                // identical to the previous one from the SECOND wrong attempt
+                // on, and the dialog's remember key would stop changing (the
+                // typed secret would survive into the retry).
+                passphrasePrompt = passphrasePrompt?.copy(
+                    error = "Wrong passphrase — try again",
+                    id = ++promptSeq
+                )
                 return@launch
             } catch (e: VaultFormatException) {
                 passphrasePrompt = null
@@ -679,5 +775,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { appState.setFirstRunDone() }
     }
 
-    fun clearMessage() { message = null }
+    /** Drops the message AND whatever follow-up it carried — the action must
+     *  never outlive the message it belonged to. */
+    fun clearMessage() {
+        message = null
+        messageAction = null
+    }
 }

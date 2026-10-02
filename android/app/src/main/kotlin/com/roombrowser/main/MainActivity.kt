@@ -3,8 +3,10 @@ package com.roombrowser.main
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -28,8 +30,15 @@ class MainActivity : FragmentActivity() {
     private lateinit var viewModel: MainViewModel
 
     // Notifications (API 33+): agent progress + download completions.
+    // The result used to be thrown away ({}), which made a denial completely
+    // invisible: downloads finished and the agent worked while no
+    // notification ever appeared and nothing told the user why. A denial now
+    // explains itself through the screen's snackbar channel and offers the
+    // system screen that can still grant it.
     private val notifPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (!granted) viewModel.onNotificationPermissionDenied()
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -77,13 +86,37 @@ class MainActivity : FragmentActivity() {
     }
 
     /** Requests POST_NOTIFICATIONS once on API 33+ so the agent's background
-     *  progress notification (and download alerts) are visible. */
+     *  progress notification (and download alerts) are visible. ONCE is the
+     *  ViewModel's job (see claimNotificationPrompt): a twice-denied
+     *  permission is answered instantly with no UI, so an unconditional ask
+     *  here would re-post the denial hint on every rotation. */
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
-            PackageManager.PERMISSION_GRANTED
+            PackageManager.PERMISSION_GRANTED &&
+            viewModel.claimNotificationPrompt()
         ) {
             runCatching { notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
+        }
+    }
+
+    /**
+     * The system's notification screen for this app — the snackbar action of
+     * a denied POST_NOTIFICATIONS request. It has to be the system screen:
+     * once the user has denied twice, the app can never prompt again itself.
+     *
+     * The app-details page is the fallback so the action is never a dead end
+     * on a ROM that lacks the per-app notification screen.
+     */
+    fun openNotificationSettings() {
+        val notifications = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+            .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+        runCatching { startActivity(notifications) }.onFailure {
+            val details = Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", packageName, null)
+            )
+            runCatching { startActivity(details) }
         }
     }
 

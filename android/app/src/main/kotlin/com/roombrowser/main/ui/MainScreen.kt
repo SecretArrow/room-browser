@@ -54,8 +54,10 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -80,6 +82,7 @@ import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.profile.CopyOptions
 import com.roombrowser.main.MainActivity
 import com.roombrowser.main.MainViewModel
+import com.roombrowser.main.MessageAction
 import com.roombrowser.main.PassphrasePrompt
 import com.roombrowser.main.PendingExport
 import com.roombrowser.ui.common.EmptyState
@@ -120,7 +123,29 @@ fun MainScreen(
     val message = viewModel.message
     LaunchedEffect(message) {
         message?.let {
-            snackbarHostState.showSnackbar(it)
+            // Some messages carry a one-tap follow-up (today only the denied-
+            // notifications hint, whose action opens the system notification
+            // screen). Both the label and the duration are explicit: Material3
+            // defaults an action-bearing snackbar to Indefinite, which would
+            // park it over the bottom of the profile list until it is swiped
+            // away. Actionless messages keep their original Short timing.
+            val action = viewModel.messageAction
+            val actionLabel = when (action) {
+                MessageAction.OPEN_NOTIFICATION_SETTINGS -> "Settings"
+                null -> null
+            }
+            val result = snackbarHostState.showSnackbar(
+                message = it,
+                actionLabel = actionLabel,
+                withDismissAction = action != null,
+                duration = if (action == null) SnackbarDuration.Short else SnackbarDuration.Long
+            )
+            if (result == SnackbarResult.ActionPerformed) {
+                when (action) {
+                    MessageAction.OPEN_NOTIFICATION_SETTINGS -> activity.openNotificationSettings()
+                    null -> Unit
+                }
+            }
             viewModel.clearMessage()
         }
     }
@@ -316,8 +341,12 @@ fun MainScreen(
             profile = target,
             onDismiss = { editTarget = null },
             onSave = { name, icon, color ->
-                viewModel.renameProfile(target.id, name)
-                viewModel.restyleProfile(target.id, icon, color)
+                // ONE call, ONE get → copy → put. Saving used to fire
+                // renameProfile() and restyleProfile() as two independent
+                // coroutines: both read the row before either wrote it, so one
+                // of the two edits was silently thrown away while the snackbar
+                // reported success.
+                viewModel.updateProfile(target.id, name, icon, color)
                 editTarget = null
             }
         )
@@ -833,6 +862,20 @@ private fun EditProfileDialog(
                     onValueChange = { name = it },
                     label = { Text("Name") },
                     singleLine = true,
+                    // Clearing the name used to leave Save tappable but inert
+                    // (its onClick dropped blank input on the floor): the
+                    // dialog just sat there with no hint why nothing happened.
+                    // The field now says what is wrong and the confirm button
+                    // below says it cannot be used — the same guard
+                    // CreateProfileDialog puts on its own confirm. Unlike that
+                    // dialog this one opens with a name already in it, so the
+                    // error can only appear after the user empties it.
+                    isError = name.isBlank(),
+                    supportingText = if (name.isBlank()) {
+                        { Text("Name cannot be empty", color = MaterialTheme.colorScheme.error) }
+                    } else {
+                        null
+                    },
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(12.dp))
@@ -879,7 +922,10 @@ private fun EditProfileDialog(
             }
         },
         confirmButton = {
-            Button(onClick = { if (name.isNotBlank()) onSave(name.trim(), icon, color) }) {
+            Button(
+                onClick = { if (name.isNotBlank()) onSave(name.trim(), icon, color) },
+                enabled = name.isNotBlank()
+            ) {
                 Text("Save")
             }
         },
@@ -1002,7 +1048,15 @@ private fun ExportProfileDialog(
         onDismissRequest = onDismiss,
         title = { Text("Export \"${profile.name}\"") },
         text = {
-            Column(Modifier.imePadding()) {
+            // Scrollable, like every other dialog body here: an AlertDialog's
+            // height is capped by the window, so in landscape (or at a large
+            // font scale) this fixed-height body simply clipped the checkbox
+            // and the passwords paragraph out of reach.
+            Column(
+                Modifier
+                    .imePadding()
+                    .verticalScroll(rememberScrollState())
+            ) {
                 Text("Profile settings, site permissions and site settings are always included.")
                 Spacer(Modifier.height(12.dp))
                 LabeledCheckboxRow("Include bookmarks", includeBookmarks) { includeBookmarks = it }
@@ -1032,7 +1086,10 @@ private fun ExportDeliveryDialog(
         onDismissRequest = onCancel,
         title = { Text("Export ready") },
         text = {
-            Column {
+            // Scrollable for the same reason as the dialogs above: the file
+            // name plus the three-line explanation did not fit a landscape
+            // dialog, and an unscrollable body just hid the rest.
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text("\"${export.fileName}\" · ${formatSize(export.sizeBytes)}")
                 Spacer(Modifier.height(8.dp))
                 Text(
@@ -1065,9 +1122,13 @@ private fun VaultPassphraseDialog(
     onConfirm: (passphrase: String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    // Keyed by the prompt so a retry (error copy) resets both fields.
-    var passphrase by remember(prompt) { mutableStateOf("") }
-    var confirmation by remember(prompt) { mutableStateOf("") }
+    // Keyed by the prompt's id so EVERY new prompt — including every retry —
+    // starts with empty fields. Keying on the prompt VALUE was not enough:
+    // from the second wrong passphrase on, the retry prompt is a byte-
+    // identical copy of the previous one, the key never changed and the
+    // rejected secret stayed in the field.
+    var passphrase by remember(prompt.id) { mutableStateOf("") }
+    var confirmation by remember(prompt.id) { mutableStateOf("") }
     val mismatch = prompt.forExport && confirmation.isNotEmpty() && confirmation != passphrase
     val valid = if (prompt.forExport) {
         passphrase.length >= MIN_EXPORT_PASSPHRASE && passphrase == confirmation
@@ -1080,7 +1141,14 @@ private fun VaultPassphraseDialog(
             Text(if (prompt.forExport) "Export passphrase" else "Enter file passphrase")
         },
         text = {
-            Column(Modifier.imePadding()) {
+            // Scrollable: with the keyboard up, two password fields and their
+            // error lines, a landscape dialog cannot show this body at once —
+            // unscrollable, the "Repeat passphrase" field was unreachable.
+            Column(
+                Modifier
+                    .imePadding()
+                    .verticalScroll(rememberScrollState())
+            ) {
                 Text(
                     if (prompt.forExport) {
                         "${prompt.credentialCount} saved " +
@@ -1179,9 +1247,14 @@ private fun ImportProfileDialog(
                     value = json,
                     onValueChange = { json = it },
                     label = { Text("JSON") },
+                    // heightIn, not height: a fixed 160dp box stays 160dp tall
+                    // even when the dialog has less room than that (landscape,
+                    // large font scale), where it crowded the paste hint and
+                    // the "Choose file…" button out of view. It may now shrink
+                    // and grow with the pasted JSON, but never past the cap.
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(160.dp)
+                        .heightIn(min = 96.dp, max = 160.dp)
                 )
             }
         },

@@ -162,6 +162,43 @@ class ProfileManager(
         return updated
     }
 
+    /**
+     * One-shot edit of everything the "Edit Profile" dialog can change —
+     * name, icon and color — in a SINGLE get → copy → put.
+     *
+     * The editor used to save by calling [rename] and [restyle] back to back
+     * from two independent coroutines. Each ran its own get → copy → put, so
+     * both read the SAME row before either wrote it and whichever put landed
+     * second overwrote the other's field: the rename or the re-style was
+     * silently lost while the UI reported success. One read and one write per
+     * save cannot lose an edit.
+     *
+     * Validation is [rename]'s (non-empty after trimming, no name collision
+     * with another profile) and a null icon/color leaves that field alone
+     * exactly as [restyle] does. Storage identity (UUID) is untouched.
+     */
+    suspend fun update(
+        id: ProfileId,
+        name: String,
+        icon: String? = null,
+        colorArgb: Long? = null
+    ): Profile {
+        val trimmed = name.trim()
+        require(trimmed.isNotEmpty()) { "Profile name must not be empty" }
+        val profile = store.get(id) ?: throw IllegalArgumentException("Profile not found: $id")
+        val others = store.profiles().filter { it.id != id }
+        require(others.none { it.name.equals(trimmed, ignoreCase = true) }) {
+            "A profile with this name already exists"
+        }
+        val updated = profile.copy(
+            name = trimmed,
+            icon = icon ?: profile.icon,
+            colorArgb = colorArgb ?: profile.colorArgb
+        )
+        store.put(updated)
+        return updated
+    }
+
     suspend fun setLocked(id: ProfileId, locked: Boolean): Profile {
         val profile = store.get(id) ?: throw IllegalArgumentException("Profile not found: $id")
         val updated = profile.copy(isLocked = locked)
