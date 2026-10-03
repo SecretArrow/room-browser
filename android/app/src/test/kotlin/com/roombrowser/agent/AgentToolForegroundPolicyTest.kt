@@ -87,6 +87,6 @@ class AgentToolForegroundPolicyTest {
         // Together the two sides are exactly the tools the model can call:
         // nothing left unclassified, and nothing claimed by both.
         assertThat(classified).containsExactlyElementsIn(everyTool)
-        assertThat(staysInBackground).containsNoneOfElementsIn(MOVES_THE_PAGE)
+        assertThat(staysInBackground.intersect(MOVES_THE_PAGE)).isEmpty()
     }
 }
