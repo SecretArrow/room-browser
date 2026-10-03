@@ -36,16 +36,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Cache the pinned Android SDK components
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # See ci.yml: the runner image ships a different NDK/CMake than this
           # build pins, so the step below would re-download ~700 MB every run.
@@ -67,7 +67,7 @@ jobs:
           test -d "$CMAKE_DIR" || test -d /usr/local/lib/android/sdk/cmake/3.22.1 || { echo "cmake 3.22.1 missing after install"; exit 1; }
 
       - name: Cache Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
 
       - name: Compute the version to stamp
         id: ver
@@ -162,7 +162,7 @@ jobs:
           done
 
       - name: Upload the APKs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: quick-apk-${{ github.sha }}
           path: android/app/build/outputs/apk/release/*.apk

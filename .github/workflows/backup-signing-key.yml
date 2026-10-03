@@ -41,10 +41,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
@@ -151,7 +151,7 @@ jobs:
           echo "Verified: the blob decrypts with the passphrase, the keystore is byte-identical, and the recorded password opens it."
 
       - name: Upload the encrypted blob as an artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: signing-key-backup-encrypted
           # ONLY the ciphertext — never the archive, never the keystore.

@@ -61,16 +61,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Cache the pinned Android SDK components
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # The runner image ships NDK 27.3/28.2/29.0 and CMake 3.31/4.1; this
           # build pins 27.0.12077973 and 3.22.1, so the step below takes its
@@ -98,7 +98,7 @@ jobs:
           test -d "$CMAKE_DIR" || test -d /usr/local/lib/android/sdk/cmake/3.22.1 || { echo "cmake 3.22.1 missing after install"; exit 1; }
 
       - name: Cache Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
 
       - name: Apply automatic lint fixes
         working-directory: android
@@ -159,16 +159,16 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Cache the pinned Android SDK components
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # The runner image ships NDK 27.3/28.2/29.0 and CMake 3.31/4.1; this
           # build pins 27.0.12077973 and 3.22.1, so the step below takes its
@@ -193,7 +193,7 @@ jobs:
           test -d "$CMAKE_DIR" || test -d /usr/local/lib/android/sdk/cmake/3.22.1 || { echo "cmake 3.22.1 missing after install"; exit 1; }
 
       - name: Cache Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
 
       - name: Static analysis (Android Lint)
         working-directory: android
@@ -246,7 +246,7 @@ jobs:
 
       - name: Upload lint report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lint-report
           path: android/app/build/reports/lint-results-debug.html
@@ -254,7 +254,7 @@ jobs:
 
       - name: Upload test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-reports
           path: |
@@ -285,16 +285,16 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Cache the pinned Android SDK components
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # The runner image ships NDK 27.3/28.2/29.0 and CMake 3.31/4.1; this
           # build pins 27.0.12077973 and 3.22.1, so the step below takes its
@@ -319,7 +319,7 @@ jobs:
           test -d "$CMAKE_DIR" || test -d /usr/local/lib/android/sdk/cmake/3.22.1 || { echo "cmake 3.22.1 missing after install"; exit 1; }
 
       - name: Cache Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
 
       - name: Enable KVM
         run: |
@@ -361,7 +361,7 @@ jobs:
 
       - name: Upload instrumented test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-reports
           path: |
@@ -392,7 +392,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Compute version
         id: ver
@@ -503,7 +503,7 @@ jobs:
           desktop\scripts\package-windows.ps1 -BuildDir desktop\build\Release -Version ${{ steps.ver.outputs.version }} -DistDir desktop\dist
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: desktop-windows
           path: desktop/dist/
@@ -520,7 +520,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install GTK3 + WebKitGTK dev libraries
         run: |
@@ -559,7 +559,7 @@ jobs:
           desktop/scripts/package-linux.sh desktop/build ${{ steps.ver.outputs.version }} desktop/dist
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: desktop-linux
           path: desktop/dist/
@@ -592,16 +592,16 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Cache the pinned Android SDK components
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # The runner image ships NDK 27.3/28.2/29.0 and CMake 3.31/4.1; this
           # build pins 27.0.12077973 and 3.22.1, so the step below takes its
@@ -626,7 +626,7 @@ jobs:
           test -d "$CMAKE_DIR" || test -d /usr/local/lib/android/sdk/cmake/3.22.1 || { echo "cmake 3.22.1 missing after install"; exit 1; }
 
       - name: Cache Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
 
       - name: Compute release tag
         id: tag
@@ -713,7 +713,7 @@ jobs:
           done
 
       - name: Download desktop artifacts (this run, if any)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           pattern: desktop-*
@@ -764,13 +764,13 @@ jobs:
           ls -lh release-out/
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-bundle
           path: release-out/
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.name }}
