@@ -501,7 +501,6 @@ private fun WalletDashboard(
     onOpenExplorer: (url: String) -> Unit
 ) {
     val context = LocalContext.current
-    val extras = LocalRoomExtras.current
     val accounts by engine.accounts.collectAsState()
     val balances by engine.balances.collectAsState()
     val activeNetworks by engine.activeNetworks.collectAsState()
@@ -525,10 +524,13 @@ private fun WalletDashboard(
     // of the screen, seconds after the finger moved.
     var copiedAddress by remember { mutableStateOf<String?>(null) }
 
-    /** The account a chain's Send / Receive acts from (its first, by default). */
+    /**
+     * The account a chain's Send / Receive acts from (its first, by default).
+     * The rule itself lives in [WalletOverview], where it can be tested: the
+     * unlocked dashboard never composes under the instrumented suite.
+     */
     fun activeAccountOf(chain: ChainType): WalletAccountRecord? =
-        accounts.firstOrNull { it.id == activeAccountByChain[chain] }
-            ?: accounts.firstOrNull { it.chainType == chain }
+        WalletOverview.activeAccount(accounts, chain, activeAccountByChain[chain])
 
     fun copyAddressWithFeedback(address: String) {
         // Addresses are public — a plain clip (no sensitive flag).
@@ -554,48 +556,28 @@ private fun WalletDashboard(
             .verticalScroll(rememberScrollState())
             .padding(bottom = 24.dp)
     ) {
-        // Header: wallet label + owning profile.
-        RoomCard(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp),
-            withGradient = false
-        ) {
-            Row(
-                Modifier.padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    Modifier
-                        .size(38.dp)
-                        .clip(RoundedCornerShape(13.dp))
-                        .background(extras.primary.copy(alpha = 0.14f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Filled.AccountBalanceWallet,
-                        contentDescription = null,
-                        tint = extras.primary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-                Spacer(Modifier.width(12.dp))
-                Column {
-                    Text(
-                        walletLabel,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = extras.textPrimary
-                    )
-                    if (profileName.isNotBlank()) {
-                        Text(
-                            "Profile: $profileName",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = extras.textSecondary
-                        )
-                    }
-                }
-            }
-        }
+        // Header: the wallet, and the ONE account its primary actions act
+        // from. It used to name only the wallet file, while Send / Receive
+        // were repeated under every chain section — so a wallet on five
+        // chains offered five identical pairs and no single place to act.
+        val focusedChain = WalletOverview.focusedChain(accounts, chainFilter)
+        val focusedAccount = focusedChain?.let { activeAccountOf(it) }
+        WalletOverviewCard(
+            walletLabel = walletLabel,
+            profileName = profileName,
+            chain = focusedChain,
+            networkName = focusedChain?.let { activeNetworks[it]?.name },
+            account = focusedAccount,
+            balance = focusedAccount?.let { balances[it.id] },
+            checking = refreshing,
+            copied = focusedAccount != null && copiedAddress == focusedAccount.address,
+            onCopy = {
+                focusedAccount?.let { copyAddressWithFeedback(it.address) }
+            },
+            onOpenNetwork = { chain -> networkPickerChain = chain },
+            onSend = { chain -> sendChain = chain },
+            onReceive = { chain -> receiveChain = chain }
+        )
         // Connection first: before any balance is read, the user should know
         // whether the reads are working at all. With no accounts there is
         // nothing to be connected to, and the accounts empty state says so.
@@ -693,29 +675,10 @@ private fun WalletDashboard(
                             onCopy = { copyAddressWithFeedback(account.address) }
                         )
                     }
-                    Row(
-                        Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = { sendChain = chain },
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                                .semantics {
-                                    contentDescription = "Send on ${chain.displayName}"
-                                }
-                        ) { Text("Send") }
-                        OutlinedButton(
-                            onClick = { receiveChain = chain },
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                                .semantics {
-                                    contentDescription = "Receive on ${chain.displayName}"
-                                }
-                        ) { Text("Receive") }
-                    }
+                    // Send / Receive are NOT repeated here. They live once, in
+                    // the header, acting on the chain the filter selects —
+                    // which is also why the chip row above now chooses the
+                    // active chain and not just what is visible.
                 }
                 // No account can be shown yet, and the reason matters: before
                 // the first read lands, "No accounts yet" would tell a user
@@ -907,6 +870,183 @@ private fun WalletDashboard(
         onMessage = onMessage,
         onDone = { backupOpen = false }
     )
+}
+
+/**
+ * The wallet header: which wallet this is, and the one account its primary
+ * actions act from.
+ *
+ * WHY ONE ACCOUNT AND NO TOTAL: a wallet holding 1 ETH and 1 SOL holds "2" of
+ * nothing. A cross-chain total is only meaningful in a currency the chains are
+ * priced in, and this app has no price feed — adding one would mean a network
+ * call on every dashboard entry and a headline number that is wrong whenever
+ * it is stale. So the header states what is true: the selected chain's account
+ * and that account's own balance, with the chain named above it.
+ *
+ * The account is reachable here as well as in its chain section, because the
+ * actions are here: a user who taps Send should not have to scroll to find out
+ * which address it will spend from.
+ */
+@Composable
+private fun WalletOverviewCard(
+    walletLabel: String,
+    profileName: String,
+    chain: ChainType?,
+    networkName: String?,
+    account: WalletAccountRecord?,
+    balance: BalanceResult?,
+    checking: Boolean,
+    copied: Boolean,
+    onCopy: () -> Unit,
+    onOpenNetwork: (ChainType) -> Unit,
+    onSend: (ChainType) -> Unit,
+    onReceive: (ChainType) -> Unit
+) {
+    val extras = LocalRoomExtras.current
+    RoomCard(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        withGradient = false
+    ) {
+        // fillMaxWidth, not just padding: RoomCard's content is a Box, so a
+        // wrapping Column would leave the Send / Receive Row below with no
+        // width to divide — weighted children need a bounded width.
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(38.dp)
+                        .clip(RoundedCornerShape(13.dp))
+                        .background(extras.primary.copy(alpha = 0.14f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Filled.AccountBalanceWallet,
+                        contentDescription = null,
+                        tint = extras.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(
+                        walletLabel,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = extras.textPrimary
+                    )
+                    if (profileName.isNotBlank()) {
+                        Text(
+                            "Profile: $profileName",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = extras.textSecondary
+                        )
+                    }
+                }
+            }
+            // No account to act from: the wallet itself is the whole header.
+            // The chain filter naming a chain this wallet holds nothing on is
+            // the way here, and the empty state below says so.
+            if (chain == null || account == null) return@Column
+            Spacer(Modifier.height(10.dp))
+            // The chain the actions below will use, and the way to change it.
+            // Naming the NETWORK too, not just the chain: which chain an
+            // address lives on is a property of its format, but which network
+            // it is read and spent on decides fees and whether the balance is
+            // real money.
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { onOpenNetwork(chain) }
+                    .padding(horizontal = 10.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Filled.Language,
+                    contentDescription = null,
+                    tint = extras.icon,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (networkName.isNullOrBlank()) {
+                        "${chain.displayName} · no network selected"
+                    } else {
+                        "${chain.displayName} · $networkName"
+                    },
+                    style = MaterialTheme.typography.labelLarge,
+                    color = extras.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "Change",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = extras.primary
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        account.label.ifBlank { chain.displayName },
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = extras.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        shortenAddress(account.address),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = extras.textSecondary,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    AccountBalance(balance = balance, checking = checking)
+                    WalletIconButton(
+                        label = if (copied) "Address copied" else "Copy address",
+                        icon = if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
+                        tint = if (copied) extras.primary else extras.icon,
+                        onClick = onCopy
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Button(
+                    onClick = { onSend(chain) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .semantics {
+                            contentDescription = "Send on ${chain.displayName}"
+                        }
+                ) { Text("Send") }
+                OutlinedButton(
+                    onClick = { onReceive(chain) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .semantics {
+                            contentDescription = "Receive on ${chain.displayName}"
+                        }
+                ) { Text("Receive") }
+            }
+        }
+    }
 }
 
 /**

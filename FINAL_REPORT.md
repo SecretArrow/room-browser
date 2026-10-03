@@ -306,6 +306,35 @@ pending, as instructed.
    The policy is narrowed rather than abandoned: the engine's rule is about
    SECRET key material, and a public key is published on chain with every
    signature this wallet makes.
+3. **The wallet header shows one account, not a portfolio total — DECIDED,
+   implemented.** The header used to name only the wallet file, while
+   Send / Receive were repeated under every chain section — so a wallet
+   holding five chains offered five identical pairs and no single place to
+   act. The header now carries the focused chain, that chain's active account
+   with its balance, and the one Send / Receive pair.
+
+   It deliberately carries **no cross-chain total**. A wallet holding 1 ETH
+   and 1 SOL holds "2" of nothing: a total is only meaningful in a currency
+   the chains are priced in, and this app has no price feed. Adding one would
+   mean a network call on every dashboard entry and a headline number that is
+   wrong whenever it is stale — the opposite of the honesty the rest of this
+   dashboard is built on.
+
+   The chain filter chips now choose the chain the actions act on, not only
+   what is listed. Two selectors that mean almost the same thing drift apart,
+   and the user would then be looking at one chain while the buttons spent on
+   another.
+
+   The trade is worth naming: with the filter on "All", Send and Receive act
+   on the first chain that holds an account, so reaching a second chain is now
+   one tap (its chip) where it used to be none. That tap buys one obvious
+   primary action instead of one per chain.
+
+   The "which chain, which account" rule lives in `WalletOverview`, a pure
+   object with unit tests. The unlocked dashboard never composes under the
+   instrumented suite — CI holds no device credential, so the wallet renders
+   its locked pane — which means these rules have no other way of being tested
+   at all.
 
 ### 5.2 Deferred, with reasons
 
