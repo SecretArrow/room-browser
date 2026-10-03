@@ -403,6 +403,24 @@ interface AgentDao {
     @Query("SELECT * FROM agent_sessions WHERE id = :id")
     suspend fun session(id: Long): AgentSessionEntity?
 
+    /**
+     * The chat bound to one tab, or null when that tab has none yet.
+     *
+     * At most one row should carry a given tab_id — the controller maintains
+     * that by detaching a chat before it binds another to the same tab — but
+     * nothing in the schema can enforce it (see AgentSessionEntity), so this
+     * reads the most recently touched row rather than assuming.
+     */
+    @Query(
+        "SELECT * FROM agent_sessions WHERE profile_id = :profileId AND tab_id = :tabId " +
+            "ORDER BY updated_at DESC LIMIT 1"
+    )
+    suspend fun sessionForTab(profileId: String, tabId: String): AgentSessionEntity?
+
+    /** Binds a chat to a tab, or detaches it with `tabId = ""`. Never deletes. */
+    @Query("UPDATE agent_sessions SET tab_id = :tabId WHERE id = :id")
+    suspend fun setTab(id: Long, tabId: String)
+
     @Insert
     suspend fun insertSession(entity: AgentSessionEntity): Long
 

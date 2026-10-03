@@ -62,6 +62,17 @@ class AgentToolExecutor(
     private val confirmGate: suspend (name: String, label: String) -> ActionVerdict
 ) : ToolExecutor {
 
+    /**
+     * The tab this turn is acting on right now: its start tab, or a tab the
+     * agent moved itself to since (see [bindTo]).
+     *
+     * The controller reads it when a turn ends, to tell "the user walked away
+     * from this chat while it ran" from "this chat's work moved to a tab of
+     * its own" — the two look identical from [BrowserViewModel.activeTabId]
+     * alone, and they want opposite treatment.
+     */
+    val currentTabId: String? get() = tabId
+
     override suspend fun execute(name: String, argsJson: String): ToolResult =
         withContext(Dispatchers.Main) {
             val args: Map<String, Any?> = parseArgs(argsJson)

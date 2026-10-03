@@ -42,7 +42,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         WalletActivityEntity::class,
         WalletActiveNetworkEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -352,6 +352,39 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v9 → v10: per-tab agent chats. Adds `agent_sessions.tab_id` plus
+         * the (profile_id, tab_id) index the per-tab lookup reads through.
+         *
+         * Purely additive: every existing chat gets the "" default, which is
+         * read as "not bound to a tab" — the chat stays in the history list
+         * and nothing is lost, but no tab claims it, so each tab starts its
+         * own conversation from the next message on.
+         *
+         * A binding outlives the tab it names: closing a tab leaves the chat
+         * bound to its id, and reopening a closed tab reuses that id (see
+         * BrowserViewModel.reopenClosedTab), so the conversation comes back
+         * with the tab. A chat bound to an id no live tab carries is simply
+         * not reachable until something reopens it — never wrong, only idle.
+         *
+         * `internal` rather than private so AgentSessionMigrationTest can run
+         * it against a database built back into its v9 shape. Nothing else in
+         * a fresh install ever executes this: a new install creates v10
+         * directly, so without that test no CI job would notice a migration
+         * that bricks the upgrade for everyone who already has the app.
+         */
+        internal val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `agent_sessions` ADD COLUMN `tab_id` TEXT NOT NULL DEFAULT ''"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_agent_sessions_profile_id_tab_id` " +
+                        "ON `agent_sessions` (`profile_id`, `tab_id`)"
+                )
+            }
+        }
+
         @Volatile
         private var instance: AppDatabase? = null
 
@@ -366,7 +399,7 @@ abstract class AppDatabase : RoomDatabase() {
                 .addMigrations(
                     MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4,
                     MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
-                    MIGRATION_8_9
+                    MIGRATION_8_9, MIGRATION_9_10
                 )
                 .build()
     }

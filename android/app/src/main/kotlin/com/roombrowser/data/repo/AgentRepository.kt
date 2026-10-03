@@ -11,8 +11,9 @@ import kotlinx.coroutines.flow.Flow
  * Agent persistence: providers (API keys stay encrypted at rest — see
  * com.roombrowser.agent.KeyStoreCrypto), chat sessions and messages.
  *
- * Sessions are profile-scoped; providers are app-global (they are
- * credentials/infrastructure, not browsing data).
+ * Sessions are profile-scoped AND, since v10, tab-scoped: a tab shows the
+ * chat bound to it, so switching tabs switches conversations. Providers are
+ * app-global (they are credentials/infrastructure, not browsing data).
  */
 class AgentRepository(private val db: AppDatabase) {
 
@@ -39,16 +40,37 @@ class AgentRepository(private val db: AppDatabase) {
 
     suspend fun session(id: Long): AgentSessionEntity? = dao.session(id)
 
+    /**
+     * The conversation of one tab, or null when that tab has none yet — the
+     * normal state of a freshly opened tab, and what makes it start a new
+     * chat instead of continuing someone else's.
+     *
+     * A blank [tabId] deliberately answers null and not the unbound rows:
+     * "" is the id of EVERY chat that is not bound to a tab, and a caller
+     * holding no tab must not be handed one of those as if it owned it.
+     */
+    suspend fun sessionForTab(profileId: String, tabId: String): AgentSessionEntity? =
+        if (tabId.isBlank()) null else dao.sessionForTab(profileId, tabId)
+
+    /**
+     * Binds [id] to [tabId], or detaches it with "" — after which no tab
+     * resolves to it and it lives on only in the history list. Detaching is
+     * how "start a new chat here" gives the tab up without deleting anything.
+     */
+    suspend fun bindSessionToTab(id: Long, tabId: String) = dao.setTab(id, tabId)
+
     suspend fun createSession(
         profileId: String,
         title: String,
         providerId: Long,
-        model: String
+        model: String,
+        tabId: String = ""
     ): Long {
         val now = System.currentTimeMillis()
         return dao.insertSession(
             AgentSessionEntity(
                 profileId = profileId,
+                tabId = tabId,
                 title = title.ifBlank { "Agent task" },
                 providerId = providerId,
                 model = model,

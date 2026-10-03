@@ -5,6 +5,7 @@ import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import com.roombrowser.RoomBrowserApp
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.data.db.AgentMessageEntity
@@ -230,6 +231,14 @@ class BrowserAgentController(
         private set
     var activeSessionId by mutableStateOf<Long?>(null)
         private set
+    /**
+     * The tab whose conversation is on screen, or null while none is
+     * resolved yet. Read by the panel to notice that the chat it is showing
+     * is not the one belonging to the tab behind it (which happens while a
+     * turn runs — see [onActiveTabChanged]).
+     */
+    var conversationTabId by mutableStateOf<String?>(null)
+        private set
     var providers by mutableStateOf<List<AgentProviderEntity>>(emptyList())
         private set
     var sessions by mutableStateOf<List<AgentSessionEntity>>(emptyList())
@@ -259,6 +268,16 @@ class BrowserAgentController(
     private var turnJob: Job? = null
 
     /**
+     * Which request owns the panel, as a counter rather than a flag.
+     *
+     * Bumped by everything that takes the panel over — a tab resolve, a turn
+     * being sent — so a resolve that was still reading the database when the
+     * panel changed hands can tell that its answer is stale and drop it. See
+     * [showTabConversation].
+     */
+    private var conversationRequest = 0L
+
+    /**
      * Whether this turn has already told the user that the local decision
      * gate could not answer. Reset per turn; see [gateFailure].
      */
@@ -286,6 +305,13 @@ class BrowserAgentController(
         }
         scope.launch {
             repo.observeSessions(profileId.value).collect { sessions = it }
+        }
+        // The panel follows the browser to whichever tab is on screen, so
+        // each tab keeps its own conversation. snapshotFlow keys off the
+        // Compose state itself, so this fires on a user tab switch, on the
+        // tab closing, and on the first restore alike.
+        scope.launch {
+            snapshotFlow { vm.activeTabId }.collect { onActiveTabChanged(it) }
         }
     }
 
@@ -457,19 +483,88 @@ class BrowserAgentController(
 
     // ------------------------------------------------------------- sessions
 
+    /**
+     * Starts a NEW conversation in the current tab.
+     *
+     * The chat this tab was showing is detached, not deleted: it goes back to
+     * the history list (reachable from the panel's history button) and the
+     * tab is left with no conversation, so the next message begins a fresh
+     * one. Without the detach the tab would still resolve to the old chat and
+     * this button would appear to do nothing.
+     */
     fun newSession() {
         if (running) return
+        // Takes the panel: any tab resolve still reading is now stale.
+        conversationRequest++
+        val previous = activeSessionId
         activeSessionId = null
         entries = emptyList()
+        if (previous != null) {
+            scope.launch { repo.bindSessionToTab(previous, "") }
+        }
     }
 
+    /**
+     * Opens a chat from the history list IN THE CURRENT TAB.
+     *
+     * One tab shows one conversation, so adopting a chat moves it here: the
+     * chat this tab was showing is detached (still in the list, no longer
+     * this tab's) and [id] takes its place. A chat picked while no tab is
+     * resolved is left as it was rather than detached from the tab that owns
+     * it — moving a conversation is only ever the user's doing.
+     */
     fun openSession(id: Long) {
         if (running) return
         scope.launch {
             val session = repo.session(id) ?: return@launch
+            // Takes the panel: any tab resolve still reading is now stale.
+            conversationRequest++
+            val tabId = vm.activeTabId
+            if (tabId != null) {
+                val previous = activeSessionId
+                if (previous != null && previous != id) repo.bindSessionToTab(previous, "")
+                repo.bindSessionToTab(id, tabId)
+                conversationTabId = tabId
+            }
             activeSessionId = session.id
             entries = repo.messages(id).mapNotNull(::entryFromRow)
         }
+    }
+
+    /**
+     * Points the panel at [tabId]'s conversation, creating nothing yet: a tab
+     * with no chat of its own shows an empty panel, and its chat row is
+     * written by the first message sent from it.
+     *
+     * Whoever takes the panel bumps [conversationRequest], and a resolve that
+     * finds the counter moved while it was reading applies nothing. Two
+     * things can overtake it, and both would be destructive: a faster tab
+     * switch (which would leave the wrong conversation on screen with nothing
+     * to say so) and a message being sent (which would erase the message the
+     * user just sent, because `entries` is the one list the panel draws).
+     */
+    private suspend fun showTabConversation(tabId: String) {
+        val token = ++conversationRequest
+        val session = repo.sessionForTab(profileId.value, tabId)
+        if (token != conversationRequest || vm.activeTabId != tabId) return
+        conversationTabId = tabId
+        activeSessionId = session?.id
+        entries = session?.let { repo.messages(it.id).mapNotNull(::entryFromRow) } ?: emptyList()
+    }
+
+    /**
+     * Follows the user to the tab they just opened.
+     *
+     * While a turn is RUNNING this does nothing, deliberately. `entries` is
+     * one list for the whole controller, so re-pointing it mid-turn would
+     * erase the running turn's progress from the screen — and the turn is
+     * usually the reason the panel is open at all. The panel therefore stays
+     * with the turn and re-binds when it ends (see [runTurn]); the header
+     * says so meanwhile.
+     */
+    private fun onActiveTabChanged(tabId: String?) {
+        if (running || tabId == null || tabId == conversationTabId) return
+        scope.launch { showTabConversation(tabId) }
     }
 
     fun deleteSession(id: Long) {
@@ -516,7 +611,15 @@ class BrowserAgentController(
             messages.value = "Pick a model for ${provider.name} first"
             return
         }
-        turnJob = scope.launch { runTurn(message, includePage, attachments, provider, model) }
+        // The tab is read HERE, on the user's own tap, and not inside the
+        // coroutine: runTurn suspends several times before it would get to
+        // it, and a tab switched in that window would bind the turn — and
+        // its new chat row — to the wrong tab.
+        val tabId = vm.activeTabId
+        // The turn takes the panel from here on: a tab resolve still in
+        // flight must not land on top of it and wipe the message below.
+        conversationRequest++
+        turnJob = scope.launch { runTurn(message, includePage, attachments, provider, model, tabId) }
     }
 
     fun stop() {
@@ -539,7 +642,9 @@ class BrowserAgentController(
         includePage: Boolean,
         attachments: List<AgentAttachment>,
         provider: AgentProviderEntity,
-        model: String
+        model: String,
+        // The tab the user was on when they sent; see [send].
+        tabId: String?
     ) {
         // The turn runs on the STORED settings, not on the [settings] mirror.
         // The mirror starts at defaults and is filled asynchronously, and this
@@ -577,6 +682,14 @@ class BrowserAgentController(
         }
         var streamingIndex = -1
         try {
+            // The turn belongs to the tab it was started from. Every tool
+            // resolves its engine from this id rather than from whatever is on
+            // screen, so a tab switch mid-turn can no longer retarget the rest
+            // of it, and the engine is pinned so the live-engine budget cannot
+            // evict the page out from under the turn either. Pinned inside the
+            // try so the finally below lifts it even if a step from here on
+            // throws.
+            vm.pinTabForAgent(tabId)
             // "Delete all agent chats" can run in the settings ACTIVITY while
             // a session is active here — verify it still exists, else start a
             // fresh one instead of writing to a dead row (FK safety).
@@ -586,22 +699,20 @@ class BrowserAgentController(
                     profileId = profileId.value,
                     title = text.take(64),
                     providerId = provider.id,
-                    model = model
-                ).also { activeSessionId = it }
+                    model = model,
+                    // The new chat belongs to this tab, so coming back to the
+                    // tab brings the conversation back with it.
+                    tabId = tabId.orEmpty()
+                ).also {
+                    activeSessionId = it
+                    tabId?.let { id -> conversationTabId = id }
+                }
             repo.addMessage(sessionId, "user", display)
 
             val apiKey = apiKeyFor(provider).orEmpty()
-            // The turn belongs to the tab it was started from. Every tool
-            // resolves its engine from this id rather than from whatever is on
-            // screen, so a tab switch mid-turn can no longer retarget the rest
-            // of it, and the engine is pinned so the live-engine budget cannot
-            // evict the page out from under the turn either. The pin is lifted
-            // in the finally below.
-            val turnTabId = vm.activeTabId
-            vm.pinTabForAgent(turnTabId)
             val executor = AgentToolExecutor(
                 vm = vm,
-                tabId = turnTabId,
+                tabId = tabId,
                 onStatus = { setStatus(it) },
                 confirmGate = { name, label -> gate(name, label) }
             )
@@ -712,6 +823,28 @@ class BrowserAgentController(
                 }
             }
             repo.touchSession(sessionId)
+            // The turn finished, so the panel belongs to the user again: if
+            // they moved to another tab while it ran, that tab's conversation
+            // takes the screen now.
+            //
+            // On the SUCCESS path only. The catch below appends an error
+            // notice and stop() appends "stopped by user", and both of those
+            // live in `entries` alone — re-binding there would wipe the very
+            // line that explains what happened, and would do it fastest
+            // exactly when something went wrong.
+            //
+            // Only when the user moved, too. A turn that opened its own tab
+            // leaves that tab on screen (Tahap 1), and re-binding to it would
+            // swap this chat's answer for that tab's empty conversation at
+            // the worst possible moment; `executor.currentTabId` is where the
+            // turn's work ended, so an active tab that is neither it nor this
+            // chat's own tab is the user's doing.
+            val nowActive = vm.activeTabId
+            if (nowActive != null && nowActive != conversationTabId &&
+                nowActive != executor.currentTabId
+            ) {
+                showTabConversation(nowActive)
+            }
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {

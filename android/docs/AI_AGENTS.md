@@ -45,6 +45,31 @@ While a task is actively running the pill always appears (live progress
 stays visible) and hides again when the turn finishes. The agent itself
 remains reachable at any time from the page menu (⚙) → *AI Agents*.
 
+### Chats are per-tab
+
+Each browser tab keeps **its own conversation**. Switching tabs switches the
+chat in the panel; opening a fresh tab starts an empty one. A chat is written
+to the database on the first message sent from a tab, and it stays that tab's
+chat — so coming back to a tab brings its conversation back with it, and
+closing then **reopening a tab** (which reuses the tab's id) restores the chat
+too.
+
+* **New chat (+)** gives the tab up rather than deleting anything: the current
+  conversation moves to the history list and the tab starts a fresh one.
+* **History** lists every chat of the profile. Tapping one **adopts it into
+  the current tab**, so a conversation started elsewhere can be picked up
+  here; the chat this tab was showing goes back to the list.
+* **While a turn runs**, the panel stays with that turn even if you switch
+  tabs — the header then reads *Running in another tab* — and it returns to
+  the current tab's chat when the turn finishes. One conversation is live at
+  a time; running several turns at once is not supported yet.
+* An unsent draft (and any attached files) belongs to the tab it was typed
+  in, and is dropped when you switch away rather than being filed under
+  another tab's chat.
+
+Chats written before per-tab chats existed are unbound: they are in the
+history list as before, but no tab claims them.
+
 ## Providers & models (manual input, like opencode)
 
 Any **OpenAI-compatible** endpoint works. In *AI Agent settings → Add
@@ -71,22 +96,35 @@ responses are accepted as a fallback automatically.
 
 ## What the agent can do (tool catalogue)
 
+EVERY tool acts on the chat's own tab — the tab the turn was started from —
+and never on "whatever is on screen". A turn therefore survives you switching
+tabs, and cannot be retargeted by it. Tools that READ or navigate a page are
+listed below; the two that must have their tab on screen are marked.
+
 | Tool | Effect |
 |---|---|
-| `navigate(url)` | Load a URL in the current tab (waits for page finish) |
-| `search_web(query)` | Runs the profile's search engine |
+| `navigate(url)` | Load a URL in this chat's tab (waits for page finish) — *needs the tab on screen* |
+| `search_web(query)` | Runs the profile's search engine — *needs the tab on screen* |
 | `read_page()` | Extracts URL, title, visible text and every interactive element with a `[ref]` number |
-| `click(ref)` | Clicks element `[ref]` (scrolls it into view first) |
-| `fill_input(ref, text)` | Types into inputs/textareas — uses the native value setter so React/Vue forms register it |
-| `press_enter(ref?)` | Submits the focused / given form |
+| `click(ref)` | Clicks element `[ref]` (scrolls it into view first) — *needs the tab on screen* |
+| `fill_input(ref, text)` | Types into inputs/textareas — uses the native value setter so React/Vue forms register it — *needs the tab on screen* |
+| `press_enter(ref?)` | Submits the focused / given form — *needs the tab on screen* |
 | `scroll(direction, amount?)` | Scrolls the page |
-| `go_back()` | History back |
-| `open_new_tab(url?)`, `list_tabs()`, `switch_tab(index)`, `close_tab()` | Tab management |
-| `auto_like()` | Likes/upvotes the posts **currently visible** on the page (X, Facebook, Reddit, Tumblr, LinkedIn…) — up to 20 per call; scroll then repeat to continue |
-| `auto_repost()` | Reposts/retweets/reblogs/shares the visible posts — up to 15 per call |
-| `auto_reply(text)` | Types the text into the visible reply box and submits it |
-| `auto_post(text)` | Opens the composer, types a new post/status/tweet and submits it |
+| `go_back()` | History back — *needs the tab on screen* |
+| `open_new_tab(url?)`, `list_tabs()`, `switch_tab(index)`, `close_tab()` | Tab management. `list_tabs` marks which tab is *this chat* and which is *on screen*; `close_tab` closes the chat's own tab |
+| `auto_like()` | Likes/upvotes the posts **currently visible** on the page (X, Facebook, Reddit, Tumblr, LinkedIn…) — up to 20 per call; scroll then repeat to continue — *needs the tab on screen* |
+| `auto_repost()` | Reposts/retweets/reblogs/shares the visible posts — up to 15 per call — *needs the tab on screen* |
+| `auto_reply(text)` | Types the text into the visible reply box and submits it — *needs the tab on screen* |
+| `auto_post(text)` | Opens the composer, types a new post/status/tweet and submits it — *needs the tab on screen* |
 | `wait(ms)` | Waits for post-submit animations / infinite-scroll loading before reading again |
+
+A tool marked *needs the tab on screen* waits up to 8 seconds for its tab to
+come to the front, then refuses with an explanation. The reason is concrete:
+the browser hosts a WebView engine only while its tab is on screen, so
+starting a page load on a background tab can wedge that tab permanently. The
+tools without the mark are pure page-script or bookkeeping calls and are safe
+on a background engine, which is what lets a turn keep working while you read
+something else.
 
 Element interaction uses the numbered-reference model (every visible
 interactive element is tagged `data-agent-ref` by injected JS — the same
@@ -328,10 +366,13 @@ app (default process — agent settings activities, no WebView)
                           AgentSessionsActivity (own windows)
 ```
 
-Room schema **v3** adds the `protocol` column to `agent_providers`
-(`OPENAI` | `OPENCODE`, default `OPENAI`) — lossless additive migrations
-(v1→v2 agent tables, v2→v3 protocol). Sessions are profile-scoped;
-providers are app-global credentials.
+Room schema **v3** added the `protocol` column to `agent_providers`
+(`OPENAI` | `OPENCODE`, default `OPENAI`); **v10** added
+`agent_sessions.tab_id` plus its `(profile_id, tab_id)` index, which is what
+makes chats per-tab. All of these are lossless additive migrations (v1→v2
+agent tables, v2→v3 protocol, v9→v10 tab chats) — existing chats get the `""`
+tab and stay in the history list. Providers are app-global credentials;
+sessions are scoped to a profile and a tab.
 
 ## Tests
 
@@ -364,6 +405,11 @@ providers are app-global credentials.
   flips the Local decision gate and YOLO switches and checks that YOLO's
   warning paragraph actually renders while it is on,
   and opens the chat-history activity.
+  `AgentTabSessionTest` — the per-tab chat queries against a real Room
+  database: a tab resolving to its OWN conversation and not another's, a
+  detached chat staying in the history list, adopting a chat moving it off
+  the tab that had it, the same tab id under two profiles staying two
+  conversations, and a blank tab id never resolving to an unbound chat.
 
 ## Tips
 

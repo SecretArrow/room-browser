@@ -176,7 +176,7 @@ data class CustomThemeEntity(
 )
 
 // =========================================================================
-// AI AGENT (autonomous browsing assistant) — schema v2
+// AI AGENT (autonomous browsing assistant) — schema v2, chats per-tab since v10
 // =========================================================================
 
 /**
@@ -229,14 +229,33 @@ data class AgentProviderEntity(
     }
 }
 
-/** One agent chat session, scoped to a profile. */
+/**
+ * One agent chat session, scoped to a profile AND — normally — to one tab.
+ *
+ * `tab_id` is the tab whose conversation this is. A tab resolves the chat it
+ * shows through it (AgentRepository.sessionForTab), which is what makes
+ * switching tabs switch conversations rather than continue the one before.
+ *
+ * `""` means the chat belongs to no tab: every chat written before per-tab
+ * chats existed reads as "", and so does one the user detached by starting a
+ * new chat in that tab. Those are exactly the rows the history list is for.
+ *
+ * The id is kept even when its tab is closed, so reopening the tab (which
+ * reuses the id) brings the conversation back with it.
+ *
+ * Deliberately NOT unique on (profile_id, tab_id): all of a profile's
+ * unbound chats share the "" value, so a unique index would leave a profile
+ * room for precisely one history entry.
+ */
 @Entity(
     tableName = "agent_sessions",
-    indices = [Index("profile_id")]
+    indices = [Index("profile_id"), Index("profile_id", "tab_id")]
 )
 data class AgentSessionEntity(
     @PrimaryKey(autoGenerate = true) @ColumnInfo(name = "id") val id: Long = 0,
     @ColumnInfo(name = "profile_id") val profileId: String,
+    /** The owning tab's id, or "" when this chat is not bound to a tab. */
+    @ColumnInfo(name = "tab_id", defaultValue = "") val tabId: String = "",
     @ColumnInfo(name = "title") val title: String,
     @ColumnInfo(name = "provider_id") val providerId: Long,
     @ColumnInfo(name = "model") val model: String,

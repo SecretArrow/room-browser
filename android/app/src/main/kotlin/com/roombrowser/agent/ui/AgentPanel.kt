@@ -86,6 +86,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -200,6 +201,7 @@ fun AgentPanelHost(
                 Column(Modifier.fillMaxSize()) {
                     AgentPanelHeader(
                         agent = agent,
+                        activeTabId = viewModel.activeTabId,
                         onCollapse = { onExpandedChange(false) },
                         onNewSession = { agent.newSession() },
                         onOpenSessions = onOpenSessions,
@@ -212,12 +214,19 @@ fun AgentPanelHost(
                             .weight(1f)
                             .fillMaxWidth()
                     )
-                    AgentComposer(
-                        agent = agent,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .imePadding()
-                    )
+                    // Keyed on the tab so unsent input cannot follow the user
+                    // into another tab's conversation: the composer text and
+                    // its attached files are remembered across tab switches
+                    // otherwise, and the next Send would file them under a
+                    // chat they were never written for.
+                    key(viewModel.activeTabId) {
+                        AgentComposer(
+                            agent = agent,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .imePadding()
+                        )
+                    }
                 }
             }
         } else if (agent.settings.showAgentButton || agent.running) {
@@ -388,6 +397,7 @@ private fun AgentStatusPill(
 @Composable
 private fun AgentPanelHeader(
     agent: BrowserAgentController,
+    activeTabId: String?,
     onCollapse: () -> Unit,
     onNewSession: () -> Unit,
     onOpenSessions: () -> Unit,
@@ -428,6 +438,21 @@ private fun AgentPanelHeader(
                     .semantics { contentDescription = "agent_model" }
                     .padding(vertical = 8.dp)
             )
+            // While a turn runs the panel stays with it, even if the user
+            // walks off to another tab — otherwise the running work would
+            // vanish from the screen it was started on. Says so, because a
+            // conversation that ignores the tab behind it otherwise reads as
+            // a bug.
+            val shown = agent.conversationTabId
+            if (agent.running && shown != null && shown != activeTabId) {
+                Text(
+                    "Running in another tab",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
         IconButton(onClick = onNewSession) {
             Icon(Icons.Filled.Add, contentDescription = "New agent chat")
