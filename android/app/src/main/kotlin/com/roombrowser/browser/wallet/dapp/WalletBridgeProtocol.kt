@@ -835,13 +835,46 @@ object WalletBridgeProtocol {
      * the bridge's silent auto-approve path AND documented as the shape the
      * engine settles prompted Connect outcomes with, so both paths agree:
      * EVM `["0x…"]` (EIP-1193), Solana `{"publicKey":"…"}` (Phantom),
-     * Aptos `{"address":"…"}`, Sui `["…"]`, Tron `{"address":"…"}`.
+     * Aptos `{"address":"…","publicKey":"…"}`, Sui `["…"]`,
+     * Tron `{"address":"…"}`, Bitcoin `{"address":"…","publicKey":"…"}`,
+     * Cosmos `{"address":"…","publicKey":"…"}`.
+     *
+     * The Cosmos object never reaches a page as-is: `window.keplr.enable`
+     * rewraps this value into the `[Key]` array Keplr resolves with, and
+     * builds each Key from the address and pubKey on it. The key therefore
+     * has to ride here — `enable()` is how most Cosmos dApps get their first
+     * Key, and a wallet that answers it with a null pubKey is a wallet whose
+     * offline signer cannot be constructed.
+     *
+     * [publicKey] is the account's public key as lowercase hex, and is
+     * carried ONLY for the chains whose dApp conventions publish one —
+     * see [WalletEngineApi.publicKeyOf] for why that is Cosmos, Aptos and
+     * Bitcoin and not the others. It stays optional in the payload rather
+     * than becoming a null field: a dApp that reads `account.publicKey`
+     * gets a string when the key is available and `undefined` when it is
+     * not, which is what it would see against a wallet that never had one,
+     * and neither is a shape it can mistake for a real key.
      */
-    fun connectSuccessResult(chainType: ChainType, address: String): String = when (chainType) {
+    fun connectSuccessResult(
+        chainType: ChainType,
+        address: String,
+        publicKey: String? = null
+    ): String = when (chainType) {
         ChainType.EVM, ChainType.SUI -> JsonArray(listOf(JsonPrimitive(address))).toString()
         ChainType.SOLANA -> buildJsonObject { put("publicKey", address) }.toString()
-        ChainType.APTOS, ChainType.TRON -> buildJsonObject { put("address", address) }.toString()
-        else -> JsonPrimitive(address).toString()
+        ChainType.APTOS -> buildJsonObject {
+            put("address", address)
+            publicKey?.let { put("publicKey", it) }
+        }.toString()
+        ChainType.BITCOIN -> buildJsonObject {
+            put("address", address)
+            publicKey?.let { put("publicKey", it) }
+        }.toString()
+        ChainType.COSMOS -> buildJsonObject {
+            put("address", address)
+            publicKey?.let { put("publicKey", it) }
+        }.toString()
+        ChainType.TRON -> buildJsonObject { put("address", address) }.toString()
     }
 
     /** The page-visible value of `eth_accounts` for a permitted host. */
@@ -850,17 +883,29 @@ object WalletBridgeProtocol {
 
     /**
      * The page-visible value of Keplr's `getKey` for a permitted host: the
-     * `Key` shape Keplr dApps read. `pubKey` is NULL on purpose — the engine
-     * never hands key material (or anything derived from a private key except
-     * a signature) to the bridge, so this wallet cannot publish the compressed
-     * public key. A dApp that needs it for offline fee/sign-doc construction
-     * must either fetch the signer's pubkey from the chain or use
-     * signAmino/signDirect, which the wallet answers with a real signature.
+     * `Key` shape Keplr dApps read.
+     *
+     * `pubKey` is the account's compressed secp256k1 public key as lowercase
+     * hex when [publicKey] is supplied, and JSON null when it is not. Keplr
+     * itself hands dApps a `Uint8Array` here, so the injected script converts
+     * the hex to bytes before the page ever sees it — hex is a transport
+     * detail of this bridge, never part of the dApp-facing shape.
+     *
+     * The key is not secret: it is published on chain with every signature
+     * this wallet produces, and Keplr, Leap and every other Cosmos wallet
+     * return it from this exact call. It is also load-bearing — a CosmJS
+     * client puts the signer's pubkey INSIDE the sign doc it builds, so a
+     * wallet that returns null here cannot complete a `signDirect` flow at
+     * all. Null is therefore a degraded answer, kept only for the case where
+     * the account's key material cannot be read (a locked wallet, an account
+     * that has since been removed): the address-only flows still work, and a
+     * dApp that needs the key sees it is missing rather than being told a
+     * wrong one.
      */
-    fun keplrKeyResult(address: String): String = buildJsonObject {
+    fun keplrKeyResult(address: String, publicKey: String? = null): String = buildJsonObject {
         put("name", "Room Browser")
         put("algo", "secp256k1")
-        put("pubKey", JsonNull)
+        if (publicKey.isNullOrBlank()) put("pubKey", JsonNull) else put("pubKey", publicKey)
         put("address", address)
         put("bech32Address", address)
         put("isNanoLedger", false)

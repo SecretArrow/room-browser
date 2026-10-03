@@ -41,6 +41,16 @@ package com.roombrowser.browser.wallet.dapp
  *    their native counterparts. The tronWeb shim is deliberately NOT the
  *    TronWeb SDK — see the comment at its definition for the exact limit.
  *
+ * PUBLIC KEYS: the chains whose dApp conventions publish one — Cosmos, Aptos
+ * and Bitcoin — get a real public key here, derived by the engine from the
+ * account's own key material and transported as hex. The page never sees the
+ * hex: Keplr's `pubKey` and CosmJS's `pubkey` are `Uint8Array`s, so the
+ * conversion happens in this script (see `hexToBytes`). EVM is left out
+ * because EIP-1193 has no public-key call at all — a dApp recovers the signer
+ * from the signature — and Solana because its address already IS the key.
+ * A locked wallet yields the address-only answer these calls gave before the
+ * key existed, never an error.
+ *
  * PROTOCOL (see [WalletBridgeProtocol] for the native codec):
  *  - Every provider call wraps `{id, kind: "request"|"rpc", chain, method,
  *    params}` into JSON and calls `window.RoomWallet.request(json)`; the
@@ -123,7 +133,12 @@ object RoomWalletScript {
       evmConnected: false,
       solanaPublicKey: null,
       aptosAddress: null,
+      aptosPublicKey: null,
       cosmosAddress: null,
+      // Bytes, not hex: these are cached in exactly the form the page is
+      // handed, so a re-read after a push can never disagree with the first
+      // answer over an encoding.
+      cosmosPubKey: null,
       bitcoinAddress: null,
       tronAddress: null
     };
@@ -219,6 +234,50 @@ object RoomWalletScript {
         }
       } catch (e) {}
       return null;
+    }
+
+    // The public key a CONNECT result carries, for the chains whose dApp
+    // conventions publish one: Cosmos, Aptos, Bitcoin. Absent — not null —
+    // for the rest, which is why this is read defensively rather than through
+    // a field that is always there. Keplr's getKey is the one key-bearing
+    // result this does not serve; its field is `pubKey`, not `publicKey`, and
+    // it is converted at its own call site.
+    function publicKeyOf(value) {
+      try {
+        if (value && typeof value === 'object' &&
+            typeof value.publicKey === 'string' && value.publicKey) {
+          return value.publicKey;
+        }
+      } catch (e) {}
+      return null;
+    }
+
+    // The bridge carries byte payloads as hex text, because JSON has no byte
+    // type — but every dApp-facing shape that reads a public key is a
+    // Uint8Array (Keplr's pubKey, CosmJS's pubkey). The conversion belongs on
+    // this side of the page boundary, so the page never sees the transport
+    // encoding. Returns null for anything that is not clean, even-length hex:
+    // a partial or NaN-filled buffer would be a wrong key rather than a
+    // missing one, and a verifier cannot tell those apart.
+    //
+    // Validated character by character rather than with a regex, because this
+    // whole script is a Kotlin raw string: a dollar sign anywhere in it would
+    // be read as interpolation, and a test pins the script to containing none.
+    var HEX_DIGITS = '0123456789abcdefABCDEF';
+    function hexToBytes(hex) {
+      if (typeof hex !== 'string' || !hex || hex.length % 2 !== 0) return null;
+      for (var i = 0; i < hex.length; i++) {
+        if (HEX_DIGITS.indexOf(hex.charAt(i)) < 0) return null;
+      }
+      try {
+        var out = new Uint8Array(hex.length / 2);
+        for (var j = 0; j < out.length; j++) {
+          out[j] = parseInt(hex.substr(j * 2, 2), 16);
+        }
+        return out;
+      } catch (e) {
+        return null;
+      }
     }
 
     // Base58 (Bitcoin alphabet) decode, for PublicKey.toBytes(). Returns
@@ -345,13 +404,20 @@ object RoomWalletScript {
         } else if (entry.method === 'connect' || entry.method === 'requestAccounts' || entry.method === 'enable') {
           var address = addressOf(value);
           if (address === null) return;
+          var pub = publicKeyOf(value);
           if (entry.chain === CHAIN_SOLANA) {
             state.solanaPublicKey = solanaPublicKeyOf(address);
           } else if (entry.chain === CHAIN_APTOS) {
             state.aptosAddress = address;
+            state.aptosPublicKey = pub;
           } else if (entry.chain === CHAIN_COSMOS) {
             state.cosmosAddress = address;
+            state.cosmosPubKey = hexToBytes(pub);
           } else if (entry.chain === CHAIN_BITCOIN) {
+            // No cached public key alongside it: nothing reads one without
+            // the connect result in hand (BitcoinProvider.getAccounts
+            // resolves addresses only), and a field nothing reads is a field
+            // that drifts.
             state.bitcoinAddress = address;
           } else if (entry.chain === CHAIN_TRON) {
             state.tronAddress = address;
@@ -455,7 +521,9 @@ object RoomWalletScript {
           // prove about them: whatever they cached is no longer current.
           state.solanaPublicKey = null;
           state.aptosAddress = null;
+          state.aptosPublicKey = null;
           state.cosmosAddress = null;
+          state.cosmosPubKey = null;
           state.bitcoinAddress = null;
           state.tronAddress = null;
           dispatch('solana', 'accountChanged', null);
@@ -579,10 +647,17 @@ object RoomWalletScript {
         return send(CHAIN_APTOS, 'request', 'connect', []);
       },
       account: function () {
-        return Promise.resolve({
-          address: state.aptosAddress,
-          publicKey: state.aptosAddress
-        });
+        // Both halves come from the connect result. publicKey used to be set
+        // to the ADDRESS, which is not a public key and is not a shape any
+        // Aptos client can use — it is a 32-byte hex string where an ed25519
+        // key belongs, and nothing about it says it is the wrong value. It is
+        // omitted rather than nulled when the engine could not read the key,
+        // so a dApp's `if (!account.publicKey)` sees the same thing either way.
+        var account = { address: state.aptosAddress };
+        if (typeof state.aptosPublicKey === 'string' && state.aptosPublicKey) {
+          account.publicKey = state.aptosPublicKey;
+        }
+        return Promise.resolve(account);
       },
       signMessage: function (input) {
         var src = input && typeof input === 'object' ? input : {};
@@ -669,15 +744,15 @@ object RoomWalletScript {
 
     var cosmosEvents = eventsFor('cosmos');
 
-    function keplrKey(address) {
+    // pubKey is BYTES, matching Keplr: a CosmJS client copies it straight into
+    // the sign doc it builds, so a hex string here is a sign doc that fails to
+    // encode. [pubKey] is already-converted bytes (or null) — the bridge
+    // transports the key as hex and the callers convert it once, above.
+    function keplrKey(address, pubKey) {
       return {
         name: 'Room Browser',
         algo: 'secp256k1',
-        // The engine hands the bridge no public key, so this wallet cannot
-        // publish one (see WalletBridgeProtocol.keplrKeyResult). dApps that
-        // need the compressed pubkey must read it from the chain or sign
-        // through signAmino/signDirect.
-        pubKey: null,
+        pubKey: pubKey || null,
         address: address,
         bech32Address: address,
         isNanoLedger: false,
@@ -710,14 +785,13 @@ object RoomWalletScript {
           return window.keplr.getKey(id).then(function (key) {
             var address = key && typeof key.bech32Address === 'string' ? key.bech32Address : null;
             if (address === null) throw bridgeError(-32603, 'Cosmos key returned no address');
-            // pubKey is null for the reason keplrKey documents: the engine
-            // does not publish public keys. Address-only flows work; a
-            // CosmJS client that needs the pubkey to BUILD a sign doc cannot
-            // be served by this wallet yet.
+            // pubkey is what CosmJS puts INSIDE the sign doc, so a client
+            // cannot build one without it. It is bytes, or null for the
+            // degraded address-only answer getKey documents.
             return [{
               address: address,
               algo: key && typeof key.algo === 'string' ? key.algo : 'secp256k1',
-              pubkey: key ? key.pubKey : null
+              pubkey: key && key.pubKey ? key.pubKey : null
             }];
           });
         },
@@ -745,13 +819,24 @@ object RoomWalletScript {
           var address = addressOf(value);
           if (address === null) throw bridgeError(-32603, 'Cosmos connect returned no address');
           state.cosmosAddress = address;
-          return [keplrKey(address)];
+          var pubKey = hexToBytes(publicKeyOf(value));
+          state.cosmosPubKey = pubKey;
+          return [keplrKey(address, pubKey)];
         });
       },
       getKey: function (chainId) {
         var params = { chainId: typeof chainId === 'string' ? chainId : null };
         return send(CHAIN_COSMOS, 'request', 'getKey', params).then(function (key) {
           if (key && typeof key.bech32Address === 'string') state.cosmosAddress = key.bech32Address;
+          // The engine sends pubKey as hex; Keplr resolves with a Uint8Array.
+          // Converted in place so any field the engine adds later survives,
+          // and cached in the converted form — signArbitrary and a repeated
+          // getKey then hand the page the same bytes rather than re-encoding.
+          if (key && typeof key === 'object') {
+            var pubKey = hexToBytes(key.pubKey);
+            key.pubKey = pubKey;
+            state.cosmosPubKey = pubKey;
+          }
           return key;
         });
       },
@@ -803,9 +888,12 @@ object RoomWalletScript {
         };
         try { params.message = wrapMessage(data); } catch (e) {}
         return send(CHAIN_COSMOS, 'request', 'signArbitrary', params).then(function (signature) {
-          // pub_key is null for the same reason as getKey's: the engine does
-          // not expose public keys.
-          return { signature: String(signature), pub_key: null };
+          // Keplr resolves with {signature, pub_key}, and an off-chain
+          // verifier needs the pub_key to check the signature without a chain
+          // round-trip. It is the key the last enable/getKey resolved with; a
+          // page that signs without ever asking for the key gets null, which
+          // is a missing field rather than a wrong one.
+          return { signature: String(signature), pub_key: state.cosmosPubKey };
         });
       },
       on: cosmosEvents.on,
@@ -834,7 +922,14 @@ object RoomWalletScript {
           var address = addressOf(value);
           if (address === null) throw bridgeError(-32603, 'Bitcoin connect returned no address');
           state.bitcoinAddress = address;
-          return { address: address, publicKey: null };
+          var publicKey = publicKeyOf(value);
+          // The compressed pubkey, hex — what every Bitcoin wallet's connect
+          // hands back, and what a PSBT signer needs to match inputs to this
+          // account. Absent rather than null when the engine could not read
+          // it, so a dApp's presence check behaves identically either way.
+          var account = { address: address };
+          if (publicKey !== null) account.publicKey = publicKey;
+          return account;
         });
       },
       getAccounts: function () {

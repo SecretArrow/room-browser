@@ -406,6 +406,34 @@ interface WalletEngineApi {
     suspend fun revealMnemonic(): String?
 
     /**
+     * The account's PUBLIC key as lowercase hex, for the chains whose dApp
+     * conventions publish one: Cosmos (compressed secp256k1, the `pubKey`
+     * Keplr's `getKey` returns and CosmJS's `getAccounts` needs to build a
+     * sign doc), Aptos (ed25519, `account().publicKey`) and Bitcoin
+     * (compressed secp256k1, `connect().publicKey`).
+     *
+     * Returns null on the chains that never publish one, and null for any
+     * account whose key material cannot be read — a locked wallet, or an
+     * account id that no longer exists. Null is not an error: every caller
+     * degrades to the address-only answer it gave before this existed.
+     *
+     * EVM is deliberately excluded, and not because it would be hard: EIP-1193
+     * has no public-key call at all. A dApp recovers the signer from the
+     * signature with `ecrecover`, so MetaMask never sends one and neither does
+     * this wallet — `eth_accounts` stays the whole of what an EVM page learns
+     * about the account. Solana is excluded for the opposite reason: its
+     * address IS the base58 public key, and the connect result already carries
+     * it in the `publicKey` field Phantom uses.
+     *
+     * A public key is not secret. It is published on chain alongside every
+     * signature this wallet makes, and handing it to a dApp grants no ability
+     * to sign, to spend, or to derive the private key. The engine's rule about
+     * key material is about SECRET material, and this method is the boundary
+     * being drawn precisely rather than widened.
+     */
+    suspend fun publicKeyOf(accountId: String): String?
+
+    /**
      * Everything a wallet-keys export needs: the phrase, plus every account
      * with its path and — for imported ones only — its private key.
      *

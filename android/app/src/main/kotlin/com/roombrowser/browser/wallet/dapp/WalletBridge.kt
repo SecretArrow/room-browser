@@ -6,6 +6,7 @@ import android.os.SystemClock
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import com.roombrowser.browser.wallet.DappOutcome
+import com.roombrowser.browser.wallet.WalletAccountRecord
 import com.roombrowser.browser.wallet.WalletBridgeError
 import com.roombrowser.browser.wallet.WalletEngineApi
 import com.roombrowser.domain.engine.UrlIntelligence
@@ -263,6 +264,37 @@ class WalletBridge(
         }
     }
 
+    /**
+     * Settles one call whose payload needs the account's PUBLIC key.
+     *
+     * The key is derived by the engine from the account's own key material,
+     * which is a suspend call, so this answer is pushed from [relayScope]
+     * instead of being written inline the way the address-only replies are.
+     * Ordering stays sane: [respondSuccess] is main-confined, the page sees
+     * exactly one response per id, and nothing else can settle this call.
+     *
+     * A NULL KEY IS NOT AN ERROR — that is the whole point of the signature.
+     * Every call that reaches here has a working address-only answer; the key
+     * is additive. A locked wallet, or an account whose key cannot be read,
+     * therefore degrades to exactly the result this bridge produced before the
+     * key existed, rather than failing a connect that used to succeed.
+     */
+    private fun settleWithPublicKey(
+        id: String,
+        account: WalletAccountRecord,
+        build: (String?) -> String
+    ) {
+        val engine = engineProvider()
+        if (engine == null) {
+            respondSuccess(id, build(null))
+            return
+        }
+        relayScope.launch {
+            val hex = runCatching { engine.publicKeyOf(account.id) }.getOrNull()
+            respondSuccess(id, build(hex))
+        }
+    }
+
     private fun handleDappCall(call: WalletDappCall, host: String, originUrl: String) {
         val engine = engineProvider()
         if (engine == null) {
@@ -305,7 +337,9 @@ class WalletBridge(
                 )
                 return
             }
-            respondSuccess(call.id, WalletBridgeProtocol.keplrKeyResult(primary.address))
+            settleWithPublicKey(call.id, primary) { hex ->
+                WalletBridgeProtocol.keplrKeyResult(primary.address, hex)
+            }
             return
         }
 
@@ -334,7 +368,11 @@ class WalletBridge(
                 WalletBridgeProtocol.permissionMethodFor(call.chainType)
             )
         ) {
-            respondSuccess(call.id, WalletBridgeProtocol.connectSuccessResult(call.chainType, primary.address))
+            // Same shape the engine settles a PROMPTED connect with, key and
+            // all — so a dApp cannot tell the two paths apart.
+            settleWithPublicKey(call.id, primary) { hex ->
+                WalletBridgeProtocol.connectSuccessResult(call.chainType, primary.address, hex)
+            }
             return
         }
 

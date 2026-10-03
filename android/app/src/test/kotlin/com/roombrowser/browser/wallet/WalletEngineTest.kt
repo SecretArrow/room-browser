@@ -4,7 +4,11 @@ import com.google.common.truth.Truth.assertThat
 import com.roombrowser.domain.export.WalletBackup
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.wallet.chains.ChainRegistry
+import com.roombrowser.domain.wallet.chains.bitcoin.BitcoinAdapter
+import com.roombrowser.domain.wallet.chains.cosmos.CosmosAdapter
 import com.roombrowser.domain.wallet.chains.evm.EvmAdapter
+import com.roombrowser.domain.wallet.crypto.Hashes
+import com.roombrowser.domain.wallet.crypto.Hex
 import com.roombrowser.domain.wallet.crypto.Mnemonics
 import com.roombrowser.domain.wallet.model.BalanceResult
 import com.roombrowser.domain.wallet.model.BroadcastResult
@@ -760,6 +764,62 @@ class WalletEngineTest {
         assertThat(outcomes[1].error).isNull()
         assertThat(outcomes[1].resultJson).isEqualTo("""{"address":"$TRON0"}""")
     }
+
+    /**
+     * The property a dApp depends on is that the key it is handed is the key
+     * BEHIND the address it was given, so each case is checked by round trip
+     * through the same adapter that produced the address — not against a
+     * second copy of the expected hex, which would only prove the test and
+     * the engine share an assumption.
+     */
+    @Test
+    fun `publicKeyOf derives the key for the chains that publish one and null elsewhere`() =
+        runTest(testDispatcher) {
+            seedWallet(
+                profile,
+                ABANDON,
+                listOf(
+                    ChainType.COSMOS, ChainType.APTOS, ChainType.BITCOIN,
+                    ChainType.EVM, ChainType.SOLANA, ChainType.TRON
+                )
+            )
+            engine.bind(profile)
+            advanceUntilIdle()
+
+            fun accountOf(chain: ChainType) =
+                engine.accounts.value.first { it.chainType == chain }
+
+            val cosmosKey = engine.publicKeyOf(accountOf(ChainType.COSMOS).id)
+            assertThat(cosmosKey).isNotNull()
+            // Compressed secp256k1: 33 bytes, and the same key the bech32
+            // address was built from (which is what makes it usable in a
+            // CosmJS sign doc).
+            assertThat(Hex.decode(cosmosKey!!).size).isEqualTo(33)
+            assertThat(CosmosAdapter().bech32Address(Hex.decode(cosmosKey), "cosmos"))
+                .isEqualTo(COSMOS0)
+
+            val aptosKey = engine.publicKeyOf(accountOf(ChainType.APTOS).id)
+            assertThat(aptosKey).isNotNull()
+            assertThat(Hex.decode(aptosKey!!).size).isEqualTo(32)
+            // Aptos derives the address as sha3_256(pubkey || 0x00).
+            assertThat("0x" + Hex.encode(Hashes.sha3_256(Hex.decode(aptosKey) + byteArrayOf(0))))
+                .isEqualTo(APTOS0)
+
+            val bitcoinKey = engine.publicKeyOf(accountOf(ChainType.BITCOIN).id)
+            assertThat(bitcoinKey).isNotNull()
+            assertThat(Hex.decode(bitcoinKey!!).size).isEqualTo(33)
+            assertThat(BitcoinAdapter().p2wpkhAddress(Hex.decode(bitcoinKey), testnet = false))
+                .isEqualTo(BTC0)
+
+            // Nothing is published on these. EVM matches MetaMask (EIP-1193
+            // carries addresses only), Solana's address IS its public key and
+            // is already in the connect result, and TRON's convention has no
+            // such call.
+            assertThat(engine.publicKeyOf(accountOf(ChainType.EVM).id)).isNull()
+            assertThat(engine.publicKeyOf(accountOf(ChainType.SOLANA).id)).isNull()
+            assertThat(engine.publicKeyOf(accountOf(ChainType.TRON).id)).isNull()
+            assertThat(engine.publicKeyOf("no-such-account")).isNull()
+        }
 
     @Test
     fun `SignMessage while locked settles UNAUTHORIZED`() = runTest(testDispatcher) {

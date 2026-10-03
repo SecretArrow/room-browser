@@ -271,7 +271,7 @@ pending, as instructed.
 
 ## 5. Known issues
 
-### 5.1 Needs your decision (deliberately not changed)
+### 5.1 Decisions made
 
 1. **Re-showing the wallet recovery phrase — DECIDED, implemented.** You
    approved the row. `engine.revealMnemonic()` is now reachable from the UI as
@@ -283,12 +283,29 @@ pending, as instructed.
    only one that survives losing the phone. The original objection, that the
    row would break a promise the product makes on screen, was resolved by
    fixing the promise rather than keeping the gap.
-2. **Exposing public keys over the dApp bridge.** Cosmos (`keplrKeyResult`,
-   `signArbitrary`, `getOfflineSigner().getAccounts()`), Aptos `account()` and
-   Bitcoin `connect()` all want a public key. The bridge currently returns none,
-   which is why some dApps on those chains cannot complete a connection. The
-   documented policy is "no key material leaves the engine", and a public key is
-   not a secret — but it is a documented reversal, so it is yours to make.
+2. **Exposing public keys over the dApp bridge — DECIDED, implemented.**
+   Your ruling: **not for EVM, yes for Cosmos, Aptos and Bitcoin.** That is
+   also where the protocol lands — EIP-1193 has no public-key call at all,
+   because an EVM dApp recovers the signer from the signature with
+   `ecrecover`, so EVM stays address-only and matches MetaMask exactly.
+   Solana was already publishing its key (its address *is* the key).
+
+   `WalletEngine.publicKeyOf` derives the key from the account's own key
+   material — nothing new at rest, no migration — and it is carried on
+   `keplrKeyResult`, on the Cosmos/Aptos/Bitcoin `connectSuccessResult`, and
+   therefore on both the prompted and the auto-approved connect paths, which
+   stay byte-identical so a dApp cannot tell them apart. The injected script
+   converts the hex to bytes, because Keplr's `pubKey` and CosmJS's `pubkey`
+   are `Uint8Array`s that go straight into a sign doc.
+
+   This fixes a real break, not just a missing field: `window.aptos.account()`
+   was returning the **address** as `publicKey`, which is not a key and reads
+   as a valid one. A locked wallet still returns the address-only answer it
+   returned before — never an error.
+
+   The policy is narrowed rather than abandoned: the engine's rule is about
+   SECRET key material, and a public key is published on chain with every
+   signature this wallet makes.
 
 ### 5.2 Deferred, with reasons
 

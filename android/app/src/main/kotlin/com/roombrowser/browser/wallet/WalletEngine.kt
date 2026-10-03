@@ -318,6 +318,47 @@ open class WalletEngine(
         return repo.revealMnemonic(profileId)
     }
 
+    /**
+     * See [WalletEngineApi.publicKeyOf] for which chains this answers for and
+     * why the others are left out.
+     *
+     * The key is derived from the account's own key material rather than read
+     * from a stored copy, so there is nothing new at rest and nothing to
+     * migrate — and NOTHING here is gated on an unlocked session beyond what
+     * reading that material already requires. A locked wallet, or an account
+     * whose key cannot be read, answers null: the dApp gets the address-only
+     * result it got before, which is a working connect for every flow that
+     * does not need the key.
+     *
+     * Only the chains listed in the API doc are handled; the rest return null
+     * without touching key material at all.
+     */
+    override suspend fun publicKeyOf(accountId: String): String? {
+        val account = accounts.value.firstOrNull { it.id == accountId } ?: return null
+        return publicKeyOf(account)
+    }
+
+    /**
+     * The derivation behind [publicKeyOf], taking the record directly.
+     *
+     * [executeConnect] already holds the account it is about to connect —
+     * freshly read from the repository — so routing that call back through
+     * the state flow would make the prompted path depend on the flow having
+     * caught up, and hand a prompted connect a key-less result on exactly the
+     * same account the auto-approve path answers with one.
+     */
+    private suspend fun publicKeyOf(account: WalletAccountRecord): String? =
+        runCatching {
+            when (account.chainType) {
+                ChainType.COSMOS, ChainType.BITCOIN -> Hex.encode(
+                    Bip32PrivateKey.compressedPublicKeyOf(secpPrivateKey(account))
+                )
+                ChainType.APTOS ->
+                    Hex.encode(Ed25519.publicKeyFromSeed(ed25519Seed(account)))
+                else -> null
+            }
+        }.getOrNull()
+
     override suspend fun backupContents(mnemonic: String?): WalletBackup.Contents {
         val profileId = requireBound()
         // A caller holding the phrase already (the onboarding reveal, where
@@ -1171,9 +1212,16 @@ open class WalletEngine(
         // shapes (EVM/SUI address ARRAY, SOLANA {"publicKey"},
         // APTOS/TRON {"address"}) — byte-identical to the bridge's own
         // silent auto-approve, so a dApp cannot tell the paths apart.
+        // The public key rides along where the chain's conventions carry
+        // one; null (locked wallet, unreadable key) leaves the shape as it
+        // was rather than turning into an error.
         return DappOutcome(
             request.id,
-            WalletBridgeProtocol.connectSuccessResult(request.chainType, chosen.address),
+            WalletBridgeProtocol.connectSuccessResult(
+                request.chainType,
+                chosen.address,
+                publicKeyOf(chosen)
+            ),
             null
         )
     }

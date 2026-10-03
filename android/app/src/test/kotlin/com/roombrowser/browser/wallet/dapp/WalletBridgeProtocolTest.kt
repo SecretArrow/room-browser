@@ -684,10 +684,51 @@ class WalletBridgeProtocolTest {
             .isEqualTo("[\"0xsui\"]")
         assertThat(WalletBridgeProtocol.connectSuccessResult(ChainType.TRON, "TXYZ"))
             .isEqualTo("{\"address\":\"TXYZ\"}")
+        assertThat(WalletBridgeProtocol.connectSuccessResult(ChainType.BITCOIN, "bc1qxyz"))
+            .isEqualTo("{\"address\":\"bc1qxyz\"}")
+        assertThat(WalletBridgeProtocol.connectSuccessResult(ChainType.COSMOS, "cosmos1qq"))
+            .isEqualTo("{\"address\":\"cosmos1qq\"}")
 
         assertThat(WalletBridgeProtocol.accountsResult(listOf("0xa", "0xb")))
             .isEqualTo("[\"0xa\",\"0xb\"]")
         assertThat(WalletBridgeProtocol.accountsResult(emptyList())).isEqualTo("[]")
+    }
+
+    @Test
+    fun `a supplied public key rides along on the chains that publish one`() {
+        val pub = "02" + "ab".repeat(32)
+
+        assertThat(WalletBridgeProtocol.connectSuccessResult(ChainType.APTOS, "0xapt", pub))
+            .isEqualTo("{\"address\":\"0xapt\",\"publicKey\":\"$pub\"}")
+        assertThat(WalletBridgeProtocol.connectSuccessResult(ChainType.BITCOIN, "bc1qxyz", pub))
+            .isEqualTo("{\"address\":\"bc1qxyz\",\"publicKey\":\"$pub\"}")
+        // Cosmos needs it here too: window.keplr.enable builds the [Key] it
+        // resolves with out of this value, so a connect without the key is a
+        // Cosmos dApp whose first Key has a null pubKey.
+        assertThat(WalletBridgeProtocol.connectSuccessResult(ChainType.COSMOS, "cosmos1qq", pub))
+            .isEqualTo("{\"address\":\"cosmos1qq\",\"publicKey\":\"$pub\"}")
+
+        // Absent, not null: a dApp's presence check behaves the same either
+        // way, and a null field would claim an account with no key.
+        assertThat(WalletBridgeProtocol.connectSuccessResult(ChainType.APTOS, "0xapt"))
+            .doesNotContain("publicKey")
+    }
+
+    @Test
+    fun `public-key-less chains never grow a public key field`() {
+        val pub = "02" + "ab".repeat(32)
+
+        // EVM is EIP-1193: addresses only, and MetaMask publishes no key, so
+        // the argument must be ignored rather than appended.
+        assertThat(WalletBridgeProtocol.connectSuccessResult(ChainType.EVM, "0xabc", pub))
+            .isEqualTo("[\"0xabc\"]")
+        assertThat(WalletBridgeProtocol.connectSuccessResult(ChainType.SUI, "0xsui", pub))
+            .isEqualTo("[\"0xsui\"]")
+        assertThat(WalletBridgeProtocol.connectSuccessResult(ChainType.TRON, "TXYZ", pub))
+            .isEqualTo("{\"address\":\"TXYZ\"}")
+        // Solana's address IS its public key, so the field is the address.
+        assertThat(WalletBridgeProtocol.connectSuccessResult(ChainType.SOLANA, "SOLADDR", pub))
+            .isEqualTo("{\"publicKey\":\"SOLADDR\"}")
     }
 
     @Test
@@ -999,17 +1040,31 @@ class WalletBridgeProtocolTest {
     }
 
     @Test
-    fun `keplr key result publishes no key material`() {
+    fun `keplr key result publishes the public key and no secret`() {
         val address = "cosmos1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9"
         val key = WalletBridgeProtocol.keplrKeyResult(address)
         assertThat(key).contains("\"bech32Address\":\"$address\"")
         assertThat(key).contains("\"address\":\"$address\"")
         assertThat(key).contains("\"algo\":\"secp256k1\"")
-        // No private key, no seed, no raw key material — and pubKey is null
-        // because the engine never exposes public keys either.
+        // No key available (a locked wallet, an unreadable account): null, so
+        // every address-only flow still works.
         assertThat(key).contains("\"pubKey\":null")
         assertThat(key).doesNotContain("privateKey")
         assertThat(key).doesNotContain("mnemonic")
+    }
+
+    @Test
+    fun `keplr key result carries a supplied public key as hex`() {
+        val address = "cosmos1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9"
+        val pub = "02" + "cd".repeat(32)
+        val key = WalletBridgeProtocol.keplrKeyResult(address, pub)
+
+        assertThat(key).contains("\"pubKey\":\"$pub\"")
+        assertThat(key).doesNotContain("\"pubKey\":null")
+        // Still nothing secret, key or no key.
+        assertThat(key).doesNotContain("privateKey")
+        assertThat(key).doesNotContain("mnemonic")
+        assertThat(key).doesNotContain("seed")
     }
 
     // ------------------------------------------------------------------
@@ -1077,6 +1132,22 @@ class WalletBridgeProtocolTest {
         // Every signing path goes through the bridge's async request; the
         // script never resolves a signature locally.
         assertThat(script).contains("'request'")
+    }
+
+    @Test
+    fun `script converts public keys to bytes and never hands back the address`() {
+        val script = RoomWalletScript.SCRIPT
+        // The bridge transports a public key as hex because JSON has no byte
+        // type; Keplr's pubKey and CosmJS's pubkey are Uint8Arrays that go
+        // straight into a sign doc, so the encoding must be undone here.
+        assertThat(script).contains("function hexToBytes")
+        assertThat(script).contains("function publicKeyOf")
+        assertThat(script).contains("pubKey: pubKey || null")
+        assertThat(script).contains("pub_key: state.cosmosPubKey")
+        // The Aptos regression this fixes: account().publicKey used to be the
+        // ADDRESS, which is not a public key and reads as a valid one.
+        assertThat(script).doesNotContain("publicKey: state.aptosAddress")
+        assertThat(script).contains("account.publicKey = state.aptosPublicKey")
     }
 
     @Test
