@@ -446,12 +446,35 @@ class SuiAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
         const val INTENT_TRANSACTION_DATA = 0x00
         const val INTENT_PERSONAL_MESSAGE = 0x03
 
+        /**
+         * The public Sui fullnodes this adapter points at, and why they are not
+         * `fullnode.<net>.sui.io`.
+         *
+         * Sui deprecated JSON-RPC on its own public fullnodes. All three of its
+         * hosts answer every call with `-32601 Method not found. JSON-RPC on
+         * public fullnodes has been deprecated. Please migrate to gRPC or
+         * GraphQL endpoints`. That is a protocol answer and not a transport
+         * failure, so [com.roombrowser.domain.wallet.rpc.RpcEndpointChain]
+         * correctly refuses to fail over past it — a wallet pointed at those
+         * hosts does not degrade, it errors on every read and every send.
+         *
+         * Verified 2026-10-03 against sui_getLatestCheckpointSequenceNumber,
+         * suix_getReferenceGasPrice, suix_getBalance and suix_getOwnedObjects.
+         * Two endpoints per network, because a single provider is a single
+         * point of failure and these are third-party hosts with no SLA. The
+         * real fix is the gRPC or GraphQL migration; that is not done here —
+         * the adapter speaks JSON-RPC end to end, and a half-migrated adapter
+         * is worse than a working one on a supported endpoint.
+         */
         val MAINNET = NetworkConfig(
             id = "SUI:mainnet",
             chainType = ChainType.SUI,
             chainId = "mainnet",
             name = "Sui Mainnet",
-            rpcUrls = listOf("https://fullnode.mainnet.sui.io"),
+            rpcUrls = listOf(
+                "https://sui-rpc.publicnode.com",
+                "https://sui.api.onfinality.io/public"
+            ),
             nativeSymbol = "SUI",
             nativeDecimals = 9,
             explorerUrl = "https://suiscan.xyz",
@@ -462,24 +485,30 @@ class SuiAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
             chainType = ChainType.SUI,
             chainId = "testnet",
             name = "Sui Testnet",
-            rpcUrls = listOf("https://fullnode.testnet.sui.io"),
-            nativeSymbol = "SUI",
-            nativeDecimals = 9,
-            explorerUrl = "https://suiscan.xyz",
-            isTestnet = true
-        )
-        val DEVNET = NetworkConfig(
-            id = "SUI:devnet",
-            chainType = ChainType.SUI,
-            chainId = "devnet",
-            name = "Sui Devnet",
-            rpcUrls = listOf("https://fullnode.devnet.sui.io"),
+            rpcUrls = listOf(
+                "https://sui-testnet-rpc.publicnode.com",
+                "https://sui-testnet-endpoint.blockvision.org"
+            ),
             nativeSymbol = "SUI",
             nativeDecimals = 9,
             explorerUrl = "https://suiscan.xyz",
             isTestnet = true
         )
 
-        fun defaultNetworks(): List<NetworkConfig> = listOf(MAINNET, TESTNET, DEVNET)
+        /**
+         * No DEVNET preset: devnet is the one Sui network with no public
+         * JSON-RPC left. `fullnode.devnet.sui.io` is deprecated like the rest,
+         * `sui-devnet-rpc.publicnode.com` does not exist (404), OnFinality has
+         * no devnet host (the name does not resolve) and BlockVision's devnet
+         * endpoint proxies the same deprecated fullnode back at us — all four
+         * checked 2026-10-03. Shipping a preset whose every endpoint answers
+         * `-32601` would be shipping a network that cannot work.
+         *
+         * Same call the EVM list already made for Horizen Gobi: a network
+         * whose only public endpoint is gone is not offered. Sui devnet is also
+         * wiped periodically, so a preset for it would be a moving target even
+         * with a working host.
+         */
+        fun defaultNetworks(): List<NetworkConfig> = listOf(MAINNET, TESTNET)
     }
 }

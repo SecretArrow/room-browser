@@ -337,6 +337,14 @@ internal fun shortenAddress(address: String): String =
  * Best-effort transaction URL for a network's block explorer (used by the
  * send-success snackbar and activity rows when no full URL was pre-computed).
  * Path convention per chain family; null when the network has no explorer.
+ *
+ * The paths follow the explorer each family's preset actually names, which is
+ * why SUI is "tx" and not "txblock": "txblock" belongs to suiexplorer.com
+ * (explorer.sui.io 307-redirects there), while the preset points at
+ * suiscan.xyz, whose own bundle builds every transaction link as
+ * `/tx/${digest}` — "txblock" appears nowhere in it, so the old path landed on
+ * suiscan's not-found view. Checked against suiscan's shipped main.js on
+ * 2026-10-03.
  */
 internal fun explorerTxUrl(config: NetworkConfig?, hash: String): String? {
     if (config == null) return null
@@ -344,7 +352,7 @@ internal fun explorerTxUrl(config: NetworkConfig?, hash: String): String? {
     val path = when (config.chainType) {
         ChainType.EVM, ChainType.SOLANA, ChainType.BITCOIN -> "tx"
         ChainType.APTOS -> "txn"
-        ChainType.SUI -> "txblock"
+        ChainType.SUI -> "tx"
         ChainType.COSMOS -> "txs"
         ChainType.TRON -> "#/transaction"
     }

@@ -300,31 +300,54 @@ class WalletRepository(
      * Idempotently seeds the default-network catalogue for the profile:
      * every [ChainRegistry] default is inserted with the first network of
      * each chain family ENABLED (Ethereum Mainnet for EVM, the family
-     * mainnet for the others) and the rest present but disabled. Rows that
-     * already exist are NEVER overridden — a disabled or edited default
-     * stays exactly as the user left it — so calling this before every
-     * network read is always safe.
+     * mainnet for the others) and the rest present but disabled.
+     *
+     * A bundled network's own payload is REFRESHED on every call, while its
+     * `enabled` flag is left exactly as the user set it. The two are
+     * separable, and separating them is the point: a default's addresses are
+     * ours to correct — an RPC host that deprecates its API takes the preset
+     * with it, and a wallet still dialling the dead host errors on every read
+     * and every send, for every existing profile, forever — while whether the
+     * user wants that network switched on is theirs alone. A row the user
+     * turned CUSTOM is never touched: that row is theirs now.
      */
     override suspend fun ensureDefaultNetworks(profileId: ProfileId) {
         withContext(Dispatchers.IO) {
-            val existing = networkDao.forProfile(profileId.value).mapTo(mutableSetOf()) { it.id }
+            val rows = networkDao.forProfile(profileId.value)
+            val byId = rows.associateBy { it.id }
             val defaults = registry.allDefaultNetworks()
             val enabledByDefault = defaults
                 .groupBy { it.chainType }
                 .mapValues { (_, family) -> family.first().id }
             defaults.forEach { config ->
-                if (config.id !in existing) {
-                    networkDao.upsert(
+                val payload = json.encodeToString(NetworkConfig.serializer(), config)
+                val row = byId[config.id]
+                when {
+                    row == null -> networkDao.upsert(
                         WalletNetworkEntity(
                             id = config.id,
                             profileId = profileId.value,
                             enabled = enabledByDefault[config.chainType] == config.id,
                             isCustom = false,
-                            payload = json.encodeToString(NetworkConfig.serializer(), config)
+                            payload = payload
                         )
                     )
+                    // copy() keeps the row's key and BOTH flags: only the
+                    // network's own addresses move.
+                    !row.isCustom && row.payload != payload ->
+                        networkDao.upsert(row.copy(payload = payload))
+                    else -> Unit
                 }
             }
+            // A network dropped from the catalogue (Sui devnet: every public
+            // JSON-RPC it had is gone) leaves a row behind for anyone who
+            // seeded it before. Drop the DISABLED, non-custom leftovers —
+            // deliberately only those. An ENABLED row is the network the user
+            // is on, and a network is not deleted out from under them; a
+            // custom row was never ours to keep in step.
+            val catalogued = defaults.mapTo(mutableSetOf()) { it.id }
+            rows.filter { !it.isCustom && !it.enabled && it.id !in catalogued }
+                .forEach { networkDao.delete(profileId.value, it.id) }
         }
     }
 

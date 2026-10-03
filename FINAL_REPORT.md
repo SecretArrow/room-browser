@@ -335,6 +335,46 @@ pending, as instructed.
    instrumented suite — CI holds no device credential, so the wallet renders
    its locked pane — which means these rules have no other way of being tested
    at all.
+4. **The network presets are checked against the live endpoints, and the ones
+   that no longer answer are corrected or withdrawn — DECIDED, implemented.**
+   Every bundled endpoint was probed with the call its own adapter makes (111
+   endpoints: EVM `eth_chainId`, Solana `getHealth`, Aptos `/v1`, Sui
+   `sui_getLatestCheckpointSequenceNumber`, Bitcoin `/blocks/tip/height`, TRON
+   `POST /wallet/getnowblock`, Cosmos `status` + LCD `node_info`, and every
+   explorer host). 105 answered; of the six that did not, five were my probe's
+   own bugs — including the TRON "failures", which were POSTs to the URL root
+   (HTTP 405) rather than to `/wallet/getnowblock`, where all three TronGrid
+   hosts answer 200. The one real defect was Sui.
+
+   **Sui deprecated JSON-RPC on its own public fullnodes.** All three of
+   `fullnode.{mainnet,testnet,devnet}.sui.io` answer every call with
+   `-32601 Method not found. JSON-RPC on public fullnodes has been deprecated.
+   Please migrate to gRPC or GraphQL endpoints`. That is a protocol answer, not
+   a transport failure, so `RpcEndpointChain` correctly refuses to fail over
+   past it — the preset did not degrade, it errored on every read and every
+   send. Mainnet and testnet now point at hosts that answer all four adapter
+   methods (`sui-rpc.publicnode.com` + `sui.api.onfinality.io/public`;
+   `sui-testnet-rpc.publicnode.com` + `sui-testnet-endpoint.blockvision.org`).
+   **The Sui devnet preset is withdrawn**: `sui-devnet-rpc.publicnode.com` does
+   not exist, OnFinality has no devnet host (the name does not resolve) and
+   BlockVision's devnet endpoint proxies the same deprecated fullnode — there
+   is no public Sui devnet JSON-RPC left to point at. That is the call the EVM
+   list already made for Horizen Gobi.
+
+   Two things had to change for the fix to reach anyone. `ensureDefaultNetworks`
+   never overrode an existing row, so **every profile created before this fix
+   would have kept dialling the dead host forever**; it now refreshes a
+   non-custom row's payload while leaving its `enabled` flag exactly as the user
+   set it — the addresses are ours to correct, the switch is theirs — and drops
+   a disabled, non-custom row whose network left the catalogue (never an enabled
+   one, and never a custom one). And the explorer path was wrong: the app built
+   `<explorerUrl>/txblock/<hash>`, which is suiexplorer.com's shape, while the
+   Sui preset names suiscan.xyz — whose own bundle builds every transaction link
+   as `/tx/${digest}` and contains `txblock` nowhere. The link now lands.
+
+   The migration the deprecation asks for (gRPC or GraphQL) is **not** done: the
+   adapter speaks JSON-RPC end to end, and a half-migrated adapter is worse than
+   a working one on a supported host. It is recorded in §6.
 
 ### 5.2 Deferred, with reasons
 
@@ -397,3 +437,10 @@ pending, as instructed.
    centre ~4dp. It passed on this run, but it is the one assertion in the suite
    that is sensitive to touch-target sizing — keep it in mind the next time a
    row's controls are resized.
+9. **Migrate the Sui adapter to gRPC or GraphQL.** Sui has deprecated JSON-RPC
+   on public fullnodes; the presets now point at third-party hosts that still
+   answer it (publicnode, onfinality, blockvision), and those are the only
+   reason Sui works at all right now. This is a real migration — a second
+   transport in the adapter, its own serialization, and its own test surface —
+   not an endpoint swap, which is why it was not folded into the preset fix.
+   Worth doing before the third-party hosts follow Sui's own.

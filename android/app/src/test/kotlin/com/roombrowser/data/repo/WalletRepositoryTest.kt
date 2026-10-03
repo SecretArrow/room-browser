@@ -16,6 +16,7 @@ import com.roombrowser.data.db.WalletNetworkDao
 import com.roombrowser.data.db.WalletNetworkEntity
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.wallet.chains.ChainRegistry
+import com.roombrowser.domain.wallet.chains.sui.SuiAdapter
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.security.VaultCryptor
@@ -544,6 +545,82 @@ class WalletRepositoryTest {
         assertThat(evmEnabled).isEmpty()
         assertThat(db.networks.values.filter { it.profileId == profileA.value })
             .hasSize(registry.allDefaultNetworks().size)
+    }
+
+    @Test
+    fun `a bundled network's addresses are refreshed without touching the user's switch`() = runTest {
+        repo.ensureDefaultNetworks(profileA)
+        val key = "${profileA.value}|SUI:mainnet"
+
+        // The row as an older build seeded it, pointed at a host that has since
+        // deprecated its API — with the user having switched that network OFF.
+        val stale = SuiAdapter.MAINNET.copy(rpcUrls = listOf("https://fullnode.mainnet.sui.io"))
+        db.networks[key] = db.networks.getValue(key).copy(
+            enabled = false,
+            payload = Json.encodeToString(NetworkConfig.serializer(), stale)
+        )
+
+        repo.ensureDefaultNetworks(profileA)
+
+        val refreshed = db.networks.getValue(key)
+        // The addresses are ours to correct: a wallet left dialling the dead
+        // host errors on every read and every send, for every profile.
+        assertThat(refreshed.config()).isEqualTo(SuiAdapter.MAINNET)
+        assertThat(refreshed.config().rpcUrls).doesNotContain("https://fullnode.mainnet.sui.io")
+        // The switch is the user's: refreshing must not turn it back on, and
+        // must not quietly promote the row to a custom network either.
+        assertThat(refreshed.enabled).isFalse()
+        assertThat(refreshed.isCustom).isFalse()
+        assertThat(db.networks.getValue("${profileA.value}|EVM:1").enabled).isTrue()
+    }
+
+    @Test
+    fun `a custom row that took over a default's id is never refreshed`() = runTest {
+        repo.ensureDefaultNetworks(profileA)
+        val custom = NetworkConfig.evm(
+            1L, "My Ethereum", listOf("https://my.example/rpc"), "ETH", null
+        )
+        repo.upsertCustomNetwork(profileA, custom)
+
+        repo.ensureDefaultNetworks(profileA)
+
+        val row = db.networks.getValue("${profileA.value}|EVM:1")
+        assertThat(row.isCustom).isTrue()
+        assertThat(row.config().rpcUrls).containsExactly("https://my.example/rpc")
+    }
+
+    @Test
+    fun `a network dropped from the catalogue is removed only while it is off`() = runTest {
+        repo.ensureDefaultNetworks(profileA)
+
+        // A profile seeded by a build that still shipped a Sui devnet preset,
+        // left switched off — exactly how this one is seeded.
+        fun seedDevnet(enabled: Boolean) {
+            val devnet = SuiAdapter.MAINNET.copy(
+                id = "SUI:devnet",
+                chainId = "devnet",
+                name = "Sui Devnet",
+                rpcUrls = listOf("https://fullnode.devnet.sui.io"),
+                isTestnet = true
+            )
+            db.networks["${profileA.value}|SUI:devnet"] = WalletNetworkEntity(
+                id = devnet.id,
+                profileId = profileA.value,
+                enabled = enabled,
+                isCustom = false,
+                payload = Json.encodeToString(NetworkConfig.serializer(), devnet)
+            )
+        }
+
+        seedDevnet(enabled = false)
+        repo.ensureDefaultNetworks(profileA)
+        assertThat(db.networks.keys).doesNotContain("${profileA.value}|SUI:devnet")
+
+        // Switched ON it is the network the user is on: not deleted from
+        // under them, even though the catalogue no longer lists it.
+        seedDevnet(enabled = true)
+        repo.ensureDefaultNetworks(profileA)
+        assertThat(db.networks.keys).contains("${profileA.value}|SUI:devnet")
     }
 
     @Test
