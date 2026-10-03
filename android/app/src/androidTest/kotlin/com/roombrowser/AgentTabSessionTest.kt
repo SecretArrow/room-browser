@@ -31,6 +31,15 @@ import org.junit.runner.RunWith
  * Every test ends on a VOID-returning Truth call, because a Kotlin method
  * whose last expression has a value is non-void and JUnit4 then refuses the
  * whole class (see the runBlocking<Unit> note in the project memory).
+ *
+ * The names are snake_case identifiers, NOT backticked sentences. `runBlocking`
+ * makes each body a suspend lambda, which Kotlin compiles to a synthetic class
+ * named after the method — and a method name is free to contain spaces while a
+ * CLASS name is not: D8 rejects "Space characters in SimpleName ... are not
+ * allowed prior to DEX version 040", and with minSdk 28 that is every build.
+ * The failure lands in dexBuilderDebugAndroidTest, so it is androidTest-only
+ * and invisible to `quality`; AndroidTestNamingTest in the unit-test source set
+ * is what turns it into a fast failure instead.
  */
 @RunWith(AndroidJUnit4::class)
 class AgentTabSessionTest {
@@ -60,7 +69,7 @@ class AgentTabSessionTest {
     }
 
     @Test
-    fun `each tab resolves to its own conversation`() = runBlocking<Unit> {
+    fun each_tab_resolves_to_its_own_conversation() = runBlocking<Unit> {
         val first = repo.createSession(profileA, "about cats", 1, "m", tabId = tabOne)
         val second = repo.createSession(profileA, "about dogs", 1, "m", tabId = tabTwo)
 
@@ -72,7 +81,7 @@ class AgentTabSessionTest {
     }
 
     @Test
-    fun `a detached chat keeps its history but no longer owns the tab`() = runBlocking<Unit> {
+    fun a_detached_chat_keeps_its_history_but_no_longer_owns_the_tab() = runBlocking<Unit> {
         val id = repo.createSession(profileA, "old chat", 1, "m", tabId = tabOne)
         repo.addMessage(id, "user", "hello")
 
@@ -87,7 +96,7 @@ class AgentTabSessionTest {
     }
 
     @Test
-    fun `adopting a chat moves it off the tab that had it`() = runBlocking<Unit> {
+    fun adopting_a_chat_moves_it_off_the_tab_that_had_it() = runBlocking<Unit> {
         val id = repo.createSession(profileA, "moving", 1, "m", tabId = tabOne)
         // What the history list does on tap: bind it to the tab on screen.
         repo.bindSessionToTab(id, tabTwo)
@@ -97,7 +106,7 @@ class AgentTabSessionTest {
     }
 
     @Test
-    fun `the same tab id in two profiles is two different conversations`() = runBlocking<Unit> {
+    fun the_same_tab_id_in_two_profiles_is_two_different_conversations() = runBlocking<Unit> {
         val a = repo.createSession(profileA, "personal", 1, "m", tabId = sharedTab)
         val b = repo.createSession(profileB, "work", 1, "m", tabId = sharedTab)
 
@@ -107,7 +116,7 @@ class AgentTabSessionTest {
     }
 
     @Test
-    fun `a blank tab id never resolves to an unbound chat`() = runBlocking<Unit> {
+    fun a_blank_tab_id_never_resolves_to_an_unbound_chat() = runBlocking<Unit> {
         // Unbound chats all share tab_id = "": a caller with no tab must not
         // be handed one of them as though it owned it.
         repo.createSession(profileA, "no tab", 1, "m")

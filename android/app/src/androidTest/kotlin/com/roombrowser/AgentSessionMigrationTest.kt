@@ -57,7 +57,7 @@ class AgentSessionMigrationTest {
     }
 
     @Test
-    fun `upgrading from v9 keeps every chat and adds the tab column`() = runBlocking<Unit> {
+    fun upgrading_from_v9_keeps_every_chat_and_adds_the_tab_column() = runBlocking<Unit> {
         // 1. A real database with a real chat in it.
         val created = Room.databaseBuilder(context, AppDatabase::class.java, dbName).build()
         created.agentDao().insertSession(
