@@ -134,6 +134,12 @@ internal fun formatSize(bytes: Long): String = when {
  * must send nothing rather than an empty "Standing context:" block.
  *
  * [pageSnapshot] is null when the user did not include the page.
+ *
+ * Returns a MUTABLE list, and that is part of the contract rather than a
+ * convenience: [AgentLoop.runTurn] appends the tool calls and tool results it
+ * makes to this very list as the turn proceeds, so the caller's history and
+ * the model's history stay the same object. Handing it an immutable list does
+ * not compile — which is how this signature was caught.
  */
 internal fun buildTurnHistory(
     prompt: String,
@@ -142,7 +148,7 @@ internal fun buildTurnHistory(
     settings: AgentSettings,
     attachments: List<AgentAttachment>,
     request: String
-): List<ChatMessage> {
+): MutableList<ChatMessage> {
     val history = mutableListOf(ChatMessage(role = "system", content = prompt))
     history.addAll(priorTurns)
     if (pageSnapshot != null) {
