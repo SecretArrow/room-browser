@@ -48,16 +48,24 @@ import kotlin.coroutines.resumeWithException
  * Timeouts: connect 20s, read 60s (progress lines arrive continuously — a
  * longer read timeout buys nothing), whole-call timeout 0 because PULLS ARE
  * LONG: a multi-GB download legally runs for hours.
+ *
+ * The read timeout is a constructor parameter rather than a constant for one
+ * reason: a test asserts that cancelling a pull aborts the blocked read
+ * *promptly*, and the only thing that makes "promptly" meaningful is a bound
+ * on how long a reader that was NOT aborted would have taken. That bound is
+ * this timeout, so a test has to be able to move it out of the way instead of
+ * racing it. Production never passes it.
  */
 class OllamaClient(
     client: OkHttpClient,
     baseUrl: String,
-    private val apiKey: String = ""
+    private val apiKey: String = "",
+    readTimeoutSeconds: Long = 60
 ) {
 
     private val callFactory: OkHttpClient = client.newBuilder()
         .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(readTimeoutSeconds, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .callTimeout(0, TimeUnit.MILLISECONDS)
         .retryOnConnectionFailure(true)

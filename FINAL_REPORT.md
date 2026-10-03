@@ -270,6 +270,29 @@ Notes on the run:
   the release job's `!cancelled()` condition means that did not hold up the
   Android release.
 
+### A flake that was not left as a flake
+
+`quality` runs `:app:testDebugUnitTest` and retries once on failure, so a green
+conclusion does not prove the first attempt passed — the log carries
+`##[warning]First attempt failed — retrying once`. That happened on the run for
+`c31ed52`: `311 tests completed, 1 failed`, the failure being
+`OllamaLocalTest > pull cancellation surfaces as CancellationException and a
+second pull resumes` with a `TimeoutCancellationException`. The retry was green
+and the run was reported green.
+
+The test asserts that cancelling a pull aborts the blocked read *promptly*, so
+it needs a bound on how long a reader that was NOT aborted would have taken.
+That bound was `OllamaClient`'s hardcoded 60 s read timeout, which capped the
+assertion's window at 20 s to keep a 3x margin — and the window had already hit
+that cap twice, at 4 s and at 10 s, each time fixed by widening it toward the
+ceiling. The read timeout is now a constructor parameter (default 60 s,
+production never passes it), so the test pins both halves itself: a 120 s chunk
+period against a 600 s read timeout, leaving 120 s as the only escape for a
+broken watcher and 40 s as the window — the same 3x, with twice the headroom
+for the scheduling delay that actually caused the flake. A starved runner
+delays the abort; it does not reorder it, so the wider window costs no
+discrimination.
+
 ### Release
 
 **[v1.0.105](https://github.com/SecretArrow/room-browser/releases/tag/v1.0.105)** — published 2026-10-02 12:51 UTC, not a draft, not a prerelease.

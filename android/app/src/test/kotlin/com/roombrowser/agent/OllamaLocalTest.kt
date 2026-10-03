@@ -319,20 +319,24 @@ class OllamaLocalTest {
         //   WORKING watcher → call.cancel() aborts the blocked read in
         //                     milliseconds (one dispatched continuation).
         //   BROKEN watcher  → the read only frees when the next chunk lands
-        //                     or the read times out — and OllamaClient
-        //                     rebuilds its client with a 60 s read timeout.
-        // So the chunk period here is 120 s: LONGER than that read timeout,
-        // which leaves 60 s as the ONLY way a broken watcher can escape and
-        // makes the 20 s window below a clean 3x margin under it. (It used to
-        // be a 30 s period against a 10 s window: still 3x, but the broken
-        // bound sat *below* the read timeout, so the window and the flake
-        // shared one scale.) The window has now needed widening twice — 4 s
-        // flaked on a loaded 2-core runner (38 tests, parallel forks, GC
-        // pauses), then 10 s flaked with this exact signature
-        // (TimeoutCancellation at the await below) on a run whose app code
-        // was byte-identical to a green one. A starved runner DELAYS the
-        // abort, it does not reorder it, so a wider window costs no
-        // discrimination.
+        //                     or the read times out, whichever comes first.
+        // Both halves of that pair are now pinned by this test rather than
+        // inherited from app code. The chunk period is 120 s and the client
+        // below is built with a 600 s read timeout, so 120 s is the ONLY way a
+        // broken watcher can escape — and the 40 s window is a clean 3x margin
+        // under it.
+        //
+        // The read timeout used to be OllamaClient's hardcoded 60 s. That put
+        // the broken bound at 60 s, which capped the window at 20 s to hold the
+        // same 3x, and the window hit that cap twice: 4 s flaked on a loaded
+        // 2-core runner (38 tests, parallel forks, GC pauses), then 10 s flaked
+        // with this exact signature (TimeoutCancellation at the await below) on
+        // a run whose app code was byte-identical to a green one. Both times
+        // the remedy was to widen the window, and both times the thing it was
+        // being widened toward was the ceiling. Making the timeout injectable
+        // removes the ceiling: the window doubled and the 3x is unchanged. A
+        // starved runner DELAYS the abort, it does not reorder it, so the wider
+        // window costs no discrimination.
         // Response 2: the re-issued (resumed) pull, served completely.
         server.enqueue(
             MockResponse()
@@ -346,7 +350,7 @@ class OllamaLocalTest {
                 .setBody(pullBody)
         )
 
-        val client = OllamaClient(OkHttpClient(), base)
+        val client = OllamaClient(OkHttpClient(), base, readTimeoutSeconds = 600)
         val firstEvent = CompletableDeferred<Unit>()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val pullJob = scope.async {
@@ -360,9 +364,9 @@ class OllamaLocalTest {
         pullJob.cancel()
         // The cancelled pull must return PROMPTLY (the blocked read is aborted
         // via call.cancel()) and surface as a CancellationException — that is
-        // the exact contract LocalAiController.pause() relies on. 20 s is 3x
-        // under the 60 s a broken watcher would need (see the bounds above).
-        val surfaced = withTimeout(20_000) { runCatching { pullJob.await() }.exceptionOrNull() }
+        // the exact contract LocalAiController.pause() relies on. 40 s is 3x
+        // under the 120 s a broken watcher would need (see the bounds above).
+        val surfaced = withTimeout(40_000) { runCatching { pullJob.await() }.exceptionOrNull() }
         assertThat(surfaced).isInstanceOf(CancellationException::class.java)
         assertThat(server.takeRequest().path).isEqualTo("/api/pull")
         scope.cancel()
