@@ -71,9 +71,11 @@ package com.roombrowser.browser.wallet.dapp
  *    listeners get `keplr_keystorechange`, and an
  *    unhandled event name surfaces on `window.ethereum`'s EIP-1193 `message`
  *    listeners as `{type, data}`.
- *  - A rejected call carrying 4900/4901 means native lost the wallet or the
- *    chain, which is exactly EIP-1193's `disconnect`: it is dispatched to
- *    `window.ethereum` listeners.
+ *  - A rejected call carrying 4900 means the WALLET is not available, which
+ *    is exactly EIP-1193's `disconnect`: it is dispatched to
+ *    `window.ethereum` listeners. 4901 (this call could not reach the chain)
+ *    is deliberately NOT — the wallet is still there, so the provider keeps
+ *    its connection and the failure is reported on the `message` channel.
  *
  * MESSAGE ENCODING (the base64 convention): `personal_sign` payloads that
  * are 0x-hex strings pass through verbatim; EVERY other message payload
@@ -117,9 +119,31 @@ object RoomWalletScript {
     var CHAIN_BITCOIN = 'BITCOIN';
     var CHAIN_TRON = 'TRON';
 
+    // The read-only EVM calls: no prompt, relayed straight to the chain's
+    // active network (a couple of them are answered natively from
+    // configuration — see WalletBridgeProtocol.localChainAnswer).
+    //
+    // This list IS the contract: native has its own copy
+    // (WalletBridgeProtocol.READONLY_RPC_METHODS) and refuses a relay it does
+    // not recognise, so a method added here and not there arrives as a
+    // refusal. A parity test asserts the two sets are equal. Seven methods
+    // used to be here, and every other read — block number, nonce, code, fee
+    // history — fell through to the request path and came back 4200
+    // Unsupported Method, which is a lie a dApp reads as the wallet failing.
     var READONLY_METHODS = {
-      eth_chainId: 1, net_version: 1, eth_blockNumber: 1,
-      eth_getBalance: 1, eth_call: 1, eth_gasPrice: 1, eth_estimateGas: 1
+      eth_chainId: 1, net_version: 1, eth_blockNumber: 1, eth_syncing: 1,
+      web3_clientVersion: 1, net_listening: 1, net_peerCount: 1,
+      eth_getBalance: 1, eth_getCode: 1, eth_getStorageAt: 1,
+      eth_getTransactionCount: 1, eth_getProof: 1,
+      eth_getBlockByNumber: 1, eth_getBlockByHash: 1,
+      eth_getBlockTransactionCountByNumber: 1, eth_getBlockTransactionCountByHash: 1,
+      eth_getUncleCountByBlockNumber: 1, eth_getUncleCountByBlockHash: 1,
+      eth_getUncleByBlockNumberAndIndex: 1, eth_getUncleByBlockHashAndIndex: 1,
+      eth_getTransactionByHash: 1, eth_getTransactionReceipt: 1,
+      eth_getTransactionByBlockNumberAndIndex: 1, eth_getTransactionByBlockHashAndIndex: 1,
+      eth_getLogs: 1,
+      eth_gasPrice: 1, eth_maxPriorityFeePerGas: 1, eth_feeHistory: 1,
+      eth_call: 1, eth_estimateGas: 1, web3_sha3: 1
     };
     var UNSUPPORTED_METHODS = {
       eth_signTransaction: 1, eth_sendRawTransaction: 1,
@@ -362,12 +386,29 @@ object RoomWalletScript {
       return params;
     }
 
+    // True when a call of this method is still waiting for its answer: a
+    // repeat while one is in flight is a retry, or a second component asking
+    // the same question — not a new prompt.
+    function hasPendingFor(method) {
+      for (var id in pending) {
+        if (pending[id] && pending[id].method === method) return true;
+      }
+      return false;
+    }
+
     function send(chain, kind, method, params) {
       return new Promise(function (resolve, reject) {
         try {
+          // The gap sheds a FLOOD, and the flood worth shedding is prompts:
+          // a read raises none, and a repeat of a method that is still in
+          // flight is exactly what the native side coalesces into the single
+          // prompt already on screen. Rejecting either of those is what a
+          // dApp reports as "connection attempt failed" — and the connect
+          // call is the one a dApp is most likely to repeat while it waits.
           var now = Date.now();
           var last = lastCallAt[method] || 0;
-          if (now - last < SAME_METHOD_GAP_MS) {
+          if (!READONLY_METHODS[method] && !hasPendingFor(method) &&
+              now - last < SAME_METHOD_GAP_MS) {
             reject(bridgeError(-32005, 'Too many requests, retry shortly'));
             return;
           }
@@ -435,11 +476,27 @@ object RoomWalletScript {
         if (code !== 0) {
           var msg = typeof errorMessage === 'string' && errorMessage
             ? errorMessage : 'Wallet request rejected';
-          // 4900/4901 = the wallet or its chain went away: that is exactly
-          // what EIP-1193's `disconnect` means, so tell the page.
-          if (code === 4900 || code === 4901) {
+          // 4900 DISCONNECTED is the WALLET being unavailable (no engine
+          // behind the bridge, no page host): that is EIP-1193's `disconnect`,
+          // and the page must hear it so it stops offering to sign.
+          //
+          // 4901 CHAIN_DISCONNECTED is not that. It means this one call could
+          // not reach the chain — a rate-limited, blocked or briefly down RPC
+          // endpoint — while the wallet itself is present and able to sign.
+          // Firing `disconnect` for it made a wagmi app tear its connection
+          // down and report the connect as failed, once per endpoint hiccup,
+          // which is why it happens "often" and never reproducibly. The
+          // provider stays connected, the failed call is still rejected with
+          // its own code, and listeners are told on the EIP-1193 message
+          // channel instead.
+          if (code === 4900) {
             state.evmConnected = false;
             dispatch('evm', 'disconnect', bridgeError(code, msg));
+          } else if (code === 4901) {
+            dispatch('evm', 'message', {
+              type: 'chainDisconnected',
+              data: { code: code, message: msg }
+            });
           }
           entry.reject(bridgeError(code, msg));
           return;

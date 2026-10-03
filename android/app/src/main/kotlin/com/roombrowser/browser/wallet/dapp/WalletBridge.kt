@@ -14,11 +14,14 @@ import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
 import com.roombrowser.domain.wallet.rpc.JsonRpcClient
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -112,10 +115,14 @@ class WalletBridge(
     /**
      * Main-thread-confined pending state. [pendingById] tracks every call
      * until its response is delivered; [pageIdByDappId] maps engine request
-     * ids back to page ids; [pendingByHost] enforces the per-host cap;
+     * ids back to page ids; [pendingByHost] enforces the per-host caps;
      * [lastDispatchAt] enforces the per-(host, method) gap.
+     *
+     * [method] and [isRead] are what the gap and the caps are decided on: a
+     * read can neither raise a prompt nor pile one up, so it is neither
+     * gapped nor counted against the prompt cap.
      */
-    private class Pending(val host: String) {
+    private class Pending(val host: String, val method: String, val isRead: Boolean) {
         var dappRequestId: String? = null
     }
 
@@ -171,31 +178,47 @@ class WalletBridge(
             respondError(call.id, WalletBridgeError(WalletBridgeError.DISCONNECTED, "No host for current page"))
             return
         }
-        val now = SystemClock.elapsedRealtime()
-        if (lastDispatchAt.size > THROTTLE_TABLE_LIMIT) lastDispatchAt.clear()
-        val throttleKey = host + '\n' + call.method
-        val last = lastDispatchAt[throttleKey] ?: 0L
-        if (now - last < MIN_METHOD_GAP_MS) {
-            respondError(
-                call.id,
-                WalletBridgeError(WalletBridgeProtocol.CODE_RATE_LIMITED, "Too many requests, retry shortly")
-            )
-            return
-        }
-        lastDispatchAt[throttleKey] = now
+        val isRead = call is WalletRpcCall && WalletBridgeProtocol.isReadonlyRpcMethod(call.method)
 
-        // Cap concurrent work per host: reject the OLDEST pending call.
+        // The gap sheds a flood, and the flood worth shedding is PROMPTS —
+        // that is the whole point of it (see the security model above). Two
+        // kinds of call are therefore let through:
+        //  - a read, which raises no prompt at all;
+        //  - a repeat of a method that is still in flight, which is a retry or
+        //    a second component asking the same question, and which the engine
+        //    coalesces into the one prompt already on screen anyway.
+        // Rejecting those is what a dApp reports as a failed connection, and
+        // eth_requestAccounts — the connect call — is the one a dApp is most
+        // likely to repeat while it waits.
+        if (!isRead && !hasPendingFor(host, call.method)) {
+            val now = SystemClock.elapsedRealtime()
+            if (lastDispatchAt.size > THROTTLE_TABLE_LIMIT) lastDispatchAt.clear()
+            val throttleKey = host + '\n' + call.method
+            val last = lastDispatchAt[throttleKey] ?: 0L
+            if (now - last < MIN_METHOD_GAP_MS) {
+                respondError(
+                    call.id,
+                    WalletBridgeError(WalletBridgeProtocol.CODE_RATE_LIMITED, "Too many requests, retry shortly")
+                )
+                return
+            }
+            lastDispatchAt[throttleKey] = now
+        }
+
+        // Cap concurrent work per host, counting reads and prompt-raising
+        // calls against their own limits: a page may have many reads in
+        // flight at once (that is what a dApp does on load) but only
+        // [MAX_PENDING_PER_HOST] prompts waiting for the user. The OLDEST of
+        // whichever kind overflows is shed.
         val queue = pendingByHost.getOrPut(host) { ArrayDeque() }
-        while (queue.size >= MAX_PENDING_PER_HOST) {
-            val oldest = queue.pollFirst() ?: break
-            pendingById.remove(oldest)
-            respondError(
-                oldest,
-                WalletBridgeError(WalletBridgeError.USER_REJECTED, "Too many pending requests")
-            )
+        val cap = if (isRead) MAX_PENDING_READS_PER_HOST else MAX_PENDING_PER_HOST
+        while (queue.count { isReadPending(it) == isRead } >= cap) {
+            val oldest = queue.firstOrNull { isReadPending(it) == isRead } ?: break
+            queue.remove(oldest)
+            shed(oldest)
         }
         queue.addLast(call.id)
-        pendingById[call.id] = Pending(host)
+        pendingById[call.id] = Pending(host, call.method, isRead)
 
         when (call) {
             is WalletRpcCall -> relay(call)
@@ -242,26 +265,59 @@ class WalletBridge(
             return
         }
         relayScope.launch {
-            for (endpoint in endpoints) {
-                try {
-                    val result = rpc.call(endpoint, call.method, params)
-                    respondSuccess(call.id, result.toString())
-                    return@launch
-                } catch (e: WalletException.NetworkUnavailable) {
-                    // The only retryable case: nothing answered.
-                } catch (e: WalletException) {
-                    respondError(call.id, WalletBridgeProtocol.relayError(e))
-                    return@launch
-                } catch (e: Exception) {
-                    // Transport-level failure outside the typed hierarchy —
-                    // also nothing answered.
-                }
+            // The page's promise must always settle, and settling it late is
+            // the same thing to a dApp as never settling it: every endpoint is
+            // tried in turn, each with its own 8s connect/read timeout, so a
+            // run of dead or blocked endpoints could take 24s to answer a call
+            // wagmi abandons after 10. The budget bounds the whole walk.
+            val answer = withTimeoutOrNull(RELAY_BUDGET_MS) { relayAcross(endpoints, call, params) }
+            when (answer) {
+                is RelayAnswer.Ok -> respondSuccess(call.id, answer.json)
+                is RelayAnswer.Failed -> respondError(call.id, answer.error)
+                // Budget spent, or every endpoint exhausted: nothing answered.
+                null, RelayAnswer.Unreachable -> respondError(
+                    call.id,
+                    WalletBridgeError(WalletBridgeError.CHAIN_DISCONNECTED, "No RPC endpoint answered")
+                )
             }
-            respondError(
-                call.id,
-                WalletBridgeError(WalletBridgeError.CHAIN_DISCONNECTED, "No RPC endpoint answered")
-            )
         }
+    }
+
+    /**
+     * Walks [endpoints] in order for one read. ONLY a transport failure moves
+     * on to the next url — an RPC that answered, however unhappily, is the
+     * chain's verdict and is passed through rather than masked by a retry.
+     */
+    private suspend fun relayAcross(
+        endpoints: List<String>,
+        call: WalletRpcCall,
+        params: List<JsonElement>
+    ): RelayAnswer {
+        for (endpoint in endpoints) {
+            try {
+                return RelayAnswer.Ok(rpc.call(endpoint, call.method, params).toString())
+            } catch (e: CancellationException) {
+                // The relay budget ran out. Rethrown so withTimeoutOrNull can
+                // end the walk — swallowing it here would just move on to the
+                // next endpoint and spend a timeout that is already gone.
+                throw e
+            } catch (e: WalletException.NetworkUnavailable) {
+                // The only retryable case: nothing answered.
+            } catch (e: WalletException) {
+                return RelayAnswer.Failed(WalletBridgeProtocol.relayError(e))
+            } catch (e: Exception) {
+                // Transport-level failure outside the typed hierarchy —
+                // also nothing answered.
+            }
+        }
+        return RelayAnswer.Unreachable
+    }
+
+    /** What one read's walk across the endpoints produced. */
+    private sealed interface RelayAnswer {
+        data class Ok(val json: String) : RelayAnswer
+        data class Failed(val error: WalletBridgeError) : RelayAnswer
+        object Unreachable : RelayAnswer
     }
 
     /**
@@ -431,6 +487,40 @@ class WalletBridge(
         }
     }
 
+    /** True when this host already has a call of [method] waiting for an answer. */
+    private fun hasPendingFor(host: String, method: String): Boolean =
+        pendingByHost[host]?.any { pendingById[it]?.method == method } == true
+
+    /** Whether a still-pending call is a read (never null for a queued id). */
+    private fun isReadPending(pageId: String): Boolean = pendingById[pageId]?.isRead == true
+
+    /**
+     * Drops one pending call because the host is at its cap.
+     *
+     * The code matters as much as the drop: this used to answer 4001, which
+     * EIP-1193 defines as the USER declining. A dApp told that mid-connect
+     * reports a rejected connection — or, worse, believes the user said no
+     * and gives up — when what actually happened is that the wallet was busy.
+     * -32005 says busy, which is true and retryable.
+     *
+     * A call that had already reached the engine also has a confirmation
+     * waiting for the user, and that has to go with it: the page will never
+     * see its answer, so leaving the prompt up asks the user to approve
+     * something that can no longer be delivered.
+     */
+    private fun shed(pageId: String) {
+        pendingById[pageId]?.dappRequestId?.let { dappId ->
+            pageIdByDappId.remove(dappId)
+            runCatching { engineProvider()?.cancelDappRequests(listOf(dappId)) }
+        }
+        // respondError retires the call from pendingById AND from the host
+        // queue, so the shed id cannot linger and be counted again.
+        respondError(
+            pageId,
+            WalletBridgeError(WalletBridgeProtocol.CODE_RATE_LIMITED, "Too many pending requests")
+        )
+    }
+
     /** Runs [action] on the main thread (immediate when already there). */
     private inline fun runOnMain(crossinline action: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -495,8 +585,30 @@ class WalletBridge(
         /** Minimum gap between calls of the same (host, method). */
         private const val MIN_METHOD_GAP_MS = 300L
 
-        /** Concurrent pending calls allowed per host (oldest auto-rejected beyond it). */
+        /** Prompt-raising calls allowed to wait for the user at once, per host. */
         private const val MAX_PENDING_PER_HOST = 8
+
+        /**
+         * Reads allowed in flight at once, per host.
+         *
+         * Deliberately separate from [MAX_PENDING_PER_HOST] and much larger:
+         * a dApp loads by firing many reads at once, and none of them can pile
+         * a prompt on the confirmation queue. It still has to be a bound —
+         * the relay client is shared process-wide, so an unbounded page could
+         * starve every other tab's reads — and 16 concurrent HTTP reads is
+         * already more than any dApp does.
+         */
+        private const val MAX_PENDING_READS_PER_HOST = 16
+
+        /**
+         * Total time one read may spend walking its endpoints.
+         *
+         * The endpoints are tried in order, each with [RPC_TIMEOUT_SECONDS]
+         * connect and read timeouts, so an unreachable network cost as long as
+         * the endpoint list was — a promise settled after the dApp had already
+         * given up is a promise that never settled.
+         */
+        private const val RELAY_BUDGET_MS = 12_000L
 
         /** Hard cap on throttle bookkeeping before it is reset (hostile-method growth). */
         private const val THROTTLE_TABLE_LIMIT = 256

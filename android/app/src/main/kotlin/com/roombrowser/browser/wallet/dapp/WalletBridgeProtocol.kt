@@ -311,10 +311,48 @@ object WalletBridgeProtocol {
     // Read-only RPC relay
     // ------------------------------------------------------------------
 
-    /** The EVM methods that may be relayed without any approval (reads only). */
-    private val READONLY_RPC_METHODS: Set<String> = setOf(
-        "eth_chainId", "net_version", "eth_blockNumber", "eth_getBalance",
-        "eth_call", "eth_gasPrice", "eth_estimateGas"
+    /**
+     * The EVM methods that may be relayed without any approval (reads only).
+     *
+     * This is the whole standard read surface a dApp uses, not a curated
+     * handful. It used to hold seven methods, and every other read fell
+     * through to [buildDappRequest] — which has no branch for a read and
+     * answers 4200 Unsupported Method. That is not a harmless refusal: a
+     * wagmi app reads the block number (`useBlockNumber`, which watches by
+     * default), the nonce before it builds a transaction
+     * (`eth_getTransactionCount`), the fee market (`eth_feeHistory`, inside
+     * `estimateFeesPerGas`) and contract code (`eth_getCode`) as a matter of
+     * course, and a wallet that calls those unsupported is a wallet the app
+     * reports as failing.
+     *
+     * Nothing here can change state, spend, or sign — every entry is a pure
+     * read of the chain, which is exactly why no prompt is needed.
+     *
+     * Kept IDENTICAL to the injected script's READONLY_METHODS on purpose:
+     * the script picks the transport kind from its own copy, so a method
+     * listed there and missing here would arrive as a relay this refuses.
+     * `WalletBridgeProtocolTest` asserts the two sets are equal, because
+     * nothing else can — the JS list is a string literal.
+     */
+    val READONLY_RPC_METHODS: Set<String> = setOf(
+        // Chain and node identity.
+        "eth_chainId", "net_version", "eth_blockNumber", "eth_syncing",
+        "web3_clientVersion", "net_listening", "net_peerCount",
+        // Account and contract state.
+        "eth_getBalance", "eth_getCode", "eth_getStorageAt",
+        "eth_getTransactionCount", "eth_getProof",
+        // Blocks and their uncles.
+        "eth_getBlockByNumber", "eth_getBlockByHash",
+        "eth_getBlockTransactionCountByNumber", "eth_getBlockTransactionCountByHash",
+        "eth_getUncleCountByBlockNumber", "eth_getUncleCountByBlockHash",
+        "eth_getUncleByBlockNumberAndIndex", "eth_getUncleByBlockHashAndIndex",
+        // Transactions and logs.
+        "eth_getTransactionByHash", "eth_getTransactionReceipt",
+        "eth_getTransactionByBlockNumberAndIndex", "eth_getTransactionByBlockHashAndIndex",
+        "eth_getLogs",
+        // Fees, simulation and pure computation.
+        "eth_gasPrice", "eth_maxPriorityFeePerGas", "eth_feeHistory",
+        "eth_call", "eth_estimateGas", "web3_sha3"
     )
 
     /** True when [method] is an allowlisted read-only EVM call. */

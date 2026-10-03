@@ -577,6 +577,62 @@ class WalletBridgeProtocolTest {
         assertThat(WalletBridgeProtocol.rpcParamsList(objectParams)).isNull()
     }
 
+    /**
+     * The reads a dApp actually makes. Every one of these used to fall through
+     * to the dApp-request builder, which has no branch for a read and answered
+     * 4200 Unsupported Method — so a wagmi app asking for the block number
+     * (`useBlockNumber`, watching by default), the nonce it needs before
+     * building a transaction, the fee market, or contract code was told the
+     * wallet cannot do it.
+     */
+    @Test
+    fun `the ordinary evm reads are all relayable`() {
+        val reads = listOf(
+            "eth_blockNumber", "eth_syncing", "web3_clientVersion",
+            "eth_getCode", "eth_getStorageAt", "eth_getTransactionCount", "eth_getProof",
+            "eth_getBlockByNumber", "eth_getBlockByHash",
+            "eth_getBlockTransactionCountByNumber", "eth_getBlockTransactionCountByHash",
+            "eth_getTransactionByHash", "eth_getTransactionReceipt", "eth_getLogs",
+            "eth_maxPriorityFeePerGas", "eth_feeHistory", "web3_sha3"
+        )
+        for (method in reads) {
+            assertThat(WalletBridgeProtocol.isReadonlyRpcMethod(method)).isTrue()
+        }
+        // And none of them is also routable as a dApp request, which is where
+        // the 4200 came from: a read must have exactly one path.
+        for (method in reads) {
+            val built = WalletBridgeProtocol.buildDappRequest(
+                WalletDappCall("w1", ChainType.EVM, method, JsonNull),
+                "d1", "example.com", "https://example.com", "EVM:1", "0xabc"
+            )
+            assertThat(built).isInstanceOf(DappBuildResult.Invalid::class.java)
+        }
+    }
+
+    /**
+     * The injected script decides the transport kind from its OWN copy of the
+     * read list, and native refuses a relay it does not recognise. Nothing
+     * type-checks a string literal, so the two lists are compared here — a
+     * method added to one and not the other is a method dApps cannot use.
+     */
+    @Test
+    fun `the injected read list matches the native one exactly`() {
+        val script = RoomWalletScript.SCRIPT
+        val block = Regex("var READONLY_METHODS = \\{([^}]*)\\}")
+            .find(script)
+            ?.groupValues
+            ?.get(1)
+            ?: error("the injected script no longer declares READONLY_METHODS")
+        // Keys only, so a comment added inside the literal cannot sneak into
+        // the set and make this pass on a list that does not match.
+        val jsMethods = Regex("([A-Za-z_][A-Za-z0-9_]*)\\s*:")
+            .findAll(block)
+            .map { it.groupValues[1] }
+            .toSet()
+
+        assertThat(jsMethods).isEqualTo(WalletBridgeProtocol.READONLY_RPC_METHODS)
+    }
+
     @Test
     fun `relay error mapping follows eip1193`() {
         val offline = WalletBridgeProtocol.relayError(WalletException.NetworkUnavailable())
@@ -1106,10 +1162,17 @@ class WalletBridgeProtocolTest {
         assertThat(script).contains("'connect'")
         assertThat(script).contains("'disconnect'")
         assertThat(script).contains("'message'")
-        // A 4900/4901 from the bridge means the wallet is gone: the page
-        // provider must both flip isConnected and tell listeners.
+        // A 4900 from the bridge means the wallet itself is gone: the page
+        // provider must both flip isConnected and tell listeners. A 4901 means
+        // only that THIS call could not reach the chain — the wallet is still
+        // installed and still connected, so the provider keeps its connection
+        // and reports the failure on the 'message' channel as
+        // chainDisconnected. Dispatching 'disconnect' for 4901 made a wagmi
+        // app tear down a live connection mid-handshake and report it as
+        // "Connection error".
         assertThat(script).contains("=== 4900")
         assertThat(script).contains("=== 4901")
+        assertThat(script).contains("'chainDisconnected'")
         // EIP-6963 discovery: announce + answer the request event.
         assertThat(script).contains("eip6963:announceProvider")
         assertThat(script).contains("eip6963:requestProvider")
@@ -1119,6 +1182,22 @@ class WalletBridgeProtocolTest {
         // solana.disconnect must actually revoke (bridge-local method), not
         // just clear the local cache.
         assertThat(script).contains("'disconnect'")
+    }
+
+    /**
+     * The page-side gap exists to absorb a dApp that calls the same method in
+     * a loop. It must not absorb a legitimate second call while the first is
+     * still in flight (a retry, or a poll that overlapped the previous poll),
+     * and it must never apply to a read at all — reads are relayed to a public
+     * node and cost the wallet nothing, while a rejected read during a connect
+     * handshake is what the dApp renders as "Connection attempt failed".
+     */
+    @Test
+    fun `the page-side gap exempts reads and in-flight repeats`() {
+        val script = RoomWalletScript.SCRIPT
+        assertThat(script).contains("function hasPendingFor(method)")
+        assertThat(script)
+            .contains("!READONLY_METHODS[method] && !hasPendingFor(method)")
     }
 
     @Test
