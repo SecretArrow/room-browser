@@ -225,6 +225,13 @@ class BrowserViewModel(
     var activeWebView: WebView? by mutableStateOf<WebView?>(null)
         private set
 
+    /**
+     * The tab an in-flight agent turn is working on, or null when no turn is
+     * running. See [pinTabForAgent] for why it is held here rather than in
+     * the controller.
+     */
+    private var agentTabId: String? = null
+
     /** Latest page-load event (see [PageEvent]) — for the agent's nav waiting. */
     @Volatile
     var lastPageEvent: PageEvent? = null
@@ -1072,6 +1079,39 @@ class BrowserViewModel(
         evictStaleWebViews(entity.id)
     }
 
+    // ------------------------------------------------------ agent tab binding
+
+    /**
+     * The live engine of [id]'s tab, or null when that tab holds none — the
+     * start page, an LRU-evicted background tab, or a tab since closed.
+     *
+     * The agent resolves its engine HERE and not through [activeWebView]. A
+     * turn is started on one tab, and every tool of that turn belongs to that
+     * tab; reading "whatever is on screen" is how the rest of a turn silently
+     * retargets the moment the user switches away from it.
+     */
+    fun tabWebView(id: String): WebView? = tabManager.get(id)?.webView
+
+    /** Whether [id] is the tab the user is currently looking at. */
+    fun isActiveTab(id: String): Boolean = id == activeTabId
+
+    /** Whether [id] is still an open tab of this profile. */
+    fun tabExists(id: String): Boolean = tabs.any { it.id == id }
+
+    /**
+     * Pins [id] against LRU eviction, or clears the pin when null.
+     *
+     * [MAX_LIVE_WEBVIEWS] is a memory budget and a background tab is its
+     * first casualty — which is exactly what an agent's tab is while the
+     * agent works in the background and the user browses elsewhere. Evicting
+     * it mid-turn destroys the page the turn is reasoning about, so the
+     * budget yields instead: one tab is held above it until the turn ends.
+     * The budget is a bound, not a promise, and a turn is worth one engine.
+     */
+    fun pinTabForAgent(id: String?) {
+        agentTabId = id
+    }
+
     fun selectTab(id: String) {
         if (id == activeTabId && activeWebView != null) return
         Log.d(NAV_TAG, "vm=$navId selectTab id=$id same=${id == activeTabId}")
@@ -1390,12 +1430,18 @@ class BrowserViewModel(
         val live = tabManager.liveWebViewSessions()
         if (live.size <= MAX_LIVE_WEBVIEWS) return
         val excess = live.size - MAX_LIVE_WEBVIEWS
-        tabManager.lruVictims(keepId).take(excess).forEach { victim ->
-            victim.webView?.let { webView ->
-                saveEngineStateBeforeDestroy(victim.id, webView)
-                destroyWebViewQuiet(webView)
+        tabManager.lruVictims(keepId)
+            // The agent's tab is never a candidate: an in-flight turn owns the
+            // page in it, and destroying that engine mid-turn is the turn
+            // losing the page it was reading. See [pinTabForAgent].
+            .filter { it.id != agentTabId }
+            .take(excess)
+            .forEach { victim ->
+                victim.webView?.let { webView ->
+                    saveEngineStateBeforeDestroy(victim.id, webView)
+                    destroyWebViewQuiet(webView)
+                }
             }
-        }
     }
 
     /**
@@ -1415,6 +1461,10 @@ class BrowserViewModel(
             session.webView?.let { destroyWebViewQuiet(it) }
         }
         activeWebView = null
+        // The pin names a tab of the profile being torn down; a leftover pin
+        // would hold a dead id and silently exempt a LIVE tab of the next
+        // profile from eviction.
+        agentTabId = null
     }
 
     /** Re-applies profile settings (JS, UA, zoom, cookies…) to EVERY live

@@ -591,7 +591,20 @@ class BrowserAgentController(
             repo.addMessage(sessionId, "user", display)
 
             val apiKey = apiKeyFor(provider).orEmpty()
-            val executor = AgentToolExecutor(vm) { name, label -> gate(name, label) }
+            // The turn belongs to the tab it was started from. Every tool
+            // resolves its engine from this id rather than from whatever is on
+            // screen, so a tab switch mid-turn can no longer retarget the rest
+            // of it, and the engine is pinned so the live-engine budget cannot
+            // evict the page out from under the turn either. The pin is lifted
+            // in the finally below.
+            val turnTabId = vm.activeTabId
+            vm.pinTabForAgent(turnTabId)
+            val executor = AgentToolExecutor(
+                vm = vm,
+                tabId = turnTabId,
+                onStatus = { setStatus(it) },
+                confirmGate = { name, label -> gate(name, label) }
+            )
             // Only the native Ollama protocol consumes the tuning; the other
             // gateways ignore it (default null keeps their wire format intact).
             val retry = settings.retryPolicy()
@@ -713,6 +726,10 @@ class BrowserAgentController(
             approval = null
             AgentForeground.stopCurrentTurn = null
             AgentForeground.finish()
+            // The pin belongs to the turn, so it lifts with the turn —
+            // including when the turn threw. Cleared by value and not by id on
+            // purpose: the turn may have rebound itself to a tab it opened.
+            vm.pinTabForAgent(null)
         }
     }
 
