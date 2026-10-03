@@ -36,7 +36,7 @@ class AgentTurnHistoryTest {
             AgentSettings(defaultContext = "Answer in Indonesian.", useDefaultContext = true)
         )
 
-        assertThat(messages.any { it.content.contains("Answer in Indonesian.") }).isTrue()
+        assertThat(messages.any { it.content.orEmpty().contains("Answer in Indonesian.") }).isTrue()
     }
 
     @Test
@@ -46,14 +46,14 @@ class AgentTurnHistoryTest {
         )
 
         // Off is not the same as deleted: the text is kept, and kept out.
-        assertThat(messages.none { it.content.contains("Answer in Indonesian.") }).isTrue()
+        assertThat(messages.none { it.content.orEmpty().contains("Answer in Indonesian.") }).isTrue()
     }
 
     @Test
     fun `a switch left on over blank text sends no empty context block`() {
         val messages = history(AgentSettings(defaultContext = "   ", useDefaultContext = true))
 
-        assertThat(messages.none { it.content.contains("Standing context") }).isTrue()
+        assertThat(messages.none { it.content.orEmpty().contains("Standing context") }).isTrue()
     }
 
     @Test
@@ -62,8 +62,8 @@ class AgentTurnHistoryTest {
             AgentSettings(defaultContext = "  be terse  ", useDefaultContext = true)
         )
 
-        assertThat(messages.any { it.content.endsWith("be terse") }).isTrue()
-        assertThat(messages.none { it.content.contains("  be terse") }).isTrue()
+        assertThat(messages.any { it.content.orEmpty().endsWith("be terse") }).isTrue()
+        assertThat(messages.none { it.content.orEmpty().contains("  be terse") }).isTrue()
     }
 
     @Test
@@ -91,7 +91,7 @@ class AgentTurnHistoryTest {
             request = "and now the third"
         )
 
-        assertThat(messages.any { it.content.contains("be terse") }).isTrue()
+        assertThat(messages.any { it.content.orEmpty().contains("be terse") }).isTrue()
     }
 
     @Test
@@ -101,8 +101,8 @@ class AgentTurnHistoryTest {
             pageSnapshot = null
         )
 
-        assertThat(messages.none { it.content.contains("The user's request follows.") }).isTrue()
+        assertThat(messages.none { it.content.orEmpty().contains("The user's request follows.") }).isTrue()
         // ...and the context still rides along without it.
-        assertThat(messages.any { it.content.contains("be terse") }).isTrue()
+        assertThat(messages.any { it.content.orEmpty().contains("be terse") }).isTrue()
     }
 }
