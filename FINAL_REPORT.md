@@ -273,8 +273,15 @@ Notes on the run:
 ### A flake that was not left as a flake
 
 `quality` runs `:app:testDebugUnitTest` and retries once on failure, so a green
-conclusion does not prove the first attempt passed — the log carries
-`##[warning]First attempt failed — retrying once`. That happened on the run for
+conclusion does not prove the first attempt passed. The retry is proven by the
+step invoking Gradle twice with the first ending in `N tests completed, M
+failed` — NOT by grepping the log for the warning text. The step's script body
+is echoed into the log before it runs, so `##[warning]First attempt failed —
+retrying once` appears verbatim on every run, green or not; reading it as a
+retry indicator produced exactly one false alarm while this report was being
+written (it was briefly believed the flake had recurred on `8a7b1bc`, until the
+step's single `> Task :app:testDebugUnitTest` followed by `BUILD SUCCESSFUL`
+showed a clean first attempt). A real retry happened on the run for
 `c31ed52`: `311 tests completed, 1 failed`, the failure being
 `OllamaLocalTest > pull cancellation surfaces as CancellationException and a
 second pull resumes` with a `TimeoutCancellationException`. The retry was green
