@@ -126,6 +126,27 @@ Every feature traced UI → ViewModel → Repository → DataSource.
   user's own Add-network path keeps `any` — a local `http://127.0.0.1:8545`
   node plus an https fallback is theirs to type. Two tests pin both halves
   (`WalletEngineTest`), which the split had none of before.
+- **Agent settings are one json blob, and every writer replaced all of it.**
+  The standing context ("Default context") is a switch the user turns on once
+  and then expects in every request; it could silently stop being sent. Three
+  mechanisms, one cause — what the app acted on was a best-effort in-memory
+  mirror of a value that only ever moves as a whole: (1) `runTurn` read that
+  mirror, which starts at defaults and is filled asynchronously, and this
+  class's own KDoc records that Room's cross-process invalidation "can
+  occasionally be lost" — so at send time it could still hold
+  `useDefaultContext = false`; (2) both settings controllers built each new blob
+  from their own copy (`transform(settings)`), so an unrelated edit wrote the
+  switch back off — the panel and the settings activity are different
+  processes, each holding its own copy; (3) `refreshProviders` assigned a
+  snapshot unconditionally, which can move the mirror backwards. Writes now go
+  through `AppStateRepository.updateAgentSettings`, which reads the STORED blob
+  under a mutex, applies the transform to that, and persists the result;
+  `saveAgentSettings` remains only for whole-blob replacements (a backup
+  import). `runTurn` refreshes from the store before reading anything, so the
+  turn — and the gate's yolo/confirm checks — runs on one authoritative value.
+  The turn's message assembly moved into `buildTurnHistory`, a pure function,
+  because it had NO test at all: the e2e suite proved the toggle PERSISTED,
+  never that it was SENT.
 - `ImageProxy` closed in a `finally` — an escaped decode exception used to
   starve the CameraX pipeline, so the scanner silently stopped scanning.
 - `HttpsUpgradeFallback.Registry` bounded at 64 entries, drop-oldest, under a
@@ -252,6 +273,32 @@ instrumented 35. Counting annotations is what makes the number checkable
 without a run — for `app` the annotation count and CI's own `N tests completed`
 line agree exactly (311 and 311 at the preset commit, before the two
 `requireTls` tests landed; 313 now).
+
+### A contract that had no test
+
+The standing-context fix in §3.2 came with the tests that should have caught it
+in the first place. Two new files, both pure JVM (no Room, no emulator):
+
+- `AppStateRepositoryTest` drives a real `AppStateRepository` over a
+  hand-written map DAO whose accessors `delay(1)` — virtual time under
+  `runTest`, but a genuine suspension point, which is what lets four concurrent
+  updates interleave at their read/write boundary. The fake is written out
+  rather than mocked precisely so `delay` can be called directly, without
+  depending on whether a mocking library's answer block is suspend-capable; a
+  fake that never suspends would run each update to completion and would pass
+  just as happily against a racing implementation as against a serialised one.
+  It pins four things: the transform sees the STORED blob, an unrelated edit
+  does not revert the standing context, concurrent edits all survive, and
+  `saveAgentSettings` still replaces everything — that last one so a later
+  reader does not "fix" the deliberate asymmetry away.
+- `AgentTurnHistoryTest` pins `buildTurnHistory`: the order (system, prior
+  turns, page snapshot, standing context, attachments, request), the switch on
+  and off, blank text sending no empty context block, trimming, re-sending on a
+  later turn, and the page snapshot being optional.
+
+The e2e suite is deliberately untouched by this. It asserts that the toggle
+PERSISTS across a restart, which is a different question from whether the
+context is SENT — and it was only ever answering the first one.
 
 Notes on the run:
 

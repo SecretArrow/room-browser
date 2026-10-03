@@ -182,14 +182,14 @@ class AgentSettingsController(
         scope.launch {
             runCatching { repo.deleteProvider(id) }
             if (settings.defaultProviderId == id) {
-                saveSettings(settings.copy(defaultProviderId = null, defaultModel = null))
+                saveSettings { it.copy(defaultProviderId = null, defaultModel = null) }
             }
         }
     }
 
     fun setDefault(provider: AgentProviderEntity, model: String) {
         scope.launch {
-            saveSettings(settings.copy(defaultProviderId = provider.id, defaultModel = model))
+            saveSettings { it.copy(defaultProviderId = provider.id, defaultModel = model) }
         }
     }
 
@@ -200,16 +200,27 @@ class AgentSettingsController(
      * mid-save can never lose the provider or the default selection).
      */
     suspend fun setDefaultNow(provider: AgentProviderEntity, model: String) {
-        saveSettings(settings.copy(defaultProviderId = provider.id, defaultModel = model))
+        saveSettings { it.copy(defaultProviderId = provider.id, defaultModel = model) }
     }
 
     fun updateSettings(transform: (AgentSettings) -> AgentSettings) {
-        scope.launch { saveSettings(transform(settings)) }
+        scope.launch { saveSettings(transform) }
     }
 
-    private suspend fun saveSettings(new: AgentSettings) {
-        runCatching { appState.saveAgentSettings(new) }
-        settings = new
+    /**
+     * Read-modify-write against the STORED blob, then mirror the result.
+     *
+     * [transform] deliberately receives the persisted settings and NOT
+     * [settings]. This controller runs in the default process while the
+     * browser panel runs in ':browser', and each keeps its own copy of the
+     * whole blob; a transform applied to this copy would write the other
+     * process's changes back out as they were when the copy was refreshed —
+     * turning the standing context off because this screen had not heard that
+     * the panel had just turned it on. See
+     * [com.roombrowser.data.repo.AppStateRepository.updateAgentSettings].
+     */
+    private suspend fun saveSettings(transform: (AgentSettings) -> AgentSettings) {
+        runCatching { settings = appState.updateAgentSettings(transform) }
     }
 
     /**

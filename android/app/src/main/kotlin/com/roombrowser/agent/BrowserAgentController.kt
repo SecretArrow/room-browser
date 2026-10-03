@@ -109,6 +109,63 @@ internal fun formatSize(bytes: Long): String = when {
 }
 
 /**
+ * Assembles the message list for ONE turn.
+ *
+ * Pure function (no Android deps) so the ORDER is unit-testable on the JVM.
+ * The order is the contract, and every part of it is load-bearing:
+ *
+ *   system | prior turns | page snapshot | standing context | attachments | request
+ *
+ * The standing context is re-sent on EVERY turn rather than once when it was
+ * written, because a provider keeps no memory between turns: a context that
+ * only rides the first request is gone by the third.
+ *
+ * It sits BELOW the page snapshot so "this is my standing instruction" is the
+ * most recent thing the model read before the actual request, and ABOVE the
+ * request itself so the request remains the last word.
+ *
+ * It is a USER message, never merged into the system prompt: the system prompt
+ * is the app's own instruction set, and text the user can retype at any time
+ * does not belong in the slot that defines what the agent fundamentally is.
+ *
+ * The switch and the text are checked separately on purpose. [AgentSettings]
+ * keeps "off" and "empty" as distinct states so muting a context does not mean
+ * deleting it, which means a switch left ON over blank text is reachable — and
+ * must send nothing rather than an empty "Standing context:" block.
+ *
+ * [pageSnapshot] is null when the user did not include the page.
+ */
+internal fun buildTurnHistory(
+    prompt: String,
+    priorTurns: List<ChatMessage>,
+    pageSnapshot: String?,
+    settings: AgentSettings,
+    attachments: List<AgentAttachment>,
+    request: String
+): List<ChatMessage> {
+    val history = mutableListOf(ChatMessage(role = "system", content = prompt))
+    history.addAll(priorTurns)
+    if (pageSnapshot != null) {
+        history.add(ChatMessage(role = "user", content = "$pageSnapshot\n\n(The user's request follows.)"))
+    }
+    val standing = settings.defaultContext.trim()
+    if (settings.useDefaultContext && standing.isNotEmpty()) {
+        history.add(
+            ChatMessage(
+                role = "user",
+                content = "Standing context — apply it to this and every " +
+                    "following request until I say otherwise:\n$standing"
+            )
+        )
+    }
+    renderAttachments(attachments).takeIf { it.isNotEmpty() }?.let {
+        history.add(ChatMessage(role = "user", content = it))
+    }
+    history.add(ChatMessage(role = "user", content = request))
+    return history
+}
+
+/**
  * What the user answered at the approval prompt.
  *
  * [AlwaysAllow] is the third button and the only answer that outlives the
@@ -311,7 +368,12 @@ class BrowserAgentController(
         apiKeyCache.remove(id)
         modelCache.remove(id)
         if (settings.defaultProviderId == id) {
-            appState.saveAgentSettings(settings.copy(defaultProviderId = null, defaultModel = null))
+            // Against the STORED blob, never this mirror: clearing the default
+            // must not drag every setting changed since the mirror was filled
+            // back to its old value (see AppStateRepository.updateAgentSettings).
+            settings = appState.updateAgentSettings {
+                it.copy(defaultProviderId = null, defaultModel = null)
+            }
         }
     }
 
@@ -366,21 +428,24 @@ class BrowserAgentController(
 
     fun setDefault(provider: AgentProviderEntity, model: String) {
         scope.launch {
-            appState.saveAgentSettings(
-                settings.copy(defaultProviderId = provider.id, defaultModel = model)
-            )
+            settings = appState.updateAgentSettings {
+                it.copy(defaultProviderId = provider.id, defaultModel = model)
+            }
             activeProvider = provider
             activeModel = model
             messages.value = "Agent set to ${provider.name} · $model"
         }
     }
 
+    /**
+     * Applies [transform] to the STORED settings and mirrors the result.
+     *
+     * The transform runs against the persisted blob, never against [settings]:
+     * see [com.roombrowser.data.repo.AppStateRepository.updateAgentSettings]
+     * for why an in-memory base silently reverts other writers' fields.
+     */
     fun updateSettings(transform: (AgentSettings) -> AgentSettings) {
-        scope.launch {
-            val new = transform(settings)
-            appState.saveAgentSettings(new)
-            settings = new
-        }
+        scope.launch { settings = appState.updateAgentSettings(transform) }
     }
 
     // ------------------------------------------------------------- sessions
@@ -469,6 +534,16 @@ class BrowserAgentController(
         provider: AgentProviderEntity,
         model: String
     ) {
+        // The turn runs on the STORED settings, not on the [settings] mirror.
+        // The mirror starts at defaults and is filled asynchronously, and this
+        // class documents that Room's cross-process invalidation "can
+        // occasionally be lost" — either way it can be behind at exactly the
+        // moment the user sends, which silently drops the standing context
+        // (and would equally use a stale system prompt, step budget and
+        // temperature). Refreshing here means every later read in this turn —
+        // the gate's yolo/confirm checks included — works from one
+        // authoritative value.
+        runCatching { settings = appState.agentSettingsSnapshot() }
         running = true
         gateFailureNoted = false
         // Background mode: foreground service + wake lock so the turn keeps
@@ -530,42 +605,20 @@ class BrowserAgentController(
                 systemPrompt = prompt
             )
 
-            // Rebuild the conversation: system + prior user/assistant rows + this turn.
-            val history = mutableListOf(ChatMessage(role = "system", content = prompt))
-            repo.messages(sessionId)
-                .filter { it.role == "user" || it.role == "assistant" }
-                .forEach { history.add(ChatMessage(role = it.role, content = it.content)) }
-            if (includePage) {
-                executor.snapshotContext()?.let {
-                    history.add(ChatMessage(role = "user", content = "$it\n\n(The user's request follows.)"))
-                }
-            }
-            // The user's standing context, re-sent on EVERY turn rather than
-            // once when it was written: a provider keeps no memory between
-            // turns, so a context that is only in the first request is gone by
-            // the third. It is placed BELOW the page snapshot so that "this is
-            // my standing instruction" is the most recent thing the model read
-            // before the actual request, and above the request itself so the
-            // request remains the last word.
-            //
-            // It is a USER message, never merged into the system prompt: the
-            // system prompt is the app's own instruction set, and text the
-            // user can retype at any time does not belong in the slot that
-            // defines what the agent fundamentally is.
-            val standing = settings.defaultContext.trim()
-            if (settings.useDefaultContext && standing.isNotEmpty()) {
-                history.add(
-                    ChatMessage(
-                        role = "user",
-                        content = "Standing context — apply it to this and every " +
-                            "following request until I say otherwise:\n$standing"
-                    )
-                )
-            }
-            renderAttachments(attachments).takeIf { it.isNotEmpty() }?.let {
-                history.add(ChatMessage(role = "user", content = it))
-            }
-            history.add(ChatMessage(role = "user", content = text))
+            // Rebuild the conversation: system + prior user/assistant rows +
+            // this turn. The assembly itself lives in buildTurnHistory, where
+            // the order — snapshot, then standing context, then attachments,
+            // then the request — is pinned by unit tests.
+            val history = buildTurnHistory(
+                prompt = prompt,
+                priorTurns = repo.messages(sessionId)
+                    .filter { it.role == "user" || it.role == "assistant" }
+                    .map { ChatMessage(role = it.role, content = it.content) },
+                pageSnapshot = if (includePage) executor.snapshotContext() else null,
+                settings = settings,
+                attachments = attachments,
+                request = text
+            )
 
             val loop = AgentLoop(gateway, executor, config)
             loop.runTurn(history) { event ->

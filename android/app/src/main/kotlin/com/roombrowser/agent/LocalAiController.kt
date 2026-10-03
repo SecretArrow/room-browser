@@ -412,10 +412,13 @@ class LocalAiController(
                         defaultModel = modelName,
                         protocol = AgentProviderEntity.PROTOCOL_OLLAMA
                     ).getOrThrow()
-                    val snapshot = appState.agentSettingsSnapshot()
-                    appState.saveAgentSettings(
-                        snapshot.copy(defaultProviderId = provider.id, defaultModel = modelName)
-                    )
+                    // Merged against the stored blob like every other settings
+                    // write: a snapshot read here would leave a window between
+                    // the read and this save in which another writer's field
+                    // could be overwritten (see updateAgentSettings).
+                    appState.updateAgentSettings {
+                        it.copy(defaultProviderId = provider.id, defaultModel = modelName)
+                    }
                     existing?.name ?: "Local Ollama"
                 }
                 onDone(true, "Agent set to $providerName · $modelName")

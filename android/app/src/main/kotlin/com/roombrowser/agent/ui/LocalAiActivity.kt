@@ -807,10 +807,13 @@ private fun OnDeviceEngineSection(
                         defaultModel = modelId,
                         protocol = AgentProviderEntity.PROTOCOL_LOCAL
                     ).getOrThrow()
-                    val snapshot = appState.agentSettingsSnapshot()
-                    appState.saveAgentSettings(
-                        snapshot.copy(defaultProviderId = provider.id, defaultModel = modelId)
-                    )
+                    // Merged against the stored blob like every other settings
+                    // write: a snapshot read here would leave a window between
+                    // the read and this save in which another writer's field
+                    // could be overwritten (see updateAgentSettings).
+                    appState.updateAgentSettings {
+                        it.copy(defaultProviderId = provider.id, defaultModel = modelId)
+                    }
                     existing?.name ?: "On-device engine"
                 }
                 onNotice("Agent set to $providerName · $modelId")

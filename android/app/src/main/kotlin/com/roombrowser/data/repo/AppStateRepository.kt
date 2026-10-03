@@ -7,6 +7,8 @@ import com.roombrowser.domain.agent.RetryPolicy
 import com.roombrowser.domain.model.BrowserGlobalSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
@@ -194,6 +196,17 @@ class AppStateRepository(private val dao: AppStateDao) {
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
+    /**
+     * Serialises [updateAgentSettings] cycles within this process.
+     *
+     * The agent settings are ONE json blob under one key, so there are no
+     * per-field writes for SQLite to interleave safely: a writer that starts
+     * from a copy read before another writer committed will overwrite that
+     * writer's field when it saves. Holding this across the read AND the write
+     * is what makes the cycle a merge instead of a race.
+     */
+    private val agentSettingsWrites = Mutex()
+
     val globalSettings: Flow<BrowserGlobalSettings> =
         dao.observe(AppStateKeys.GLOBAL_SETTINGS).map { raw ->
             raw?.let { runCatching { json.decodeFromString(BrowserGlobalSettings.serializer(), it) }.getOrNull() }
@@ -350,6 +363,36 @@ class AppStateRepository(private val dao: AppStateDao) {
         kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
             dao.put(AppStateEntity(AppStateKeys.AGENT_SETTINGS, json.encodeToString(AgentSettings.serializer(), settings)))
         }
+    }
+
+    /**
+     * Read-modify-write of the agent settings against the PERSISTED blob,
+     * serialised in-process. This is the write path every settings change
+     * should take; [saveAgentSettings] remains only for whole-blob writes that
+     * are authoritative by construction (a backup import replacing everything).
+     *
+     * The caller must NOT hand in a value derived from an in-memory copy. The
+     * whole blob is replaced on every save, so a transform applied to a stale
+     * base silently reverts everything changed since that copy was read: turn
+     * the standing context on in the settings activity and the panel — still
+     * holding the settings it loaded before that — would write it back off
+     * with its next unrelated edit. Reading the current blob INSIDE the lock
+     * makes each write a merge of what is stored rather than a resurrection of
+     * what the caller last happened to see.
+     *
+     * Two writers in different processes can still interleave between the read
+     * and the write. That window is a single Room round trip rather than the
+     * minutes an in-memory copy can sit around, which is the difference
+     * between a race nobody hits and one the user hits daily.
+     *
+     * @return the value that was persisted.
+     */
+    suspend fun updateAgentSettings(
+        transform: (AgentSettings) -> AgentSettings
+    ): AgentSettings = agentSettingsWrites.withLock {
+        val next = transform(agentSettingsSnapshot())
+        saveAgentSettings(next)
+        next
     }
 
     // ---------- Local AI (Ollama) tuning ----------
