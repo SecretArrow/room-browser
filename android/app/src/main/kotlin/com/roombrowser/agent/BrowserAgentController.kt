@@ -20,6 +20,7 @@ import com.roombrowser.domain.agent.AgentPrompts
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.ChatMessage
 import com.roombrowser.domain.agent.LocalAiTuning
+import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.SearchEngines
 import kotlinx.coroutines.CancellationException
@@ -593,13 +594,23 @@ class BrowserAgentController(
             val executor = AgentToolExecutor(vm) { name, label -> gate(name, label) }
             // Only the native Ollama protocol consumes the tuning; the other
             // gateways ignore it (default null keeps their wire format intact).
+            val retry = settings.retryPolicy()
             val gateway = AgentGateways.forProvider(
                 callFactory,
                 provider,
                 apiKey,
                 tuning = localAiTuning.takeIf { provider.protocol == AgentProviderEntity.PROTOCOL_OLLAMA },
                 appContext = appContext,
-                retry = settings.retryPolicy()
+                retry = retry,
+                // The pause is the user's number and can be up to a minute, so
+                // it has to be visible: a silent retry that long reads as the
+                // app hanging, and the user's answer to a hang is to kill it.
+                onRetry = { attempt, reason ->
+                    setStatus(
+                        "Attempt $attempt failed ($reason) — retrying in " +
+                            formatDurationMs(retry.delay.toInt())
+                    )
+                }
             )
             val engine = SearchEngines.byId(vm.profileSettings().searchEngineId).label
             val prompt = settings.systemPromptOverride?.takeIf { it.isNotBlank() }

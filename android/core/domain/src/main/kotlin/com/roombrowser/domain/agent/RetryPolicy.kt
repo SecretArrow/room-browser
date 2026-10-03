@@ -66,10 +66,19 @@ object RetryCodes {
 /**
  * When to send a failed provider request again, and how many times.
  *
- * Attempts are bounded and spaced by a doubling delay, so a provider that is
- * genuinely down is abandoned in seconds rather than hammered — this is a
- * courtesy to the provider and a bound on how long the user watches a
- * spinner, not an optimisation.
+ * Attempts are bounded and spaced by [delayMs], so a provider that is
+ * genuinely down is abandoned rather than hammered — this is a courtesy to
+ * the provider and a bound on how long the user watches a spinner, not an
+ * optimisation.
+ *
+ * The pause is ONE number the user sets, not a doubling curve. A curve has a
+ * shape the user cannot express with a single value, and the two things the
+ * pause is for — letting a rate-limit window move, and letting a flaky
+ * network come back — want the same answer: wait long enough that the retry
+ * is a new request rather than a repeat of the same one. Six seconds is the
+ * default because it clears a momentary gateway hiccup while staying short
+ * enough that a genuinely down provider is still reported inside the time a
+ * person will wait.
  *
  * A failure with NO HTTP status (the request never got a reply: DNS, TLS,
  * connection reset, or a stream that died mid-flight) has no code to match
@@ -81,11 +90,22 @@ data class RetryPolicy(
     val enabled: Boolean = false,
     val maxAttempts: Int = DEFAULT_ATTEMPTS,
     val statusCodes: Set<Int> = DEFAULT_STATUS_CODES,
-    val retryConnectionFailures: Boolean = true
+    val retryConnectionFailures: Boolean = true,
+    /** Pause before each retry, in milliseconds. See [delay]. */
+    val delayMs: Long = DEFAULT_DELAY_MS
 ) {
 
     /** Attempts actually made, clamped to what the UI and the loop can honour. */
     val attempts: Int get() = maxAttempts.coerceIn(MIN_ATTEMPTS, MAX_ATTEMPTS)
+
+    /**
+     * The pause actually waited, clamped to the range the settings screen
+     * offers. Clamped here rather than trusted from storage for the same
+     * reason [attempts] is: the value in the JSON blob was written by an
+     * older build, hand-edited, or restored from a backup, and a pause of
+     * ten minutes times nine retries is a hung app, not a retry policy.
+     */
+    val delay: Long get() = delayMs.coerceIn(MIN_DELAY_MS, MAX_DELAY_MS)
 
     /** A response arrived carrying [code], and that code is ticked. */
     fun retriesStatus(code: Int): Boolean = enabled && code in statusCodes
@@ -98,6 +118,30 @@ data class RetryPolicy(
         const val MIN_ATTEMPTS = 1
         const val MAX_ATTEMPTS = 10
         const val DEFAULT_ATTEMPTS = 3
+
+        /**
+         * The pause bounds, in the SECONDS the settings screen asks in. Zero
+         * is allowed and means "retry immediately" — a legitimate choice for
+         * a provider whose failures are pure noise.
+         */
+        const val MIN_DELAY_SECONDS = 0
+        const val MAX_DELAY_SECONDS = 60
+
+        /**
+         * The same bounds in the milliseconds the transport waits in.
+         *
+         * Written as literals rather than as `MIN_DELAY_SECONDS * 1000L`
+         * because these are constants of different types in the same object,
+         * and a test pins each pair together instead of the compiler being
+         * asked to fold the product. Bounds are not where a clever
+         * initialiser earns its keep.
+         */
+        const val MIN_DELAY_MS = 0L
+        const val MAX_DELAY_MS = 60_000L
+
+        /** Six seconds. */
+        const val DEFAULT_DELAY_SECONDS = 6
+        const val DEFAULT_DELAY_MS = 6_000L
 
         /**
          * Pre-ticked: the whole transient group. Deliberately excludes the

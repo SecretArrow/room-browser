@@ -48,7 +48,14 @@ object AgentGateways {
         tuning: LocalAiTuning? = null,
         appContext: android.content.Context? = null,
         toolMode: ToolMode = ToolMode.DEFAULT,
-        retry: RetryPolicy? = null
+        retry: RetryPolicy? = null,
+        /**
+         * Called before each retry, with the failed attempt number and the
+         * reason. The pause between attempts defaults to six seconds, so
+         * without this a retry is indistinguishable from a freeze — the turn
+         * site is expected to put it on the status line.
+         */
+        onRetry: (attempt: Int, reason: String) -> Unit = { _, _ -> }
     ): AgentGateway {
         val gateway = withToolMode(
             gateway = when (protocol) {
@@ -65,7 +72,11 @@ object AgentGateways {
         // turn, tool-mode round trips included — not a resumed half-turn.
         // Null means "no policy configured", which is not the same as a
         // disabled policy: the decorator is skipped entirely.
-        return if (retry != null) RetryingAgentGateway(gateway, retry) else gateway
+        return if (retry != null) {
+            RetryingAgentGateway(gateway, retry, onRetry = onRetry)
+        } else {
+            gateway
+        }
     }
 
     fun forProvider(
@@ -74,7 +85,8 @@ object AgentGateways {
         apiKey: String,
         tuning: LocalAiTuning? = null,
         appContext: android.content.Context? = null,
-        retry: RetryPolicy? = null
+        retry: RetryPolicy? = null,
+        onRetry: (attempt: Int, reason: String) -> Unit = { _, _ -> }
     ): AgentGateway = forProvider(
         callFactory = callFactory,
         baseUrl = provider.baseUrl,
@@ -83,7 +95,8 @@ object AgentGateways {
         tuning = tuning,
         appContext = appContext,
         toolMode = ToolMode.fromStored(provider.toolMode),
-        retry = retry
+        retry = retry,
+        onRetry = onRetry
     )
 
     /**

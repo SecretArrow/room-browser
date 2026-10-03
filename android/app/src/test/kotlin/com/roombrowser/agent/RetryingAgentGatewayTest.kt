@@ -13,8 +13,9 @@ import java.io.IOException
 
 /**
  * JVM tests for the retry decorator. No server and no sleeping: the delegate
- * is a scripted fake and the backoff is injected away, so each case asserts
- * the decision (retry or not, how many calls) rather than a wall clock.
+ * is a scripted fake and the pause is injected away, so each case asserts the
+ * decision (retry or not, how many calls, how long between them) rather than
+ * a wall clock.
  */
 class RetryingAgentGatewayTest {
 
@@ -191,12 +192,50 @@ class RetryingAgentGatewayTest {
     }
 
     @Test
-    fun `the backoff doubles and then stops growing`() {
-        assertThat(RetryingAgentGateway.backoffMillis(1)).isEqualTo(300L)
-        assertThat(RetryingAgentGateway.backoffMillis(2)).isEqualTo(600L)
-        assertThat(RetryingAgentGateway.backoffMillis(3)).isEqualTo(1_200L)
-        assertThat(RetryingAgentGateway.backoffMillis(4)).isEqualTo(2_400L)
-        assertThat(RetryingAgentGateway.backoffMillis(5)).isEqualTo(4_000L)
-        assertThat(RetryingAgentGateway.backoffMillis(9)).isEqualTo(4_000L)
+    fun `every retry waits the pause the user set`() = runTest {
+        val delegate = FakeGateway(
+            listOf(
+                { throw AgentHttpException(503, "down") },
+                { throw AgentHttpException(503, "still down") }
+            )
+        )
+        val waits = mutableListOf<Long>()
+        RetryingAgentGateway(
+            delegate = delegate,
+            policy = policy().copy(delayMs = 6_000L),
+            wait = { waits.add(it) },
+            onRetry = { _, _ -> }
+        ).chat(request) { }
+
+        // Three attempts, two pauses, both the number that was configured —
+        // no curve, because the setting is one value.
+        assertThat(delegate.calls).isEqualTo(3)
+        assertThat(waits).containsExactly(6_000L, 6_000L).inOrder()
+    }
+
+    @Test
+    fun `the default pause is six seconds`() {
+        assertThat(RetryPolicy().delayMs).isEqualTo(6_000L)
+        assertThat(RetryPolicy().delay).isEqualTo(6_000L)
+    }
+
+    @Test
+    fun `the millisecond bounds agree with the seconds the screen offers`() {
+        // The screen asks in seconds and the transport waits in milliseconds.
+        // The two pairs are literals in the same object, so this is what keeps
+        // a change to one from silently leaving the other behind.
+        assertThat(RetryPolicy.MIN_DELAY_MS).isEqualTo(RetryPolicy.MIN_DELAY_SECONDS * 1000L)
+        assertThat(RetryPolicy.MAX_DELAY_MS).isEqualTo(RetryPolicy.MAX_DELAY_SECONDS * 1000L)
+        assertThat(RetryPolicy.DEFAULT_DELAY_MS).isEqualTo(RetryPolicy.DEFAULT_DELAY_SECONDS * 1000L)
+    }
+
+    @Test
+    fun `a pause from storage is clamped to the offered range`() {
+        // The blob is written by whatever build last saved it, so the value
+        // reaching the transport is bounded here and not trusted.
+        assertThat(RetryPolicy(delayMs = -1L).delay).isEqualTo(RetryPolicy.MIN_DELAY_MS)
+        assertThat(RetryPolicy(delayMs = 10 * 60_000L).delay).isEqualTo(RetryPolicy.MAX_DELAY_MS)
+        // Zero is legal and means "retry immediately".
+        assertThat(RetryPolicy(delayMs = 0L).delay).isEqualTo(0L)
     }
 }

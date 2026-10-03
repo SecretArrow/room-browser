@@ -39,6 +39,11 @@ import kotlinx.coroutines.delay
  * `-1` (connection refused, DNS, TLS, interrupted stream). That is not a
  * status to match against [RetryPolicy.statusCodes], so it is routed to
  * [RetryPolicy.retriesConnectionFailure] instead.
+ *
+ * The pause between attempts is [RetryPolicy.delay], so it is the user's
+ * number and not this decorator's. [onRetry] is called before each pause,
+ * which is what lets the caller show a retry as a wait rather than as a
+ * freeze.
  */
 class RetryingAgentGateway(
     private val delegate: AgentGateway,
@@ -96,7 +101,9 @@ class RetryingAgentGateway(
                 }
                 if (!retryable || attemptNo == max) throw e
                 onRetry(attemptNo, e.message ?: e.javaClass.simpleName)
-                wait(backoffMillis(attemptNo))
+                // One pause for every retry, the number the user set. See
+                // RetryPolicy.delay for why this is not a doubling curve.
+                wait(policy.delay)
                 attemptNo++
             }
         }
@@ -108,19 +115,5 @@ class RetryingAgentGateway(
          * "no response at all". Real statuses start at 100.
          */
         private const val HTTP_STATUS_FLOOR = 100
-
-        private const val BASE_DELAY_MS = 300L
-        private const val MAX_DELAY_MS = 4_000L
-
-        /**
-         * Doubling delay, capped. Three attempts therefore wait 300 ms and
-         * then 600 ms — long enough to clear a momentary gateway hiccup,
-         * short enough that a provider which is truly down is abandoned
-         * inside a second instead of looking like a hung app.
-         */
-        fun backoffMillis(failedAttempt: Int): Long {
-            val shift = (failedAttempt - 1).coerceIn(0, 16)
-            return (BASE_DELAY_MS shl shift).coerceAtMost(MAX_DELAY_MS)
-        }
     }
 }

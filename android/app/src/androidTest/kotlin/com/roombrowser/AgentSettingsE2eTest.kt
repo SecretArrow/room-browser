@@ -222,6 +222,7 @@ class AgentSettingsE2eTest {
             "'Show AI Agent button' switch" to By.descContains("Show AI Agent button"),
             "retry switch" to By.descContains("Retry failed requests switch"),
             "retry_attempts field" to By.desc("retry_attempts"),
+            "retry_delay field" to By.desc("retry_delay"),
             "retry_code_400 box" to By.desc("retry_code_400"),
             "agent hint text" to By.textContains("Ask the agent")
         )

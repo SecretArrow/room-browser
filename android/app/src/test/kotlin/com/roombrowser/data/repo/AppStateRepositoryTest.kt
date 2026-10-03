@@ -3,6 +3,7 @@ package com.roombrowser.data.repo
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.data.db.AppStateDao
 import com.roombrowser.data.db.AppStateEntity
+import com.roombrowser.domain.agent.RetryPolicy
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -148,5 +149,36 @@ class AppStateRepositoryTest {
         assertThat(after.useDefaultContext).isFalse()
         assertThat(after.defaultContext).isEmpty()
         assertThat(after.maxSteps).isEqualTo(11)
+    }
+
+    @Test
+    fun `the retry pause is stored in seconds and handed to the transport in milliseconds`() {
+        val policy = AgentSettings(retryOnError = true, retryDelaySeconds = 6).retryPolicy()
+
+        // The screen asks in seconds and the transport waits in millis; the
+        // conversion happens once, so a factor-of-1000 mistake here is a
+        // six-millisecond pause nobody would notice until a provider was
+        // being hammered.
+        assertThat(policy.delay).isEqualTo(6_000L)
+    }
+
+    @Test
+    fun `a settings blob written before the pause setting existed still decodes`() = runTest {
+        // The blob is ONE json object, so the field's absence is the normal
+        // case for every profile saved by an earlier build. kotlinx fills in
+        // the default — and that default has to be the six seconds, not zero:
+        // a zero pause would hammer the provider the user asked us to back
+        // off from.
+        val legacy = """
+            {"enabled":true,"showAgentButton":false,"retryOnError":true,
+             "retryMaxAttempts":3,"retryConnectionFailures":true}
+        """.trimIndent()
+        dao.rows[AppStateKeys.AGENT_SETTINGS] = legacy
+
+        val settings = repo.agentSettingsSnapshot()
+
+        assertThat(settings.retryOnError).isTrue()
+        assertThat(settings.retryDelaySeconds).isEqualTo(RetryPolicy.DEFAULT_DELAY_SECONDS)
+        assertThat(settings.retryPolicy().delay).isEqualTo(RetryPolicy.DEFAULT_DELAY_MS)
     }
 }

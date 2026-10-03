@@ -951,6 +951,8 @@ private fun RetrySection(controller: AgentSettingsController) {
 
     RetryAttemptsField(controller)
 
+    RetryDelayField(controller)
+
     SettingSwitchRow(
         title = "Retry connection failures",
         subtitle = "Also retry when no status came back at all — refused connection, " +
@@ -1009,10 +1011,61 @@ private fun RetryAttemptsField(controller: AgentSettingsController) {
                 Text(
                     if (inRange) {
                         "Total tries per request, counting the first. " +
-                            "1 means no retry. Waits double between tries."
+                            "1 means no retry. The pause between tries is set below."
                     } else {
                         "Enter a number from ${RetryPolicy.MIN_ATTEMPTS} to " +
                             "${RetryPolicy.MAX_ATTEMPTS}."
+                    }
+                )
+            },
+            isError = !inRange,
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
+    }
+}
+
+/**
+ * The pause before each retry, in seconds.
+ *
+ * SECONDS, not milliseconds, because seconds are the unit the decision is
+ * made in: "wait six seconds" is a choice, "6000" is a number to translate
+ * first. Same typed-field rules as [RetryAttemptsField] — only a value in
+ * range is committed, so a half-typed number never writes a setting.
+ *
+ * The field matters as much as the switch it sits under: the pause is the
+ * difference between a retry that clears a rate-limit window and a retry
+ * that lands inside the same one.
+ */
+@Composable
+private fun RetryDelayField(controller: AgentSettingsController) {
+    var text by remember { mutableStateOf(controller.settings.retryDelaySeconds.toString()) }
+    val parsed = text.toIntOrNull()
+    val inRange = parsed != null &&
+        parsed in RetryPolicy.MIN_DELAY_SECONDS..RetryPolicy.MAX_DELAY_SECONDS
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+        OutlinedTextField(
+            value = text,
+            onValueChange = { typed ->
+                text = typed.filter { it.isDigit() }.take(3)
+                text.toIntOrNull()
+                    ?.takeIf { it in RetryPolicy.MIN_DELAY_SECONDS..RetryPolicy.MAX_DELAY_SECONDS }
+                    ?.let { n ->
+                        controller.updateSettings { s -> s.copy(retryDelaySeconds = n) }
+                    }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { contentDescription = "retry_delay" },
+            label = { Text("Pause before retry (seconds)") },
+            supportingText = {
+                Text(
+                    if (inRange) {
+                        "How long to wait before trying again. 0 retries " +
+                            "immediately; ${RetryPolicy.DEFAULT_DELAY_SECONDS} is the default."
+                    } else {
+                        "Enter a number from ${RetryPolicy.MIN_DELAY_SECONDS} to " +
+                            "${RetryPolicy.MAX_DELAY_SECONDS}."
                     }
                 )
             },

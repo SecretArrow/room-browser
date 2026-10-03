@@ -148,6 +148,16 @@ data class AgentSettings(
     /** Total attempts, counting the first. 1 means "no retry". */
     val retryMaxAttempts: Int = RetryPolicy.DEFAULT_ATTEMPTS,
     /**
+     * How long to wait before each retry, in SECONDS.
+     *
+     * Seconds, not milliseconds, because seconds are what the settings screen
+     * asks in and what a person decides in: "wait 6 seconds" is a choice
+     * someone makes, "6000" is a number they have to translate first. The
+     * transport still speaks milliseconds, and [retryPolicy] converts once,
+     * here, rather than at every reader.
+     */
+    val retryDelaySeconds: Int = RetryPolicy.DEFAULT_DELAY_SECONDS,
+    /**
      * Which HTTP statuses are worth another try. Sorted on write so the
      * stored JSON is stable — an unordered set would re-encode differently
      * on every save and make the row look changed when it is not.
@@ -166,7 +176,8 @@ data class AgentSettings(
         enabled = retryOnError,
         maxAttempts = retryMaxAttempts,
         statusCodes = retryStatusCodes.toSet(),
-        retryConnectionFailures = retryConnectionFailures
+        retryConnectionFailures = retryConnectionFailures,
+        delayMs = retryDelaySeconds * 1000L
     )
 }
 
