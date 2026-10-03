@@ -120,12 +120,28 @@ object AgentTools {
             AUTO_REPOST -> "Repost visible posts"
             AUTO_REPLY -> "Reply \"${(str("text") ?: "").take(30)}\""
             AUTO_POST -> "Post \"${(str("text") ?: "").take(30)}\""
-            WAIT -> "Wait ${int("ms") ?: 1500}ms"
+            WAIT -> "Wait ${formatDurationMs(int("ms") ?: 1500)}"
             else -> name
         }
     } catch (_: Exception) {
         name
     }
+}
+
+/**
+ * A millisecond count the way a person reads it: seconds, with one decimal
+ * only when the value is not whole.
+ *
+ * WHY: "Wait 2000ms" is a number the reader has to divide in their head;
+ * "Wait 2s" is already the answer. Sub-second waits keep the decimal
+ * ("0.2s") rather than rounding to "0s", which would read as no wait at all.
+ *
+ * The wire format is unchanged — the model still asks in `ms`, which is what
+ * every provider's tool schema expects. This is display only.
+ */
+fun formatDurationMs(ms: Int): String {
+    val tenths = Math.round(ms / 100.0)
+    return if (tenths % 10 == 0L) "${tenths / 10}s" else "${tenths / 10}.${tenths % 10}s"
 }
 
 // ---------- Page snapshot (produced by JS injection in the WebView) ----------

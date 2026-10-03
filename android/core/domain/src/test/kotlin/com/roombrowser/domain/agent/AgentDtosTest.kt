@@ -193,9 +193,20 @@ class AgentDtosTest {
         assertThat(AgentTools.describeTool(AgentTools.AUTO_POST, "not json"))
             .isEqualTo("Post \"\"")
         assertThat(AgentTools.describeTool(AgentTools.WAIT, """{"ms":2000}"""))
-            .isEqualTo("Wait 2000ms")
+            .isEqualTo("Wait 2s")
         assertThat(AgentTools.describeTool(AgentTools.WAIT, null))
-            .isEqualTo("Wait 1500ms")
+            .isEqualTo("Wait 1.5s")
+    }
+
+    @Test
+    fun `durations read as seconds, and only keep a decimal when they need one`() {
+        assertThat(formatDurationMs(2000)).isEqualTo("2s")
+        assertThat(formatDurationMs(20_000)).isEqualTo("20s")
+        assertThat(formatDurationMs(1000)).isEqualTo("1s")
+        // A sub-second wait must not round down to "0s" — that reads as no
+        // wait at all, right where the user is deciding whether to allow one.
+        assertThat(formatDurationMs(200)).isEqualTo("0.2s")
+        assertThat(formatDurationMs(1500)).isEqualTo("1.5s")
     }
 
     @Test

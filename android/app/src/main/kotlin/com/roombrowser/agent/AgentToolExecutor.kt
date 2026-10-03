@@ -7,6 +7,7 @@ import com.roombrowser.browser.PageEvent
 import com.roombrowser.domain.agent.ActionVerdict
 import com.roombrowser.domain.agent.AgentJson
 import com.roombrowser.domain.agent.AgentTools
+import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.agent.PageSnapshotDto
 import com.roombrowser.domain.agent.PageSnapshotFormatter
 import com.roombrowser.domain.agent.ToolExecutor
@@ -253,7 +254,9 @@ class AgentToolExecutor(
     private suspend fun waitTool(ms: Int?): ToolResult {
         val bounded: Long = (ms ?: 1500).coerceIn(200, 20_000).toLong()
         delay(bounded)
-        return ToolResult(true, "waited ${bounded}ms")
+        // Same seconds-not-milliseconds rendering as the tool card label, so
+        // the request the user approved and the result they read agree.
+        return ToolResult(true, "waited ${formatDurationMs(bounded.toInt())}")
     }
 
     // ------------------------------------------------------------- helpers
