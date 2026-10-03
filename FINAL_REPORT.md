@@ -273,16 +273,16 @@ pending, as instructed.
 
 ### 5.1 Needs your decision (deliberately not changed)
 
-1. **Re-showing the wallet recovery phrase.** `engine.revealMnemonic()` exists
-   and is reachable from the repository, but nothing in the UI calls it. If the
-   process dies between wallet creation and the user writing the phrase down,
-   the phrase is gone from memory and the onboarding reveal never returns.
-   **I did not add a "Show recovery phrase" row**, because the reveal screen
-   tells the user in so many words: *"This screen never appears again — Room
-   Browser stores the phrase encrypted and will not show it again."* Adding the
-   row would break a promise the product makes on screen. The existing recovery
-   path is **Manage ▸ Export wallet keys** (sealed with a password), which is
-   available from the dashboard at any time. Changing the policy is your call.
+1. **Re-showing the wallet recovery phrase — DECIDED, implemented.** You
+   approved the row. `engine.revealMnemonic()` is now reachable from the UI as
+   **Manage ▸ Show recovery phrase**, behind the unlocked session, masked until
+   a second tap, with no copy affordance (a clipboard outlives the sheet; the
+   password-sealed export remains the only way to take the phrase out of the
+   app). The onboarding note no longer claims "this screen never appears again",
+   because that would now be false — it says instead that the paper copy is the
+   only one that survives losing the phone. The original objection, that the
+   row would break a promise the product makes on screen, was resolved by
+   fixing the promise rather than keeping the gap.
 2. **Exposing public keys over the dApp bridge.** Cosmos (`keplrKeyResult`,
    `signArbitrary`, `getOfflineSigner().getAccounts()`), Aptos `account()` and
    Bitcoin `connect()` all want a public key. The bridge currently returns none,

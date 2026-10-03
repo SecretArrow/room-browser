@@ -49,6 +49,7 @@ import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Public
@@ -516,6 +517,7 @@ private fun WalletDashboard(
     var sendChain by remember { mutableStateOf<ChainType?>(null) }
     var receiveChain by remember { mutableStateOf<ChainType?>(null) }
     var backupOpen by remember { mutableStateOf(false) }
+    var revealPhraseOpen by remember { mutableStateOf(false) }
     var connectedSitesOpen by remember { mutableStateOf(false) }
     var activeAccountByChain by remember { mutableStateOf<Map<ChainType, String>>(emptyMap()) }
     // The address the user just copied, so the card that was tapped can
@@ -754,6 +756,17 @@ private fun WalletDashboard(
                     leadingIcon = Icons.Filled.FileDownload,
                     onClick = { backupOpen = true }
                 )
+                // The export above is for the user who has nothing yet and
+                // wants a file; this is for the one who has the paper but
+                // cannot read it, and only needs to look. Both exist because
+                // the phrase was always recoverable from the engine and the
+                // app simply never offered it a second time.
+                SettingActionRow(
+                    title = "Show recovery phrase",
+                    subtitle = "Read the words that restore this wallet",
+                    leadingIcon = Icons.Filled.Key,
+                    onClick = { revealPhraseOpen = true }
+                )
                 // A granted permission is invisible from here, but it is the
                 // reason a site stops asking to connect. Leaving it with no
                 // way to review or take back would make "connected" a state
@@ -853,6 +866,13 @@ private fun WalletDashboard(
             engine = engine,
             onMessage = { onMessage(it) },
             onDismiss = { connectedSitesOpen = false }
+        )
+    }
+    if (revealPhraseOpen) {
+        RevealPhraseSheet(
+            engine = engine,
+            onMessage = { onMessage(it) },
+            onDismiss = { revealPhraseOpen = false }
         )
     }
     sendChain?.let { chain ->

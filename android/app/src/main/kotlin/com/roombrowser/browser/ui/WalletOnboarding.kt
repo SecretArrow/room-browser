@@ -357,12 +357,15 @@ private fun WalletCreateIntro(
  * as this composition's transient state.
  *
  * This is also where the phrase can be written out to an encrypted backup
- * file. It is the only moment the phrase is in the user's hands — the app
- * will not show it again — so an export offered anywhere else would be
- * offered to someone who no longer has anything to compare it against.
- * The backup reads the phrase straight from this composition rather than
- * from the vault, which is what lets it work while the session is still
- * locked (creating a wallet deliberately does not unlock it).
+ * file. The backup reads the phrase straight from this composition rather
+ * than from the vault, which is what lets it work while the session is
+ * still locked (creating a wallet deliberately does not unlock it).
+ *
+ * The phrase IS readable later, from the wallet's own "Show recovery
+ * phrase" row, behind the unlocked session. That row is not a reason to
+ * skip writing the words down now — it lives on this phone, so it is gone
+ * with the phone — and the note below says so rather than claiming an
+ * only-chance this screen no longer has.
  */
 @Composable
 private fun WalletRevealScreen(
@@ -391,9 +394,11 @@ private fun WalletRevealScreen(
         )
         Spacer(Modifier.height(10.dp))
         WalletInfoNote(
-            "Write these ${words.size} words on paper and keep them offline. " +
-                "This screen never appears again — Room Browser stores the phrase " +
-                "encrypted and will not show it again."
+            "Write these ${words.size} words on paper and keep them offline — " +
+                "that paper is the only copy that survives losing this phone. " +
+                "You can read the phrase again later from the wallet, but a " +
+                "phrase that only ever lived on this device is one lost device " +
+                "away from gone."
         )
         Spacer(Modifier.height(14.dp))
         words.chunked(3).forEachIndexed { rowIndex, rowWords ->

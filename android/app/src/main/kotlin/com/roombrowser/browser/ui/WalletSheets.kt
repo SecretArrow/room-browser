@@ -1260,6 +1260,134 @@ private fun ConnectedSiteRow(record: DappPermissionRecord, onDisconnect: () -> U
 }
 
 /**
+ * The recovery phrase, readable again from the wallet.
+ *
+ * Onboarding calls its reveal the one moment the phrase is in the user's hands,
+ * and for a long time it was the only one: nothing else in the app could
+ * produce the phrase. That made a lost piece of paper unrecoverable even though
+ * the wallet was intact and the user still controlled it — the phrase was never
+ * gone, only unreadable. This sheet is the second reading.
+ *
+ * Everything about it is built to keep the exposure as short as possible:
+ *
+ *  - the engine call happens on the tap, never on open, so a sheet opened by
+ *    accident shows nothing;
+ *  - the words are masked on arrival and need a second tap to be legible: the
+ *    hidden state is the default, not something the user has to restore;
+ *  - there is deliberately NO copy button. A clipboard outlives this sheet and
+ *    is readable by every other app on the device, so the sealed export file —
+ *    which is password-protected — stays the only way to take the phrase out
+ *    of the app;
+ *  - the words live in this composition's state alone. Dismissing the sheet
+ *    drops them; reopening starts from the button again.
+ *
+ * The gate is the wallet session. [WalletEngineApi.revealMnemonic] requires a
+ * bound, unlocked wallet, and the dashboard only reaches this sheet from an
+ * unlocked screen — a locked wallet shows the lock screen instead.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun RevealPhraseSheet(
+    engine: WalletEngineApi,
+    onMessage: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val extras = LocalRoomExtras.current
+    val scope = rememberCoroutineScope()
+    var words by remember { mutableStateOf<List<String>?>(null) }
+    var revealed by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
+        Column(
+            Modifier
+                .padding(horizontal = 16.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            RoomSheetHeader("Recovery phrase")
+            WalletInfoNote(
+                "Anyone who reads these words owns this wallet. Check that nobody " +
+                    "can see this screen, and never type them into a site or give " +
+                    "them to anyone — including support."
+            )
+            Spacer(Modifier.height(14.dp))
+            val grid = words
+            if (grid == null) {
+                Button(
+                    onClick = {
+                        if (!busy) {
+                            busy = true
+                            scope.launch {
+                                val phrase =
+                                    runCatching { engine.revealMnemonic() }.getOrNull()
+                                busy = false
+                                if (phrase.isNullOrBlank()) {
+                                    onMessage("Could not read the recovery phrase")
+                                } else {
+                                    words = phrase.trim()
+                                        .split(Regex("\\s+"))
+                                        .filter { it.isNotEmpty() }
+                                    revealed = true
+                                }
+                            }
+                        }
+                    },
+                    enabled = !busy,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .semantics { contentDescription = "Reveal recovery phrase" }
+                ) { Text(if (busy) "Reading..." else "Reveal recovery phrase") }
+            } else {
+                // Same word grid as the onboarding reveal, so a user who wrote
+                // the phrase down there recognises what they are comparing
+                // against — including the numbering.
+                grid.chunked(3).forEachIndexed { rowIndex, rowWords ->
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        rowWords.forEachIndexed { column, word ->
+                            val index = rowIndex * 3 + column + 1
+                            Box(
+                                Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(extras.surfaceAlt.copy(alpha = 0.7f))
+                                    .padding(10.dp)
+                            ) {
+                                Text(
+                                    "$index. ${if (revealed) word else "••••••"}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = extras.textPrimary
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                }
+                Spacer(Modifier.height(4.dp))
+                OutlinedButton(
+                    onClick = { revealed = !revealed },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .semantics {
+                            contentDescription = if (revealed) {
+                                "Hide recovery phrase"
+                            } else {
+                                "Show recovery phrase"
+                            }
+                        }
+                ) { Text(if (revealed) "Hide phrase" else "Show phrase") }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+/**
  * Custom EVM network form: name, chain ID, RPC URL, symbol, decimals,
  * explorer — validated like the settings screens (inline errors, nothing
  * malformed is ever submitted to the engine).
