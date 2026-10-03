@@ -39,11 +39,13 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PlainTooltip
+import androidx.compose.material3.SheetState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -307,6 +309,26 @@ private fun ApproveRejectButtons(onApprove: () -> Unit, onReject: () -> Unit) {
     }
 }
 
+/**
+ * Sheet state for a sheet whose whole purpose is a DECISION — the ones that
+ * end in [ApproveRejectButtons]: open at full height from the first frame.
+ *
+ * WHY skipPartiallyExpanded: at the default partially-expanded height the
+ * answer pair sits below the fold on a small screen. The CI emulator is
+ * 320x640, where the Connect sheet's content (header, host, chain + origin,
+ * account, the "what approving means" note, then the buttons) is taller than
+ * the half-height sheet — so the user gets a request they can read and no
+ * control they can reach, while the natural "get this out of the way" gesture,
+ * a tap outside, settles it as a REJECTION. It also made the sheet's landing
+ * state depend on when its content was measured, so the same request rendered
+ * differently run to run. Opening expanded puts the decision on screen; the
+ * content still scrolls when it outgrows the sheet.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun confirmSheetState(): SheetState =
+    rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
 /** "0x1234…abcd"-style shortening; short values pass through untouched. */
 internal fun shortenAddress(address: String): String =
     if (address.length <= 12) address else address.take(6) + "…" + address.takeLast(4)
@@ -415,7 +437,11 @@ fun ConnectRequestSheet(
         onDismiss()
     }
 
-    ModalBottomSheet(onDismissRequest = { settle(false) }, shape = RoomBottomSheetShape) {
+    ModalBottomSheet(
+        onDismissRequest = { settle(false) },
+        shape = RoomBottomSheetShape,
+        sheetState = confirmSheetState()
+    ) {
         Column(
             Modifier
                 .padding(horizontal = 16.dp)
@@ -475,7 +501,11 @@ fun SignMessageSheet(
         onDismiss()
     }
 
-    ModalBottomSheet(onDismissRequest = { settle(false) }, shape = RoomBottomSheetShape) {
+    ModalBottomSheet(
+        onDismissRequest = { settle(false) },
+        shape = RoomBottomSheetShape,
+        sheetState = confirmSheetState()
+    ) {
         Column(
             Modifier
                 .padding(horizontal = 16.dp)
@@ -520,7 +550,11 @@ fun SignTypedDataSheet(
         onDismiss()
     }
 
-    ModalBottomSheet(onDismissRequest = { settle(false) }, shape = RoomBottomSheetShape) {
+    ModalBottomSheet(
+        onDismissRequest = { settle(false) },
+        shape = RoomBottomSheetShape,
+        sheetState = confirmSheetState()
+    ) {
         Column(
             Modifier
                 .padding(horizontal = 16.dp)
@@ -581,7 +615,11 @@ fun SendTransactionSheet(
         onDismiss()
     }
 
-    ModalBottomSheet(onDismissRequest = { settle(false) }, shape = RoomBottomSheetShape) {
+    ModalBottomSheet(
+        onDismissRequest = { settle(false) },
+        shape = RoomBottomSheetShape,
+        sheetState = confirmSheetState()
+    ) {
         Column(
             Modifier
                 .padding(horizontal = 16.dp)
@@ -666,7 +704,11 @@ fun SwitchChainSheet(
         onDismiss()
     }
 
-    ModalBottomSheet(onDismissRequest = { settle(false) }, shape = RoomBottomSheetShape) {
+    ModalBottomSheet(
+        onDismissRequest = { settle(false) },
+        shape = RoomBottomSheetShape,
+        sheetState = confirmSheetState()
+    ) {
         Column(
             Modifier
                 .padding(horizontal = 16.dp)
@@ -715,7 +757,11 @@ fun AddChainSheet(
         onDismiss()
     }
 
-    ModalBottomSheet(onDismissRequest = { settle(false) }, shape = RoomBottomSheetShape) {
+    ModalBottomSheet(
+        onDismissRequest = { settle(false) },
+        shape = RoomBottomSheetShape,
+        sheetState = confirmSheetState()
+    ) {
         Column(
             Modifier
                 .padding(horizontal = 16.dp)

@@ -1040,7 +1040,10 @@ class WalletE2eTest {
         // request.host, which the bridge derives from the WebView's own URL,
         // never from the page's claimed origin.
         assertTrue("The sheet must name the WebView-verified host", hasTextContains("127.0.0.1", 10_000))
-        assertTrue("Approve must be clickable", clickText("Approve", 5_000))
+        // Scroll-aware: on the 320x640 CI emulator the sheet's answer pair can
+        // sit below the fold, and an off-screen node is not in the a11y tree.
+        // Every other sheet button in this suite is clicked this way.
+        assertTrue("Approve must be clickable", clickTextWithScroll("Approve", attempts = 6))
         assertTrue("The sheet must leave after Approve", waitGone("Connect site", 8_000))
         val connectResult = pageResultText("RESULT:", 15_000)
         assertTrue(
@@ -1074,7 +1077,7 @@ class WalletE2eTest {
         )
         assertTrue("The Connect sheet must appear for the new host", hasText("Connect site", 20_000))
         assertTrue("The sheet must name the localhost host", hasTextContains("localhost", 10_000))
-        assertTrue("Reject must be clickable", clickText("Reject", 5_000))
+        assertTrue("Reject must be clickable", clickTextWithScroll("Reject", attempts = 6))
         val rejectResult = pageResultText("ERR:", 15_000)
         assertTrue(
             "The rejected connect must surface error 4001 (found ${rejectResult ?: "nothing"})\n${uiTree()}",
