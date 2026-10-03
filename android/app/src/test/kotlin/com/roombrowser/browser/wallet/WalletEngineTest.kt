@@ -1060,6 +1060,33 @@ class WalletEngineTest {
     }
 
     @Test
+    fun `a proposed chain may not smuggle a plaintext endpoint in beside a TLS one`() =
+        runTest(testDispatcher) {
+            seedWallet(profile, ABANDON, listOf(ChainType.EVM))
+            engine.bind(profile)
+            advanceUntilIdle()
+
+            // The old check was `any { it.startsWith("https://") }`, so this
+            // list passed on the strength of its SECOND url — while
+            // RpcEndpointChain tries the list in order and would therefore have
+            // sent every balance read, fee estimate and signed transaction to
+            // the plaintext host first. One good url made the whole list legal.
+            val mixed = NetworkConfig.evm(
+                9998, "Mixed",
+                listOf("http://plain.example", "https://rpc.good"), "MIX", null
+            )
+            val outcomes = mutableListOf<DappOutcome>()
+            engine.submitDappRequest(
+                DappRequest.AddChain("m1", "app.uniswap.org", ChainType.EVM, mixed)
+            ) { outcomes += it }
+            engine.decideDappRequest(DappDecision("m1", approved = true))
+            advanceUntilIdle()
+
+            assertThat(outcomes[0].requireError().code).isEqualTo(WalletBridgeError.INVALID_PARAMS)
+            assertThat(fake.networks(profile).map { it.config.id }).doesNotContain("EVM:9998")
+        }
+
+    @Test
     fun `decide on an unknown id is a silent no-op`() = runTest(testDispatcher) {
         seedWallet(profile, ABANDON, listOf(ChainType.EVM))
         engine.bind(profile)
@@ -1262,6 +1289,30 @@ class WalletEngineTest {
 
         assertThat(engine.addCustomNetwork(valid)).isTrue()
         assertThat(fake.networks(profile).map { it.config.id }).contains("EVM:9999")
+    }
+
+    @Test
+    fun `a plaintext endpoint the user typed is still accepted`() = runTest(testDispatcher) {
+        engine.bind(profile)
+        advanceUntilIdle()
+
+        // The other half of the rule: what a web page may not propose, the user
+        // may still type. `http://127.0.0.1:8545` is how a local dev node is
+        // reached, and refusing it would take a real capability away from
+        // someone who already knows what they are doing.
+        val local = NetworkConfig.evm(
+            9997, "Local Node", listOf("http://127.0.0.1:8545"), "ETH", null
+        )
+        assertThat(engine.addCustomNetwork(local)).isTrue()
+        assertThat(fake.networks(profile).map { it.config.id }).contains("EVM:9997")
+
+        // A local node WITH an https fallback is the same call. The stricter
+        // all-TLS rule belongs to the dApp path; it must not leak over here.
+        val mixed = NetworkConfig.evm(
+            9996, "Local + remote",
+            listOf("http://127.0.0.1:8545", "https://rpc.good"), "ETH", null
+        )
+        assertThat(engine.addCustomNetwork(mixed)).isTrue()
     }
 
     @Test

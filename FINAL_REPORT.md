@@ -74,7 +74,7 @@ Every feature traced UI → ViewModel → Repository → DataSource.
 | Password vault list | Decrypted while invisible | Lifecycle-scoped | `PasswordsActivity.kt` | `flowWithLifecycle(STARTED)` |
 | QR scanner | Decoded on the main thread | Off-thread | `QrScannerActivity.kt` | Single-thread executor, `@Volatile`, `finally` close, ordered teardown |
 | dApp request on a closed tab | Pending forever | Settled | `WalletBridge.kt`, `WalletEngine.kt`, `WalletContract.kt` | `dispose()` → `cancelDappRequests` → DISCONNECTED |
-| `wallet_addEthereumChain` | Accepted `http://` RPC | TLS required | `WalletEngine.kt` | `requireTls` on the dApp path only |
+| `wallet_addEthereumChain` | Accepted `http://` RPC | TLS required on **every** endpoint | `WalletEngine.kt` | `requireTls` on the dApp path; `any` → `all` |
 | Wallet bind | Not idempotent — dropped the queue | Idempotent | `WalletEngine.kt` | Early return when the profile is unchanged |
 | DNS DoH/DoT settings | Persisted malformed endpoints | Validated | `BrowserSettingsUi.kt` | `DnsValidator` + inline error, nothing committed when invalid |
 | Quick-switcher Create | Silent no-op on blank; double-tappable | Guarded | `BrowserSheets.kt` | `enabled`, in-flight flag, inline error |
@@ -115,6 +115,17 @@ Every feature traced UI → ViewModel → Repository → DataSource.
   `startForeground` that can throw `ForegroundServiceStartNotAllowedException`.
 - chainId hex conversion: a decimal id is now parsed as decimal before the
   `0x`-strip fallback, instead of the other way round.
+- `isValidNetworkConfig(requireTls = true)`: the dApp rule was `any { it
+  .startsWith("https://") }`, so a proposal of `["http://plain.example",
+  "https://good.example"]` passed on the strength of its second url — and
+  `RpcEndpointChain.ordered()` returns the list in order, so the plaintext host
+  is the one every balance read, fee estimate and `eth_sendRawTransaction`
+  would have travelled through first. The https entry was a fig leaf: the
+  config validated while the traffic went out in the clear. It is now `all`,
+  with `isNotEmpty()` because `all` is vacuously true on an empty list. The
+  user's own Add-network path keeps `any` — a local `http://127.0.0.1:8545`
+  node plus an https fallback is theirs to type. Two tests pin both halves
+  (`WalletEngineTest`), which the split had none of before.
 - `ImageProxy` closed in a `finally` — an escaped decode exception used to
   starve the CameraX pipeline, so the scanner silently stopped scanning.
 - `HttpsUpgradeFallback.Registry` bounded at 64 entries, drop-oldest, under a
@@ -233,6 +244,14 @@ Per-module unit results:
 | `app` | 255 | 0 | 0 |
 | `core/domain` | 431 | 0 | 0 |
 | `core/wallet` | 59 | 0 | 0 |
+
+The counts above belong to `bb6cd8d`, the run this section documents, and are
+not a claim about the current tree. The suite has grown since: as of `c31ed52`
+the `@Test` counts are `app` 313, `core/domain` 443, `core/wallet` 78,
+instrumented 35. Counting annotations is what makes the number checkable
+without a run — for `app` the annotation count and CI's own `N tests completed`
+line agree exactly (311 and 311 at the preset commit, before the two
+`requireTls` tests landed; 313 now).
 
 Notes on the run:
 
@@ -419,28 +438,27 @@ pending, as instructed.
    live in a plaintext file on a workstation. (The exact local path was given
    separately; it is deliberately not written down here.)
 3. **Rotate the leaked AgentRouter API token.**
-4. **Decide the two §5.1 policy questions** (recovery-phrase reveal, dApp
-   public keys). The second one is what currently blocks Cosmos, Aptos and
-   Bitcoin dApp connections.
-5. **Land the string-resource extraction and the `contentDescription` migration
+4. **Land the string-resource extraction and the `contentDescription` migration
    as two dedicated commits**, each updating its e2e selectors in the same
    change. These are the two biggest sources of future test breakage.
-6. **Add `ktlint` or `detekt` to the build.** There is neither today, and
+5. **Add `ktlint` or `detekt` to the build.** There is neither today, and
    `warningsAsErrors = false`, so style and deprecation drift is invisible to
    CI.
-7. **Add a unit test for the new `requireTls` split** in `WalletEngineTest` —
-   `http://` must be rejected on the dApp path and accepted on the user's own
-   Add-network path.
-8. **One geometric e2e assertion is worth knowing about.**
+6. **One geometric e2e assertion is worth knowing about.**
    `TabsE2eTest.closeCardByTitle()` locates the close button by whether its
    *centre* falls inside the card bounds; growing it 40dp → 48dp shifted that
    centre ~4dp. It passed on this run, but it is the one assertion in the suite
    that is sensitive to touch-target sizing — keep it in mind the next time a
    row's controls are resized.
-9. **Migrate the Sui adapter to gRPC or GraphQL.** Sui has deprecated JSON-RPC
+7. **Migrate the Sui adapter to gRPC or GraphQL.** Sui has deprecated JSON-RPC
    on public fullnodes; the presets now point at third-party hosts that still
    answer it (publicnode, onfinality, blockvision), and those are the only
    reason Sui works at all right now. This is a real migration — a second
    transport in the adapter, its own serialization, and its own test surface —
    not an endpoint swap, which is why it was not folded into the preset fix.
    Worth doing before the third-party hosts follow Sui's own.
+
+Two items that used to sit in this list are done: the two §5.1 policy questions
+were ruled on and implemented (§5.1 items 1 and 2), and the `requireTls` split
+now has its tests — two of them, and writing them turned up a real hole in the
+rule they were meant to pin (§3.2).

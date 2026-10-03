@@ -809,6 +809,19 @@ open class WalletEngine(
      * plaintext any network observer can both read those addresses and amounts
      * and rewrite the responses the signing UI shows. That is a prompt the
      * user cannot meaningfully audit, so the transport is required to be TLS.
+     *
+     * "Required to be TLS" means EVERY endpoint in the list, not merely one of
+     * them. The check used to be `any { it.startsWith("https://") }`, which a
+     * proposal of `["http://plain.example", "https://good.example"]` satisfies
+     * — and [RpcEndpointChain] tries the list in order, so the plaintext host
+     * is the one every balance read, fee estimate and signed transaction would
+     * actually travel through. The https entry was a fig leaf that made the
+     * list pass while the traffic went out in the clear. `all` is what the
+     * sentence above has always claimed.
+     *
+     * The user's own path keeps `any`: a list of a local `http://` node plus a
+     * remote https fallback is a legitimate thing to type in, and the user is
+     * the one who typed it.
      */
     internal fun isValidNetworkConfig(
         config: NetworkConfig,
@@ -816,8 +829,14 @@ open class WalletEngine(
     ): Boolean {
         val decimalOrHexChainId = config.chainId.toLongOrNull() != null ||
             config.chainId.removePrefix("0x").toLongOrNull(16) != null
-        val hasUsableRpc = config.rpcUrls.any {
-            it.startsWith("https://") || (!requireTls && it.startsWith("http://"))
+        val hasUsableRpc = if (requireTls) {
+            // isNotEmpty() is load-bearing: `all` is vacuously true on an empty
+            // list, which would make a config with no endpoints at all "usable".
+            config.rpcUrls.isNotEmpty() && config.rpcUrls.all { it.startsWith("https://") }
+        } else {
+            config.rpcUrls.any {
+                it.startsWith("https://") || it.startsWith("http://")
+            }
         }
         return config.id.isNotBlank() &&
             config.name.isNotBlank() &&
