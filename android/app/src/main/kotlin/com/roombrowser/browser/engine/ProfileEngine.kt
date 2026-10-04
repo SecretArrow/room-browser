@@ -14,6 +14,7 @@ import com.roombrowser.browser.RoomVaultScript
 import com.roombrowser.browser.wallet.dapp.RoomWalletScript
 import com.roombrowser.domain.model.ClaimedScreen
 import com.roombrowser.domain.model.Device
+import com.roombrowser.domain.model.FingerprintProfile
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
@@ -278,11 +279,13 @@ object ProfileEngine {
             ?: UserAgents.webViewNeutralUserAgent(stockUserAgent(s))
         s.textZoom = (settings.fontScale * 100f).toInt().coerceIn(50, 200)
 
+        val device = UserAgents.device(settings)
         applyDeviceShim(
             webView,
-            UserAgents.device(settings),
+            device,
             settings.claimedScreen(),
-            settings.webRtcPolicy
+            settings.webRtcPolicy,
+            FingerprintProfile.from(settings.fingerprintSeed, device)
         )
 
         // Password-manager page bridge: a SEPARATE document-start script
@@ -314,20 +317,21 @@ object ProfileEngine {
     /**
      * Install (or clear) the shim for one WebView.
      *
-     * All three halves are profile state, so all three are passed in:
+     * All four inputs are profile state, so all four are passed in:
      * [device] is the identity the profile presents, [screen] the size it
-     * claims and [webRtc] the policy it applies to peer connections. Any of
-     * them may be absent, and each half is independent of the others.
+     * claims, [webRtc] the policy it applies to peer connections and
+     * [fingerprint] the values derived from its seed. Any of them may be
+     * absent, and each one is independent of the others.
      * Desktop mode clears the device but keeps the screen claim — a browser
      * window on a screen of a stated size is not a contradiction, while an
      * Android client-hint set under a desktop UA is — and it keeps the
      * WebRTC policy too, which has nothing to do with which identity is
      * being presented.
      *
-     * The early return is the whole of the three, not of the device alone: a
-     * profile with no device, no screen claim and a non-default WebRTC policy
-     * still has something to install. Making that return about the device
-     * would silently drop the policy for every profile that never picked one.
+     * The early return covers all four: a profile with no device, no seed,
+     * no screen claim and a non-default WebRTC policy still has something to
+     * install. Making that return about the device would silently drop the
+     * policy for every profile that never picked one.
      *
      * `configure` runs again every time settings change, so the previous
      * script is removed first — otherwise a long session would stack one copy
@@ -339,17 +343,22 @@ object ProfileEngine {
         webView: WebView,
         device: Device?,
         screen: ClaimedScreen?,
-        webRtc: WebRtcPolicy
+        webRtc: WebRtcPolicy,
+        fingerprint: FingerprintProfile
     ) {
         deviceShims.remove(webView)?.let { previous ->
             // The view may already be gone; a failed removal costs nothing.
             runCatching { previous.remove() }
         }
-        if (device == null && screen == null && webRtc == WebRtcPolicy.DEFAULT) return
+        if (device == null && !fingerprint.isSeeded && screen == null &&
+            webRtc == WebRtcPolicy.DEFAULT
+        ) {
+            return
+        }
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
         runCatching {
             deviceShims[webView] = WebViewCompat.addDocumentStartJavaScript(
-                webView, DeviceShim.scriptFor(device, screen, webRtc), setOf("*")
+                webView, DeviceShim.scriptFor(device, screen, webRtc, fingerprint), setOf("*")
             )
         }
     }
@@ -409,7 +418,15 @@ object ProfileEngine {
             // is on and goes back when it is turned off. The screen claim is
             // not an Android client hint and stays: a desktop browser window on
             // a screen of a stated size is an ordinary thing.
-            applyDeviceShim(webView, null, screen, profile.settings.webRtcPolicy)
+            applyDeviceShim(
+                webView,
+                null,
+                screen,
+                profile.settings.webRtcPolicy,
+                // The derived surfaces go with the Android identity: a Windows
+                // UA must not carry Android touch points.
+                FingerprintProfile.legacy()
+            )
         } else {
             s.useWideViewPort = true
             s.loadWithOverviewMode = true
@@ -417,11 +434,13 @@ object ProfileEngine {
                 UaMode.DEFAULT -> s.userAgentString = null
                 else -> UserAgents.effectiveUserAgent(profile.settings)?.let { s.userAgentString = it }
             }
+            val device = UserAgents.device(profile.settings)
             applyDeviceShim(
                 webView,
-                UserAgents.device(profile.settings),
+                device,
                 screen,
-                profile.settings.webRtcPolicy
+                profile.settings.webRtcPolicy,
+                FingerprintProfile.from(profile.settings.fingerprintSeed, device)
             )
         }
     }
