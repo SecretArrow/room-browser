@@ -214,6 +214,21 @@ jobs:
             ./gradlew testDebugUnitTest :core:domain:test :core:wallet:test --console=plain --continue
           }
 
+      - name: Compile the instrumented test sources
+        working-directory: android
+        # The suite's other half, compiled where a mistake costs a minute
+        # instead of a full e2e cycle. Nothing else in this job ever builds
+        # `src/androidTest` — only the e2e job does, so a typo in a test
+        # source is discovered after the emulator boot, the APK install and
+        # the whole suite, and is reported there as a TEST failure rather
+        # than a compile failure. This step moves that discovery forward:
+        # compileDebugAndroidTestKotlin compiles without running anything, so
+        # it adds no emulator and no test execution.
+        #
+        # It is not a substitute for the e2e job: nothing here proves the
+        # assertions are right, only that they are well-formed.
+        run: ./gradlew compileDebugAndroidTestKotlin --console=plain
+
       - name: Debug build (all ABIs)
         working-directory: android
         run: ./gradlew assembleDebug --console=plain

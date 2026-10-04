@@ -539,8 +539,29 @@ class AgentSettingsE2eTest {
      *  drags between find attempts (no fling overshoot). */
     private fun clickTextWithScroll(text: String, attempts: Int = 24): Boolean {
         for (i in 1..attempts) {
-            if (clickText(text, 1_500)) return true
+            val node = device.wait(Until.findObject(By.text(text)), 1_500)
+            if (node != null && rectSettled(node) && clickSmart(node)) return true
             dragUpQuarter()
+        }
+        return false
+    }
+
+    /**
+     * True once two consecutive reads of [node]'s rect agree, i.e. the
+     * viewport has stopped moving. A found node is not necessarily a still
+     * one — a row can still be settling after the drag, or a dialog can
+     * shift the layout under it — and this helper returns a bare `true` with
+     * no verification, so a tap on stale bounds is swallowed silently.
+     * Bounded: gives up after [tries] reads so a node that is genuinely
+     * animating cannot hang the test.
+     */
+    private fun rectSettled(node: UiObject2, tries: Int = 6): Boolean {
+        var previous = runCatching { node.visibleBounds }.getOrNull() ?: return false
+        repeat(tries) {
+            try { Thread.sleep(200) } catch (_: InterruptedException) { }
+            val current = runCatching { node.visibleBounds }.getOrNull() ?: return false
+            if (current == previous) return true
+            previous = current
         }
         return false
     }
