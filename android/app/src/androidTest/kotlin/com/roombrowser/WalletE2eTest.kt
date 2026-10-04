@@ -320,6 +320,12 @@ class WalletE2eTest {
         return found
     }
 
+    private fun logProbe(tag: String, message: String) {
+        message.chunked(1_000).forEach {
+            android.util.Log.w("WalletE2eTest", "RB-PROBE $tag: $it")
+        }
+    }
+
     private fun clickCenter(node: UiObject2): Boolean = try {
         val b = node.visibleBounds
         // SHELL TAP (input tap) — deterministic on the busy CI a11y pipeline.
