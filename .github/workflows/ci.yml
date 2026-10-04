@@ -44,7 +44,7 @@ concurrency:
 
 env:
   # The daemon is left on: it is started once per job and reused by every
-  # later ./gradlew in that job (there are up to five in `quality` alone),
+  # later ./gradlew in that job (there are up to six in `quality` alone),
   # instead of paying JVM start plus cold JIT on each one. It exits with the
   # runner. --console=plain is already passed on every gradle command.
   GRADLE_OPTS: -Dorg.gradle.console=plain
