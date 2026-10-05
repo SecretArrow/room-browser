@@ -347,7 +347,8 @@ class HeadlessToolExecutor(
             text.take(MAX_JS_RESULT_CHARS) + "\n…[truncated at $MAX_JS_RESULT_CHARS characters]"
         }
 
-    private suspend fun formatSnapshot(): String? {        if (webView.progress < 100) {
+    private suspend fun formatSnapshot(): String? {
+        if (webView.progress < 100) {
             withTimeoutOrNull(4000) {
                 while (webView.progress < 100) delay(POLL_MS)
             }
