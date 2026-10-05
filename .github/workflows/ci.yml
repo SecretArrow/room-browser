@@ -374,13 +374,10 @@ jobs:
             # exit non-zero.
             cd android && ./gradlew connectedDebugAndroidTest --console=plain || (adb exec-out logcat -d -b crash > /home/runner/work/room-browser/e2e-logcat-crash.txt; adb exec-out logcat -d > /home/runner/work/room-browser/e2e-logcat-full.txt; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml /home/runner/work/room-browser/ >/dev/null 2>&1; adb pull /sdcard/e2e-shots /home/runner/work/room-browser/ >/dev/null 2>&1; exit 1)
 
-      # The probes the suites log go to logcat, and logcat was only ever pulled
-      # on failure -- so the one run that could have measured a latency (a green
-      # one) was the one run that kept no record of it. Tagged, so it stays small.
-      - name: Dump the suites' probe log
-        if: always()
-        run: adb exec-out logcat -d -s 'WalletE2eTest:*' > /home/runner/work/room-browser/e2e-probe.txt || true
-
+      # No probe step here, unlike the sibling: this edition runs ONE gradle
+      # invocation, so the per-test logcat in the artifact below already
+      # carries the probe lines. The step that used to sit here ran after the
+      # emulator was gone and only ever produced a 0-byte file.
       - name: Upload instrumented test reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -390,7 +387,6 @@ jobs:
             android/app/build/outputs/androidTest-results/
             /home/runner/work/room-browser/e2e-logcat-crash.txt
             /home/runner/work/room-browser/e2e-logcat-full.txt
-            /home/runner/work/room-browser/e2e-probe.txt
             /home/runner/work/room-browser/e2e-ui.xml
             /home/runner/work/room-browser/e2e-shots
           if-no-files-found: ignore
