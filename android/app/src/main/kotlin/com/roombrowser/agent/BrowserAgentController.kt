@@ -714,7 +714,9 @@ class BrowserAgentController(
                 vm = vm,
                 tabId = tabId,
                 onStatus = { setStatus(it) },
-                confirmGate = { name, label -> gate(name, label) }
+                confirmGate = { name, label -> gate(name, label) },
+                // Wallet approvals must not ride the bypassable generic gate.
+                walletConfirm = { label -> requestWalletApproval(label) }
             )
             // Only the native Ollama protocol consumes the tuning; the other
             // gateways ignore it (default null keeps their wire format intact).
@@ -937,6 +939,41 @@ class BrowserAgentController(
     }
 
     /**
+     * Always shows the prompt: unlike [gate]/[requestApproval] it can never
+     * return allow without the user seeing it, and every failure denies.
+     * "Always allow" is one-time here — there is no wallet-wide trust store.
+     */
+    private suspend fun requestWalletApproval(label: String): Boolean {
+        setStatus("Approve wallet request? ${label.lineSequence().firstOrNull().orEmpty()}")
+        return try {
+            withTimeout(APPROVAL_TIMEOUT_MS) {
+                suspendCancellableCoroutine { continuation ->
+                    approval = AgentApproval(WALLET_APPROVAL_NAME, label, SystemClock.elapsedRealtime()) { answer ->
+                        if (continuation.isActive) {
+                            when (answer) {
+                                ApprovalAnswer.Allow -> continuation.resume(true)
+                                ApprovalAnswer.AlwaysAllow -> {
+                                    note(
+                                        "Wallet requests always ask — this one was allowed once, " +
+                                            "and the next will ask again.",
+                                        error = false
+                                    )
+                                    continuation.resume(true)
+                                }
+                                ApprovalAnswer.Deny -> continuation.resume(false)
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (ce: CancellationException) {
+            false
+        } finally {
+            approval = null
+        }
+    }
+
+    /**
      * The gate every state-changing tool call passes through.
      *
      * Three rules apply, in this order:
@@ -1106,6 +1143,9 @@ class BrowserAgentController(
 
     companion object {
         private const val APPROVAL_TIMEOUT_MS = 120_000L
+
+        /** Name on the wallet approval prompt, distinct from a normal tool gate. */
+        private const val WALLET_APPROVAL_NAME = "wallet"
 
         /**
          * How long one local gate decision may take. Generous enough for the
