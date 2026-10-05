@@ -3,23 +3,31 @@ package com.roombrowser.agent
 import android.content.Context
 import android.webkit.WebView
 import com.roombrowser.browser.engine.ProfileEngine
+import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.db.AiTaskEntity
 import com.roombrowser.data.repo.permissions
+import com.roombrowser.data.repo.runConfig
 import com.roombrowser.di.AppGraph
 import com.roombrowser.domain.agent.AgentConfig
 import com.roombrowser.domain.agent.AgentEvent
+import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentLoop
 import com.roombrowser.domain.agent.AgentPrompts
+import com.roombrowser.domain.agent.AutoModelPicker
+import com.roombrowser.domain.agent.ChatRequest
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.SearchEngines
+import com.roombrowser.domain.task.AiTaskExecutionMode
+import com.roombrowser.domain.task.needsVisibleBrowser
 import java.time.ZoneId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 
 /**
- * Runs a deferred task for real: one headless WebView on the task's own
- * profile, the agent loop, and the answer stored back on the row.
+ * Runs a deferred task for real: a page on the task's own profile — hidden by
+ * default, a tab of the running browser when the task asks for one — the agent
+ * loop, and the answer stored back on the row.
  *
  * IT ONLY WORKS IN ':browser', and that is a fact about the engine rather than
  * a preference. The WebView data directory is chosen ONCE per process
@@ -72,42 +80,72 @@ class HeadlessAiTaskRunner(
         if (!settings.enabled) {
             return AiTaskRunOutcome.Deferred("Deferred: the AI agent is switched off in settings.")
         }
+        val runConfig = task.runConfig
         val providers = graph.agentRepo.providers()
-        val provider = settings.defaultProviderId?.let { id -> providers.firstOrNull { it.id == id } }
+        val provider = runConfig.providerId?.let { id -> providers.firstOrNull { it.id == id } }
+            ?: settings.defaultProviderId?.let { id -> providers.firstOrNull { it.id == id } }
             ?: providers.firstOrNull()
             ?: return AiTaskRunOutcome.Deferred("Deferred: no AI provider is configured.")
-        val model = settings.defaultModel?.takeIf { it.isNotBlank() }
-            ?: provider.defaultModel.takeIf { it.isNotBlank() }
-            ?: return AiTaskRunOutcome.Deferred(
-                "Deferred: no model is chosen for ${provider.name}."
-            )
         val apiKey = provider.apiKeyEnc.takeIf { it.isNotBlank() }
             ?.let { KeyStoreCrypto.decrypt(it) }
             .orEmpty()
+        val gateway = AgentGateways.forProvider(
+            callFactory = OkHttpClient(),
+            provider = provider,
+            apiKey = apiKey,
+            appContext = context
+        )
+        val model = runConfig.model?.takeIf { it.isNotBlank() }
+            ?: resolveModel(provider, gateway, settings.defaultModel)
+            ?: return AiTaskRunOutcome.Deferred(
+                "Deferred: nothing on ${provider.name} answered, so there is no model to run this on."
+            )
 
         val engineLabel = SearchEngines.byId(profile.settings.searchEngineId).label
         val prompt = settings.systemPromptOverride?.takeIf { it.isNotBlank() }
             ?: AgentPrompts.render(System.currentTimeMillis(), ZoneId.systemDefault(), engineLabel)
 
         return withContext(Dispatchers.Main) {
-            val webView = createHeadlessWebView(profile)
-                ?: return@withContext AiTaskRunOutcome.Deferred(
-                    "Deferred: the browser engine could not start a page."
+            // A task saved as visible must not quietly become invisible: with
+            // no browser on screen there is no tab to open, and the run waits
+            // rather than falling back to a hidden page.
+            val page = if (runConfig.executionMode.needsVisibleBrowser) {
+                val host = AiTaskPageHosts.current()
+                    ?: return@withContext AiTaskRunOutcome.Deferred(
+                        "Deferred: this task runs in a visible browser, and none is on screen. " +
+                            "This runs the next time Room Browser is open on ${profile.name}."
+                    )
+                host.openPage(
+                    AiTaskPageRequest(
+                        profileId = task.profileId,
+                        permissions = task.permissions,
+                        confirmActions = settings.confirmActions,
+                        keepTab = runConfig.executionMode == AiTaskExecutionMode.STANDARD
+                    )
+                ) ?: return@withContext AiTaskRunOutcome.Deferred(
+                    "Deferred: the browser could not open a tab for this task."
                 )
+            } else {
+                null
+            }
 
+            var owned: WebView? = null
             try {
-                val executor = HeadlessToolExecutor(
-                    webView = webView,
-                    searchEngineId = profile.settings.searchEngineId,
-                    permissions = task.permissions,
-                    confirmActions = settings.confirmActions
-                )
-                val gateway = AgentGateways.forProvider(
-                    callFactory = OkHttpClient(),
-                    provider = provider,
-                    apiKey = apiKey,
-                    appContext = context
-                )
+                val executor = page?.executor ?: run {
+                    val webView = createHeadlessWebView(profile)
+                    if (webView == null) {
+                        return@withContext AiTaskRunOutcome.Deferred(
+                            "Deferred: the browser engine could not start a page."
+                        )
+                    }
+                    owned = webView
+                    HeadlessToolExecutor(
+                        webView = webView,
+                        searchEngineId = profile.settings.searchEngineId,
+                        permissions = task.permissions,
+                        confirmActions = settings.confirmActions
+                    )
+                }
                 val config = AgentConfig(
                     model = model,
                     maxSteps = settings.maxSteps,
@@ -141,11 +179,42 @@ class HeadlessAiTaskRunner(
             } catch (t: Throwable) {
                 AiTaskRunOutcome.Failed(t.message ?: t.javaClass.simpleName)
             } finally {
-                runCatching {
-                    webView.stopLoading()
-                    webView.destroy()
+                if (page != null) {
+                    runCatching { page.close() }
+                } else {
+                    runCatching {
+                        owned?.stopLoading()
+                        owned?.destroy()
+                    }
                 }
             }
+        }
+    }
+
+    /**
+     * The model an AUTO task runs on: the configured default if it answers,
+     * otherwise the first of this provider's own models that does.
+     *
+     * This is a probe and not a lookup on purpose — a name in a /models
+     * response is an offer, and an offer the account cannot call fails at the
+     * first turn of a run nobody is watching. Null means nothing answered, and
+     * the caller records that as a deferral: an unreachable model is not a
+     * failure of the task.
+     */
+    private suspend fun resolveModel(
+        provider: AgentProviderEntity,
+        gateway: AgentGateway,
+        preferred: String?
+    ): String? {
+        val configured = preferred?.takeIf { it.isNotBlank() }
+            ?: provider.defaultModel.takeIf { it.isNotBlank() }
+        val listed = runCatching { gateway.listModels() }.getOrDefault(emptyList())
+        return AutoModelPicker.firstWorking(AutoModelPicker.candidates(configured, listed)) { candidate ->
+            gateway.chat(
+                ChatRequest(model = candidate, messages = AutoModelPicker.PROBE_MESSAGES, tools = null),
+                events = {}
+            )
+            true
         }
     }
 
