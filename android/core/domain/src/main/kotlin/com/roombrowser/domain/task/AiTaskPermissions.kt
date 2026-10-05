@@ -5,13 +5,21 @@ import kotlinx.serialization.Serializable
 
 /**
  * What one scheduled AI task is allowed to do on the page, chosen when the
- * task is created. The four groups mirror the tool catalogue's risk tiers, so
- * a task that only reads can never be talked into clicking or posting by the
+ * task is created. The four page groups mirror the tool catalogue's risk tiers,
+ * so a task that only reads can never be talked into clicking or posting by the
  * page it is reading.
  *
  * The default is read + navigate + interact, and posting OFF: the ordinary
  * "go there and tell me" task needs the first three, while anything that
  * publishes on the user's behalf is opt-in per task.
+ *
+ * Wallet tools are the fifth group and have no toggle at all: approving a dApp
+ * request signs or broadcasts, and the confirmation it needs can only come from
+ * a person, so no task grant reaches them (see [ToolGroup.WALLET]).
+ *
+ * App control is the sixth, and is denied for the same reason: it changes the
+ * browser itself — its settings, its saved per-site permissions, what it has
+ * kept — and some of it cannot be undone (see [ToolGroup.APP]).
  *
  * An unknown tool name is denied, not allowed — a tool added to the catalogue
  * later must be granted explicitly rather than inheriting a blanket yes.
@@ -33,6 +41,7 @@ data class AiTaskPermissions(
         AgentTools.SELECT_OPTION, AgentTools.PRESS_KEYS, AgentTools.RUN_JS -> ToolGroup.INTERACT
         AgentTools.AUTO_LIKE, AgentTools.AUTO_REPOST,
         AgentTools.AUTO_REPLY, AgentTools.AUTO_POST -> ToolGroup.POST
+        in AgentTools.WALLET_TOOLS -> ToolGroup.WALLET
         AgentTools.APP_OPEN, AgentTools.APP_TABS, AgentTools.APP_DATA,
         AgentTools.APP_SETTINGS, AgentTools.APP_SHIELDS,
         AgentTools.APP_SITE_PERMISSION, AgentTools.APP_PAGE -> ToolGroup.APP
@@ -44,6 +53,7 @@ data class AiTaskPermissions(
         ToolGroup.NAVIGATE -> allowNavigate
         ToolGroup.INTERACT -> allowInteract
         ToolGroup.POST -> allowPost
+        ToolGroup.WALLET -> false
         // Nobody is watching a scheduled run, and these change the browser
         // itself — including irreversibly. A chat turn is the only route.
         ToolGroup.APP -> false
@@ -64,6 +74,11 @@ enum class ToolGroup(val label: String) {
     NAVIGATE("navigating"),
     INTERACT("clicking and typing"),
     POST("posting"),
+
+    /** Never granted to a task; see [walletUnattendedRefusal]. */
+    WALLET("wallet requests"),
+
+    /** Never granted to a task; see [appUnattendedRefusal]. */
     APP("the app's own screens, settings and data")
 }
 
@@ -75,6 +90,7 @@ enum class ToolGroup(val label: String) {
  */
 internal fun refusalMessage(toolName: String, group: ToolGroup?): String = when (group) {
     null -> "unknown tool: $toolName"
+    ToolGroup.WALLET -> walletUnattendedRefusal(toolName)
     ToolGroup.APP -> appUnattendedRefusal(toolName)
     else -> "tool '$toolName' is switched off for this task: ${group.label} is not permitted"
 }
@@ -98,3 +114,13 @@ fun appUnattendedRefusal(toolName: String): String =
 fun unattendedRefusal(toolName: String): String =
     "tool '$toolName' would ask you to confirm it first, and a scheduled run has nobody to ask. " +
         "Turn off \"Confirm actions before running\" in AI Agent settings, or run this in a chat."
+
+/**
+ * The refusal for the wallet tools, which no setting can turn on: the promise
+ * that a task cannot reach the wallet is what makes "the model cannot approve a
+ * transaction on its own" true. The model has to be told the route that works,
+ * or it retries the same call until the step budget is gone.
+ */
+fun walletUnattendedRefusal(toolName: String): String =
+    "tool '$toolName' works only in a chat, never in a scheduled run: a wallet request is " +
+        "approved by you, in person. Ask the user to approve it in the wallet sheet."

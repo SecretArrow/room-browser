@@ -62,6 +62,12 @@ class AgentToolExecutor(
     private val onStatus: (String) -> Unit = {},
     private val confirmGate: suspend (name: String, label: String) -> ActionVerdict,
     /**
+     * Wallet approvals ask the user directly, never through [confirmGate]:
+     * YOLO, the local decision model and "Confirm actions: off" all bypass
+     * that gate, and none of them may approve a wallet request. Default DENY.
+     */
+    private val walletConfirm: suspend (label: String) -> Boolean = { false },
+    /**
      * The gate for actions that cannot be undone. Deliberately a DIFFERENT
      * callback from [confirmGate]: this one always reaches a person, whatever
      * the app's Confirm actions switch and whatever YOLO mode says.
@@ -83,6 +89,14 @@ class AgentToolExecutor(
      * alone, and they want opposite treatment.
      */
     val currentTabId: String? get() = tabId
+
+    /** Built on first use: `vm.walletEngine` loads the whole crypto stack. */
+    private val walletTools: AgentWalletTools by lazy {
+        AgentWalletTools(
+            wallet = { WalletEngineAccess(vm.walletEngine) },
+            confirmApproval = walletConfirm
+        )
+    }
 
     override suspend fun execute(name: String, argsJson: String): ToolResult =
         withContext(Dispatchers.Main) {
@@ -118,6 +132,11 @@ class AgentToolExecutor(
                     AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
                     AgentTools.PRESS_KEYS -> pressKeys(str(args, "keys"), intOrNull(args, "ref"))
                     AgentTools.WAIT_FOR -> waitFor(str(args, "text"), intOrNull(args, "timeout_ms"))
+                    AgentTools.WALLET_STATE -> walletTools.readState()
+                    AgentTools.WALLET_REQUESTS -> walletTools.listRequests()
+                    AgentTools.WALLET_APPROVE -> walletTools.approve(str(args, "request_id"))
+                    AgentTools.WALLET_REJECT -> walletTools.reject(str(args, "request_id"))
+                    AgentTools.WALLET_SWITCH_NETWORK -> walletTools.switchNetwork(str(args, "network_id"))
                     else -> ToolResult(false, "unknown tool: $name")
                 }
             } catch (ce: CancellationException) {
@@ -658,9 +677,9 @@ class AgentToolExecutor(
  * `press_keys` are the same thing reached by a dropdown or a chord.
  *
  * The rest — read_page, scroll, list_tabs, open_new_tab, switch_tab,
- * close_tab, wait — start no navigation of their own and stay available while
- * the user is elsewhere, which is what lets a turn keep working in the
- * background instead of stalling on a tab switch.
+ * close_tab, wait, and the wallet tools — start no navigation of their own and
+ * stay available while the user is elsewhere, which is what lets a turn keep
+ * working in the background instead of stalling on a tab switch.
  *
  * Top-level and `internal` rather than private to the class so that
  * [AgentToolForegroundPolicyTest] can hold it to the full tool list: a tool

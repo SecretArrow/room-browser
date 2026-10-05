@@ -36,6 +36,13 @@ object AgentTools {
     const val AUTO_POST = "auto_post"
     const val WAIT = "wait"
 
+    // ---- wallet (dApp request queue + active network) ----
+    const val WALLET_STATE = "wallet_state"
+    const val WALLET_REQUESTS = "wallet_requests"
+    const val WALLET_APPROVE = "wallet_approve"
+    const val WALLET_REJECT = "wallet_reject"
+    const val WALLET_SWITCH_NETWORK = "wallet_switch_network"
+
     // ---- direct page control ----
     const val RUN_JS = "run_js"
     const val SELECT_OPTION = "select_option"
@@ -64,6 +71,8 @@ object AgentTools {
     private val SCHEMA_TAB_INDEX = """{"type":"object","properties":{"index":{"type":"integer","description":"Tab index from list_tabs"}},"required":["index"]}"""
     private val SCHEMA_TEXT = """{"type":"object","properties":{"text":{"type":"string","description":"Text to send"}},"required":["text"]}"""
     private val SCHEMA_WAIT = """{"type":"object","properties":{"ms":{"type":"integer","description":"Milliseconds to wait, 200-20000, default 1500"}}}"""
+    private val SCHEMA_REQUEST_ID = """{"type":"object","properties":{"request_id":{"type":"string","description":"Request id from wallet_requests"}},"required":["request_id"]}"""
+    private val SCHEMA_NETWORK_ID = """{"type":"object","properties":{"network_id":{"type":"string","description":"Network id from wallet_state, e.g. EVM:137. The wallet must already know it."}},"required":["network_id"]}"""
     private val SCHEMA_RUN_JS = """{"type":"object","properties":{"script":{"type":"string","description":"JavaScript to run in the page. Synchronous only: the value of the last expression comes back as text, and a returned Promise is not awaited."}},"required":["script"]}"""
     private val SCHEMA_SELECT_OPTION = """{"type":"object","properties":{"ref":{"type":"integer","description":"<select> element reference number from read_page"},"value":{"type":"string","description":"The option's value, or its visible text"}},"required":["ref","value"]}"""
     private val SCHEMA_PRESS_KEYS = """{"type":"object","properties":{"keys":{"type":"string","description":"Key chord: Enter, Escape, Tab, ArrowDown, PageDown, F1-F12, or a combination like Control+a"},"ref":{"type":"integer","description":"Optional element reference to focus first; defaults to whatever is focused"}},"required":["keys"]}"""
@@ -86,7 +95,8 @@ object AgentTools {
      *
      * `run_js` is deliberately NOT here: it is the through-the-back-door tool
      * and is offered unconfirmed by the owner's decision. `wait_for` only
-     * reads, like `wait`.
+     * reads, like `wait`. `wallet_reject` is absent because rejecting is the
+     * safe direction and must never be gated.
      *
      * The app tools are here because they change the browser itself — a
      * setting, a saved permission, a bookmark — which is exactly what the
@@ -97,8 +107,18 @@ object AgentTools {
     val INTERACTIVE_TOOLS = setOf(
         CLICK, FILL_INPUT, PRESS_ENTER, SELECT_OPTION, PRESS_KEYS,
         AUTO_LIKE, AUTO_REPOST, AUTO_REPLY, AUTO_POST,
+        WALLET_APPROVE, WALLET_SWITCH_NETWORK,
         APP_OPEN, APP_TABS, APP_DATA, APP_SETTINGS, APP_SHIELDS,
         APP_SITE_PERMISSION, APP_PAGE
+    )
+
+    /**
+     * The wallet tools as one set. Every one of them answers a dApp request or
+     * moves the active network, so none has a meaning without the user watching
+     * the sheet — a scheduled run refuses the whole group.
+     */
+    val WALLET_TOOLS = setOf(
+        WALLET_STATE, WALLET_REQUESTS, WALLET_APPROVE, WALLET_REJECT, WALLET_SWITCH_NETWORK
     )
 
     /** OpenAI `tools` array for the chat request. */
@@ -120,6 +140,31 @@ object AgentTools {
         def(AUTO_REPLY, "Reply to the open post/thread: types the given text into the visible reply box and submits it. Returns immediately; call wait then read_page to verify.", SCHEMA_TEXT),
         def(AUTO_POST, "Create a new post/status/tweet with the given text: opens the composer, types, and submits. Call wait then read_page to verify.", SCHEMA_TEXT),
         def(WAIT, "Wait for a page update (post-submit animations, infinite scroll loading) before reading again.", SCHEMA_WAIT),
+        def(
+            WALLET_STATE,
+            "Read the wallet's current state: whether it is locked, its accounts (chain, label, address), the active network for each chain, and the networks it already knows. Use it to find a network_id for wallet_switch_network. Addresses are public; never ask the user for a key or phrase.",
+            SCHEMA_NO_PARAMS
+        ),
+        def(
+            WALLET_REQUESTS,
+            "List the dApp requests waiting for the user's decision, with the host, the method and the transaction or message being requested. ALWAYS call this before wallet_approve: approving a request that was not listed here is refused. Listing changes nothing and needs no confirmation.",
+            SCHEMA_NO_PARAMS
+        ),
+        def(
+            WALLET_APPROVE,
+            "Approve one pending dApp request by its request_id from wallet_requests. This is IRREVERSIBLE: approving a transaction broadcasts it and moves funds, and approving a signature lets the dApp use a signature that cannot be recalled. The user is shown the full request and must confirm, so expect a pause. Never approve anything the user did not ask for — when the request is unclear or unwanted, use wallet_reject instead.",
+            SCHEMA_REQUEST_ID
+        ),
+        def(
+            WALLET_REJECT,
+            "Reject one pending dApp request by its request_id. Rejecting is always allowed and never asks for confirmation — it is the safe answer when the request is unclear, unexpected, or was not asked for. The page receives a user-rejected error and nothing is signed or sent.",
+            SCHEMA_REQUEST_ID
+        ),
+        def(
+            WALLET_SWITCH_NETWORK,
+            "Make an already-known network the wallet's active network for its chain, using a network_id from wallet_state. It cannot add or invent a network: the id must already be in the wallet and enabled. This changes which network every connected dApp sees (chainChanged) and which network later transactions target, and the user is asked to confirm. It moves no funds.",
+            SCHEMA_NETWORK_ID
+        ),
         def(RUN_JS, "Run JavaScript in the current page and get the value of the last expression back as text. Use it for anything the other tools do not cover: reading attributes, hovering, scrolling an element into view, localStorage. Synchronous only — a returned Promise is not awaited, so read its eventual effect with wait_for or read_page instead.", SCHEMA_RUN_JS),
         def(SELECT_OPTION, "Choose an option in a dropdown (<select>) by its value or by its visible text.", SCHEMA_SELECT_OPTION),
         def(PRESS_KEYS, "Send a key chord to the focused element (or to one by [ref]): Enter, Escape to close a dialog, Tab, ArrowDown, PageDown, F1-F12, or a combination like Control+a.", SCHEMA_PRESS_KEYS),
@@ -158,6 +203,8 @@ object AgentTools {
             (args[key] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
         fun int(key: String): Int? =
             (args[key] as? JsonPrimitive)?.intOrNull
+        // A UUID, shortened for the label; the model still passes the whole id.
+        fun shortId(id: String?): String = id?.take(8) ?: "?"
 
         when (name) {
             NAVIGATE -> "Open ${str("url") ?: "page"}"
@@ -177,6 +224,11 @@ object AgentTools {
             AUTO_REPLY -> "Reply \"${(str("text") ?: "").take(30)}\""
             AUTO_POST -> "Post \"${(str("text") ?: "").take(30)}\""
             WAIT -> "Wait ${formatDurationMs(int("ms") ?: 1500)}"
+            WALLET_STATE -> "Read wallet state"
+            WALLET_REQUESTS -> "List pending wallet requests"
+            WALLET_APPROVE -> "Approve wallet request ${shortId(str("request_id"))}"
+            WALLET_REJECT -> "Reject wallet request ${shortId(str("request_id"))}"
+            WALLET_SWITCH_NETWORK -> "Switch network to ${str("network_id") ?: "?"}"
             RUN_JS -> "Run JS: " + (str("script") ?: "").lineSequence().firstOrNull().orEmpty().take(40)
             SELECT_OPTION -> "Select \"${(str("value") ?: "").take(30)}\" in [${int("ref") ?: "?"}]"
             PRESS_KEYS -> "Press ${str("keys") ?: "?"}"

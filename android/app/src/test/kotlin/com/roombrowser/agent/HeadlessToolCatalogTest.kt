@@ -6,8 +6,8 @@ import com.roombrowser.domain.agent.AgentTools
 import org.junit.Test
 
 /**
- * Holds the whole tool catalogue to the three sets [HeadlessToolExecutor]
- * knows about.
+ * Holds the whole tool catalogue to the four sets [HeadlessToolExecutor] knows
+ * about.
  *
  * A scheduled run is offered the same tool list as a chat turn, so a tool added
  * to [AgentTools.toolDefs] and classified nowhere would be offered to the model
@@ -24,11 +24,12 @@ import org.junit.Test
 class HeadlessToolCatalogTest {
 
     @Test
-    fun `every catalogue tool is supported, a tab tool or an app tool`() {
+    fun `every catalogue tool is supported, a tab tool, an app tool or a wallet tool`() {
         val everyTool = AgentTools.toolDefs().map { it.function.name }
         val classified = HeadlessToolExecutor.SUPPORTED_TOOLS +
             HeadlessToolExecutor.TAB_TOOLS +
-            HeadlessToolExecutor.APP_TOOLS
+            HeadlessToolExecutor.APP_TOOLS +
+            AgentTools.WALLET_TOOLS
 
         assertThat(classified).containsExactlyElementsIn(everyTool)
         assertThat(everyTool).containsNoDuplicates()
@@ -39,12 +40,15 @@ class HeadlessToolCatalogTest {
         val sets = listOf(
             HeadlessToolExecutor.SUPPORTED_TOOLS,
             HeadlessToolExecutor.TAB_TOOLS,
-            HeadlessToolExecutor.APP_TOOLS
+            HeadlessToolExecutor.APP_TOOLS,
+            AgentTools.WALLET_TOOLS
         )
 
-        assertThat(sets[0].intersect(sets[1])).isEmpty()
-        assertThat(sets[0].intersect(sets[2])).isEmpty()
-        assertThat(sets[1].intersect(sets[2])).isEmpty()
+        sets.forEachIndexed { i, a ->
+            sets.drop(i + 1).forEach { b ->
+                assertThat(a.intersect(b)).isEmpty()
+            }
+        }
     }
 
     @Test
@@ -70,9 +74,11 @@ class HeadlessToolCatalogTest {
     fun `every tool that would have to ask the user is classified`() {
         // confirmActions turns these into a refusal, so a missing one would go
         // unrefused in an unattended run — the exact action the switch exists
-        // to hold back. The app tools answer differently (a run cannot use them
-        // at all), which is why the union is the set to check.
-        val classified = HeadlessToolExecutor.SUPPORTED_TOOLS + HeadlessToolExecutor.APP_TOOLS
+        // to hold back. The app and wallet tools answer differently (a run
+        // cannot use them at all), which is why the union is the set to check.
+        val classified = HeadlessToolExecutor.SUPPORTED_TOOLS +
+            HeadlessToolExecutor.APP_TOOLS +
+            AgentTools.WALLET_TOOLS
         assertThat(classified).containsAtLeastElementsIn(AgentTools.INTERACTIVE_TOOLS)
         assertThat(AgentTools.INTERACTIVE_TOOLS).isNotEmpty()
     }
