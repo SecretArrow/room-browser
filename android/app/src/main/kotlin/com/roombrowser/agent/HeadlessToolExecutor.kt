@@ -257,7 +257,7 @@ class HeadlessToolExecutor(
 
     private suspend fun runJs(script: String?): ToolResult {
         val code = nonBlank(script) ?: return ToolResult(false, "missing 'script' argument")
-        val raw = evaluateJs(session, PageInjector.runJs(jsonString(code)))
+        val raw = evaluateJs(PageInjector.runJs(jsonString(code)))
             ?: return ToolResult(false, "run_js failed (JavaScript error or page still loading)")
         return ToolResult(true, clip(unquote(raw)))
     }
@@ -266,7 +266,7 @@ class HeadlessToolExecutor(
         if (ref == null || value == null) {
             return ToolResult(false, "missing 'ref' or 'value' argument")
         }
-        val raw = evaluateJs(session, PageInjector.selectOptionJs(ref, jsonString(value)))
+        val raw = evaluateJs(PageInjector.selectOptionJs(ref, jsonString(value)))
             ?: return ToolResult(false, "select_option failed (JavaScript error or page still loading)")
         return ToolResult(true, unquote(raw))
     }
@@ -280,7 +280,7 @@ class HeadlessToolExecutor(
             ref, jsonString(chord.key), jsonString(chord.code), chord.keyCode,
             chord.ctrl, chord.shift, chord.alt, chord.meta, jsonString(chord.label())
         )
-        val raw = evaluateJs(session, script)
+        val raw = evaluateJs(script)
             ?: return ToolResult(false, "press_keys failed (JavaScript error or page still loading)")
         return ToolResult(true, unquote(raw))
     }
@@ -293,7 +293,7 @@ class HeadlessToolExecutor(
         val found = withTimeoutOrNull(timeout) {
             var hit = false
             while (!hit) {
-                hit = unquote(evaluateJs(session, probe).orEmpty()).trim() == "1"
+                hit = unquote(evaluateJs(probe).orEmpty()).trim() == "1"
                 if (!hit) delay(POLL_MS)
             }
             true
