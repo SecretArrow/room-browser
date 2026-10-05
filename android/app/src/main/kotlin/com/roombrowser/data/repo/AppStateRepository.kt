@@ -70,6 +70,12 @@ data class AgentSettings(
      * pick, so turning AUTO off restores it rather than losing it.
      */
     val defaultModelAuto: Boolean = false,
+    /**
+     * The chat runs on a hidden page instead of the tab the user is looking
+     * at. Off by default: the visible tab is what makes "click that button"
+     * mean anything to the person giving the order.
+     */
+    val chatHeadless: Boolean = false,
     val temperature: Double = 0.2,
     val maxSteps: Int = 25,
     val confirmActions: Boolean = false,

@@ -2,12 +2,14 @@ package com.roombrowser.agent
 
 import android.app.Application
 import android.os.SystemClock
+import android.webkit.WebView
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import com.roombrowser.RoomBrowserApp
 import com.roombrowser.browser.BrowserViewModel
+import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.data.db.AgentMessageEntity
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.db.AgentSessionEntity
@@ -23,9 +25,11 @@ import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.AutoModelPicker
 import com.roombrowser.domain.agent.ChatMessage
 import com.roombrowser.domain.agent.LocalAiTuning
+import com.roombrowser.domain.agent.ToolExecutor
 import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.SearchEngines
+import com.roombrowser.domain.task.AiTaskPermissions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -288,6 +292,14 @@ class BrowserAgentController(
      */
     var chatModelAuto by mutableStateOf(false)
         private set
+    /**
+     * The chat is set to HEADLESS: each turn drives a hidden page of this
+     * profile's own rather than the tab on screen. Surfaced so the panel can
+     * say so — a hidden turn cannot see a tab, and the user has to be able to
+     * tell that from the conversation.
+     */
+    var chatHeadless by mutableStateOf(false)
+        private set
     var modelsLoading by mutableStateOf(false)
         private set
     var modelsError by mutableStateOf<String?>(null)
@@ -399,6 +411,7 @@ class BrowserAgentController(
             ?: provider?.defaultModel?.takeIf { it.isNotBlank() }
         activeModel = model
         chatModelAuto = settings.defaultModelAuto && provider != null
+        chatHeadless = settings.chatHeadless
     }
 
     // ------------------------------------------------------------- provider & model
@@ -521,6 +534,18 @@ class BrowserAgentController(
             activeProvider = provider
             chatModelAuto = true
             messages.value = "Agent set to ${provider.name} · Auto"
+        }
+    }
+
+    /**
+     * Chooses what a chat turn runs ON: the tab the user is looking at, or a
+     * hidden page of this profile's own. Persisted, because it is a standing
+     * choice about how this profile's agent works, not a per-turn switch.
+     */
+    fun setChatHeadless(headless: Boolean) {
+        scope.launch {
+            settings = appState.updateAgentSettings { it.copy(chatHeadless = headless) }
+            chatHeadless = headless
         }
     }
 
@@ -774,6 +799,9 @@ class BrowserAgentController(
         // An error reported as an EVENT rather than thrown still means the turn
         // did not do what was asked, so it must not clear the retry offer.
         var turnFailed = false
+        // A headless turn's page. Declared out here because the finally below
+        // is where it is destroyed, and that runs whatever path left the try.
+        var ownedPage: WebView? = null
         try {
             // The turn belongs to the tab it was started from. Every tool
             // resolves its engine from this id rather than from whatever is on
@@ -813,6 +841,52 @@ class BrowserAgentController(
                 note("None of ${provider.name}'s models answered. Pick one by hand.", error = true)
                 return
             }
+            // WHERE the turn runs is settled here too, and for the same reason
+            // as the model: a conversation that recorded a request no surface
+            // could carry out would claim a run that did not happen.
+            val visibleExecutor = AgentToolExecutor(
+                vm = vm,
+                tabId = tabId,
+                onStatus = { setStatus(it) },
+                confirmGate = { name, label -> gate(name, label) },
+                // Wallet approvals must not ride the bypassable generic gate.
+                walletConfirm = { label -> requestWalletApproval(label) },
+                destructiveGate = { name, label -> destructiveVerdict(name, label) }
+            )
+            // HEADLESS: the turn drives a hidden page of this profile's own
+            // instead of the tab on screen. The reference is kept so the
+            // context snapshot below reads the page the turn actually worked
+            // on, and so the page is torn down when the turn ends.
+            val headless = if (settings.chatHeadless) {
+                val page = createHeadlessPage()
+                if (page == null) {
+                    note(
+                        "Could not start a hidden page for this turn. Switch this chat " +
+                            "to the browser tab and try again.",
+                        error = true
+                    )
+                    return
+                }
+                ownedPage = page
+                HeadlessToolExecutor(
+                    webView = page,
+                    searchEngineId = vm.profileSettings().searchEngineId,
+                    permissions = HEADLESS_CHAT_PERMISSIONS,
+                    confirmActions = settings.confirmActions,
+                    // A headless CHAT still has the person who sent it, so an
+                    // action that has to be asked about is asked about rather
+                    // than refused the way a scheduled run refuses it.
+                    askInteractive = { name, label -> gate(name, label) }
+                )
+            } else {
+                null
+            }
+            val executor: ToolExecutor = headless?.let {
+                HeadlessChatToolGate(
+                    page = it,
+                    appTools = { name, args -> visibleExecutor.executeAppTool(name, args) }
+                )
+            } ?: visibleExecutor
             // "Delete all agent chats" can run in the settings ACTIVITY while
             // a session is active here — verify it still exists, else start a
             // fresh one instead of writing to a dead row (FK safety).
@@ -832,15 +906,6 @@ class BrowserAgentController(
                 }
             repo.addMessage(sessionId, "user", display)
 
-            val executor = AgentToolExecutor(
-                vm = vm,
-                tabId = tabId,
-                onStatus = { setStatus(it) },
-                confirmGate = { name, label -> gate(name, label) },
-                // Wallet approvals must not ride the bypassable generic gate.
-                walletConfirm = { label -> requestWalletApproval(label) },
-                destructiveGate = { name, label -> destructiveVerdict(name, label) }
-            )
             val engine = SearchEngines.byId(vm.profileSettings().searchEngineId).label
             val prompt = settings.systemPromptOverride?.takeIf { it.isNotBlank() }
                 ?: AgentPrompts.render(System.currentTimeMillis(), ZoneId.systemDefault(), engine)
@@ -860,7 +925,11 @@ class BrowserAgentController(
                 priorTurns = repo.messages(sessionId)
                     .filter { it.role == "user" || it.role == "assistant" }
                     .map { ChatMessage(role = it.role, content = it.content) },
-                pageSnapshot = if (includePage) executor.snapshotContext() else null,
+                pageSnapshot = when {
+                    !includePage -> null
+                    headless != null -> headless.snapshotContext()
+                    else -> visibleExecutor.snapshotContext()
+                },
                 settings = settings,
                 attachments = attachments,
                 request = text
@@ -943,12 +1012,14 @@ class BrowserAgentController(
             // Only when the user moved, too. A turn that opened its own tab
             // leaves that tab on screen (Tahap 1), and re-binding to it would
             // swap this chat's answer for that tab's empty conversation at
-            // the worst possible moment; `executor.currentTabId` is where the
+            // the worst possible moment; the executor's tab is where the
             // turn's work ended, so an active tab that is neither it nor this
-            // chat's own tab is the user's doing.
+            // chat's own tab is the user's doing. A headless turn never moves
+            // its own tab — the tab tools are refused — so the executor's tab
+            // is still the one this chat started on.
             val nowActive = vm.activeTabId
             if (nowActive != null && nowActive != conversationTabId &&
-                nowActive != executor.currentTabId
+                nowActive != visibleExecutor.currentTabId
             ) {
                 showTabConversation(nowActive)
             }
@@ -964,6 +1035,13 @@ class BrowserAgentController(
             running = false
             setStatus(null)
             approval = null
+            // The hidden page belongs to the turn, so it goes with the turn —
+            // it is never in the tab list, and a WebView left alive keeps a
+            // renderer and its cookies' page state around for nothing.
+            ownedPage?.let {
+                it.stopLoading()
+                it.destroy()
+            }
             AgentForeground.stopCurrentTurn = null
             AgentForeground.finish()
             // The pin belongs to the turn, so it lifts with the turn —
@@ -972,6 +1050,37 @@ class BrowserAgentController(
             vm.pinTabForAgent(null)
         }
     }
+
+    /**
+     * A hidden page for a headless turn: this profile's own engine, started at
+     * the tab the user was on so the first read — and the "include the current
+     * page" context — begin where they were.
+     *
+     * IT IS NEVER ATTACHED to the view tree, so nothing here can appear on the
+     * user's screen or disturb the tab they are looking at, and because the
+     * process is already bound to this profile it shares that profile's cookie
+     * jar — a signed-in page stays signed-in.
+     *
+     * HONEST LIMIT: an unattached WebView still loads and runs JavaScript, but
+     * no frame is ever drawn from it, so a page that only fills itself in from
+     * `requestAnimationFrame` or an IntersectionObserver may stay empty. The
+     * measurement is what gives it a viewport at all (`innerHeight` is 0
+     * without one, which would make every scroll a silent no-op); it does not
+     * make the page animate.
+     */
+    private fun createHeadlessPage(): WebView? = runCatching {
+        val webView = ProfileEngine.createWebView(appContext, vm.profile)
+        val metrics = appContext.resources.displayMetrics
+        HeadlessToolExecutor.measureForHeadlessUse(
+            webView = webView,
+            widthPx = metrics.widthPixels,
+            heightPx = metrics.heightPixels
+        )
+        vm.pageState.url
+            ?.takeIf { it.isNotBlank() && !it.startsWith("about:") }
+            ?.let { webView.loadUrl(it) }
+        webView
+    }.getOrNull()
 
     // ------------------------------------------------------------- entry helpers
 
@@ -1303,5 +1412,17 @@ class BrowserAgentController(
          * long — the action then falls back to the Confirm actions rule.
          */
         private const val DECISION_TIMEOUT_MS = 30_000L
+
+        /**
+         * What a headless chat may reach on its hidden page.
+         *
+         * A chat is attended, so it gets the page tools the visible chat has,
+         * posting included; the person who sent the turn is there to be asked.
+         * The wallet and the app tools are not decided here: the app's own
+         * tools run through the visible executor's gates, and
+         * [HeadlessChatToolGate] refuses the wallet and tab groups with the
+         * reason that fits a hidden page.
+         */
+        private val HEADLESS_CHAT_PERMISSIONS = AiTaskPermissions(allowPost = true)
     }
 }

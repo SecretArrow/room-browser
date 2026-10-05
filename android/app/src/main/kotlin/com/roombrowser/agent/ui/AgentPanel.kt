@@ -405,6 +405,7 @@ private fun AgentPanelHeader(
     onOpenSettings: () -> Unit
 ) {
     var showModelPicker by remember { mutableStateOf(false) }
+    var showSurfacePicker by remember { mutableStateOf(false) }
 
     Row(
         Modifier
@@ -440,6 +441,21 @@ private fun AgentPanelHeader(
                     .semantics { contentDescription = "agent_model" }
                     .padding(vertical = 8.dp)
             )
+            // Where a turn runs, on the same tappable line pattern as the
+            // model above. It has to be visible BEFORE a turn is sent: the two
+            // surfaces disagree about what "click that button" means, and only
+            // one of them can be watched.
+            Text(
+                if (agent.chatHeadless) "Headless · hidden page" else "Headed · this tab",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .clickable { showSurfacePicker = true }
+                    .semantics { contentDescription = "agent_surface" }
+                    .padding(vertical = 6.dp)
+            )
             // While a turn runs the panel stays with it, even if the user
             // walks off to another tab — otherwise the running work would
             // vanish from the screen it was started on. Says so, because a
@@ -472,6 +488,9 @@ private fun AgentPanelHeader(
 
     if (showModelPicker) {
         ModelPickerSheet(agent = agent, onDismiss = { showModelPicker = false })
+    }
+    if (showSurfacePicker) {
+        ChatSurfaceSheet(agent = agent, onDismiss = { showSurfacePicker = false })
     }
 }
 
@@ -1435,6 +1454,65 @@ fun ModelPickerSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
                     }
                 }
             }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+// ------------------------------------------------------------------- surface picker
+
+/**
+ * What a chat turn runs on. Two options, not the AI Task editor's three: a
+ * chat has no "leave the tab open when it ends" — it runs on a tab the user
+ * already had, or on a page of its own that goes away with the turn.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChatSurfaceSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
+        Column(Modifier.padding(horizontal = 16.dp)) {
+            Text("Where the chat runs", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Applies to every turn from now on, in this profile.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = !agent.chatHeadless,
+                    onClick = {
+                        agent.setChatHeadless(false)
+                        onDismiss()
+                    },
+                    label = { Text("Headed browser") },
+                    modifier = Modifier.semantics { contentDescription = "agent_surface_headed" }
+                )
+                FilterChip(
+                    selected = agent.chatHeadless,
+                    onClick = {
+                        agent.setChatHeadless(true)
+                        onDismiss()
+                    },
+                    label = { Text("Headless") },
+                    modifier = Modifier.semantics { contentDescription = "agent_surface_headless" }
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (agent.chatHeadless) {
+                    "Runs on a hidden page in this profile — sites you are signed into stay " +
+                        "signed in — starting at the address you are on, and nothing appears on " +
+                        "screen while it works. It cannot open or switch tabs, and a wallet " +
+                        "request cannot be answered from a page you cannot see."
+                } else {
+                    "Runs on the tab you are looking at, so every click and every line typed " +
+                        "happens where you can watch it, and the agent can open tabs of its own."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Spacer(Modifier.height(24.dp))
         }
     }

@@ -4,6 +4,7 @@ import android.os.SystemClock
 import android.view.View
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import com.roombrowser.domain.agent.ActionVerdict
 import com.roombrowser.domain.agent.AgentAppActions
 import com.roombrowser.domain.agent.AgentJson
 import com.roombrowser.domain.agent.AgentTools
@@ -33,20 +34,21 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 
 /**
- * Executes the agent's browser tools for a SCHEDULED run: one headless
- * [WebView] and nobody watching.
+ * Executes the agent's browser tools on ONE headless [WebView].
  *
  * Same tool semantics and same result wording as [AgentToolExecutor], because
  * the model reading them is the same model. What differs is only what a
- * headless run cannot do, and each of those answers says so rather than
+ * single hidden page cannot do, and each of those answers says so rather than
  * pretending:
  *
  *  - there are no TABS (one page, one WebView), so the four tab tools are
  *    refused;
- *  - there is nobody to answer a confirmation, so an action that would have to
- *    ask the user is refused, and the refusal says which switch allows it.
+ *  - an action that would have to ask the user is refused, and the refusal says
+ *    which switch allows it — unless the caller supplied [askInteractive],
+ *    which is how a HEADLESS CHAT reaches the person watching it. A scheduled
+ *    run passes nothing, and the refusal stands.
  *
- * The WebView is this task's own and is never attached to the view tree, so
+ * The WebView belongs to its caller and is never attached to the view tree, so
  * nothing here reaches the user's browsing. It is measured and laid out once
  * by its creator, because an unmeasured WebView has no viewport and every
  * scroll and snapshot would be a no-op on a 0x0 page.
@@ -55,7 +57,13 @@ class HeadlessToolExecutor(
     private val webView: WebView,
     private val searchEngineId: String,
     private val permissions: AiTaskPermissions,
-    private val confirmActions: Boolean
+    private val confirmActions: Boolean,
+    /**
+     * Asks the person watching whether one interactive action may run. Null —
+     * the default, and every scheduled run — keeps the refusal, because an
+     * approval that cannot be given must not be invented.
+     */
+    private val askInteractive: (suspend (name: String, label: String) -> ActionVerdict)? = null
 ) : ToolExecutor {
 
     private val lastStartedAt = AtomicLong(0L)
@@ -76,7 +84,7 @@ class HeadlessToolExecutor(
     override suspend fun execute(name: String, argsJson: String): ToolResult =
         withContext(Dispatchers.Main) {
             val args: Map<String, Any?> = parseArgs(argsJson)
-            refusal(name)?.let { return@withContext it }
+            refusal(name, argsJson)?.let { return@withContext it }
             try {
                 when (name) {
                     AgentTools.NAVIGATE -> navigate(str(args, "url"))
@@ -107,12 +115,14 @@ class HeadlessToolExecutor(
 
     /**
      * The refusals that come from the RUN rather than from the page: a wallet
-     * tool (never available without a person), a tool the task does not allow
+     * tool (never available without a person), a tool the run does not allow
      * (whose message names the switch), a tool with no meaning without tabs, and
-     * an action that would have to ask a user who is not there. Checked before
-     * dispatch so no tool can be reached by a route that forgot to ask.
+     * an action that would have to ask the user — which becomes a real question
+     * when the caller supplied [askInteractive], and the refusal above when it
+     * did not. Checked before dispatch so no tool can be reached by a route that
+     * forgot to ask.
      */
-    private fun refusal(name: String): ToolResult? {
+    private suspend fun refusal(name: String, argsJson: String): ToolResult? {
         if (name in AgentTools.WALLET_TOOLS) return ToolResult(false, walletUnattendedRefusal(name))
         permissions.refusal(name)?.let { return ToolResult(false, it) }
         if (name in TAB_TOOLS) {
@@ -123,9 +133,21 @@ class HeadlessToolExecutor(
             )
         }
         if (confirmActions && name in AgentTools.INTERACTIVE_TOOLS) {
-            return ToolResult(false, unattendedRefusal(name))
+            val ask = askInteractive ?: return ToolResult(false, unattendedRefusal(name))
+            return when (val verdict = ask(name, AgentTools.describeTool(name, argsJson))) {
+                is ActionVerdict.Allow -> null
+                is ActionVerdict.Deny -> ToolResult(false, verdict.reason)
+                // Asking is the caller's job, so a verdict that reaches here is
+                // a bug — deny rather than run.
+                is ActionVerdict.Ask -> ToolResult(false, "the user denied this action")
+            }
         }
         return null
+    }
+
+    /** The page's text, for the chat's "include the current page" context. */
+    suspend fun snapshotContext(): String? = withContext(Dispatchers.Main) {
+        formatSnapshot()?.let { "Current page:\n$it" }
     }
 
     // ------------------------------------------------------------- tools
