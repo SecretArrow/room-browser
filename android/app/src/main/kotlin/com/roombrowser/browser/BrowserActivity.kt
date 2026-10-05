@@ -350,7 +350,7 @@ class BrowserActivity : FragmentActivity() {
             url?.let { putExtra(EXTRA_INITIAL_URL, it) }
         }
         val pending = android.app.PendingIntent.getActivity(
-            this, 4242, intent,
+            this, SELF_RESTART_REQUEST_CODE, intent,
             android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
         )
         val alarm = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
@@ -365,24 +365,35 @@ class BrowserActivity : FragmentActivity() {
     }
 
     /**
-     * Cancels any pending self-restart backstop alarm. PendingIntent
-     * equivalence uses Intent.filterEquals (component/flags — extras are NOT
-     * compared) plus the request code, so this token matches BOTH the
-     * [scheduleSelfRestart] and the ProfileSwitchExecutor backstops (both
-     * 4242 + BrowserActivity + NEW_TASK|CLEAR_TASK). Creating the token here
-     * is side-effect free; cancelling it when no alarm was set is a no-op.
+     * Cancels every pending engine-restart alarm.
+     *
+     * TWO tokens, and they cannot be one: [SELF_RESTART_REQUEST_CODE] relaunches
+     * with CLEAR_TASK (safe, because its process is already dead when it fires)
+     * and [SWITCH_BACKSTOP_REQUEST_CODE] relaunches without it (so it can never
+     * tear down a live instance). `Intent.filterEquals` ignores flags, so only
+     * the request code separates them -- see RestartAlarm.kt.
+     *
+     * A token that was never armed has no PendingIntent to read, so this is
+     * safe to call unconditionally on every bind.
      */
     private fun cancelPendingRestartAlarm() {
-        runCatching {
-            val intent = Intent(this, BrowserActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        val alarm = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
+        for (requestCode in RESTART_REQUEST_CODES) {
+            runCatching {
+                // NO_CREATE, never UPDATE_CURRENT. The two tokens are told
+                // apart by their request code alone, so UPDATE_CURRENT here
+                // rewrites the ARMED token to this throwaway intent -- dropping
+                // its profile extra and handing it CLEAR_TASK, the one flag the
+                // backstop was deliberately built without. NO_CREATE reads the
+                // armed token back untouched instead.
+                val pending = android.app.PendingIntent.getActivity(
+                    this, requestCode,
+                    Intent(this, BrowserActivity::class.java),
+                    android.app.PendingIntent.FLAG_NO_CREATE or
+                        android.app.PendingIntent.FLAG_IMMUTABLE
+                ) ?: return@runCatching
+                alarm.cancel(pending)
             }
-            val pending = android.app.PendingIntent.getActivity(
-                this, 4242, intent,
-                android.app.PendingIntent.FLAG_UPDATE_CURRENT or
-                    android.app.PendingIntent.FLAG_IMMUTABLE
-            )
-            (getSystemService(ALARM_SERVICE) as android.app.AlarmManager).cancel(pending)
         }
     }
 
