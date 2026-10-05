@@ -306,7 +306,7 @@ class AgentSettingsE2eTest {
 
     /**
      * VERIFIED send: taps the send button with FRESH bounds each attempt and
-     * only returns once the user bubble's copy affordance is in the tree. The
+     * only returns once the app has ACCEPTED the tap (see [sendLanded]). The
      * send button moves when the IME dismisses (composer resize) — a tap on
      * pre-shift bounds lands on nothing (CI 227ebc3). Each send attempt is
      * given its own grace window before re-tapping, so a slow first send is
@@ -318,14 +318,39 @@ class AgentSettingsE2eTest {
             // Only worth searching once something has been tapped: before the
             // first attempt there is nothing to find, and a later attempt must
             // confirm the earlier one did not already send before re-tapping.
-            if (tapped && revealDesc("agent_copy_user", 600)) return true
+            if (tapped && sendLanded(600)) return true
+            // Negative control for the composer probe: the prompt IS in the
+            // field at this point, so a probe that cannot see it is broken and
+            // must not be allowed to read as a successful send.
+            if (!device.hasObject(composerHoldsPrompt)) return false
             val send = device.wait(Until.findObject(By.desc("agent_send")), 2_000) ?: continue
             clickSmart(send)
             tapped = true
-            if (revealDesc("agent_copy_user", 4_000)) return true
+            if (sendLanded(4_000)) return true
         }
-        return revealDesc("agent_copy_user", 0)
+        return sendLanded(0)
     }
+
+    private val composerHoldsPrompt: BySelector =
+        By.desc("agent_composer_field").textContains("e2e_copy_prompt")
+
+    /**
+     * True once the app has taken the prompt out of the composer.
+     *
+     * The user bubble's copy affordance is the direct evidence, but it is
+     * normally out of reach here: the transcript is a LazyColumn shorter than
+     * one bubble on the CI display and the mock reply lands at once, so the
+     * just-sent bubble leaves the composed window and scrolling does not bring
+     * it back (run 37360922928 scrolled both ways for 38s without finding it).
+     * The composer survives that geometry — it held the prompt, and only an
+     * accepted send empties it, which is the exact inverse of the CI 227ebc3
+     * defect where a tap on stale bounds left the text in place. Waiting for
+     * it to go, rather than sampling once, is what keeps a slow clear from
+     * being misread as a missed tap and re-sent.
+     */
+    private fun sendLanded(bubbleWindowMs: Long): Boolean =
+        device.wait(Until.gone(composerHoldsPrompt), 2_000) ||
+            revealDesc("agent_copy_user", bubbleWindowMs)
 
     /**
      * Waits for a node, then keeps looking for it with the transcript scrolled
