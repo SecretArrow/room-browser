@@ -14,7 +14,6 @@ import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentLoop
 import com.roombrowser.domain.agent.AgentPrompts
 import com.roombrowser.domain.agent.AutoModelPicker
-import com.roombrowser.domain.agent.ChatRequest
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.SearchEngines
 import com.roombrowser.domain.task.AiTaskExecutionMode
@@ -205,18 +204,10 @@ class HeadlessAiTaskRunner(
         provider: AgentProviderEntity,
         gateway: AgentGateway,
         preferred: String?
-    ): String? {
-        val configured = preferred?.takeIf { it.isNotBlank() }
-            ?: provider.defaultModel.takeIf { it.isNotBlank() }
-        val listed = runCatching { gateway.listModels() }.getOrDefault(emptyList())
-        return AutoModelPicker.firstWorking(AutoModelPicker.candidates(configured, listed)) { candidate ->
-            gateway.chat(
-                ChatRequest(model = candidate, messages = AutoModelPicker.PROBE_MESSAGES, tools = null),
-                events = {}
-            )
-            true
-        }
-    }
+    ): String? = AutoModelPicker.firstWorkingOn(
+        gateway,
+        preferred?.takeIf { it.isNotBlank() } ?: provider.defaultModel.takeIf { it.isNotBlank() }
+    )
 
     /**
      * A WebView of this task's own, on the profile this process is bound to,

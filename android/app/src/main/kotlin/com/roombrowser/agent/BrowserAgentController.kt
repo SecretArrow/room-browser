@@ -15,10 +15,12 @@ import com.roombrowser.data.repo.AgentSettings
 import com.roombrowser.domain.agent.ActionGate
 import com.roombrowser.domain.agent.ActionVerdict
 import com.roombrowser.domain.agent.AgentEvent
+import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.AgentLoop
 import com.roombrowser.domain.agent.AgentPrompts
 import com.roombrowser.domain.agent.AgentTools
+import com.roombrowser.domain.agent.AutoModelPicker
 import com.roombrowser.domain.agent.ChatMessage
 import com.roombrowser.domain.agent.LocalAiTuning
 import com.roombrowser.domain.agent.formatDurationMs
@@ -260,6 +262,13 @@ class BrowserAgentController(
         private set
     var activeModel by mutableStateOf<String?>(null)
         private set
+    /**
+     * The chat is set to AUTO: each turn asks the provider which of its models
+     * answers rather than sending [activeModel]. Surfaced so the header says
+     * AUTO instead of a model that this turn may not use.
+     */
+    var chatModelAuto by mutableStateOf(false)
+        private set
     var modelsLoading by mutableStateOf(false)
         private set
     var modelsError by mutableStateOf<String?>(null)
@@ -370,6 +379,7 @@ class BrowserAgentController(
         val model = settings.defaultModel?.takeIf { it.isNotBlank() && provider != null }
             ?: provider?.defaultModel?.takeIf { it.isNotBlank() }
         activeModel = model
+        chatModelAuto = settings.defaultModelAuto && provider != null
     }
 
     // ------------------------------------------------------------- provider & model
@@ -410,7 +420,7 @@ class BrowserAgentController(
             // must not drag every setting changed since the mirror was filled
             // back to its old value (see AppStateRepository.updateAgentSettings).
             settings = appState.updateAgentSettings {
-                it.copy(defaultProviderId = null, defaultModel = null)
+                it.copy(defaultProviderId = null, defaultModel = null, defaultModelAuto = false)
             }
         }
     }
@@ -467,12 +477,50 @@ class BrowserAgentController(
     fun setDefault(provider: AgentProviderEntity, model: String) {
         scope.launch {
             settings = appState.updateAgentSettings {
-                it.copy(defaultProviderId = provider.id, defaultModel = model)
+                it.copy(defaultProviderId = provider.id, defaultModel = model, defaultModelAuto = false)
             }
             activeProvider = provider
             activeModel = model
+            chatModelAuto = false
             messages.value = "Agent set to ${provider.name} · $model"
         }
+    }
+
+    /**
+     * Sets the chat to AUTO on [provider]: every turn tries the provider's own
+     * default and then the first of its models that answers (see
+     * [AutoModelPicker]), so a name the account cannot actually call does not
+     * fail the whole conversation.
+     */
+    fun setAutoModel(provider: AgentProviderEntity) {
+        scope.launch {
+            // defaultModel is deliberately kept: it is the last explicit pick,
+            // and turning AUTO off should give it back rather than forget it.
+            settings = appState.updateAgentSettings {
+                it.copy(defaultProviderId = provider.id, defaultModelAuto = true)
+            }
+            activeProvider = provider
+            chatModelAuto = true
+            messages.value = "Agent set to ${provider.name} · Auto"
+        }
+    }
+
+    /**
+     * The model an AUTO turn runs on: the one that was picked by hand first,
+     * then whatever of the provider's own models answers. Null means none of
+     * them did, which the caller reports instead of sending a turn the provider
+     * is going to refuse.
+     */
+    private suspend fun resolveAutoModel(
+        provider: AgentProviderEntity,
+        gateway: AgentGateway
+    ): String? {
+        setStatus("Looking for a model that answers…")
+        val configured = activeModel?.takeIf { it.isNotBlank() }
+            ?: provider.defaultModel.takeIf { it.isNotBlank() }
+        val chosen = AutoModelPicker.firstWorkingOn(gateway, configured)
+        setStatus(null)
+        return chosen
     }
 
     /**
@@ -611,8 +659,10 @@ class BrowserAgentController(
             messages.value = "Configure an AI provider first (Agent → settings)"
             return
         }
-        val model = activeModel ?: provider.defaultModel
-        if (model.isBlank()) {
+        // Null means AUTO: the model is not known until a provider answers, and
+        // asking which one does is work the turn itself has to do.
+        val model: String? = if (chatModelAuto) null else activeModel ?: provider.defaultModel
+        if (model != null && model.isBlank()) {
             messages.value = "Pick a model for ${provider.name} first"
             return
         }
@@ -647,7 +697,8 @@ class BrowserAgentController(
         includePage: Boolean,
         attachments: List<AgentAttachment>,
         provider: AgentProviderEntity,
-        model: String,
+        // Null means AUTO — see [send] and [resolveAutoModel].
+        requestedModel: String?,
         // The tab the user was on when they sent; see [send].
         tabId: String?
     ) {
@@ -695,35 +746,7 @@ class BrowserAgentController(
             // try so the finally below lifts it even if a step from here on
             // throws.
             vm.pinTabForAgent(tabId)
-            // "Delete all agent chats" can run in the settings ACTIVITY while
-            // a session is active here — verify it still exists, else start a
-            // fresh one instead of writing to a dead row (FK safety).
-            val sessionId = activeSessionId
-                ?.takeIf { runCatching { repo.session(it) != null }.getOrDefault(false) }
-                ?: repo.createSession(
-                    profileId = profileId.value,
-                    title = text.take(64),
-                    providerId = provider.id,
-                    model = model,
-                    // The new chat belongs to this tab, so coming back to the
-                    // tab brings the conversation back with it.
-                    tabId = tabId.orEmpty()
-                ).also {
-                    activeSessionId = it
-                    tabId?.let { id -> conversationTabId = id }
-                }
-            repo.addMessage(sessionId, "user", display)
-
             val apiKey = apiKeyFor(provider).orEmpty()
-            val executor = AgentToolExecutor(
-                vm = vm,
-                tabId = tabId,
-                onStatus = { setStatus(it) },
-                confirmGate = { name, label -> gate(name, label) },
-                // Wallet approvals must not ride the bypassable generic gate.
-                walletConfirm = { label -> requestWalletApproval(label) },
-                destructiveGate = { name, label -> destructiveVerdict(name, label) }
-            )
             // Only the native Ollama protocol consumes the tuning; the other
             // gateways ignore it (default null keeps their wire format intact).
             val retry = settings.retryPolicy()
@@ -743,6 +766,43 @@ class BrowserAgentController(
                             formatDurationMs(retry.delay.toInt())
                     )
                 }
+            )
+            // AUTO is settled HERE, before the session row exists: a
+            // conversation recorded against a model that never answered would
+            // claim a run that did not happen, and the user's own message would
+            // be left in it with no reply under it.
+            val model = requestedModel ?: resolveAutoModel(provider, gateway)
+            if (model == null) {
+                note("None of ${provider.name}'s models answered. Pick one by hand.", error = true)
+                return
+            }
+            // "Delete all agent chats" can run in the settings ACTIVITY while
+            // a session is active here — verify it still exists, else start a
+            // fresh one instead of writing to a dead row (FK safety).
+            val sessionId = activeSessionId
+                ?.takeIf { runCatching { repo.session(it) != null }.getOrDefault(false) }
+                ?: repo.createSession(
+                    profileId = profileId.value,
+                    title = text.take(64),
+                    providerId = provider.id,
+                    model = model,
+                    // The new chat belongs to this tab, so coming back to the
+                    // tab brings the conversation back with it.
+                    tabId = tabId.orEmpty()
+                ).also {
+                    activeSessionId = it
+                    tabId?.let { id -> conversationTabId = id }
+                }
+            repo.addMessage(sessionId, "user", display)
+
+            val executor = AgentToolExecutor(
+                vm = vm,
+                tabId = tabId,
+                onStatus = { setStatus(it) },
+                confirmGate = { name, label -> gate(name, label) },
+                // Wallet approvals must not ride the bypassable generic gate.
+                walletConfirm = { label -> requestWalletApproval(label) },
+                destructiveGate = { name, label -> destructiveVerdict(name, label) }
             )
             val engine = SearchEngines.byId(vm.profileSettings().searchEngineId).label
             val prompt = settings.systemPromptOverride?.takeIf { it.isNotBlank() }

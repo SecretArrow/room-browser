@@ -95,4 +95,52 @@ class AutoModelPickerTest {
         assertThat(AutoModelPicker.PROBE_MESSAGES.single().role).isEqualTo("user")
         assertThat(AutoModelPicker.PROBE_MESSAGES.single().content).isEqualTo("Reply with OK.")
     }
+
+    // ------------------------------------------------- against a real gateway
+
+    /** Answers for the models in [answering], and only those — which is what a
+     *  provider that lists a model it will not serve looks like from here. */
+    private class FakeGateway(
+        private val listed: List<String>,
+        private val answering: Set<String>,
+        private val listFails: Boolean = false
+    ) : AgentGateway {
+        val probed = mutableListOf<String>()
+
+        override suspend fun listModels(): List<String> {
+            if (listFails) throw IllegalStateException("no /models endpoint")
+            return listed
+        }
+
+        override suspend fun chat(
+            request: ChatRequest,
+            events: suspend (StreamEvent) -> Unit
+        ): ChatMessage {
+            probed += request.model
+            if (request.model !in answering) throw IllegalStateException("model unavailable")
+            return ChatMessage(role = "assistant", content = "OK")
+        }
+    }
+
+    @Test
+    fun the_listed_model_that_answers_is_the_one_chosen() = runTest {
+        val gateway = FakeGateway(listed = listOf("a", "b"), answering = setOf("b"))
+        assertThat(AutoModelPicker.firstWorkingOn(gateway, configured = null)).isEqualTo("b")
+        // The offer that did not answer was really called: this is a probe, not
+        // a lookup, and a lookup would have returned "a".
+        assertThat(gateway.probed).containsExactly("a", "b").inOrder()
+    }
+
+    @Test
+    fun a_provider_with_no_model_list_still_gets_its_default_tried() = runTest {
+        val gateway = FakeGateway(listed = emptyList(), answering = setOf("llama3"), listFails = true)
+        assertThat(AutoModelPicker.firstWorkingOn(gateway, configured = "llama3")).isEqualTo("llama3")
+        assertThat(gateway.probed).containsExactly("llama3")
+    }
+
+    @Test
+    fun nothing_answering_is_null_so_no_turn_is_sent() = runTest {
+        val gateway = FakeGateway(listed = listOf("a", "b"), answering = emptySet())
+        assertThat(AutoModelPicker.firstWorkingOn(gateway, configured = null)).isNull()
+    }
 }

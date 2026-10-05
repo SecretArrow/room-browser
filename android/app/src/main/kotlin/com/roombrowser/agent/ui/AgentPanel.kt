@@ -423,6 +423,7 @@ private fun AgentPanelHeader(
             val provider = agent.activeProvider
             val modelLine = when {
                 provider == null -> "No provider configured"
+                agent.chatModelAuto -> "${provider.name} · Auto"
                 else -> "${provider.name} · ${agent.activeModel ?: provider.defaultModel}"
             }
             Text(
@@ -1328,6 +1329,19 @@ fun ModelPickerSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
                     selected = selected?.id == provider.id,
                     isDefault = agent.settings.defaultProviderId == provider.id,
                     onClick = { selected = provider }
+                )
+            }
+
+            if (selected != null) {
+                Spacer(Modifier.height(12.dp))
+                FilterChip(
+                    selected = agent.chatModelAuto && agent.activeProvider?.id == selected!!.id,
+                    onClick = {
+                        agent.setAutoModel(selected!!)
+                        onDismiss()
+                    },
+                    label = { Text("Auto — try each model until one answers") },
+                    modifier = Modifier.semantics { contentDescription = "agent_model_auto" }
                 )
             }
 

@@ -52,4 +52,24 @@ object AutoModelPicker {
         candidates.take(MAX_PROBES).firstOrNull { model ->
             runCatching { probe(model) }.getOrDefault(false)
         }
+
+    /**
+     * [firstWorking] against a real gateway: the list comes from the provider,
+     * and the probe is one short turn, so a model that answers at all is a model
+     * this account can actually call.
+     *
+     * A list that cannot be fetched is not a failure — [configured] alone is
+     * then the whole set of candidates, which is the right answer when a
+     * provider has no `/models` endpoint but does have a working default.
+     */
+    suspend fun firstWorkingOn(gateway: AgentGateway, configured: String?): String? {
+        val listed = runCatching { gateway.listModels() }.getOrDefault(emptyList())
+        return firstWorking(candidates(configured, listed)) { candidate ->
+            gateway.chat(
+                ChatRequest(model = candidate, messages = PROBE_MESSAGES, tools = null),
+                events = {}
+            )
+            true
+        }
+    }
 }
