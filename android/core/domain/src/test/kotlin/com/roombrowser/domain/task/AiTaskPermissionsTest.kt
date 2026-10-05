@@ -97,11 +97,36 @@ class AiTaskPermissionsTest {
     fun every_catalogue_tool_belongs_to_exactly_one_group() {
         val catalogue = AgentTools.toolDefs().map { it.function.name }
         listOf(
-            ToolGroup.READ_PAGE, ToolGroup.NAVIGATE, ToolGroup.INTERACT, ToolGroup.POST
+            ToolGroup.READ_PAGE, ToolGroup.NAVIGATE, ToolGroup.INTERACT, ToolGroup.POST,
+            ToolGroup.APP
         ).forEach { group ->
             assertThat(catalogue.filter { all.groupOf(it) == group }).isNotEmpty()
         }
         assertThat(catalogue.filter { all.groupOf(it) == null }).isEmpty()
+    }
+
+    @Test
+    fun app_tools_are_denied_however_the_task_is_granted() {
+        val everything = AiTaskPermissions(
+            allowReadPage = true,
+            allowNavigate = true,
+            allowInteract = true,
+            allowPost = true
+        )
+        val appTools = AgentTools.toolDefs().map { it.function.name }
+            .filter { it.startsWith("app_") }
+        assertThat(appTools).isNotEmpty()
+        appTools.forEach { tool ->
+            assertThat(all.groupOf(tool)).isEqualTo(ToolGroup.APP)
+            assertThat(all.allows(tool)).isFalse()
+            assertThat(everything.allows(tool)).isFalse()
+            // The refusal has to name the route that DOES work, or the model
+            // keeps trying the same call in an unattended run.
+            val refusal = everything.refusal(tool)
+            assertThat(refusal).isNotNull()
+            assertThat(refusal).contains(tool)
+            assertThat(refusal).doesNotContain("unknown tool")
+        }
     }
 
     @Test

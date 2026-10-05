@@ -36,6 +36,21 @@ object AgentTools {
     const val AUTO_POST = "auto_post"
     const val WAIT = "wait"
 
+    // ---- direct page control ----
+    const val RUN_JS = "run_js"
+    const val SELECT_OPTION = "select_option"
+    const val PRESS_KEYS = "press_keys"
+    const val WAIT_FOR = "wait_for"
+
+    // ---- the app's own components ----
+    const val APP_OPEN = "app_open"
+    const val APP_TABS = "app_tabs"
+    const val APP_DATA = "app_data"
+    const val APP_SETTINGS = "app_settings"
+    const val APP_SHIELDS = "app_shields"
+    const val APP_SITE_PERMISSION = "app_site_permission"
+    const val APP_PAGE = "app_page"
+
     private const val OBJ = """{"type":"object"}"""
 
     private val SCHEMA_NAVIGATE = """{"type":"object","properties":{"url":{"type":"string","description":"Full URL, e.g. https://example.com/path"}},"required":["url"]}"""
@@ -49,11 +64,41 @@ object AgentTools {
     private val SCHEMA_TAB_INDEX = """{"type":"object","properties":{"index":{"type":"integer","description":"Tab index from list_tabs"}},"required":["index"]}"""
     private val SCHEMA_TEXT = """{"type":"object","properties":{"text":{"type":"string","description":"Text to send"}},"required":["text"]}"""
     private val SCHEMA_WAIT = """{"type":"object","properties":{"ms":{"type":"integer","description":"Milliseconds to wait, 200-20000, default 1500"}}}"""
+    private val SCHEMA_RUN_JS = """{"type":"object","properties":{"script":{"type":"string","description":"JavaScript to run in the page. Synchronous only: the value of the last expression comes back as text, and a returned Promise is not awaited."}},"required":["script"]}"""
+    private val SCHEMA_SELECT_OPTION = """{"type":"object","properties":{"ref":{"type":"integer","description":"<select> element reference number from read_page"},"value":{"type":"string","description":"The option's value, or its visible text"}},"required":["ref","value"]}"""
+    private val SCHEMA_PRESS_KEYS = """{"type":"object","properties":{"keys":{"type":"string","description":"Key chord: Enter, Escape, Tab, ArrowDown, PageDown, F1-F12, or a combination like Control+a"},"ref":{"type":"integer","description":"Optional element reference to focus first; defaults to whatever is focused"}},"required":["keys"]}"""
+    private val SCHEMA_WAIT_FOR = """{"type":"object","properties":{"text":{"type":"string","description":"Text to wait for in the visible page"},"timeout_ms":{"type":"integer","description":"How long to wait, 500-30000, default 10000"}},"required":["text"]}"""
 
-    /** Tool names whose execution may require user confirmation. */
+    /** An enum built from the object that defines it, so the two cannot drift. */
+    private fun enumOf(values: Collection<String>): String =
+        values.joinToString("\",\"", prefix = "[\"", postfix = "\"]")
+
+    private val SCHEMA_APP_OPEN = """{"type":"object","properties":{"screen":{"type":"string","enum":${enumOf(AgentAppActions.SCREENS)},"description":"Screen to open"}},"required":["screen"]}"""
+    private val SCHEMA_APP_TABS = """{"type":"object","properties":{"action":{"type":"string","enum":${enumOf(AgentAppActions.TAB_ACTIONS)},"description":"list shows the tabs; the rest act on the tab at 'index' (or on this chat's tab when omitted)"},"index":{"type":"integer","description":"Tab index from action=list"},"position":{"type":"integer","description":"New position, for action=move"},"name":{"type":"string","description":"Group name for action=group"}}}"""
+    private val SCHEMA_APP_DATA = """{"type":"object","properties":{"kind":{"type":"string","enum":${enumOf(AgentAppActions.DATA_KINDS)},"description":"Which saved list to work on"},"action":{"type":"string","enum":["list","add","remove","clear","search","pause","resume","cancel","retry","open"],"description":"What to do; the allowed actions depend on kind"},"id":{"type":"string","description":"Row id from action=list, for remove/pause/resume/cancel/retry/open"},"title":{"type":"string","description":"Title, for bookmarks action=add"},"url":{"type":"string","description":"URL, for bookmarks action=add"},"query":{"type":"string","description":"Search text, for history action=search"}},"required":["kind","action"]}"""
+    private val SCHEMA_APP_SETTINGS = """{"type":"object","properties":{"action":{"type":"string","enum":["get","set"]},"key":{"type":"string","enum":${enumOf(AgentAppActions.PROFILE_SETTINGS.keys)},"description":"Setting name; omit for action=get to read them all"},"value":{"type":"string","description":"New value for action=set: true/false for a switch, or the text itself"}},"required":["action"]}"""
+    private val SCHEMA_APP_SHIELDS = """{"type":"object","properties":{"action":{"type":"string","enum":${enumOf(AgentAppActions.SHIELD_ACTIONS)},"description":"read reports the current site; toggle turns tracking protection off/on for it; clear_site_data removes the stored site data"},"enabled":{"type":"boolean","description":"For action=toggle: true to keep protection on, false to switch it off for this site"}},"required":["action"]}"""
+    private val SCHEMA_APP_SITE_PERMISSION = """{"type":"object","properties":{"action":{"type":"string","enum":${enumOf(AgentAppActions.PERMISSION_ACTIONS)}},"permission":{"type":"string","enum":${enumOf(AgentAppActions.PERMISSIONS)}},"decision":{"type":"string","enum":${enumOf(AgentAppActions.PERMISSION_DECISIONS)},"description":"For action=set"}},"required":["action"]}"""
+    private val SCHEMA_APP_PAGE = """{"type":"object","properties":{"action":{"type":"string","enum":${enumOf(AgentAppActions.PAGE_ACTIONS)},"description":"find/find_next/find_previous/clear_find work on text; reader_on/reader_off, desktop_on/desktop_off and bookmark_add/bookmark_remove act on the open page"},"query":{"type":"string","description":"For the find actions: the text to find. find_next and find_previous need it repeated — the browser keeps no last query of its own"}},"required":["action"]}"""
+
+    /**
+     * Tool names whose execution may require user confirmation.
+     *
+     * `run_js` is deliberately NOT here: it is the through-the-back-door tool
+     * and is offered unconfirmed by the owner's decision. `wait_for` only
+     * reads, like `wait`.
+     *
+     * The app tools are here because they change the browser itself — a
+     * setting, a saved permission, a bookmark — which is exactly what the
+     * Confirm actions switch is for. The actions among them that cannot be
+     * undone ask EVERY time regardless of this set: see
+     * [AgentAppActions.isDestructive].
+     */
     val INTERACTIVE_TOOLS = setOf(
-        CLICK, FILL_INPUT, PRESS_ENTER,
-        AUTO_LIKE, AUTO_REPOST, AUTO_REPLY, AUTO_POST
+        CLICK, FILL_INPUT, PRESS_ENTER, SELECT_OPTION, PRESS_KEYS,
+        AUTO_LIKE, AUTO_REPOST, AUTO_REPLY, AUTO_POST,
+        APP_OPEN, APP_TABS, APP_DATA, APP_SETTINGS, APP_SHIELDS,
+        APP_SITE_PERMISSION, APP_PAGE
     )
 
     /** OpenAI `tools` array for the chat request. */
@@ -74,7 +119,18 @@ object AgentTools {
         def(AUTO_REPOST, "Repost/retweet/reblog/share the posts currently visible on the page. Reposts up to 15 visible items. Scroll first, then call again to continue.", SCHEMA_NO_PARAMS),
         def(AUTO_REPLY, "Reply to the open post/thread: types the given text into the visible reply box and submits it. Returns immediately; call wait then read_page to verify.", SCHEMA_TEXT),
         def(AUTO_POST, "Create a new post/status/tweet with the given text: opens the composer, types, and submits. Call wait then read_page to verify.", SCHEMA_TEXT),
-        def(WAIT, "Wait for a page update (post-submit animations, infinite scroll loading) before reading again.", SCHEMA_WAIT)
+        def(WAIT, "Wait for a page update (post-submit animations, infinite scroll loading) before reading again.", SCHEMA_WAIT),
+        def(RUN_JS, "Run JavaScript in the current page and get the value of the last expression back as text. Use it for anything the other tools do not cover: reading attributes, hovering, scrolling an element into view, localStorage. Synchronous only — a returned Promise is not awaited, so read its eventual effect with wait_for or read_page instead.", SCHEMA_RUN_JS),
+        def(SELECT_OPTION, "Choose an option in a dropdown (<select>) by its value or by its visible text.", SCHEMA_SELECT_OPTION),
+        def(PRESS_KEYS, "Send a key chord to the focused element (or to one by [ref]): Enter, Escape to close a dialog, Tab, ArrowDown, PageDown, F1-F12, or a combination like Control+a.", SCHEMA_PRESS_KEYS),
+        def(WAIT_FOR, "Wait until the given text appears in the visible page. Cheaper than polling with read_page when a page loads its content late.", SCHEMA_WAIT_FOR),
+        def(APP_OPEN, "Open one of the browser's own screens, by name: settings, history, bookmarks, downloads, tabs, privacy, wallet, theme, ai_tasks and the rest. The page stays loaded and the page tools keep working afterwards.", SCHEMA_APP_OPEN),
+        def(APP_TABS, "Work with the browser's tabs: list them, pin or unpin, duplicate, reopen the last closed one, put one in a named group, move it, open a private tab, or close every other tab.", SCHEMA_APP_TABS),
+        def(APP_DATA, "Read or change what the browser has saved: bookmarks, history and downloads. Ids come from action=list, not from the page.", SCHEMA_APP_DATA),
+        def(APP_SETTINGS, "Read or change this profile's browsing settings by name (JavaScript, ad and tracker blocking, HTTPS upgrade, search engine, and the other names in the schema). Everything the tool can write is listed in its 'key' values.", SCHEMA_APP_SETTINGS),
+        def(APP_SHIELDS, "Report tracking protection for the site in this chat's tab and turn it off or on for that site, or clear the browser's stored site data.", SCHEMA_APP_SHIELDS),
+        def(APP_SITE_PERMISSION, "List or change the permissions saved for the site in this chat's tab: camera, microphone, location, notifications and the rest.", SCHEMA_APP_SITE_PERMISSION),
+        def(APP_PAGE, "Act on the open page from the browser side: find text in it, step through the matches, toggle reader mode or desktop mode, or bookmark it.", SCHEMA_APP_PAGE)
     )
 
     private fun def(name: String, description: String, schema: String): ToolDef =
@@ -121,6 +177,17 @@ object AgentTools {
             AUTO_REPLY -> "Reply \"${(str("text") ?: "").take(30)}\""
             AUTO_POST -> "Post \"${(str("text") ?: "").take(30)}\""
             WAIT -> "Wait ${formatDurationMs(int("ms") ?: 1500)}"
+            RUN_JS -> "Run JS: " + (str("script") ?: "").lineSequence().firstOrNull().orEmpty().take(40)
+            SELECT_OPTION -> "Select \"${(str("value") ?: "").take(30)}\" in [${int("ref") ?: "?"}]"
+            PRESS_KEYS -> "Press ${str("keys") ?: "?"}"
+            WAIT_FOR -> "Wait for \"${(str("text") ?: "").take(30)}\""
+            APP_OPEN -> "Open ${str("screen") ?: "?"} screen"
+            APP_TABS -> "Tabs: ${str("action") ?: "list"}${int("index")?.let { " [$it]" } ?: ""}"
+            APP_DATA -> "${str("kind") ?: "data"}: ${str("action") ?: "list"}"
+            APP_SETTINGS -> "Settings: ${str("action") ?: "get"}${str("key")?.let { " $it" } ?: ""}"
+            APP_SHIELDS -> "Shields: ${str("action") ?: "read"}"
+            APP_SITE_PERMISSION -> "Site permission: ${str("action") ?: "list"}"
+            APP_PAGE -> "Page: ${str("action") ?: "?"}"
             else -> name
         }
     } catch (_: Exception) {
