@@ -98,13 +98,14 @@ class BrowserActivity : FragmentActivity() {
             return
         }
         boundProfileId = profileId
-        // THIS instance is the restart — any backstop alarm scheduled by the
-        // previous instance (scheduleSelfRestart / ProfileSwitchExecutor,
-        // same request code + intent identity) has done its job and MUST be
-        // cancelled: on the CI emulator the deferred alarm fired ~5 s AFTER
-        // this activity was already up, as a redundant CLEAR_TASK relaunch
-        // that destroyed the freshly-started engine mid-initialization (the
-        // second ViewModel's tab restore raced every early interaction).
+        // THIS instance is the restart, so the alarms that raced it here have
+        // done their job and are cancelled. This is TIDYING, not the safety
+        // property: the backstop can now only ever deliver an onNewIntent, so
+        // losing this race costs nothing. It used to be the whole defence, and
+        // it used to lose -- the alarm is due at T+350 while this method runs
+        // at ~T+1150, so whether it fired first was decided by how far the
+        // system deferred an inexact alarm that day (see
+        // ProfileSwitchExecutor.scheduleRestart).
         cancelPendingRestartAlarm()
 
         val factory = object : ViewModelProvider.Factory {

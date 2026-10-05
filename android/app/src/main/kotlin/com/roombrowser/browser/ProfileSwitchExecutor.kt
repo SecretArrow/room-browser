@@ -165,12 +165,10 @@ class ProfileSwitchExecutor(
         )
         val alarm = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val triggerAt = SystemClock.elapsedRealtime() + RESTART_DELAY_MS
-        // WAKEUP (matching BrowserActivity.scheduleSelfRestart): the process
-        // dies immediately after this call — only the alarm can relaunch the
-        // engine, so it must fire even if the device dozes mid-switch (the CI
-        // emulator deferred the non-wakeup variant by ~5 s while idle).
-        // See [scheduleEngineRestart] for why this is not a bare
-        // setExactAndAllowWhileIdle.
+        // WAKEUP: the process dies moments after this call, so the alarm is the
+        // last thing that can bring the engine back if the primary launch above
+        // was lost -- it must survive Doze. See [scheduleEngineRestart] for why
+        // this is not a bare setExactAndAllowWhileIdle.
         alarm.scheduleEngineRestart(triggerAt, pending)
     }
 
