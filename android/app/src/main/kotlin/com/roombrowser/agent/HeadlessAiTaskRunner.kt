@@ -119,6 +119,7 @@ class HeadlessAiTaskRunner(
                         profileId = task.profileId,
                         permissions = task.permissions,
                         confirmActions = settings.confirmActions,
+                        allowProfileTools = settings.taskProfileTools,
                         keepTab = runConfig.executionMode == AiTaskExecutionMode.STANDARD
                     )
                 ) ?: return@withContext AiTaskRunOutcome.Deferred(
@@ -142,7 +143,16 @@ class HeadlessAiTaskRunner(
                         webView = webView,
                         searchEngineId = profile.settings.searchEngineId,
                         permissions = task.permissions,
-                        confirmActions = settings.confirmActions
+                        confirmActions = settings.confirmActions,
+                        profileData = GraphAgentProfileData(
+                            graph = graph,
+                            profileId = ProfileId(task.profileId),
+                            context = context
+                        ),
+                        allowProfileTools = settings.taskProfileTools,
+                        otpDigitsAllowed = {
+                            graph.appState.agentSettingsSnapshot().otpDigitsToAgent
+                        }
                     )
                 }
                 val config = AgentConfig(
