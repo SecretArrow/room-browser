@@ -464,7 +464,7 @@ object ProfileEngine {
         // every clear-browsing-data and profile-delete run left an undestroyed
         // WebView behind, each holding a renderer binding and this Context
         // until the GC happened to collect it. The line itself has to stay:
-        // [wipeWebViewDirs] is a SEPARATE entry point that neither caller of
+        // [wipeProfileStorage] is a SEPARATE entry point that neither caller of
         // this function runs, so nothing else clears the cache on this path.
         runCatching {
             val scratch = WebView(context)
@@ -476,8 +476,16 @@ object ProfileEngine {
         }
     }
 
-    /** Wipe the profile's WebView data directories from disk (belt & braces). */
-    fun wipeWebViewDirs(context: Context, profileId: ProfileId) {
+    /**
+     * Delete the profile's WebView data directories from disk (belt & braces
+     * on top of [clearEngineStorage], whose deletion is asynchronous).
+     *
+     * Filesystem-only, so unlike [clearEngineStorage] it needs no binding and
+     * runs from the process that deletes the profile. It must NOT be called
+     * while another process is still bound to [profileId]: a live WebView
+     * writes its directories straight back.
+     */
+    fun wipeProfileStorage(context: Context, profileId: ProfileId) {
         val suffix = profileId.safeSuffix
         val candidates = listOf(
             File(context.applicationInfo.dataDir, "app_webview_$suffix"),
