@@ -58,6 +58,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardReturn
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
@@ -1050,6 +1051,34 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
             }
 
             Spacer(Modifier.height(6.dp))
+
+            // A turn that errored or was stopped can be sent again exactly as
+            // it was asked. Retyping it is the only alternative, and the
+            // failure — a provider hiccup, a rate limit — is usually not the
+            // request's fault.
+            if (!agent.running && agent.retryable != null) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        "That turn did not finish.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = { agent.retry() },
+                        modifier = Modifier.semantics { contentDescription = "agent_retry" }
+                    ) {
+                        Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Retry")
+                    }
+                }
+            }
 
             // Row 2 — full-width input row.
             Row(verticalAlignment = Alignment.Bottom) {

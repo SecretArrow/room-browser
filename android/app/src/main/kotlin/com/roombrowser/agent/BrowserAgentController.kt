@@ -210,6 +210,18 @@ data class AgentApproval(
  *
  * The controller runs in the ':browser' process (it needs the WebView).
  */
+/**
+ * A turn that did not finish — the provider errored, the turn threw, or the
+ * user stopped it — kept exactly as it was asked so it can be sent again.
+ * Retyping it is the only other way, and the failure is usually the provider's
+ * rather than the request's.
+ */
+data class RetryableTurn(
+    val text: String,
+    val includePage: Boolean,
+    val attachments: List<AgentAttachment>
+)
+
 class BrowserAgentController(
     application: Application,
     private val profileId: ProfileId,
@@ -237,6 +249,13 @@ class BrowserAgentController(
     var approval by mutableStateOf<AgentApproval?>(null)
         private set
     var activeSessionId by mutableStateOf<Long?>(null)
+        private set
+    /**
+     * The last turn that did not finish, or null once one completes cleanly.
+     * Non-null is what puts the Retry button in the composer; it survives a
+     * stop on purpose, since the work is still wanted.
+     */
+    var retryable by mutableStateOf<RetryableTurn?>(null)
         private set
     /**
      * The tab whose conversation is on screen, or null while none is
@@ -552,6 +571,9 @@ class BrowserAgentController(
         val previous = activeSessionId
         activeSessionId = null
         entries = emptyList()
+        // A failed turn belongs to the chat it was asked in; a fresh chat is
+        // not where its Retry button should still be waiting.
+        retryable = null
         if (previous != null) {
             scope.launch { repo.bindSessionToTab(previous, "") }
         }
@@ -581,6 +603,7 @@ class BrowserAgentController(
             }
             activeSessionId = session.id
             entries = repo.messages(id).mapNotNull(::entryFromRow)
+            retryable = null
         }
     }
 
@@ -687,6 +710,12 @@ class BrowserAgentController(
         entries = entries + AgentEntry.Notice("Stopped by user", error = true, at = System.currentTimeMillis())
     }
 
+    /** Sends the turn that did not finish again, word for word. */
+    fun retry() {
+        val last = retryable ?: return
+        send(last.text, last.includePage, last.attachments)
+    }
+
     fun respondApproval(answer: ApprovalAnswer) {
         approval?.let { it.respond(answer) }
         approval = null
@@ -725,6 +754,11 @@ class BrowserAgentController(
         val display = if (attachments.isEmpty()) text
         else text + "\n📎 " + attachments.joinToString(", ") { it.name }
         entries = entries + AgentEntry.User(display, System.currentTimeMillis())
+        // Offered for retry until this turn finishes cleanly. Set here, before
+        // anything can fail, so every failure path below — an error event, a
+        // throw, the user's Stop — leaves the button up without each of them
+        // having to remember to raise it.
+        retryable = RetryableTurn(text, includePage, attachments)
         // YOLO has no prompt to remind anyone it is on, which is exactly why
         // it needs saying: the user turned it on at a prompt, possibly days
         // ago, and every turn since has looked identical to one where the
@@ -737,6 +771,9 @@ class BrowserAgentController(
             )
         }
         var streamingIndex = -1
+        // An error reported as an EVENT rather than thrown still means the turn
+        // did not do what was asked, so it must not clear the retry offer.
+        var turnFailed = false
         try {
             // The turn belongs to the tab it was started from. Every tool
             // resolves its engine from this id rather than from whatever is on
@@ -877,6 +914,7 @@ class BrowserAgentController(
                     }
                     is AgentEvent.AgentError -> {
                         streamingIndex = finalizeAssistant(streamingIndex)
+                        turnFailed = true
                         entries = entries + AgentEntry.Notice(
                             text = "Agent error: ${event.message}",
                             error = true,
@@ -891,6 +929,7 @@ class BrowserAgentController(
                 }
             }
             repo.touchSession(sessionId)
+            if (!turnFailed) retryable = null
             // The turn finished, so the panel belongs to the user again: if
             // they moved to another tab while it ran, that tab's conversation
             // takes the screen now.
