@@ -116,11 +116,9 @@ data class KeyChord(
             NAMED[lower]?.let { return it }
             if (lower.length == 1) {
                 val c = lower[0]
-                when {
-                    c in 'a'..'z' -> return Base(lower, "Key${c.uppercaseChar()}", c.uppercaseChar().code)
-                    c in '0'..'9' -> return Base(lower, "Digit$c", c.code)
-                    PUNCTUATION[c]?.let { return it }
-                }
+                if (c in 'a'..'z') return Base(lower, "Key${c.uppercaseChar()}", c.uppercaseChar().code)
+                if (c in '0'..'9') return Base(lower, "Digit$c", c.code)
+                PUNCTUATION[c]?.let { return it }
             }
             if (lower.length in 2..3 && lower[0] == 'f') {
                 val n = lower.drop(1).toIntOrNull() ?: return null
