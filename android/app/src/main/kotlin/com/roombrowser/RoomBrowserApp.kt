@@ -32,7 +32,13 @@ class RoomBrowserApp : Application(), Configuration.Provider {
     override fun onCreate() {
         super.onCreate()
         graph = AppGraph(this)
-        if (isDefaultProcess()) scheduleRetentionCleanup()
+        if (isDefaultProcess()) {
+            scheduleRetentionCleanup()
+        } else {
+            // Scheduled AI tasks were recorded by the worker in the default
+            // process; the engine that runs them only exists here.
+            graph.aiTaskDelivery.start(graph.appScope)
+        }
     }
 
     override val workManagerConfiguration: Configuration

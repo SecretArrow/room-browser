@@ -3,6 +3,7 @@ package com.roombrowser.data.repo
 import com.roombrowser.data.db.AiTaskDao
 import com.roombrowser.data.db.AiTaskEntity
 import com.roombrowser.domain.task.AiTaskPermissions
+import com.roombrowser.domain.task.AiTaskRunStatus
 import com.roombrowser.domain.task.TaskSchedule
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.json.Json
@@ -92,6 +93,18 @@ class AiTaskRepository(private val dao: AiTaskDao) {
 
     suspend fun recordRun(id: Long, atMs: Long, status: String, summary: String?) =
         dao.recordRun(id, atMs, status, summary)
+
+    /**
+     * The occurrences waiting for a process that can run them. DEFERRED IS the
+     * queue: the worker records what it could not run there, and ':browser'
+     * runs it. A separate queue column could disagree with the run history the
+     * list already shows; this cannot.
+     */
+    fun observeDeferred(): Flow<List<AiTaskEntity>> =
+        dao.observeByStatus(AiTaskRunStatus.DEFERRED.name)
+
+    /** The same rows, read once — what the sweep looks at before it waits. */
+    suspend fun deferredNow(): List<AiTaskEntity> = dao.byStatus(AiTaskRunStatus.DEFERRED.name)
 
     suspend fun delete(id: Long) = dao.delete(id)
 
