@@ -1,5 +1,6 @@
 package com.roombrowser.browser.engine
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Build
 import android.webkit.CookieManager
@@ -329,7 +330,13 @@ object ProfileEngine {
      * The gate is not optional — the call throws on a WebView whose APK
      * predates the API, and the mode then stays at its aborted-by-default
      * value, which is the pre-existing behaviour rather than a new failure.
+     *
+     * The suppression covers a stale lint model, not a wrong constant:
+     * androidx.webkit 1.12.1 annotates the feature name with a value list
+     * that predates WEB_AUTHENTICATION, while the AAR this builds against
+     * does declare it (verified in WebViewFeature.class).
      */
+    @SuppressLint("WrongConstant")
     private fun applyWebAuthnSupport(webView: WebView) {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_AUTHENTICATION)) return
         WebSettingsCompat.setWebAuthenticationSupport(
