@@ -810,7 +810,12 @@ class BrowserViewModel(
 
     init {
         webViewClient = RoomWebViewClient(profile, graph.filterEngine, clientCallbacks)
-        viewModelScope.launch { initialize() }
+        // Dispatchers.Main, not the scope's own Main.immediate: the immediate
+        // dispatcher runs this body IN PLACE while the constructor is still
+        // initializing fields, so initialize() read the properties declared
+        // below this point (vaultCallbacks) as null and crashed on startup.
+        // Main always queues, so construction finishes before this starts.
+        viewModelScope.launch(Dispatchers.Main) { initialize() }
         observeFlows()
     }
 
