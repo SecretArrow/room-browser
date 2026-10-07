@@ -13,7 +13,6 @@ import android.util.Log
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
-import android.webkit.ValueCallback
 import android.webkit.WebView
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -339,10 +338,6 @@ class BrowserViewModel(
         pending.cancel()
     }
 
-    /** File-chooser bridge for <input type=file>. */
-    var fileChooserCallback: ValueCallback<Array<Uri>>? = null
-        private set
-
     private val clientCallbacks = object : RoomWebViewClient.Callbacks {
         /**
          * The page host a sub-resource of [view] is judged against.
@@ -657,8 +652,7 @@ class BrowserViewModel(
                 callback.onResult(null)
                 return
             }
-            fileChooserLauncherIntent = intent
-            fileChooserResult = callback
+            onFileChooserRequest(intent) { uris -> callback.onResult(uris) }
         }
         override fun openNewWindow(view: WebView?, url: String) {
             // The second of two checks: onCreateWindow already refuses a popup
@@ -675,10 +669,26 @@ class BrowserViewModel(
         override fun isActiveEngine(view: WebView): Boolean = view === activeWebView
     }
 
-    var fileChooserLauncherIntent: android.content.Intent? = null
+    /**
+     * A `<input type=file>` request from the page, waiting for the user to pick.
+     * Held as state so the browser UI launches the picker and answers it; the
+     * engine's own callback stays unanswered until [answerFileChooser] runs,
+     * and an unanswered one is an input that never settles.
+     */
+    data class FileChooserRequest(val intent: Intent, val accept: (Array<Uri>?) -> Unit)
+
+    var pendingFileChooser by mutableStateOf<FileChooserRequest?>(null)
         private set
-    var fileChooserResult: RoomWebChromeClient.FileChooserResult? = null
-        private set
+
+    fun onFileChooserRequest(intent: Intent, accept: (Array<Uri>?) -> Unit) {
+        pendingFileChooser = FileChooserRequest(intent, accept)
+    }
+
+    /** Answer the outstanding request, if any. `null` means the user cancelled. */
+    fun answerFileChooser(uris: Array<Uri>?) {
+        pendingFileChooser?.accept?.invoke(uris)
+        pendingFileChooser = null
+    }
 
     // ------------------------------------------------------------------
     // Answers to the engine's permission requests.

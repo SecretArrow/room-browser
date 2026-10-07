@@ -2,6 +2,7 @@ package com.roombrowser.browser.ui
 
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
@@ -122,6 +123,13 @@ internal fun agentRoute(screen: String): BrowserRoute? = when (screen) {
  */
 data class LaunchRequest(val url: String, val nonce: Long)
 
+private fun fileChooserUris(resultCode: Int, data: Intent?): Array<Uri>? {
+    if (resultCode != Activity.RESULT_OK || data == null) return null
+    val clip = data.clipData
+    if (clip != null) return Array(clip.itemCount) { clip.getItemAt(it).uri }
+    return data.data?.let { arrayOf(it) }
+}
+
 /**
  * The browser shell: omnibox, toolbar, WebView host, homepage, error
  * pages, IP conflict warning, find-in-page and reader mode.
@@ -202,6 +210,21 @@ fun BrowserScreen(
             viewModel.agent.openSession(sessionId)
             agentPanelExpanded = true
         }
+    }
+
+    val fileChooser = viewModel.pendingFileChooser
+    val launchedChooser = remember { mutableStateOf<Any?>(null) }
+    val filePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        viewModel.answerFileChooser(fileChooserUris(result.resultCode, result.data))
+    }
+    LaunchedEffect(fileChooser) {
+        val request = fileChooser ?: return@LaunchedEffect
+        // A recomposition must not relaunch a picker that is already open.
+        if (launchedChooser.value === request) return@LaunchedEffect
+        launchedChooser.value = request
+        filePicker.launch(request.intent)
     }
 
     fun launchAgentSettings() {
