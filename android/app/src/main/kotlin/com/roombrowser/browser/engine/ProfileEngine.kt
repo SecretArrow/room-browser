@@ -9,6 +9,7 @@ import android.webkit.WebView
 import android.webkit.WebViewDatabase
 import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewCompat
+import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 import com.roombrowser.browser.RoomVaultScript
 import com.roombrowser.browser.wallet.dapp.RoomWalletScript
@@ -312,6 +313,29 @@ object ProfileEngine {
         webView.importantForAutofill =
             if (settings.autofillEnabled) android.view.View.IMPORTANT_FOR_AUTOFILL_AUTO
             else android.view.View.IMPORTANT_FOR_AUTOFILL_NO
+
+        applyWebAuthnSupport(webView)
+    }
+
+    /**
+     * Let the page use passkeys.
+     *
+     * WebView ships WebAuthn switched OFF and aborts `navigator.credentials`
+     * the moment it is called, which a page that only offers passkey sign-in
+     * shows as a spinner that never ends. FOR_BROWSER is the mode for a
+     * browser: FOR_APP covers only a site the app itself owns through Digital
+     * Asset Links, and this browser owns none.
+     *
+     * The gate is not optional — the call throws on a WebView whose APK
+     * predates the API, and the mode then stays at its aborted-by-default
+     * value, which is the pre-existing behaviour rather than a new failure.
+     */
+    private fun applyWebAuthnSupport(webView: WebView) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_AUTHENTICATION)) return
+        WebSettingsCompat.setWebAuthenticationSupport(
+            webView.settings,
+            WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_FOR_BROWSER
+        )
     }
 
     /**
