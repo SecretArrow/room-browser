@@ -1215,6 +1215,15 @@ class BrowserViewModel(
 
     fun closeTab(id: String) {
         viewModelScope.launch {
+            // Only a private tab leaving the last one behind wipes the session
+            // artifacts: clearing on every tab close also drops the ordinary
+            // session cookies of the tabs that survive it.
+            val closingPrivate = tabManager.get(id)?.entity?.isPrivate == true
+            val privateTabsLeft = browserRepo.openTabs(profileId)
+                .count { it.isPrivate && it.id != id }
+            if (closingPrivate && privateTabsLeft == 0) {
+                ProfileEngine.clearSessionArtifacts(getApplication())
+            }
             // Destroy THIS tab's engine before dropping the session — its
             // back/forward state is captured first so reopening the tab
             // restores the page (and its history) instead of a bare reload.
@@ -1233,9 +1242,6 @@ class BrowserViewModel(
                 val next = remaining.maxByOrNull { it.lastViewedAt }
                 activeTabId = next?.id
                 if (next != null) selectTab(next.id) else pageState = PageState()
-            }
-            if (remaining.none { it.isPrivate }) {
-                ProfileEngine.clearSessionArtifacts(getApplication())
             }
         }
     }
@@ -1260,13 +1266,23 @@ class BrowserViewModel(
         viewModelScope.launch {
             val open = browserRepo.openTabs(profileId)
             val activePos = open.firstOrNull { it.id == id }?.position ?: 0
-            open.filter { tab ->
+            val closing = open.filter { tab ->
                 when (onlyLeft) {
                     null -> tab.id != id
                     true -> tab.position < activePos
                     else -> tab.position > activePos
                 }
-            }.forEach { tab ->
+            }
+            // Same rule as closeTab: a sweep that takes the last private tab
+            // away clears the session artifacts too. This path used to skip
+            // the cleanup entirely, so "close all other tabs" left a private
+            // session's cookies behind.
+            val closingIds = closing.map { it.id }.toSet()
+            val privateSurvivors = open.count { it.isPrivate && it.id !in closingIds }
+            if (privateSurvivors == 0 && closing.any { it.isPrivate }) {
+                ProfileEngine.clearSessionArtifacts(getApplication())
+            }
+            closing.forEach { tab ->
                 // Per-tab engines: release each closed tab's engine + session,
                 // not just its database row — with the history bundle saved
                 // first (a reopened tab gets its page back).
