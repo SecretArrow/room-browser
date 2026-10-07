@@ -528,8 +528,7 @@ class BrowserViewModel(
                 android.webkit.WebViewClient.ERROR_HOST_LOOKUP ->
                     transportFailure(url, hostLookup = true)
                 android.webkit.WebViewClient.ERROR_CONNECT,
-                android.webkit.WebViewClient.ERROR_TIMEOUT,
-                android.webkit.WebViewClient.ERROR_INTERNET_DISCONNECTED ->
+                android.webkit.WebViewClient.ERROR_TIMEOUT ->
                     transportFailure(url, hostLookup = false)
                 else -> PageError.Generic(url, description)
             }
