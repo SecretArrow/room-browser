@@ -3,6 +3,8 @@ package com.roombrowser.browser
 import android.app.Application
 import android.content.Intent
 import android.graphics.Bitmap
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.net.http.SslError
 import android.os.Bundle
@@ -45,6 +47,7 @@ import com.roombrowser.domain.agent.AgentAppActions
 import com.roombrowser.domain.credentials.CredentialDomainMatcher
 import com.roombrowser.domain.credentials.SavedCredential
 import com.roombrowser.domain.engine.FilterEngine
+import com.roombrowser.domain.engine.PageFailure
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.model.BrowserGlobalSettings
 import com.roombrowser.domain.model.Device
@@ -85,6 +88,7 @@ data class PageState(
 
 sealed interface PageError {
     data class NoInternet(val url: String) : PageError
+    data class Unreachable(val url: String) : PageError
     data class Ssl(val url: String, val message: String) : PageError
     data class DnsFailure(val url: String) : PageError
     data class Generic(val url: String, val message: String?) : PageError
@@ -515,10 +519,18 @@ class BrowserViewModel(
             // failure must not paint an error page over the page on screen.
             if (view !== activeWebView) return
             Log.d(NAV_TAG, "vm=$navId onReceivedError url=$url code=$errorCode")
+            // The engine's code says HOW the load failed, never whether the
+            // DEVICE is at fault: mapping ERROR_CONNECT straight to "No
+            // Internet" told users their network was down when only that one
+            // server was silent. [PageFailure] makes that call from the
+            // connection's own state.
             pageError = when (errorCode) {
-                android.webkit.WebViewClient.ERROR_HOST_LOOKUP -> PageError.DnsFailure(url)
+                android.webkit.WebViewClient.ERROR_HOST_LOOKUP ->
+                    transportFailure(url, hostLookup = true)
                 android.webkit.WebViewClient.ERROR_CONNECT,
-                android.webkit.WebViewClient.ERROR_TIMEOUT -> PageError.NoInternet(url)
+                android.webkit.WebViewClient.ERROR_TIMEOUT,
+                android.webkit.WebViewClient.ERROR_INTERNET_DISCONNECTED ->
+                    transportFailure(url, hostLookup = false)
                 else -> PageError.Generic(url, description)
             }
             pageState = pageState.copy(loading = false)
@@ -1033,7 +1045,26 @@ class BrowserViewModel(
 
     fun goBack() { activeWebView?.goBack() }
     fun goForward() { activeWebView?.goForward() }
-    fun reload() { activeWebView?.reload() }
+
+    /**
+     * Retry the page whose error surface is on screen.
+     *
+     * The error page REPLACES the engine surface, so WebViewHost is out of the
+     * composition while one is up and the engine has no parent — the exact
+     * parentless state [runWhenAttached] exists to keep a load out of. Clearing
+     * the error first brings WebViewHost back, and queueing the reload through
+     * the deferred path lets it start on an attached, laid-out view instead of
+     * wedging on the WebView 83 stack.
+     */
+    fun reload() {
+        val webView = activeWebView ?: return
+        if (pageError != null) {
+            pageError = null
+            pageState = pageState.copy(isHomepage = false)
+        }
+        runWhenAttached(webView) { webView.reload() }
+    }
+
     fun stopLoading() { activeWebView?.stopLoading() }
 
     /**
@@ -2639,6 +2670,34 @@ class BrowserViewModel(
         SslError.SSL_DATE_INVALID -> "The certificate date is invalid."
         else -> "The site's certificate could not be verified."
     }
+
+    /** The page a failed main-frame load gets, given what the engine reported
+     *  and whether this device is actually online. */
+    private fun transportFailure(url: String, hostLookup: Boolean): PageError =
+        when (PageFailure.of(hostLookup, deviceOnline())) {
+            PageFailure.OFFLINE -> PageError.NoInternet(url)
+            PageFailure.DNS -> PageError.DnsFailure(url)
+            PageFailure.UNREACHABLE -> PageError.Unreachable(url)
+        }
+
+    /**
+     * Whether this device holds a connection that claims to reach the
+     * internet — the fact the engine's error code cannot supply, and the one
+     * that separates "your network is down" from "that server did not answer".
+     *
+     * NET_CAPABILITY_INTERNET, not ..._VALIDATED: a device whose connectivity
+     * probe is itself blocked (a corporate firewall, a VPN that drops the
+     * probe host) never reports VALIDATED while browsing fine, and reading
+     * that as "offline" would recreate the same lie in the other direction.
+     */
+    private fun deviceOnline(): Boolean = runCatching {
+        val manager = getApplication<Application>()
+            .getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return false
+        val network = manager.activeNetwork ?: return false
+        manager.getNetworkCapabilities(network)
+            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+    }.getOrDefault(false)
 
     override fun onCleared() {
         Log.d(NAV_TAG, "vm=$navId onCleared")

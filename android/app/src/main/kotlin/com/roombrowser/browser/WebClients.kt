@@ -335,6 +335,21 @@ class RoomWebViewClient(
         SslFrameMatch.isMainFrameFailure(failingUrl, mainFrameUrl, view.url)
 
     override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
+        // A certificate that is bad for a SUB-RESOURCE is that resource's
+        // problem, not the page's: cancel it and let the page carry on. This
+        // is a refusal, never an acceptance — the resource is not loaded, and
+        // nothing here ever calls handler.proceed(), so certificate
+        // validation is untouched.
+        //
+        // Checked BEFORE the upgrade fallback on purpose: the fallback entry
+        // is the MAIN frame's one http retry, and a sub-resource failure that
+        // happened to carry the same url used to spend it — navigating the
+        // whole tab down to the plain-http original because an iframe's
+        // certificate was bad.
+        if (!isMainFrameSslFailure(view, error.url)) {
+            handler.cancel()
+            return
+        }
         // HTTPS-First fallback: an https endpoint without a valid TLS setup
         // behind one of OUR upgrades → retry the original http URL once.
         // The registry key is the FAILING url (error.url — e.g.
@@ -346,15 +361,6 @@ class RoomWebViewClient(
         if (original != null) {
             handler.cancel()
             view.post { view.loadUrl(original) }
-            return
-        }
-        // A certificate that is bad for a SUB-RESOURCE is that resource's
-        // problem, not the page's: cancel it and let the page carry on. This
-        // is a refusal, never an acceptance — the resource is not loaded, and
-        // nothing here ever calls handler.proceed(), so certificate
-        // validation is untouched.
-        if (!isMainFrameSslFailure(view, error.url)) {
-            handler.cancel()
             return
         }
         // Never proceed automatically — the user decides via the error page.
