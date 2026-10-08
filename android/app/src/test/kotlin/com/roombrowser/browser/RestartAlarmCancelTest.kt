@@ -15,7 +15,7 @@ import java.io.File
  * is what that costs -- the backstop was deliberately built without CLEAR_TASK
  * so that it could never tear down a live engine, the cancel put CLEAR_TASK
  * back on it, the alarm fired anyway (`flg=0x10008000`, no extras) and the
- * ':browser' process was left alive with a full engine runtime, no activity and
+ * ':browser' process was left alive with a full Gecko runtime, no activity and
  * no frame for two minutes.
  *
  * A source scan, like AndroidTestNamingTest, because nothing else in the build
