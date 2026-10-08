@@ -21,6 +21,11 @@ val baseVersionName =
 val ciBuildNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0
 val baseVersionCode = if (ciBuildNumber > 0) ciBuildNumber else 1
 
+// Keeps every release permanently above the `200000 + tag` band the Quick APK
+// workflow used to stamp, so an APK installed from that workflow can never
+// outrank a published release again. Forward-only: published codes are ~400000.
+val releaseCodeBase = 1_000_000
+
 android {
     namespace = "com.roombrowser"
     compileSdk = 35
@@ -31,7 +36,7 @@ android {
         applicationId = "com.roombrowser"
         minSdk = 28
         targetSdk = 35
-        versionCode = baseVersionCode
+        versionCode = releaseCodeBase + baseVersionCode
         versionName = baseVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -72,7 +77,7 @@ android {
                     "x86" -> 1
                     else -> 0
                 }
-                impl.versionCode.set(abiRank * 100_000 + baseVersionCode)
+                impl.versionCode.set(abiRank * 100_000 + releaseCodeBase + baseVersionCode)
                 impl.outputFileName.set(
                     "room-browser-v$baseVersionName-${abi ?: "universal"}-$buildTypeName.apk"
                 )
