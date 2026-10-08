@@ -225,9 +225,9 @@ jobs:
         # twice. A genuinely broken test fails both attempts, so the gate
         # still holds; the annotation keeps the retry visible, not silent.
         run: |
-          ./gradlew testDebugUnitTest :core:domain:test :core:wallet:test --console=plain --continue || {
+          ./gradlew testDebugUnitTest :core:domain:test :core:wallet:test :engine:test --console=plain --continue || {
             echo "::warning title=Unit tests flaked::First attempt failed — retrying once. A load-induced flake passes now; a real failure fails again."
-            ./gradlew testDebugUnitTest :core:domain:test :core:wallet:test --console=plain --continue
+            ./gradlew testDebugUnitTest :core:domain:test :core:wallet:test :engine:test --console=plain --continue
           }
 
       - name: Compile the instrumented test sources
