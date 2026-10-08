@@ -44,7 +44,7 @@ class BrowserTaskPageHost(
         vm.openNewTab(START_URL)
         val tabId = vm.activeTabId ?: return null
         vm.pinTabForAgent(tabId)
-        if (vm.tabWebView(tabId) == null) {
+        if (vm.tabSession(tabId) == null) {
             vm.pinTabForAgent(null)
             if (!request.keepTab) vm.closeTab(tabId)
             return null

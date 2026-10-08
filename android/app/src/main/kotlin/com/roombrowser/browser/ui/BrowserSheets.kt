@@ -310,19 +310,7 @@ fun PageActionsSheet(
                 if (viewModel.bookmarks.any { it.url == viewModel.pageState.url }) "Remove bookmark" else "Add bookmark"
             ) { viewModel.toggleBookmark(); onDismiss() }
             SheetAction(Icons.Filled.PictureAsPdf, "Save page as PDF") {
-                // PrintManager → user saves as PDF (real Android print pipeline)
-                runCatching {
-                    val webView = viewModel.activeWebView
-                    if (webView != null) {
-                        val printManager = context.getSystemService(android.content.Context.PRINT_SERVICE)
-                            as android.print.PrintManager
-                        printManager.print(
-                            viewModel.pageState.title.ifBlank { "Page" },
-                            webView.createPrintDocumentAdapter("RoomBrowser"),
-                            android.print.PrintAttributes.Builder().build()
-                        )
-                    }
-                }
+                viewModel.savePageAsPdf()
                 onDismiss()
             }
             SheetAction(Icons.Filled.QrCodeScanner, "QR: share this page as code") { onShowQr() }

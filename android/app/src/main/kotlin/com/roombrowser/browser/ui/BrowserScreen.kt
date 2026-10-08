@@ -5,7 +5,6 @@ import android.content.Intent
 import android.net.Uri
 import android.view.View
 import android.view.ViewGroup
-import android.webkit.WebView
 import android.widget.FrameLayout
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
@@ -125,13 +124,6 @@ internal fun agentRoute(screen: String): BrowserRoute? = when (screen) {
  */
 data class LaunchRequest(val url: String, val nonce: Long)
 
-private fun fileChooserUris(resultCode: Int, data: Intent?): Array<Uri>? {
-    if (resultCode != Activity.RESULT_OK || data == null) return null
-    val clip = data.clipData
-    if (clip != null) return Array(clip.itemCount) { clip.getItemAt(it).uri }
-    return data.data?.let { arrayOf(it) }
-}
-
 /**
  * The browser shell: omnibox, toolbar, WebView host, homepage, error
  * pages, IP conflict warning, find-in-page and reader mode.
@@ -154,6 +146,21 @@ fun BrowserScreen(
             snackbarHostState.showSnackbar(it)
             viewModel.snackbar.value = null
         }
+    }
+
+    val fileChooser = viewModel.pendingFileChooser
+    val launchedChooser = remember { mutableStateOf<Any?>(null) }
+    val filePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        viewModel.answerFileChooser(fileChooserUris(result.resultCode, result.data))
+    }
+    LaunchedEffect(fileChooser) {
+        val request = fileChooser ?: return@LaunchedEffect
+        // A recomposition must not relaunch a picker that is already open.
+        if (launchedChooser.value === request) return@LaunchedEffect
+        launchedChooser.value = request
+        filePicker.launch(request.intent)
     }
 
     val agentMessage by viewModel.agent.messages.collectAsState()
@@ -214,21 +221,6 @@ fun BrowserScreen(
         }
     }
 
-    val fileChooser = viewModel.pendingFileChooser
-    val launchedChooser = remember { mutableStateOf<Any?>(null) }
-    val filePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        viewModel.answerFileChooser(fileChooserUris(result.resultCode, result.data))
-    }
-    LaunchedEffect(fileChooser) {
-        val request = fileChooser ?: return@LaunchedEffect
-        // A recomposition must not relaunch a picker that is already open.
-        if (launchedChooser.value === request) return@LaunchedEffect
-        launchedChooser.value = request
-        filePicker.launch(request.intent)
-    }
-
     fun launchAgentSettings() {
         com.roombrowser.agent.ui.AgentSettingsActivity.launch(
             activity, viewModel.profileId.value
@@ -276,7 +268,7 @@ fun BrowserScreen(
             // competing with the video for the bottom of the screen. With an
             // empty bottomBar the Scaffold's content padding collapses, so
             // the media container below owns the full window height.
-            if (viewModel.customView == null) {
+            if (!viewModel.isFullscreen) {
                 BrowserBottomBar(
                     // THE fix for the 3-button collision: the toolbar is padded
                     // above the system Back / Home / Recents bar (plus display
@@ -304,7 +296,7 @@ fun BrowserScreen(
                 // container must fill the whole window (the system bars
                 // themselves are hidden then, see FullscreenMediaHost).
                 .windowInsetsPadding(
-                    if (viewModel.customView != null) {
+                    if (viewModel.isFullscreen) {
                         WindowInsets(0, 0, 0, 0)
                     } else {
                         WindowInsets.systemBars
@@ -337,7 +329,7 @@ fun BrowserScreen(
             }
 
             // The floating AI agent panel lives above the browsing surface.
-            if (route == BrowserRoute.Browser && viewModel.customView == null) {
+            if (route == BrowserRoute.Browser && !viewModel.isFullscreen) {
                 com.roombrowser.agent.ui.AgentPanelHost(
                     viewModel = viewModel,
                     expanded = agentPanelExpanded,
@@ -347,11 +339,12 @@ fun BrowserScreen(
                 )
             }
 
-            // Fullscreen media view (HTML5 onShowCustomView). The scaffold's
-            // chrome is dropped above and the system bars are hidden inside
-            // the host, so the video really is fullscreen.
-            viewModel.customView?.let { view ->
-                FullscreenMediaHost(view = view, activity = activity)
+            // Fullscreen media (HTML5). The ENGINE renders the media inside
+            // its own view now — the app is told the state and nothing else —
+            // so all that is left here is dropping the chrome and hiding the
+            // system bars, which the host below does.
+            if (viewModel.isFullscreen) {
+                FullscreenMediaHost(activity = activity)
             }
         }
     }
@@ -372,7 +365,7 @@ fun BrowserScreen(
     // ------------------------------------------------------------------
     BackHandler {
         when {
-            viewModel.customView != null -> viewModel.exitFullscreen()
+            viewModel.isFullscreen -> viewModel.exitFullscreen()
             viewModel.readerContent != null -> viewModel.exitReaderMode()
             showFindBar -> {
                 viewModel.clearFindInPage()
@@ -605,6 +598,13 @@ fun BrowserScreen(
     // owns the launch loop; while the gate stands no URL can load).
 }
 
+private fun fileChooserUris(resultCode: Int, data: Intent?): Array<Uri>? {
+    if (resultCode != Activity.RESULT_OK || data == null) return null
+    val clip = data.clipData
+    if (clip != null) return Array(clip.itemCount) { clip.getItemAt(it).uri }
+    return data.data?.let { arrayOf(it) }
+}
+
 /**
  * The HTTP Basic/Digest credential prompt.
  *
@@ -679,14 +679,17 @@ private fun HttpAuthDialog(
 }
 
 /**
- * Hosts the WebView's HTML5 fullscreen view (WebChromeClient.onShowCustomView).
+ * The app's side of HTML5 fullscreen media: the scaffold above drops its
+ * bottom bar and its status-bar/cutout padding while this is composed, and the
+ * system status/navigation bars are hidden through
+ * [WindowInsetsControllerCompat].
  *
- * The media is rendered edge-to-edge in a container that fills the whole
- * window — the scaffold above drops its bottom bar and its status-bar/cutout
- * padding while this is composed — and the system status/navigation bars are
- * hidden through [WindowInsetsControllerCompat]. Only wiring `exitFullscreen`
- * (as before) left the video letterboxed below the status bar with the
- * browser toolbar and navigation bar still occupying the bottom.
+ * NO VIEW IS HOSTED HERE ANY MORE. The WebView edition was handed the
+ * fullscreen view by `onShowCustomView` and had to render it edge-to-edge
+ * itself (and `FullscreenMediaHost` did exactly that). The facade hands the
+ * app a STATE instead — the engine puts the fullscreen content inside its own
+ * view — so the container, its release path and the "child already has a
+ * parent" hazard it guarded against are all gone.
  *
  * The previous [WindowInsetsControllerCompat.getSystemBarsBehavior] is
  * captured before hiding and restored on exit; the restore also runs from
@@ -694,7 +697,7 @@ private fun HttpAuthDialog(
  * fullscreen can never strand the app with hidden system bars.
  */
 @Composable
-private fun FullscreenMediaHost(view: View, activity: Activity) {
+private fun FullscreenMediaHost(activity: Activity) {
     val window = activity.window
     DisposableEffect(window) {
         val controller = WindowCompat.getInsetsController(window, window.decorView)
@@ -708,22 +711,4 @@ private fun FullscreenMediaHost(view: View, activity: Activity) {
             controller.systemBarsBehavior = previousBehavior
         }
     }
-    AndroidView(
-        factory = { context ->
-            FrameLayout(context).apply {
-                layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
-                addView(view)
-            }
-        },
-        // The custom view belongs to the WebView, not to this host: leaving it
-        // parented to the discarded FrameLayout kept that container reachable
-        // after fullscreen exited, and made the NEXT addView of the same
-        // instance throw "The specified child already has a parent". The
-        // sibling host in BrowserContent releases the same way.
-        onRelease = { frame -> frame.removeAllViews() },
-        modifier = Modifier.fillMaxSize()
-    )
 }

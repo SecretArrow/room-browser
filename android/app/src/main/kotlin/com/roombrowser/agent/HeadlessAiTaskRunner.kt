@@ -1,7 +1,6 @@
 package com.roombrowser.agent
 
 import android.content.Context
-import android.webkit.WebView
 import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.db.AiTaskEntity
@@ -18,6 +17,7 @@ import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.SearchEngines
 import com.roombrowser.domain.task.AiTaskExecutionMode
 import com.roombrowser.domain.task.needsVisibleBrowser
+import com.roombrowser.engine.EngineSession
 import java.time.ZoneId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -29,14 +29,13 @@ import okhttp3.OkHttpClient
  * loop, and the answer stored back on the row.
  *
  * IT ONLY WORKS IN ':browser', and that is a fact about the engine rather than
- * a preference. The WebView data directory is chosen ONCE per process
- * ([ProfileEngine.bindProcessToProfile] calls `setDataDirectorySuffix`, and the
- * suffix cannot be changed at runtime), so this process is pinned to one
- * profile's cookie jar, storage and cache. A second WebView over another
- * profile's data — or over the same one, while the user is browsing it — is the
- * one thing that must not happen. The engine that runs a task therefore belongs
- * to the process that already owns the binding, and the answer to "cannot run
- * here" is to leave the occurrence queued rather than to force a binding.
+ * a preference. This app creates ONE engine runtime per process, bound to one
+ * profile and never retargeted, and every process shares the same on-disk
+ * profile. A second runtime over those files — the default process running a
+ * task while ':browser' has the browser open — is the one thing that must not
+ * happen, so the run belongs in the process that owns the runtime and the
+ * answer to "cannot run here" is to leave the occurrence queued rather than to
+ * start a second engine.
  *
  * The runner never BINDS the process: it runs on the profile the process is
  * already bound to, or it waits. Binding here would be a race the browser must
@@ -129,18 +128,18 @@ class HeadlessAiTaskRunner(
                 null
             }
 
-            var owned: WebView? = null
+            var owned: EngineSession? = null
             try {
                 val executor = page?.executor ?: run {
-                    val webView = createHeadlessWebView(profile)
-                    if (webView == null) {
+                    val session = createHeadlessSession(task, profile)
+                    if (session == null) {
                         return@withContext AiTaskRunOutcome.Deferred(
-                            "Deferred: the browser engine could not start a page."
+                            "Deferred: the browser engine could not start a session."
                         )
                     }
-                    owned = webView
+                    owned = session
                     HeadlessToolExecutor(
-                        webView = webView,
+                        session = session,
                         searchEngineId = profile.settings.searchEngineId,
                         permissions = task.permissions,
                         confirmActions = settings.confirmActions,
@@ -191,10 +190,7 @@ class HeadlessAiTaskRunner(
                 if (page != null) {
                     runCatching { page.close() }
                 } else {
-                    runCatching {
-                        owned?.stopLoading()
-                        owned?.destroy()
-                    }
+                    runCatching { owned?.close() }
                 }
             }
         }
@@ -220,30 +216,26 @@ class HeadlessAiTaskRunner(
     )
 
     /**
-     * A WebView of this task's own, on the profile this process is bound to,
-     * measured so it has a real viewport.
+     * A session of this task's own, on the profile this process is bound to.
      *
-     * IT IS NEVER ATTACHED to the view tree, so nothing here can appear on the
-     * user's screen or disturb the tab they are looking at, and it shares the
-     * process's WebView data directory (the profile's own cookie jar) because
-     * that is what makes a signed-in page a signed-in page.
+     * IT IS NEVER ATTACHED to a view, so nothing here can appear on the user's
+     * screen or disturb the tab they are looking at, and it shares the
+     * process's own profile context, because that is what makes a signed-in
+     * page a signed-in page.
      *
-     * HONEST LIMIT: an unattached WebView still loads and runs JavaScript, but
-     * no frame is ever drawn from it, so a page that only fills itself in from
-     * `requestAnimationFrame` or IntersectionObserver may stay empty. The
-     * measurement below is what gives it a viewport at all (`innerHeight` is 0
-     * without one, which would make every scroll a silent no-op); it does not
-     * make the page animate.
+     * HONEST LIMIT: a detached session still loads and runs JavaScript, but no
+     * frame is ever drawn from it, so a page that only fills itself in from
+     * `requestAnimationFrame` or IntersectionObserver may stay empty.
      */
-    private fun createHeadlessWebView(profile: com.roombrowser.domain.model.Profile): WebView? =
-        runCatching {
-            val webView = ProfileEngine.createWebView(context, profile)
-            val metrics = context.resources.displayMetrics
-            HeadlessToolExecutor.measureForHeadlessUse(
-                webView = webView,
-                widthPx = metrics.widthPixels,
-                heightPx = metrics.heightPixels
-            )
-            webView
-        }.getOrNull()
+    private fun createHeadlessSession(
+        task: AiTaskEntity,
+        profile: com.roombrowser.domain.model.Profile
+    ): EngineSession? = runCatching {
+        ProfileEngine.createSession(
+            context = context,
+            profile = profile,
+            sessionId = "ai-task-${task.id}-${System.currentTimeMillis()}",
+            isPrivate = false
+        )
+    }.getOrNull()
 }

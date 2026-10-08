@@ -2,7 +2,6 @@ package com.roombrowser.agent
 
 import android.app.Application
 import android.os.SystemClock
-import android.webkit.WebView
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -31,6 +30,7 @@ import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.SearchEngines
 import com.roombrowser.domain.task.AiTaskPermissions
+import com.roombrowser.engine.EngineSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -213,7 +213,7 @@ data class AgentApproval(
  *  - action approvals when "confirm actions" is enabled
  *  - persistence of messages
  *
- * The controller runs in the ':browser' process (it needs the WebView).
+ * The controller runs in the ':browser' process (it needs the engine).
  */
 /**
  * A turn that did not finish — the provider errored, the turn threw, or the
@@ -825,7 +825,7 @@ class BrowserAgentController(
         var turnFailed = false
         // A headless turn's page. Declared out here because the finally below
         // is where it is destroyed, and that runs whatever path left the try.
-        var ownedPage: WebView? = null
+        var ownedPage: EngineSession? = null
         try {
             // The turn belongs to the tab it was started from. Every tool
             // resolves its engine from this id rather than from whatever is on
@@ -897,7 +897,7 @@ class BrowserAgentController(
                 }
                 ownedPage = page
                 HeadlessToolExecutor(
-                    webView = page,
+                    session = page,
                     searchEngineId = vm.profileSettings().searchEngineId,
                     permissions = HEADLESS_CHAT_PERMISSIONS,
                     confirmActions = settings.confirmActions,
@@ -1074,12 +1074,9 @@ class BrowserAgentController(
             setStatus(null)
             approval = null
             // The hidden page belongs to the turn, so it goes with the turn —
-            // it is never in the tab list, and a WebView left alive keeps a
+            // it is never in the tab list, and a session left alive keeps a
             // renderer and its cookies' page state around for nothing.
-            ownedPage?.let {
-                it.stopLoading()
-                it.destroy()
-            }
+            ownedPage?.let { runCatching { it.close() } }
             AgentForeground.stopCurrentTurn = null
             AgentForeground.finish()
             // The pin belongs to the turn, so it lifts with the turn —
@@ -1094,30 +1091,26 @@ class BrowserAgentController(
      * the tab the user was on so the first read — and the "include the current
      * page" context — begin where they were.
      *
-     * IT IS NEVER ATTACHED to the view tree, so nothing here can appear on the
-     * user's screen or disturb the tab they are looking at, and because the
-     * process is already bound to this profile it shares that profile's cookie
-     * jar — a signed-in page stays signed-in.
+     * IT IS NEVER ATTACHED to a view, so nothing here can appear on the user's
+     * screen or disturb the tab they are looking at, and because the process is
+     * already bound to this profile it uses that profile's own engine context —
+     * a signed-in page stays signed-in.
      *
-     * HONEST LIMIT: an unattached WebView still loads and runs JavaScript, but
-     * no frame is ever drawn from it, so a page that only fills itself in from
-     * `requestAnimationFrame` or an IntersectionObserver may stay empty. The
-     * measurement is what gives it a viewport at all (`innerHeight` is 0
-     * without one, which would make every scroll a silent no-op); it does not
-     * make the page animate.
+     * HONEST LIMIT: a detached session still loads and runs JavaScript, but no
+     * frame is ever drawn from it, so a page that only fills itself in from
+     * `requestAnimationFrame` or an IntersectionObserver may stay empty.
      */
-    private fun createHeadlessPage(): WebView? = runCatching {
-        val webView = ProfileEngine.createWebView(appContext, vm.profile)
-        val metrics = appContext.resources.displayMetrics
-        HeadlessToolExecutor.measureForHeadlessUse(
-            webView = webView,
-            widthPx = metrics.widthPixels,
-            heightPx = metrics.heightPixels
+    private fun createHeadlessPage(): EngineSession? = runCatching {
+        val session = ProfileEngine.createSession(
+            context = appContext,
+            profile = vm.profile,
+            sessionId = "agent-chat-${System.currentTimeMillis()}",
+            isPrivate = false
         )
         vm.pageState.url
             ?.takeIf { it.isNotBlank() && !it.startsWith("about:") }
-            ?.let { webView.loadUrl(it) }
-        webView
+            ?.let { session.loadUri(it) }
+        session
     }.getOrNull()
 
     // ------------------------------------------------------------- entry helpers

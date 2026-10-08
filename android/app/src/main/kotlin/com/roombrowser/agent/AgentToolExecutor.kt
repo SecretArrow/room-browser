@@ -1,7 +1,7 @@
 package com.roombrowser.agent
 
 import android.os.SystemClock
-import android.webkit.WebView
+import com.roombrowser.engine.EngineSession
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.PageEvent
 import com.roombrowser.domain.agent.ActionVerdict
@@ -39,7 +39,7 @@ import kotlin.coroutines.resume
  * and never on "the current tab". The user browses while a turn runs, and a
  * tool that followed the screen would edit a page the user never asked the
  * agent to touch: switch tabs mid-turn and the rest of the turn lands in the
- * wrong one, silently. [BrowserViewModel.tabWebView] resolves the bound
+ * wrong one, silently. [BrowserViewModel.tabSession] resolves the bound
  * tab's engine, which stays alive in the background, so reading and
  * scrolling keep working while the user is elsewhere. Only an action that
  * would START A NAVIGATION needs the tab on screen — a background engine is
@@ -47,7 +47,7 @@ import kotlin.coroutines.resume
  * (see [MOVES_THE_PAGE]) — and those wait for the tab rather than acting on
  * the wrong page.
  *
- * All WebView access happens on the main dispatcher; navigation results are
+ * All engine access happens on the main dispatcher; navigation results are
  * awaited by polling the ViewModel's page events (race-free by design).
  */
 class AgentToolExecutor(
@@ -115,10 +115,9 @@ class AgentToolExecutor(
         withContext(Dispatchers.Main) {
             val args: Map<String, Any?> = parseArgs(argsJson)
             try {
-                // Asked once, here, rather than inside each of the ten tools:
-                // "can this action start a navigation?" is a property of the
-                // tool, and one place that answers it cannot drift out of step
-                // with ten.
+                // Asked once, here, rather than inside each tool: "needs the
+                // tab on screen" is a property of the tool, and one place that
+                // answers it cannot drift out of step with the list.
                 if (name in MOVES_THE_PAGE || name in NEEDS_SCREEN_TAB) {
                     awaitBoundTabActive()?.let { return@withContext it }
                 }
@@ -141,15 +140,15 @@ class AgentToolExecutor(
                     AgentTools.AUTO_REPLY -> autoReply(str(args, "text"))
                     AgentTools.AUTO_POST -> autoPost(str(args, "text"))
                     AgentTools.WAIT -> waitTool(intOrNull(args, "ms"))
-                    AgentTools.RUN_JS -> runJs(str(args, "script"))
-                    AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
-                    AgentTools.PRESS_KEYS -> pressKeys(str(args, "keys"), intOrNull(args, "ref"))
-                    AgentTools.WAIT_FOR -> waitFor(str(args, "text"), intOrNull(args, "timeout_ms"))
                     AgentTools.WALLET_STATE -> walletTools.readState()
                     AgentTools.WALLET_REQUESTS -> walletTools.listRequests()
                     AgentTools.WALLET_APPROVE -> walletTools.approve(str(args, "request_id"))
                     AgentTools.WALLET_REJECT -> walletTools.reject(str(args, "request_id"))
                     AgentTools.WALLET_SWITCH_NETWORK -> walletTools.switchNetwork(str(args, "network_id"))
+                    AgentTools.RUN_JS -> runJs(str(args, "script"))
+                    AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
+                    AgentTools.PRESS_KEYS -> pressKeys(str(args, "keys"), intOrNull(args, "ref"))
+                    AgentTools.WAIT_FOR -> waitFor(str(args, "text"), intOrNull(args, "timeout_ms"))
                     else -> ToolResult(false, "unknown tool: $name")
                 }
             } catch (ce: CancellationException) {
@@ -188,7 +187,7 @@ class AgentToolExecutor(
         // belongs to the tab on screen, and the user may have switched away
         // while the page was loading — the report would then name the page
         // they switched TO.
-        val landed = tabId?.let { vm.tabWebView(it) }
+        val landed = tabId?.let { vm.tabSession(it) }
         val landedUrl = landed?.url?.takeIf { it.isNotBlank() } ?: url
         return if (settled) {
             ToolResult(
@@ -223,9 +222,9 @@ class AgentToolExecutor(
     private suspend fun click(ref: Int?): ToolResult {
         if (ref == null) return ToolResult(false, "missing 'ref' argument")
         refuse(AgentTools.CLICK, AgentTools.describeTool(AgentTools.CLICK, "{\"ref\":$ref}"))?.let { return it }
-        val webView = boundWebView() ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
         val triggerAt = SystemClock.elapsedRealtime()
-        val jsResult = evaluateJs(webView, PageInjector.clickJs(ref))
+        val jsResult = evaluateJs(session, PageInjector.clickJs(ref))
             ?: return ToolResult(false, "click failed (JavaScript error or page still loading)")
         val outcome = unquote(jsResult)
         awaitPageSettle(triggerAt)
@@ -248,18 +247,18 @@ class AgentToolExecutor(
      * "clicking and typing" prompt.
      */
     private suspend fun rawFillField(ref: Int, text: String): ToolResult {
-        val webView = boundWebView() ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
         val jsonText = AgentJson.encodeToString(String.serializer(), text)
-        val jsResult = evaluateJs(webView, PageInjector.fillJs(ref, jsonText))
+        val jsResult = evaluateJs(session, PageInjector.fillJs(ref, jsonText))
             ?: return ToolResult(false, "fill failed (JavaScript error or page still loading)")
         return ToolResult(true, unquote(jsResult))
     }
 
     private suspend fun pressEnter(ref: Int?): ToolResult {
         refuse(AgentTools.PRESS_ENTER, "press Enter / submit")?.let { return it }
-        val webView = boundWebView() ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
         val triggerAt = SystemClock.elapsedRealtime()
-        val jsResult = evaluateJs(webView, PageInjector.enterJs(ref))
+        val jsResult = evaluateJs(session, PageInjector.enterJs(ref))
             ?: return ToolResult(false, "enter failed (JavaScript error)")
         awaitPageSettle(triggerAt)
         delay(SETTLE_MS)
@@ -267,23 +266,23 @@ class AgentToolExecutor(
     }
 
     private suspend fun scroll(direction: String?, amount: Int?): ToolResult {
-        val webView = boundWebView() ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
         val percent = (amount ?: 80).coerceIn(10, 300)
-        val dy = (webView.height * percent / 100) * (if (direction == "up") -1 else 1)
-        val jsResult = evaluateJs(webView, PageInjector.scrollJs(dy))
+        val dy = (session.view.height * percent / 100) * (if (direction == "up") -1 else 1)
+        val jsResult = evaluateJs(session, PageInjector.scrollJs(dy))
             ?: return ToolResult(false, "scroll failed")
         return ToolResult(true, unquote(jsResult))
     }
 
     private suspend fun goBack(): ToolResult {
-        val webView = boundWebView() ?: return ToolResult(false, "no page is loaded in this chat's tab")
-        if (!webView.canGoBack()) return ToolResult(true, "already at the first page in this tab")
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        if (!session.canGoBack) return ToolResult(true, "already at the first page in this tab")
         val triggerAt = SystemClock.elapsedRealtime()
-        webView.goBack()
+        session.goBack()
         awaitPageSettle(triggerAt)
         delay(SETTLE_MS)
         // This tab's engine, not pageState — see [navigate] for why.
-        return ToolResult(true, "went back to ${webView.url.orEmpty()}")
+        return ToolResult(true, "went back to ${session.url.orEmpty()}")
     }
 
     private suspend fun openNewTab(url: String?): ToolResult {
@@ -338,19 +337,19 @@ class AgentToolExecutor(
 
     private suspend fun autoLike(): ToolResult = socialAction(
         AgentTools.AUTO_LIKE, "like the visible posts"
-    ) { webView -> evaluateJs(webView, PageInjector.autoLikeJs()) }
+    ) { session -> evaluateJs(session, PageInjector.autoLikeJs()) }
 
     private suspend fun autoRepost(): ToolResult = socialAction(
         AgentTools.AUTO_REPOST, "repost the visible posts"
-    ) { webView -> evaluateJs(webView, PageInjector.autoRepostJs()) }
+    ) { session -> evaluateJs(session, PageInjector.autoRepostJs()) }
 
     private suspend fun autoReply(text: String?): ToolResult {
         if (text == null) return ToolResult(false, "missing 'text' argument")
         return socialAction(
             AgentTools.AUTO_REPLY, "reply with \"" + text.replace('\n', ' ').take(40) + "\"", 900L
-        ) { webView ->
+        ) { session ->
             val jsonText = AgentJson.encodeToString(String.serializer(), text)
-            evaluateJs(webView, PageInjector.autoReplyJs(jsonText))
+            evaluateJs(session, PageInjector.autoReplyJs(jsonText))
         }
     }
 
@@ -358,9 +357,9 @@ class AgentToolExecutor(
         if (text == null) return ToolResult(false, "missing 'text' argument")
         return socialAction(
             AgentTools.AUTO_POST, "post \"" + text.replace('\n', ' ').take(40) + "\"", 2400L
-        ) { webView ->
+        ) { session ->
             val jsonText = AgentJson.encodeToString(String.serializer(), text)
-            evaluateJs(webView, PageInjector.autoPostJs(jsonText))
+            evaluateJs(session, PageInjector.autoPostJs(jsonText))
         }
     }
 
@@ -369,13 +368,13 @@ class AgentToolExecutor(
         name: String,
         label: String,
         settleMs: Long = 0L,
-        js: suspend (WebView) -> String?
+        js: suspend (EngineSession) -> String?
     ): ToolResult {
         refuse(name, label)?.let { return it }
-        val webView = boundWebView()
+        val session = boundSession()
             ?: return ToolResult(false, "no page is loaded in this chat's tab — navigate to the site first")
         val triggerAt = SystemClock.elapsedRealtime()
-        val jsResult = js(webView)
+        val jsResult = js(session)
             ?: return ToolResult(false, "$name failed (JavaScript error or page still loading)")
         awaitPageSettle(triggerAt)
         if (settleMs > 0) delay(settleMs)
@@ -400,9 +399,8 @@ class AgentToolExecutor(
      */
     private suspend fun runJs(script: String?): ToolResult {
         val code = nonBlank(script) ?: return ToolResult(false, "missing 'script' argument")
-        val webView = boundWebView()
-            ?: return ToolResult(false, "no page is loaded in this chat's tab")
-        val raw = evaluateJs(webView, PageInjector.runJs(jsonString(code)))
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        val raw = evaluateJs(session, PageInjector.runJs(jsonString(code)))
             ?: return ToolResult(false, "run_js failed (JavaScript error or page still loading)")
         return ToolResult(true, clip(unquote(raw)))
     }
@@ -412,10 +410,9 @@ class AgentToolExecutor(
             return ToolResult(false, "missing 'ref' or 'value' argument")
         }
         refuse(AgentTools.SELECT_OPTION, "choose \"${value.take(40)}\" in [$ref]")?.let { return it }
-        val webView = boundWebView()
-            ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
         val triggerAt = SystemClock.elapsedRealtime()
-        val raw = evaluateJs(webView, PageInjector.selectOptionJs(ref, jsonString(value)))
+        val raw = evaluateJs(session, PageInjector.selectOptionJs(ref, jsonString(value)))
             ?: return ToolResult(false, "select_option failed (JavaScript error or page still loading)")
         // A select's change handler is a submit by another name.
         awaitPageSettle(triggerAt)
@@ -429,14 +426,13 @@ class AgentToolExecutor(
             "unsupported key chord '${keys.orEmpty()}'. Supported keys: ${KeyChord.SUPPORTED_KEYS}"
         )
         refuse(AgentTools.PRESS_KEYS, "press ${chord.label()}")?.let { return it }
-        val webView = boundWebView()
-            ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
         val triggerAt = SystemClock.elapsedRealtime()
         val script = PageInjector.pressKeysJs(
             ref, jsonString(chord.key), jsonString(chord.code), chord.keyCode,
             chord.ctrl, chord.shift, chord.alt, chord.meta, jsonString(chord.label())
         )
-        val raw = evaluateJs(webView, script)
+        val raw = evaluateJs(session, script)
             ?: return ToolResult(false, "press_keys failed (JavaScript error or page still loading)")
         awaitPageSettle(triggerAt)
         delay(SETTLE_MS)
@@ -446,14 +442,13 @@ class AgentToolExecutor(
     private suspend fun waitFor(text: String?, timeoutMs: Int?): ToolResult {
         val needle = nonBlank(text) ?: return ToolResult(false, "missing 'text' argument")
         val timeout = (timeoutMs ?: DEFAULT_WAIT_FOR_MS).coerceIn(500, 30_000).toLong()
-        val webView = boundWebView()
-            ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
         val probe = PageInjector.waitProbeJs(jsonString(needle))
         val startedAt = SystemClock.elapsedRealtime()
         val found = withTimeoutOrNull(timeout) {
             var hit = false
             while (!hit) {
-                hit = unquote(evaluateJs(webView, probe).orEmpty()).trim() == "1"
+                hit = unquote(evaluateJs(session, probe).orEmpty()).trim() == "1"
                 if (!hit) delay(POLL_MS)
             }
             true
@@ -500,7 +495,7 @@ class AgentToolExecutor(
      * the sharper answer, and the inline comment below says why it is still
      * consulted for that one case.
      */
-    private fun boundWebView(): WebView? {
+    private fun boundSession(): EngineSession? {
         val id = tabId ?: return null
         // pageState describes the tab on SCREEN, so it is only meaningful for
         // that tab — asking it about a background one answers about a
@@ -509,9 +504,9 @@ class AgentToolExecutor(
         // page the user left, and reading that would report content the tab
         // is no longer showing.
         if (vm.isActiveTab(id) && vm.pageState.isHomepage) return null
-        val webView = vm.tabWebView(id) ?: return null
-        val url = webView.url ?: return null
-        return webView.takeIf { url.isNotBlank() && !url.startsWith("about:") }
+        val session = vm.tabSession(id) ?: return null
+        val url = session.url ?: return null
+        return session.takeIf { url.isNotBlank() && !url.startsWith("about:") }
     }
 
     /**
@@ -559,16 +554,16 @@ class AgentToolExecutor(
     }
 
     private suspend fun formatSnapshot(): String? {
-        val webView = boundWebView() ?: return null
-        if (webView.progress < 100) {
+        val session = boundSession() ?: return null
+        if (session.progress < 100) {
             // The engine's OWN progress, not pageState: a background tab has
             // no pageState of its own, so the old check would wait on the
             // active tab's load — or skip the wait for this tab's.
             withTimeoutOrNull(4000) {
-                while (webView.progress < 100) delay(POLL_MS)
+                while (session.progress < 100) delay(POLL_MS)
             }
         }
-        val raw = evaluateJs(webView, PageInjector.snapshotJs()) ?: return null
+        val raw = evaluateJs(session, PageInjector.snapshotJs()) ?: return null
         if (raw.isBlank() || raw == "null" || raw == "undefined") return null
         val snapshot = runCatching {
             AgentJson.decodeFromString(PageSnapshotDto.serializer(), raw)
@@ -576,11 +571,11 @@ class AgentToolExecutor(
         return PageSnapshotFormatter.format(snapshot)
     }
 
-    /** Evaluates JS on the WebView, suspending until the callback fires. */
-    private suspend fun evaluateJs(webView: WebView, script: String): String? =
+    /** Evaluates JS on the session, suspending until the callback fires. */
+    private suspend fun evaluateJs(session: EngineSession, script: String): String? =
         suspendCancellableCoroutine { continuation ->
             try {
-                webView.evaluateJavascript(script) { value ->
+                session.evaluateJs(script) { value ->
                     if (continuation.isActive) continuation.resume(value)
                 }
             } catch (t: Throwable) {
@@ -588,7 +583,7 @@ class AgentToolExecutor(
             }
         }
 
-    /** evaluateJavascript returns string results JSON-encoded — undo that. */
+    /** The engine returns string results JSON-encoded — undo that. */
     private fun unquote(jsResult: String): String = runCatching {
         if (jsResult.length >= 2 && jsResult.startsWith("\"") && jsResult.endsWith("\"")) {
             AgentJson.decodeFromString(String.serializer(), jsResult)

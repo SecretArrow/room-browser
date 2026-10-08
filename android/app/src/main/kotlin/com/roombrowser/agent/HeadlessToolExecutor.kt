@@ -1,9 +1,6 @@
 package com.roombrowser.agent
 
 import android.os.SystemClock
-import android.view.View
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import com.roombrowser.domain.agent.ActionVerdict
 import com.roombrowser.domain.agent.AgentAppActions
 import com.roombrowser.domain.agent.AgentJson
@@ -19,6 +16,8 @@ import com.roombrowser.domain.task.AiTaskPermissions
 import com.roombrowser.domain.task.profileUnattendedRefusal
 import com.roombrowser.domain.task.unattendedRefusal
 import com.roombrowser.domain.task.walletUnattendedRefusal
+import com.roombrowser.engine.EngineSession
+import com.roombrowser.engine.EngineSessionListener
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CancellationException
@@ -36,29 +35,33 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
 /**
- * Executes the agent's browser tools on ONE headless [WebView].
+ * Executes the agent's browser tools on ONE headless [EngineSession].
  *
  * Same tool semantics and same result wording as [AgentToolExecutor], because
- * the model reading them is the same model. What differs is only what a
- * single hidden page cannot do, and each of those answers says so rather than
- * pretending:
+ * the model reading them is the same model — a scheduled task that navigated
+ * must be told what it landed on in the same words as a chat turn. What
+ * differs is only what a single hidden page cannot do, and each of those
+ * answers says so rather than pretending:
  *
- *  - there are no TABS (one page, one WebView), so the four tab tools are
+ *  - there are no TABS (one page, one session), so the four tab tools are
  *    refused;
  *  - an action that would have to ask the user is refused, and the refusal says
  *    which switch allows it — unless the caller supplied [askInteractive],
  *    which is how a HEADLESS CHAT reaches the person watching it. A scheduled
  *    run passes nothing, and the refusal stands.
  *
- * The WebView belongs to its caller and is never attached to the view tree, so
- * nothing here reaches the user's browsing. It is measured and laid out once
- * by its creator, because an unmeasured WebView has no viewport and every
- * scroll and snapshot would be a no-op on a 0x0 page.
+ * Nothing here reaches the user's browsing: the session belongs to its caller,
+ * never the one on screen.
  */
 class HeadlessToolExecutor(
-    private val webView: WebView,
+    private val session: EngineSession,
     private val searchEngineId: String,
     private val permissions: AiTaskPermissions,
+    /**
+     * Whether the agent asks before it acts. A scheduled run cannot ask, so a
+     * turn that would have to is refused instead of silently running the
+     * action the user expected to be asked about.
+     */
     private val confirmActions: Boolean,
     /**
      * Asks the person watching whether one interactive action may run. Null —
@@ -90,15 +93,17 @@ class HeadlessToolExecutor(
     }
 
     init {
-        webView.webViewClient = object : WebViewClient() {
-            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-                lastStartedAt.set(SystemClock.elapsedRealtime())
-            }
+        session.setListener(
+            object : EngineSessionListener {
+                override fun onPageStarted(session: EngineSession, url: String?) {
+                    lastStartedAt.set(SystemClock.elapsedRealtime())
+                }
 
-            override fun onPageFinished(view: WebView?, url: String?) {
-                lastFinishedAt.set(SystemClock.elapsedRealtime())
+                override fun onPageFinished(session: EngineSession, url: String?, success: Boolean) {
+                    lastFinishedAt.set(SystemClock.elapsedRealtime())
+                }
             }
-        }
+        )
     }
 
     override suspend fun execute(name: String, argsJson: String): ToolResult =
@@ -195,14 +200,14 @@ class HeadlessToolExecutor(
         val url = normalizeUrl(rawUrl)
             ?: return ToolResult(false, "missing or invalid 'url' argument")
         val triggerAt = SystemClock.elapsedRealtime()
-        webView.loadUrl(url)
+        session.loadUri(url)
         val settled = awaitPageSettle(triggerAt)
         delay(SETTLE_MS)
-        val landedUrl = webView.url?.takeIf { it.isNotBlank() } ?: url
+        val landedUrl = session.url?.takeIf { it.isNotBlank() } ?: url
         return if (settled) {
             ToolResult(
                 true,
-                "Navigated to $landedUrl — \"${webView.title.orEmpty()}\". Call read_page to inspect the content."
+                "Navigated to $landedUrl — \"${session.title.orEmpty()}\". Call read_page to inspect the content."
             )
         } else {
             ToolResult(
@@ -232,7 +237,7 @@ class HeadlessToolExecutor(
     private suspend fun click(ref: Int?): ToolResult {
         if (ref == null) return ToolResult(false, "missing 'ref' argument")
         val triggerAt = SystemClock.elapsedRealtime()
-        val jsResult = evaluateJs(PageInjector.clickJs(ref))
+        val jsResult = evaluateJs(session, PageInjector.clickJs(ref))
             ?: return ToolResult(false, "click failed (JavaScript error or page still loading)")
         val outcome = unquote(jsResult)
         awaitPageSettle(triggerAt)
@@ -245,14 +250,14 @@ class HeadlessToolExecutor(
             return ToolResult(false, "missing 'ref' or 'text' argument")
         }
         val jsonText = AgentJson.encodeToString(String.serializer(), text)
-        val jsResult = evaluateJs(PageInjector.fillJs(ref, jsonText))
+        val jsResult = evaluateJs(session, PageInjector.fillJs(ref, jsonText))
             ?: return ToolResult(false, "fill failed (JavaScript error or page still loading)")
         return ToolResult(true, unquote(jsResult))
     }
 
     private suspend fun pressEnter(ref: Int?): ToolResult {
         val triggerAt = SystemClock.elapsedRealtime()
-        val jsResult = evaluateJs(PageInjector.enterJs(ref))
+        val jsResult = evaluateJs(session, PageInjector.enterJs(ref))
             ?: return ToolResult(false, "enter failed (JavaScript error)")
         awaitPageSettle(triggerAt)
         delay(SETTLE_MS)
@@ -260,38 +265,38 @@ class HeadlessToolExecutor(
     }
 
     /**
-     * The viewport comes from the PAGE, not from the view's current size: this
-     * WebView is laid out once by its creator and never resized, and a scroll
-     * computed from a zero height would report success while moving nothing.
+     * The viewport comes from the PAGE, not from a view: this session has no
+     * attached view, so `view.height` is zero and every scroll would be a
+     * no-op that still reported success.
      */
     private suspend fun scroll(direction: String?, amount: Int?): ToolResult {
         val percent = (amount ?: 80).coerceIn(10, 300)
-        val viewport = evaluateJs("window.innerHeight")?.trim()?.toIntOrNull() ?: 0
+        val viewport = evaluateJs(session, "window.innerHeight")?.trim()?.toIntOrNull() ?: 0
         if (viewport <= 0) return ToolResult(false, "scroll failed (no page viewport yet)")
         val dy = (viewport * percent / 100) * (if (direction == "up") -1 else 1)
-        val jsResult = evaluateJs(PageInjector.scrollJs(dy))
+        val jsResult = evaluateJs(session, PageInjector.scrollJs(dy))
             ?: return ToolResult(false, "scroll failed")
         return ToolResult(true, unquote(jsResult))
     }
 
     private suspend fun goBack(): ToolResult {
-        if (!webView.canGoBack()) return ToolResult(true, "already at the first page")
+        if (!session.canGoBack) return ToolResult(true, "already at the first page")
         val triggerAt = SystemClock.elapsedRealtime()
-        webView.goBack()
+        session.goBack()
         awaitPageSettle(triggerAt)
         delay(SETTLE_MS)
-        return ToolResult(true, "went back to ${webView.url.orEmpty()}")
+        return ToolResult(true, "went back to ${session.url.orEmpty()}")
     }
 
-    private suspend fun autoLike(): ToolResult = socialAction { evaluateJs(PageInjector.autoLikeJs()) }
+    private suspend fun autoLike(): ToolResult = socialAction { evaluateJs(session, PageInjector.autoLikeJs()) }
 
-    private suspend fun autoRepost(): ToolResult = socialAction { evaluateJs(PageInjector.autoRepostJs()) }
+    private suspend fun autoRepost(): ToolResult = socialAction { evaluateJs(session, PageInjector.autoRepostJs()) }
 
     private suspend fun autoReply(text: String?): ToolResult {
         if (text == null) return ToolResult(false, "missing 'text' argument")
         return socialAction {
             val jsonText = AgentJson.encodeToString(String.serializer(), text)
-            evaluateJs(PageInjector.autoReplyJs(jsonText))
+            evaluateJs(session, PageInjector.autoReplyJs(jsonText))
         }
     }
 
@@ -299,7 +304,7 @@ class HeadlessToolExecutor(
         if (text == null) return ToolResult(false, "missing 'text' argument")
         return socialAction {
             val jsonText = AgentJson.encodeToString(String.serializer(), text)
-            evaluateJs(PageInjector.autoPostJs(jsonText))
+            evaluateJs(session, PageInjector.autoPostJs(jsonText))
         }
     }
 
@@ -320,7 +325,7 @@ class HeadlessToolExecutor(
 
     private suspend fun runJs(script: String?): ToolResult {
         val code = nonBlank(script) ?: return ToolResult(false, "missing 'script' argument")
-        val raw = evaluateJs(PageInjector.runJs(jsonString(code)))
+        val raw = evaluateJs(session, PageInjector.runJs(jsonString(code)))
             ?: return ToolResult(false, "run_js failed (JavaScript error or page still loading)")
         return ToolResult(true, clip(unquote(raw)))
     }
@@ -329,7 +334,7 @@ class HeadlessToolExecutor(
         if (ref == null || value == null) {
             return ToolResult(false, "missing 'ref' or 'value' argument")
         }
-        val raw = evaluateJs(PageInjector.selectOptionJs(ref, jsonString(value)))
+        val raw = evaluateJs(session, PageInjector.selectOptionJs(ref, jsonString(value)))
             ?: return ToolResult(false, "select_option failed (JavaScript error or page still loading)")
         return ToolResult(true, unquote(raw))
     }
@@ -343,7 +348,7 @@ class HeadlessToolExecutor(
             ref, jsonString(chord.key), jsonString(chord.code), chord.keyCode,
             chord.ctrl, chord.shift, chord.alt, chord.meta, jsonString(chord.label())
         )
-        val raw = evaluateJs(script)
+        val raw = evaluateJs(session, script)
             ?: return ToolResult(false, "press_keys failed (JavaScript error or page still loading)")
         return ToolResult(true, unquote(raw))
     }
@@ -356,7 +361,7 @@ class HeadlessToolExecutor(
         val found = withTimeoutOrNull(timeout) {
             var hit = false
             while (!hit) {
-                hit = unquote(evaluateJs(probe).orEmpty()).trim() == "1"
+                hit = unquote(evaluateJs(session, probe).orEmpty()).trim() == "1"
                 if (!hit) delay(POLL_MS)
             }
             true
@@ -387,12 +392,12 @@ class HeadlessToolExecutor(
         }
 
     private suspend fun formatSnapshot(): String? {
-        if (webView.progress < 100) {
+        if (session.progress < 100) {
             withTimeoutOrNull(4000) {
-                while (webView.progress < 100) delay(POLL_MS)
+                while (session.progress < 100) delay(POLL_MS)
             }
         }
-        val raw = evaluateJs(PageInjector.snapshotJs()) ?: return null
+        val raw = evaluateJs(session, PageInjector.snapshotJs()) ?: return null
         if (raw.isBlank() || raw == "null" || raw == "undefined") return null
         val snapshot = runCatching {
             AgentJson.decodeFromString(PageSnapshotDto.serializer(), raw)
@@ -400,11 +405,11 @@ class HeadlessToolExecutor(
         return PageSnapshotFormatter.format(snapshot)
     }
 
-    /** Evaluates JS on the headless WebView, suspending until the callback fires. */
-    private suspend fun evaluateJs(script: String): String? =
+    /** Evaluates JS on the session, suspending until the callback fires. */
+    private suspend fun evaluateJs(session: EngineSession, script: String): String? =
         suspendCancellableCoroutine { continuation ->
             try {
-                webView.evaluateJavascript(script) { value ->
+                session.evaluateJs(script) { value ->
                     if (continuation.isActive) continuation.resume(value)
                 }
             } catch (t: Throwable) {
@@ -421,7 +426,7 @@ class HeadlessToolExecutor(
 
     /**
      * Waits for a navigation that started at/after [triggerAt] to finish, from
-     * THIS WebView's own page events. A JS-only action starts no navigation and
+     * THIS session's own page events. A JS-only action starts no navigation and
      * resolves after the start window passes with none.
      */
     private suspend fun awaitPageSettle(triggerAt: Long): Boolean {
@@ -489,9 +494,9 @@ class HeadlessToolExecutor(
          * The tools a headless run performs, declared rather than inferred so
          * [HeadlessToolCatalogTest] can hold the WHOLE catalogue to
          * [SUPPORTED_TOOLS] ∪ [TAB_TOOLS] ∪ [APP_TOOLS] ∪
-         * [AgentTools.WALLET_TOOLS]: a tool added to the catalogue later
-         * must be classified deliberately, because the wrong answer is either a
-         * tool the model is offered and refused, or one refused silently.
+         * [AgentTools.WALLET_TOOLS]: a tool added to the catalogue later must
+         * be classified deliberately, because the wrong answer is either a tool
+         * the model is offered and refused, or one refused silently.
          */
         internal val SUPPORTED_TOOLS: Set<String> = setOf(
             AgentTools.NAVIGATE, AgentTools.SEARCH_WEB, AgentTools.READ_PAGE,
@@ -528,18 +533,5 @@ class HeadlessToolExecutor(
          * is one message for it, not two.
          */
         internal val APP_TOOLS: Set<String> = AgentAppActions.TOOLS
-
-        /**
-         * Give a headless WebView the device's viewport. Without a measure and
-         * a layout pass the page is 0x0, `window.innerHeight` is 0 and every
-         * scroll is a no-op that still reports success.
-         */
-        fun measureForHeadlessUse(webView: WebView, widthPx: Int, heightPx: Int) {
-            webView.measure(
-                View.MeasureSpec.makeMeasureSpec(widthPx, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(heightPx, View.MeasureSpec.EXACTLY)
-            )
-            webView.layout(0, 0, widthPx, heightPx)
-        }
     }
 }
