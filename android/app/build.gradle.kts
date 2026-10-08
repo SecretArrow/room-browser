@@ -195,6 +195,9 @@ dependencies {
     // Multi-chain wallet core (chain adapters + crypto). App-side wallet
     // layers (contract/engine/bridge/repository/UI) build on it.
     implementation(project(":core:wallet"))
+    // `implementation`, deliberately: this is what keeps android.webkit out of
+    // this module's compile classpath, so `:app` cannot branch on the engine.
+    implementation(project(":engine"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)

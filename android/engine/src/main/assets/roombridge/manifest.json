@@ -1,0 +1,38 @@
+{
+  "manifest_version": 2,
+  "name": "Room Browser Bridge",
+  "version": "1.1",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "roombridge@roombrowser.com"
+    }
+  },
+  "permissions": [
+    "nativeMessaging",
+    "nativeMessagingFromContent",
+    "geckoViewAddons",
+    "webRequest",
+    "webRequestBlocking",
+    "<all_urls>"
+  ],
+  "background": {
+    "scripts": ["blocker.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "match_about_blank": true,
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN",
+      "js": ["main.js"]
+    },
+    {
+      "matches": ["<all_urls>"],
+      "match_about_blank": true,
+      "run_at": "document_start",
+      "all_frames": false,
+      "js": ["isolated.js"]
+    }
+  ]
+}
