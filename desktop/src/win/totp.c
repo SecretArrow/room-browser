@@ -571,7 +571,6 @@ static LRESULT CALLBACK rb_ta_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLOREDIT:
     case WM_CTLCOLORLISTBOX:
-    case WM_CTLCOLORCOMBO:
     case WM_CTLCOLORBTN:
         if (a != NULL) {
             SetBkMode((HDC)wp, OPAQUE);

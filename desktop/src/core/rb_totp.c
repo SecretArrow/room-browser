@@ -580,7 +580,7 @@ int rb_totp_code(const unsigned char *secret, size_t secret_len, int algo,
     if (secret == NULL || secret_len == 0) {
         return 0;
     }
-    if (digits < 1 || digits > 10) {
+    if (digits != 6 && digits != 8) {
         return 0;
     }
     if (period < 1) {
