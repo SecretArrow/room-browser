@@ -105,6 +105,30 @@ interface EngineSession {
     /** Navigate to [uri]. The URI must already be classified by the caller. */
     fun loadUri(uri: String)
 
+    /**
+     * Render [html] as this session's document, with **no origin**.
+     *
+     * THE ABSENCE OF A BASE-URL PARAMETER IS THE SECURITY PROPERTY, not an
+     * omission. A document loaded here must not resolve to any host, because
+     * the app's privileged page bridges decide whether to answer by reading
+     * the host out of the session's URL and declining when there is none. A
+     * caller that could name a base URL could name a host, and markup it did
+     * not write -- `oct://` circle content is third-party markup -- would then
+     * be reachable from the vault and the wallet. So this member takes the
+     * document and nothing else, and an implementation must load it in a way
+     * that leaves the session's own URL hostless (WebView: a null base URL;
+     * GeckoView: `about:blank`).
+     *
+     * This is the one place the app supplies document bytes rather than a URI.
+     * It exists because [loadUri] cannot carry them: a circle with its assets
+     * inlined is megabytes, past what a `data:` URI reliably transports, and a
+     * `data:` URI is a single-shot document with no meaningful reload.
+     *
+     * Implementations must apply [setPageScripts] to this document exactly as
+     * they do to a fetched one.
+     */
+    fun loadHtml(html: String)
+
     fun reload()
 
     /** Abandon the in-flight load, keeping the current document. */
