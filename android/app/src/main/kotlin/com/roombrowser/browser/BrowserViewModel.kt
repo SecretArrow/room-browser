@@ -528,11 +528,11 @@ class BrowserViewModel(
             if (session !== activeSession) {
                 // A background tab navigating: the URL belongs to ITS row
                 // (title stays as stored — the new document has none yet).
-                persistTab(owner, settledUrl(url, tabs.firstOrNull { it.id == owner }?.url))
+                persistTab(owner, UrlIntelligence.settledUrl(url, tabs.firstOrNull { it.id == owner }?.url))
                 return
             }
             lastPageEvent = PageEvent.Started(url, SystemClock.elapsedRealtime())
-            val started = settledUrl(url, pageState.url)
+            val started = UrlIntelligence.settledUrl(url, pageState.url)
             pageError = null
             pageState = pageState.copy(url = started, loading = true, progress = 5, isHomepage = false)
             // A navigation retires the vault offer: the login field it was
@@ -576,7 +576,7 @@ class BrowserViewModel(
             // A circle's commit IS about:blank, so the substitution has to happen before
             // the artifact test — otherwise the circle's own finish is the artifact, and
             // the tab keeps its spinner until something else navigates it.
-            val settled = settledUrl(url, committed)
+            val settled = UrlIntelligence.settledUrl(url, committed)
             if (settled == "about:blank" &&
                 committed != "about:home" && committed != "about:blank"
             ) {
@@ -1345,24 +1345,6 @@ class BrowserViewModel(
         pageState = pageState.copy(url = uri.raw, loading = false, progress = 0, isHomepage = false)
         pageError = PageError.Generic(uri.raw, message)
     }
-
-    /**
-     * The address a tab is really showing, when the engine's report is only the blank
-     * document it was handed.
-     *
-     * A circle arrives as bytes rather than as a fetch, so the engine commits
-     * `about:blank` — an opaque document with no host, which is exactly the property
-     * that keeps the app's privileged bridges out of third-party circle markup. The
-     * tab's OWN model still holds the address the user typed, so it is substituted
-     * back in here. Without it the omnibox would read `about:blank` over a rendered
-     * circle, and the finish that ends the load would be dropped as a stale artifact.
-     */
-    private fun settledUrl(reported: String, model: String?): String =
-        if (reported == "about:blank" && model != null && OctUri.parse(model) != null) {
-            model
-        } else {
-            reported
-        }
 
     fun goBack() { activeSession?.goBack() }
     fun goForward() { activeSession?.goForward() }
