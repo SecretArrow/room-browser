@@ -235,6 +235,16 @@
             android:windowSoftInputMode="adjustResize" />
 
         <!--
+          "What's My IP" — the diagnostics screen. Default process on purpose:
+          it reports on the network and the profile, never on the engine's
+          sessions, so it has no reason to sit next to them.
+        -->
+        <activity
+            android:name=".browser.ui.WhatsMyIpActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode" />
+
+        <!--
           Profile Network Warning — a DEDICATED full-screen activity in the
           ':browser' process (it must never be shown as a dismissible dialog):
           while the pending-decision flag stands, browsing is gated and this
