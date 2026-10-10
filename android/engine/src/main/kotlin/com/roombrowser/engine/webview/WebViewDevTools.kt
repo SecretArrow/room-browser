@@ -22,6 +22,15 @@ import com.roombrowser.engine.devtools.EngineNetworkSignal
  */
 internal object WebViewDevTools {
 
+    /**
+     * The armed flag inside [CONSOLE_PATCH], as text.
+     *
+     * Declared before the patch because a `const val` initialiser may only
+     * reference a constant that is already initialised; [consolePatch] replaces
+     * this marker with the state at install time.
+     */
+    private const val ARMED_PLACEHOLDER = "__RB_CONSOLE_ARMED__"
+
     /** What this build serves on a WebView that supports document-start scripts. */
     val CAPABILITIES: DeveloperToolsCapabilities = DeveloperToolsCapabilities(
         capabilities = setOf(
@@ -178,8 +187,6 @@ internal object WebViewDevTools {
      */
     fun consolePatch(armed: Boolean): String =
         CONSOLE_PATCH.replace(ARMED_PLACEHOLDER, armed.toString())
-
-    private const val ARMED_PLACEHOLDER = "__RB_CONSOLE_ARMED__"
 }
 
 /**
