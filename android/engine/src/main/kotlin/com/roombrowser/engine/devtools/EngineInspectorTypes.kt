@@ -29,7 +29,13 @@ data class EngineNetworkSignal(
     val resourceType: String? = null,
     val timestampMs: Long = 0L
 ) {
-    enum class Kind { REQUEST, RESPONSE, FAILED }
+    /**
+     * Which point of its life a signal describes.
+     *
+     * [COMPLETED] is emitted only by an engine that can watch a request finish;
+     * a signal never invents a completion by reusing [RESPONSE].
+     */
+    enum class Kind { REQUEST, RESPONSE, COMPLETED, FAILED }
 }
 
 /**

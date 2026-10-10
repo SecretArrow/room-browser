@@ -12,6 +12,7 @@ import android.os.Message
 import android.view.PixelCopy
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.GeolocationPermissions
 import android.webkit.HttpAuthHandler
@@ -38,9 +39,12 @@ import com.roombrowser.engine.EngineSessionListener
 import com.roombrowser.engine.EngineState
 import com.roombrowser.engine.HttpAuthResponder
 import com.roombrowser.engine.NavigationDecision
+import com.roombrowser.engine.devtools.EngineConsoleMessage
 import com.roombrowser.engine.devtools.EngineInspector
+import com.roombrowser.engine.devtools.EngineNetworkSignal
 import com.roombrowser.engine.PageErrorKind
 import com.roombrowser.engine.PermissionResponder
+import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -156,6 +160,21 @@ internal class WebViewEngineSession(
     private var deviceShimHandler: ScriptHandler? = null
     private var vaultHandler: ScriptHandler? = null
     private var walletHandler: ScriptHandler? = null
+
+    /**
+     * The DevTools console patch's document-start handle. Installed once from
+     * [init] and NEVER touched by [applyPageScripts], which replaces only the
+     * app's three policy scripts.
+     */
+    private var consoleHandler: ScriptHandler? = null
+
+    /**
+     * Whether the page-world console patch is currently forwarding. The patch
+     * buffers from document start regardless, and this mirrors the inspector's
+     * sink so a navigation can re-arm the new document.
+     */
+    @Volatile
+    private var consoleArmed: Boolean = false
 
     /**
      * The view group this session was last attached to, remembered so the
@@ -454,6 +473,29 @@ internal class WebViewEngineSession(
         }
     }
 
+    /**
+     * Install the DevTools console patch at document start, once for the life of
+     * the session.
+     *
+     * SEPARATE FROM [applyPageScripts] ON PURPOSE. That method replaces the
+     * app's three policy scripts on every reconfigure; this one is engine-owned
+     * plumbing a DevTools panel needs, and folding it into the app bundle would
+     * push an inspection script through `configure()` on every page load of every
+     * profile. The guard is the app's own, for the same reason: on a WebView too
+     * old for document-start scripts the patch is silently absent, which is a
+     * missing panel rather than a broken page.
+     */
+    private fun installConsolePatch() {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        runCatching {
+            consoleHandler = WebViewCompat.addDocumentStartJavaScript(
+                webView,
+                WebViewDevTools.CONSOLE_PATCH,
+                setOf("*")
+            )
+        }
+    }
+
     // ---- scripting --------------------------------------------------------
 
     /**
@@ -666,7 +708,45 @@ internal class WebViewEngineSession(
         }
     }
 
-    override fun inspector(): EngineInspector = WebViewDevTools.inspector()
+    /**
+     * This session's inspection handle. Per session, because a console sink
+     * belongs to the panel that opened it; the capability set it reads is the
+     * one shared [WebViewDevTools.CAPABILITIES], so a session can never
+     * describe a capability the engine does not serve.
+     */
+    private val devToolsInspector: WebViewInspector by lazy { WebViewDevTools.inspector(this) }
+
+    override fun inspector(): EngineInspector = devToolsInspector
+
+    /**
+     * Tells the page-world console patch to forward (or stop forwarding).
+     *
+     * The patch buffers from document start, so arming is what flushes the
+     * pre-open buffer -- and since the flag lives in the per-document page
+     * world, [onPageStarted] re-arms the new document while this stays true.
+     */
+    internal fun armPageConsole(armed: Boolean) {
+        consoleArmed = armed
+        evaluateJs(if (armed) ARM_PAGE_CONSOLE else DISARM_PAGE_CONSOLE, null)
+    }
+
+    /**
+     * Decodes one console entry the page patch stringified, or null for a
+     * payload that is not one -- so a malformed call is dropped rather than
+     * thrown back across the bridge.
+     */
+    private fun decodeConsoleEntry(payload: String): EngineConsoleMessage? =
+        runCatching {
+            val json = JSONObject(payload)
+            EngineConsoleMessage(
+                level = json.optString("level", "log"),
+                text = json.optString("text", ""),
+                source = if (json.isNull("source")) null else json.optString("source").takeIf { it.isNotEmpty() },
+                line = json.optInt("line", 0),
+                timestampMs = json.optLong("ts", System.currentTimeMillis()),
+                fromEngine = false
+            )
+        }.getOrNull()
 
     override fun close() {
         if (closed) return
@@ -687,6 +767,8 @@ internal class WebViewEngineSession(
         deviceShimHandler = null
         vaultHandler = null
         walletHandler = null
+        consoleHandler = null
+        consoleArmed = false
         customView = null
         customViewCallback = null
         listener = null
@@ -722,6 +804,26 @@ internal class WebViewEngineSession(
                 url,
                 request.isForMainFrame
             ) ?: false
+            // Side-effect only, and wrapped so it can never change the return
+            // value below: a report happens whether or not the request was
+            // blocked, because a blocked request still "started". The main-thread
+            // marshalling lives in the inspector, since this runs on a WebView
+            // background thread.
+            runCatching {
+                devToolsInspector.onNetwork(
+                    EngineNetworkSignal(
+                        kind = EngineNetworkSignal.Kind.REQUEST,
+                        url = url,
+                        method = request.method,
+                        status = null,
+                        requestHeaders = request.requestHeaders,
+                        responseHeaders = emptyMap(),
+                        isForMainFrame = request.isForMainFrame,
+                        resourceType = null,
+                        timestampMs = System.currentTimeMillis()
+                    )
+                )
+            }
             return if (blocked) blockedResponse() else null
         }
 
@@ -808,6 +910,10 @@ internal class WebViewEngineSession(
             // authoritative state when the entry lands.
             publishHistory(view)
             listener?.onPageStarted(this@WebViewEngineSession, url)
+            // A new document starts unarmed (the patch's flag lives in the page
+            // world), so the console patch is re-armed here whenever a sink is
+            // registered -- otherwise nothing forwards after a navigation.
+            if (consoleArmed) evaluateJs(ARM_PAGE_CONSOLE, null)
         }
 
         /**
@@ -1017,6 +1123,39 @@ internal class WebViewEngineSession(
         override fun onProgressChanged(view: WebView, newProgress: Int) {
             currentProgress = newProgress
             listener?.onProgress(this@WebViewEngineSession, newProgress)
+        }
+
+        /**
+         * Engine-origin console messages: the ones the page patch cannot see,
+         * such as a CSP violation the engine raised, or a message from a frame
+         * the patch did not reach. They join the page patch's entries on the one
+         * console sink, told apart by [EngineConsoleMessage.fromEngine].
+         *
+         * RETURNS FALSE so the engine's own handling is unchanged -- the default
+         * still writes the message to logcat exactly as it did before this
+         * member existed.
+         */
+        override fun onConsoleMessage(message: ConsoleMessage): Boolean {
+            devToolsInspector.onConsole(
+                EngineConsoleMessage(
+                    // WebView's own levels, not the page patch's vocabulary:
+                    // there is no `assert` here, and TIP is informational.
+                    level = when (message.messageLevel()) {
+                        ConsoleMessage.MessageLevel.TIP -> "info"
+                        ConsoleMessage.MessageLevel.LOG -> "log"
+                        ConsoleMessage.MessageLevel.WARNING -> "warn"
+                        ConsoleMessage.MessageLevel.ERROR -> "error"
+                        ConsoleMessage.MessageLevel.DEBUG -> "debug"
+                        else -> "log"
+                    },
+                    text = message.message(),
+                    source = message.sourceId()?.takeIf { it.isNotEmpty() },
+                    line = message.lineNumber(),
+                    timestampMs = System.currentTimeMillis(),
+                    fromEngine = true
+                )
+            )
+            return false
         }
 
         /**
@@ -1278,7 +1417,7 @@ internal class WebViewEngineSession(
     }
 
     /**
-     * The two page bridges. Each is registered under its own name so that the
+     * The page bridges. Each is registered under its own name so that the
      * page sees exactly the methods it saw before -- see
      * [WebViewPageChannels] for why one object installed twice would not do.
      *
@@ -1309,10 +1448,21 @@ internal class WebViewEngineSession(
     }
 
     /**
+     * `window.RoomConsole`: the DevTools console patch's entry point.
+     *
+     * The parse and the route live HERE rather than in [ConsolePageBridge], so
+     * the bridge stays a pure transport exactly like the two above. This
+     * lambda runs on WebView's JavaBridge thread; the inspector posts to main.
+     */
+    private val consolePageBridge = ConsolePageBridge { payload ->
+        decodeConsoleEntry(payload)?.let { devToolsInspector.onConsole(it) }
+    }
+
+    /**
      * Wiring, deliberately LAST in the file.
      *
      * Kotlin runs property initialisers and `init` blocks in the order they
-     * appear, so this has to sit after the two client properties and the two
+     * appear, so this has to sit after the client properties and the
      * page-bridge properties it installs. Placed at the top -- where it reads
      * better -- it would pass not-yet-initialised values to the WebView, which
      * accepts a null client happily and would then silently deliver no
@@ -1323,7 +1473,7 @@ internal class WebViewEngineSession(
      * `BrowserViewModel.createWebView` (ProfileEngine.kt:195-204,
      * BrowserViewModel.kt:1288-1333), which is the order the app has always
      * built an engine in: configured before anything is attached to it, then
-     * the two clients, then the two native page bridges, then the download
+     * the clients, then the native page bridges, then the download
      * listener.
      */
     init {
@@ -1333,6 +1483,10 @@ internal class WebViewEngineSession(
         webView.webChromeClient = webChromeClient
         webView.addJavascriptInterface(vaultPageBridge, WebViewPageChannels.VAULT_INTERFACE)
         webView.addJavascriptInterface(walletPageBridge, WebViewPageChannels.WALLET_INTERFACE)
+        webView.addJavascriptInterface(consolePageBridge, WebViewPageChannels.CONSOLE_INTERFACE)
+        // After the clients and the console bridge, so the patch's target global
+        // exists by the time any document runs it.
+        installConsolePatch()
         webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, contentLength ->
             listener?.onDownloadRequest(
                 this@WebViewEngineSession,
@@ -1527,6 +1681,14 @@ internal class WebViewEngineSession(
          * holding a renderer while the user browses on.
          */
         const val TRANSPORT_REAP_MS = 10_000L
+
+        /**
+         * The arm/disarm calls for the page-world console patch. Written as a
+         * guard so a document that has not yet run the patch is a no-op rather
+         * than a thrown `ReferenceError`.
+         */
+        const val ARM_PAGE_CONSOLE = "window.__rbConsole && window.__rbConsole.arm();"
+        const val DISARM_PAGE_CONSOLE = "window.__rbConsole && window.__rbConsole.disarm();"
     }
 }
 
