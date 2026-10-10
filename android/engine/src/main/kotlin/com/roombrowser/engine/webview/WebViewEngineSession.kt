@@ -487,10 +487,12 @@ internal class WebViewEngineSession(
      */
     private fun installConsolePatch() {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        runCatching { consoleHandler?.remove() }
+        consoleHandler = null
         runCatching {
             consoleHandler = WebViewCompat.addDocumentStartJavaScript(
                 webView,
-                WebViewDevTools.CONSOLE_PATCH,
+                WebViewDevTools.consolePatch(consoleArmed),
                 setOf("*")
             )
         }
@@ -721,12 +723,18 @@ internal class WebViewEngineSession(
     /**
      * Tells the page-world console patch to forward (or stop forwarding).
      *
-     * The patch buffers from document start, so arming is what flushes the
-     * pre-open buffer -- and since the flag lives in the per-document page
-     * world, [onPageStarted] re-arms the new document while this stays true.
+     * While disarmed the patch buffers in the page, so crossing the bridge is
+     * paid for only when someone is watching; arming is also what flushes that
+     * buffer, which is why a page that logged before the panel opened still shows
+     * those lines once it does.
      */
     internal fun armPageConsole(armed: Boolean) {
         consoleArmed = armed
+        // Two documents have to be told, because only one of them is reachable by
+        // script: the one already running answers to the patch's own switch, and
+        // every document after it is served by reinstalling the patch with the
+        // state baked in. The page-world flag alone did not survive a navigation.
+        installConsolePatch()
         evaluateJs(if (armed) ARM_PAGE_CONSOLE else DISARM_PAGE_CONSOLE, null)
     }
 
@@ -910,10 +918,6 @@ internal class WebViewEngineSession(
             // authoritative state when the entry lands.
             publishHistory(view)
             listener?.onPageStarted(this@WebViewEngineSession, url)
-            // A new document starts unarmed (the patch's flag lives in the page
-            // world), so the console patch is re-armed here whenever a sink is
-            // registered -- otherwise nothing forwards after a navigation.
-            if (consoleArmed) evaluateJs(ARM_PAGE_CONSOLE, null)
         }
 
         /**
@@ -1126,10 +1130,13 @@ internal class WebViewEngineSession(
         }
 
         /**
-         * Engine-origin console messages: the ones the page patch cannot see,
-         * such as a CSP violation the engine raised, or a message from a frame
-         * the patch did not reach. They join the page patch's entries on the one
-         * console sink, told apart by [EngineConsoleMessage.fromEngine].
+         * Every console message the engine reports, marked engine-origin.
+         *
+         * This callback is NOT the page patch's complement: WebView reports the
+         * page's own `console.log` calls here as well, so one line reaches the
+         * console sink twice. The inspector is what tells the two apart -- it
+         * drops the copy of a line the patch has already reported and keeps the
+         * ones the patch never saw, such as a CSP violation the engine raised.
          *
          * RETURNS FALSE so the engine's own handling is unchanged -- the default
          * still writes the message to logcat exactly as it did before this

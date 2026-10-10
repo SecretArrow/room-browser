@@ -2,6 +2,7 @@ package com.roombrowser.engine.webview
 
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.engine.devtools.DevToolsCapability
+import com.roombrowser.engine.devtools.EngineConsoleMessage
 import org.junit.Test
 
 /**
@@ -44,6 +45,28 @@ class WebViewDevToolsTest {
     }
 
     @Test
+    fun the_page_console_capture_is_withdrawn_when_the_device_cannot_install_the_patch() {
+        // The patch is installed through addDocumentStartJavaScript, so a WebView
+        // without it has no page console to show. Declaring the capability anyway
+        // would put a panel on screen whose feed can never fill.
+        val degraded = WebViewDevTools.capabilities(documentStartScripts = false)
+
+        assertThat(degraded.capabilities).containsExactly(
+            DevToolsCapability.PAGE_SCRIPTING,
+            DevToolsCapability.ENGINE_CONSOLE,
+            DevToolsCapability.NETWORK_REQUEST_LINE
+        )
+        // And the absence is explained rather than silent, because on THIS
+        // device it is a real limit the user can do nothing about.
+        assertThat(degraded.noteFor(DevToolsCapability.CONSOLE_CAPTURE)).isNotNull()
+
+        // The supported branch is the build's own set, unchanged.
+        val supported = WebViewDevTools.capabilities(documentStartScripts = true)
+        assertThat(supported.capabilities).isEqualTo(WebViewDevTools.CAPABILITIES.capabilities)
+        assertThat(supported.noteFor(DevToolsCapability.CONSOLE_CAPTURE)).isNull()
+    }
+
+    @Test
     fun the_console_patch_carries_the_markers_both_sides_speak() {
         val patch = WebViewDevTools.CONSOLE_PATCH
         assertThat(patch).contains("__rbConsole")
@@ -64,9 +87,50 @@ class WebViewDevToolsTest {
     }
 
     @Test
+    fun the_installed_patch_carries_its_arm_state_in_the_script() {
+        // A page-world flag dies with its document, so a patch installed armed
+        // the old way started disarmed on the next navigation and the open panel
+        // went quiet. The state therefore has to be in the installed text.
+        assertThat(WebViewDevTools.consolePatch(armed = true)).contains("var armed = true;")
+        assertThat(WebViewDevTools.consolePatch(armed = false)).contains("var armed = false;")
+        // Nothing is left for the page or the session to substitute at runtime.
+        assertThat(WebViewDevTools.consolePatch(armed = true)).doesNotContain("__RB_CONSOLE_ARMED__")
+    }
+
+    @Test
     fun the_console_patch_keeps_calling_the_original_console_method() {
         // The forward is best-effort; the page's own console call is not. A
         // wrapper that swallowed it would silently break the page's logging.
         assertThat(WebViewDevTools.CONSOLE_PATCH).contains("original.apply(console")
     }
+
+    @Test
+    fun the_engine_backlog_keeps_the_newest_and_drains_exactly_once() {
+        // A page logs at document start and the panel opens much later, so the
+        // copies that arrive in between are the only record of what the page
+        // said. Keeping them is what stops the feed opening empty; dropping the
+        // oldest is what stops an uninspected page growing a buffer forever.
+        val backlog = EngineConsoleBacklog(capacity = 2)
+        backlog.add(engineLine("one"))
+        backlog.add(engineLine("two"))
+        backlog.add(engineLine("three"))
+
+        assertThat(backlog.drain().map { it.text }).containsExactly("two", "three").inOrder()
+
+        // A drain empties, so a replayed line is never delivered twice.
+        assertThat(backlog.drain()).isEmpty()
+
+        backlog.add(engineLine("four"))
+        backlog.clear()
+        assertThat(backlog.drain()).isEmpty()
+    }
+
+    private fun engineLine(text: String) = EngineConsoleMessage(
+        level = "log",
+        text = text,
+        source = null,
+        line = null,
+        timestampMs = 0L,
+        fromEngine = true
+    )
 }
