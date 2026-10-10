@@ -199,4 +199,37 @@ class DeveloperToolsEntriesTest {
     fun an_empty_feed_still_offers_the_all_chip() {
         assertThat(kindOptions(emptyList())).containsExactly(KIND_ALL)
     }
+
+    @Test
+    fun the_document_a_request_belongs_to_is_kept_and_redacted_like_any_url() {
+        val entry = EngineNetworkSignal(
+            kind = EngineNetworkSignal.Kind.REQUEST,
+            url = "https://cdn.example.net/a.js",
+            documentUrl = "https://example.com/page?token=abc"
+        ).toEntry()
+        // A document URL carries secrets just as a request URL does.
+        assertThat(entry.documentUrl).isEqualTo("https://example.com/page?token=$REDACTED")
+    }
+
+    @Test
+    fun an_engine_that_reports_no_document_leaves_it_unset() {
+        val entry = EngineNetworkSignal(
+            kind = EngineNetworkSignal.Kind.REQUEST,
+            url = "https://example.com/a.js"
+        ).toEntry()
+        assertThat(entry.documentUrl).isNull()
+    }
+
+    @Test
+    fun a_host_is_read_from_a_url_with_or_without_a_path() {
+        assertThat(urlHost("https://example.com/a/b?c=1")).isEqualTo("example.com")
+        assertThat(urlHost("https://example.com")).isEqualTo("example.com")
+        assertThat(urlHost("https://$REDACTED@example.com:8443/a")).isEqualTo("example.com:8443")
+    }
+
+    @Test
+    fun a_url_with_no_host_yields_nothing_rather_than_a_fragment() {
+        assertThat(urlHost("about:blank")).isNull()
+        assertThat(urlHost("")).isNull()
+    }
 }

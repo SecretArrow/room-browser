@@ -98,6 +98,7 @@ internal fun networkText(entries: List<NetworkEntry>): String {
             entry.url
         ).joinToString(" ")
         lines += if (entry.sizesHidden) "$head  [sizes hidden: no Timing-Allow-Origin]" else head
+        entry.documentUrl?.let { lines += "    in $it" }
         entry.requestHeaders.forEach { lines += "    > ${it.name}: ${it.value}" }
         entry.responseHeaders.forEach { lines += "    < ${it.name}: ${it.value}" }
     }

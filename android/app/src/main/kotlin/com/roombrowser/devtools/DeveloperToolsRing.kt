@@ -11,7 +11,15 @@ package com.roombrowser.devtools
  * Not thread-safe. Both the sink that writes and the panel that reads run on
  * the main thread.
  */
-internal class DeveloperToolsRing<T>(val capacity: Int) {
+/**
+ * A bounded, drop-oldest buffer.
+ *
+ * Public rather than internal only because [InspectorSession]'s feeds are
+ * public members: a public property may not expose an internal type, and the
+ * feeds belong on the session where the panel and the engine sink can both
+ * reach them.
+ */
+class DeveloperToolsRing<T>(val capacity: Int) {
 
     init {
         require(capacity > 0) { "a ring has to hold something" }

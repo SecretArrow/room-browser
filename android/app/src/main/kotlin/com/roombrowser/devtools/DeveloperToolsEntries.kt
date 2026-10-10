@@ -26,6 +26,10 @@ data class ConsoleEntry(
  * reported through `performance`, so a row read from either source renders the
  * same way. [sizesHidden] is the page-probe's verdict that a cross-origin entry
  * withheld its sizes — rendered as hidden, never as a zero.
+ *
+ * [documentUrl] is present only for an engine that reports it, which is what
+ * makes a browser-wide capture readable: a row says which document it belongs
+ * to instead of being presented as this tab's.
  */
 @Serializable
 data class NetworkEntry(
@@ -41,7 +45,8 @@ data class NetworkEntry(
     val durationMs: Double? = null,
     val transferSize: Double? = null,
     val sizesHidden: Boolean = false,
-    val note: String? = null
+    val note: String? = null,
+    val documentUrl: String? = null
 )
 
 /** One `PerformanceResourceTiming` as the page probe reports it. */
@@ -151,6 +156,20 @@ internal fun redactUrl(url: String): String {
 }
 
 /**
+ * Just the host of a URL, for a row that has to say which document it came
+ * from without spending the whole line on it. Null when there is no host to
+ * read, so the caller renders nothing rather than a fragment.
+ */
+internal fun urlHost(url: String): String? {
+    val start = url.indexOf("://").let { if (it < 0) return null else it + 3 }
+    val rest = url.substring(start)
+    val end = rest.indexOfAny(charArrayOf('/', '?', '#'))
+    val authority = if (end < 0) rest else rest.substring(0, end)
+    val host = authority.substringAfterLast('@')
+    return host.takeIf { it.isNotEmpty() }
+}
+
+/**
  * Whether a resource entry's sizes and status have to be rendered as hidden.
  *
  * Without `Timing-Allow-Origin` a cross-origin entry reports zero sizes, and a
@@ -189,7 +208,8 @@ internal fun EngineNetworkSignal.toEntry(): NetworkEntry =
         responseHeaders = redactHeaders(responseHeaders),
         isForMainFrame = isForMainFrame,
         resourceType = resourceType,
-        timestampMs = timestampMs
+        timestampMs = timestampMs,
+        documentUrl = documentUrl?.let(::redactUrl)
     )
 
 internal fun ResourceTiming.toEntry(): NetworkEntry = NetworkEntry(

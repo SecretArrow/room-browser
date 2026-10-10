@@ -118,7 +118,13 @@ internal fun NetworkPanel(session: InspectorSession) {
     Text(
         "Request lines come from the engine, which sees them even when they fail. " +
             "Sizes and durations come from the page's own timing data, so they cover only " +
-            "what the page loaded and only after you ask for them.",
+            "what the page loaded and only after you ask for them." +
+            if (entries.any { it.documentUrl != null }) {
+                " Each row here names the document it belongs to, because this engine's " +
+                    "capture is not limited to the tab in front."
+            } else {
+                ""
+            },
         style = MaterialTheme.typography.labelSmall,
         color = extras.textSecondary,
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
@@ -226,7 +232,8 @@ private fun NetworkRow(entry: NetworkEntry) {
             size,
             entry.durationMs?.let { "${compactNumber(kotlin.math.round(it))} ms" },
             entry.note,
-            entry.isForMainFrame?.let { if (it) "main frame" else null }
+            entry.isForMainFrame?.let { if (it) "main frame" else null },
+            entry.documentUrl?.let(::urlHost)?.let { "in $it" }
         )
         if (facts.isNotEmpty()) {
             Text(
