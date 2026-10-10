@@ -438,6 +438,8 @@ internal class WebViewEngineHost : EngineHost {
      * Deliberately not gated on [bound]: this runs on the process-death path,
      * where a refusal would be the worst possible answer.
      */
+    override fun devToolsCapabilities(context: Context) = WebViewDevTools.CAPABILITIES
+
     override fun flush(context: Context) {
         runCatching { CookieManager.getInstance().flush() }
     }

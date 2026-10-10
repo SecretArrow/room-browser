@@ -38,6 +38,7 @@ import com.roombrowser.engine.EngineSessionListener
 import com.roombrowser.engine.EngineState
 import com.roombrowser.engine.HttpAuthResponder
 import com.roombrowser.engine.NavigationDecision
+import com.roombrowser.engine.devtools.EngineInspector
 import com.roombrowser.engine.PageErrorKind
 import com.roombrowser.engine.PermissionResponder
 import java.io.ByteArrayInputStream
@@ -664,6 +665,8 @@ internal class WebViewEngineSession(
             runCatching { WebViewDatabase.getInstance(webView.context).clearFormData() }
         }
     }
+
+    override fun inspector(): EngineInspector = WebViewDevTools.inspector()
 
     override fun close() {
         if (closed) return
