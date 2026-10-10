@@ -249,7 +249,19 @@ internal class WebViewInspector(
      *
      * Main-thread only, like [pageConsoleKeys].
      */
-    private val engineBacklog = EngineConsoleBacklog(ENGINE_BACKLOG_MAX)
+    private val engineBacklog = EngineSignalBacklog<EngineConsoleMessage>(BACKLOG_MAX)
+
+    /**
+     * Requests that arrived with nothing listening.
+     *
+     * `shouldInterceptRequest` reports the document itself and everything it
+     * loads, so by the time a person opens the Network panel the page is
+     * already over: without this, the panel opened on an empty feed and the one
+     * request a reader most wants to see -- the document they are looking at --
+     * was the one that could never appear. Main-thread only, like the console
+     * backlog.
+     */
+    private val networkBacklog = EngineSignalBacklog<EngineNetworkSignal>(BACKLOG_MAX)
 
     override val capabilities: DeveloperToolsCapabilities =
         WebViewDevTools.capabilities(
@@ -275,7 +287,12 @@ internal class WebViewInspector(
     }
 
     fun onNetwork(signal: EngineNetworkSignal) {
-        mainHandler.post { networkSink?.invoke(signal) }
+        // Posted for the same reason as [onConsole]: the sink must run on the
+        // main thread and the backlog must stay main-thread-only.
+        mainHandler.post {
+            val sink = networkSink ?: return@post networkBacklog.add(signal)
+            sink(signal)
+        }
     }
 
     /**
@@ -313,7 +330,12 @@ internal class WebViewInspector(
     }
 
     override fun startNetworkCapture(sink: (EngineNetworkSignal) -> Unit) {
-        networkSink = sink
+        // Posted, like [startConsoleCapture], so the replay cannot interleave
+        // with a delivery already queued and the backlog stays main-thread-only.
+        mainHandler.post {
+            networkSink = sink
+            networkBacklog.drain().forEach(sink)
+        }
     }
 
     override fun stopNetworkCapture() {
@@ -324,6 +346,7 @@ internal class WebViewInspector(
         consoleSink = null
         networkSink = null
         engineBacklog.clear()
+        networkBacklog.clear()
         session.armPageConsole(false)
     }
 
@@ -345,28 +368,28 @@ internal class WebViewInspector(
         /** Texts remembered for [ECHO_WINDOW_MS]. A page logging faster than this loses only the engine's copy of the oldest lines. */
         const val PAGE_CONSOLE_KEYS_MAX = 512
 
-        /** Engine copies kept while no panel is listening. Bounded, so an uninspected page cannot grow one forever. */
-        const val ENGINE_BACKLOG_MAX = 512
+        /** Signals kept while no panel is listening. Bounded, so an uninspected page cannot grow a buffer forever. */
+        const val BACKLOG_MAX = 512
     }
 }
 
 /**
- * The engine's console copies, held until a panel asks for them.
+ * Signals the engine produced with nothing listening, held until a panel asks.
  *
  * Separate from the inspector, and free of Android, so the drop-oldest and
  * drain behaviour is pinned by a JVM test rather than by a device.
  */
-internal class EngineConsoleBacklog(private val capacity: Int) {
+internal class EngineSignalBacklog<T>(private val capacity: Int) {
 
-    private val entries = ArrayDeque<EngineConsoleMessage>()
+    private val entries = ArrayDeque<T>()
 
-    fun add(message: EngineConsoleMessage) {
-        entries.addLast(message)
+    fun add(entry: T) {
+        entries.addLast(entry)
         while (entries.size > capacity) entries.removeFirst()
     }
 
     /** Everything held, oldest first. Empties the backlog. */
-    fun drain(): List<EngineConsoleMessage> = entries.toList().also { entries.clear() }
+    fun drain(): List<T> = entries.toList().also { entries.clear() }
 
     fun clear() = entries.clear()
 }

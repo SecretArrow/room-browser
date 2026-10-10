@@ -3,6 +3,7 @@ package com.roombrowser.engine.webview
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.engine.devtools.DevToolsCapability
 import com.roombrowser.engine.devtools.EngineConsoleMessage
+import com.roombrowser.engine.devtools.EngineNetworkSignal
 import org.junit.Test
 
 /**
@@ -110,7 +111,7 @@ class WebViewDevToolsTest {
         // copies that arrive in between are the only record of what the page
         // said. Keeping them is what stops the feed opening empty; dropping the
         // oldest is what stops an uninspected page growing a buffer forever.
-        val backlog = EngineConsoleBacklog(capacity = 2)
+        val backlog = EngineSignalBacklog<EngineConsoleMessage>(capacity = 2)
         backlog.add(engineLine("one"))
         backlog.add(engineLine("two"))
         backlog.add(engineLine("three"))
@@ -124,6 +125,30 @@ class WebViewDevToolsTest {
         backlog.clear()
         assertThat(backlog.drain()).isEmpty()
     }
+
+    @Test
+    fun the_request_backlog_holds_the_document_a_page_was_opened_on() {
+        // The document itself is reported before anything can be listening, so
+        // without a backlog of its own the Network panel opened on a page whose
+        // own address could never appear in it.
+        val backlog = EngineSignalBacklog<EngineNetworkSignal>(capacity = 1)
+        backlog.add(signal("https://example.com/"))
+        backlog.add(signal("https://example.com/asset.js"))
+
+        assertThat(backlog.drain().map { it.url }).containsExactly("https://example.com/asset.js")
+    }
+
+    private fun signal(url: String) = EngineNetworkSignal(
+        kind = EngineNetworkSignal.Kind.REQUEST,
+        url = url,
+        method = "GET",
+        status = null,
+        requestHeaders = emptyMap(),
+        responseHeaders = emptyMap(),
+        isForMainFrame = false,
+        resourceType = null,
+        timestampMs = 0L
+    )
 
     private fun engineLine(text: String) = EngineConsoleMessage(
         level = "log",
