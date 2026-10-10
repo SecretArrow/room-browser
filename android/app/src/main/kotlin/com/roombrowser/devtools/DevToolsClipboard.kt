@@ -131,7 +131,7 @@ internal fun storageRowValue(overview: PageOverview): String? {
  * them would send the reader to the wrong place.
  */
 internal fun consoleText(entries: List<ConsoleEntry>): String =
-    entries.joinToString("\n", ::consoleLine)
+    entries.joinToString("\n", transform = ::consoleLine)
 
 /** One console entry, written the way the whole-feed block writes it. */
 internal fun consoleLine(entry: ConsoleEntry): String {
@@ -144,7 +144,7 @@ internal fun consoleLine(entry: ConsoleEntry): String {
 
 /** The network feed as plain text, with the header values redaction left alone. */
 internal fun networkText(entries: List<NetworkEntry>): String =
-    entries.joinToString("\n", ::networkRowText)
+    entries.joinToString("\n", transform = ::networkRowText)
 
 /**
  * One network row, written the way the whole-feed block writes it.
