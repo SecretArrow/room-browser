@@ -1,5 +1,6 @@
 package com.roombrowser.engine.webview
 
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -9,6 +10,7 @@ import com.roombrowser.engine.devtools.DevToolsCapability
 import com.roombrowser.engine.devtools.EngineConsoleMessage
 import com.roombrowser.engine.devtools.EngineInspector
 import com.roombrowser.engine.devtools.EngineNetworkSignal
+import com.roombrowser.engine.devtools.EngineSecurityInfo
 
 /**
  * What the WebView edition can serve to Developer Tools, and the handle that
@@ -37,15 +39,19 @@ internal object WebViewDevTools {
             DevToolsCapability.PAGE_SCRIPTING,
             DevToolsCapability.CONSOLE_CAPTURE,
             DevToolsCapability.ENGINE_CONSOLE,
-            DevToolsCapability.NETWORK_REQUEST_LINE
+            DevToolsCapability.NETWORK_REQUEST_LINE,
+            // The scheme and host of the committed document are readable, which
+            // is the whole of what this edition can say about the connection.
+            DevToolsCapability.SECURITY_INFO
         ),
-        // The one absence that is a property of the ENGINE rather than of work
-        // not yet done. A request is reported before it is sent and the reply
-        // is never handed back, so the only way to a status would be to
-        // intercept the body -- which this app deliberately does not do.
         notes = mapOf(
             DevToolsCapability.NETWORK_RESPONSE_HEADERS to
-                "WebView reports a request to shouldInterceptRequest before it is sent and never hands back the response, so status and response headers are not observable without intercepting the body — which this app deliberately does not do because it would break streaming."
+                "WebView reports a request to shouldInterceptRequest before it is sent and never hands back the response, so status and response headers are not observable without intercepting the body — which this app deliberately does not do because it would break streaming.",
+            // SECURITY_CERTIFICATE is absent, not unimplemented: no WebView API
+            // exposes a live connection's certificate, so no amount of work here
+            // would produce one.
+            DevToolsCapability.SECURITY_CERTIFICATE to
+                "No WebView API exposes the certificate, cipher or TLS version of a live connection, so this edition can report that a connection is secure but not what secured it."
         )
     )
 
@@ -340,6 +346,28 @@ internal class WebViewInspector(
 
     override fun stopNetworkCapture() {
         networkSink = null
+    }
+
+    /**
+     * The scheme and host of the committed document, and nothing more.
+     *
+     * THE SENTENCE IN [EngineSecurityInfo.note] IS THE POINT. This edition
+     * genuinely cannot see the certificate, cipher or TLS version of a live
+     * connection, so a panel given these three fields and no explanation would
+     * read as a connection with nothing securing it. The note is what makes the
+     * gap a stated limitation rather than a silent blank.
+     *
+     * Read from [WebViewEngineSession.url], which is readable from any thread,
+     * so this does not hop to the UI thread the way the capture sinks do.
+     */
+    override suspend fun securityInfo(): EngineSecurityInfo? {
+        val url = session.url ?: return null
+        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
+        return EngineSecurityInfo(
+            secure = uri.scheme?.equals("https", ignoreCase = true) == true,
+            host = uri.host,
+            note = "WebView exposes no API for a live connection's certificate, cipher or TLS version."
+        )
     }
 
     override fun close() {

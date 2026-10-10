@@ -19,6 +19,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.roombrowser.engine.devtools.DevToolsCapability
 import com.roombrowser.engine.devtools.EngineSecurityInfo
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomCopyButton
@@ -28,11 +29,12 @@ import com.roombrowser.ui.common.SectionHeader
  * The Security panel: the connection, and what the page can say about itself.
  *
  * THE TWO HALVES COME FROM DIFFERENT PLACES AND ARE KEPT APART. The engine owns
- * the transport state -- and on WebView that includes the plain fact that no
- * certificate can be read, which is why the section says so rather than showing
- * nothing. The page owns what it can see from inside, which is a different and
- * sometimes contradictory view: a page served over https whose form posts to
- * http:// is the case this panel exists to surface.
+ * the transport state -- and on an edition that cannot read a certificate the
+ * section says so rather than showing nothing, because the reason differs by
+ * engine and only the capability set knows which engine this is. The page owns
+ * what it can see from inside, which is a different and sometimes contradictory
+ * view: a page served over https whose form posts to http:// is the case this
+ * panel exists to surface.
  *
  * One read each, on compose and on demand. Nothing polls.
  */
@@ -40,6 +42,10 @@ import com.roombrowser.ui.common.SectionHeader
 internal fun SecurityPanel(scope: DevToolsPanelScope) {
     val extras = LocalRoomExtras.current
     val session = scope.session
+    // Asked of the capability set rather than of the engine's name: "this
+    // edition cannot read a certificate" is a claim about what was declared, and
+    // reading it from anywhere else would let the two drift.
+    val certificatesReadable = scope.capabilities.has(DevToolsCapability.SECURITY_CERTIFICATE)
 
     var info by remember(session) { mutableStateOf<EngineSecurityInfo?>(null) }
     var probe by remember(session) { mutableStateOf<SecurityProbe?>(null) }
@@ -62,7 +68,7 @@ internal fun SecurityPanel(scope: DevToolsPanelScope) {
 
     SectionHeader("Security") {
         RoomCopyButton(
-            DeveloperToolsSecurityText.securityReport(info, probe, scope.engineName),
+            DeveloperToolsSecurityText.securityReport(info, probe, scope.engineName, certificatesReadable),
             "Security",
             "Copy the whole Security report"
         )
@@ -83,7 +89,7 @@ internal fun SecurityPanel(scope: DevToolsPanelScope) {
     }
 
     Block(DeveloperToolsSecurityText.transportText(info), "Transport")
-    Block(DeveloperToolsSecurityText.certificateText(info), "Certificate")
+    Block(DeveloperToolsSecurityText.certificateText(info, certificatesReadable), "Certificate")
     Block(DeveloperToolsSecurityText.pageObservableText(probe), "What the page can see")
 }
 

@@ -8,15 +8,19 @@ import org.junit.Test
  * WHAT THESE PIN. Every test here is a place the Security panel could state
  * something FALSE and still look right.
  *
- * The one that matters most is the certificate. WebView reports a secure
- * connection and cannot report the certificate it used, so "secure" and "here is
- * the certificate" have to be independent facts in the output. A panel that
- * printed an empty certificate block for a secure WebView connection would be
- * read as "this page has no certificate", which is the opposite of what is true.
+ * The one that matters most is the certificate, because a missing one has two
+ * opposite causes and both look identical on screen. An edition with no
+ * certificate API (WebView) reports a secure connection and can never print the
+ * certificate it used; an edition that has the API (GeckoView) prints one
+ * whenever the connection had one and finds none when it did not. Printing the
+ * same sentence for both would either blame GeckoView for an http:// page or let
+ * WebView look like a page that simply had no certificate. So every certificate
+ * test below comes in a pair, and the pairs assert different words.
  */
 class DevToolsSecurityTextTest {
 
-    private val webViewInfo = EngineSecurityInfo(
+    /** A secure connection whose certificate this edition has no API to read -- the WebView shape. */
+    private val secureWithoutCertificate = EngineSecurityInfo(
         secure = true,
         host = "example.com",
         protocolVersion = null,
@@ -25,11 +29,19 @@ class DevToolsSecurityTextTest {
         mixedContent = null
     )
 
-    private val geckoInfo = EngineSecurityInfo(
+    /**
+     * A connection whose certificate the engine DID read -- the GeckoView shape.
+     *
+     * Note what is absent and stays absent: GeckoView's SecurityInformation
+     * carries no TLS version and no cipher suite, so the honest fixture has
+     * neither. Filling them in here would let the formatter claim a field the
+     * engine never sends.
+     */
+    private val secureWithCertificate = EngineSecurityInfo(
         secure = true,
         host = "example.com",
-        protocolVersion = "TLSv1.3",
-        cipherSuite = "TLS_AES_128_GCM_SHA256",
+        protocolVersion = null,
+        cipherSuite = null,
         certificate = EngineSecurityInfo.Certificate(
             subject = "CN=example.com",
             issuer = "C=US, O=Let's Encrypt, CN=R3",
@@ -42,8 +54,11 @@ class DevToolsSecurityTextTest {
 
     @Test
     fun a_connection_whose_certificate_cannot_be_read_says_so_and_prints_no_fields() {
-        val text = DeveloperToolsSecurityText.certificateText(webViewInfo)
-        assertThat(text).contains("cannot read the certificate")
+        val text = DeveloperToolsSecurityText.certificateText(
+            secureWithoutCertificate,
+            certificatesReadable = false
+        )
+        assertThat(text).contains("this edition has no way to read")
         // A blank block would read as "this page has no certificate".
         assertThat(text).doesNotContain("subject:")
         assertThat(text).doesNotContain("issuer:")
@@ -54,38 +69,81 @@ class DevToolsSecurityTextTest {
     fun being_secure_never_produces_a_certificate_section_that_claims_one() {
         // The negative control for the test above: the sentence must be about
         // this EDITION, not about the page.
-        val text = DeveloperToolsSecurityText.certificateText(webViewInfo)
+        val text = DeveloperToolsSecurityText.certificateText(
+            secureWithoutCertificate,
+            certificatesReadable = false
+        )
         assertThat(text).doesNotContain("no certificate")
         assertThat(text).doesNotContain("has no certificate")
         assertThat(text).contains("this edition")
     }
 
     @Test
+    fun an_engine_that_can_read_certificates_and_found_none_does_not_blame_itself() {
+        // The pair to the two tests above, and the reason `certificatesReadable`
+        // is a parameter: an http:// page on an edition that CAN read a
+        // certificate is not a limit of the edition, and saying so would be a
+        // lie the reader has no way to catch.
+        val text = DeveloperToolsSecurityText.certificateText(
+            secureWithoutCertificate.copy(secure = false),
+            certificatesReadable = true
+        )
+        assertThat(text).contains("the engine reported no certificate for this connection")
+        assertThat(text).doesNotContain("this edition")
+    }
+
+    @Test
+    fun an_engine_that_reported_nothing_at_all_is_its_own_third_answer() {
+        val text = DeveloperToolsSecurityText.certificateText(null, certificatesReadable = true)
+        assertThat(text).contains("did not report the connection's state")
+        assertThat(text).doesNotContain("this edition")
+        assertThat(text).doesNotContain("presented none")
+    }
+
+    @Test
     fun a_reported_certificate_is_printed_field_by_field() {
-        val text = DeveloperToolsSecurityText.certificateText(geckoInfo)
+        val text = DeveloperToolsSecurityText.certificateText(
+            secureWithCertificate,
+            certificatesReadable = true
+        )
         assertThat(text).contains("subject: CN=example.com")
         assertThat(text).contains("issuer: C=US, O=Let's Encrypt, CN=R3")
         assertThat(text).contains("fingerprint: SHA-256 AA:BB:CC")
     }
 
     @Test
+    fun a_certificate_beats_the_edition_flag_when_both_are_present() {
+        // A certificate is never suppressed by a capability flag. If an engine
+        // hands one over, it is printed -- the flag explains an ABSENCE, and
+        // letting it hide a present fact would be the worst of both.
+        val text = DeveloperToolsSecurityText.certificateText(
+            secureWithCertificate,
+            certificatesReadable = false
+        )
+        assertThat(text).contains("subject: CN=example.com")
+    }
+
+    @Test
     fun a_validity_window_is_printed_as_iso_8601_utc() {
-        val text = DeveloperToolsSecurityText.certificateText(geckoInfo)
+        val text = DeveloperToolsSecurityText.certificateText(
+            secureWithCertificate,
+            certificatesReadable = true
+        )
         assertThat(text).contains("valid: 2026-01-01T00:00:00Z to 2027-01-01T00:00:00Z")
     }
 
     @Test
     fun a_certificate_with_no_reported_validity_says_so_rather_than_printing_a_blank_window() {
-        val info = geckoInfo.copy(
+        val info = secureWithCertificate.copy(
             certificate = EngineSecurityInfo.Certificate(subject = "CN=a.example")
         )
-        val text = DeveloperToolsSecurityText.certificateText(info)
+        val text = DeveloperToolsSecurityText.certificateText(info, certificatesReadable = true)
         assertThat(text).contains("valid: (not reported) to (not reported)")
     }
 
     @Test
     fun the_transport_section_reports_an_unread_protocol_version_as_unread() {
-        val text = DeveloperToolsSecurityText.transportText(webViewInfo)
+        val text = DeveloperToolsSecurityText.transportText(secureWithoutCertificate)
         assertThat(text).contains("protocol version: (not reported)")
         assertThat(text).contains("cipher suite: (not reported)")
         assertThat(text).contains("secure: yes")
@@ -93,13 +151,15 @@ class DevToolsSecurityTextTest {
 
     @Test
     fun the_engines_own_note_is_carried_into_the_report() {
-        val text = DeveloperToolsSecurityText.transportText(webViewInfo.copy(note = "Partial view: no certificate API"))
+        val text = DeveloperToolsSecurityText.transportText(
+            secureWithoutCertificate.copy(note = "Partial view: no certificate API")
+        )
         assertThat(text).contains("note: Partial view: no certificate API")
     }
 
     @Test
     fun an_engine_that_reported_nothing_reads_as_unreadable_not_as_insecure() {
-        val whole = DeveloperToolsSecurityText.securityReport(null, null, "Android WebView")
+        val whole = DeveloperToolsSecurityText.securityReport(null, null, "Android WebView", false)
         assertThat(whole).contains("could not report")
         assertThat(DeveloperToolsSecurityText.transportText(null)).isEqualTo("Transport -- (not reported)")
         assertThat(whole).doesNotContain("secure: no")
@@ -186,11 +246,31 @@ class DevToolsSecurityTextTest {
 
     @Test
     fun the_whole_report_header_names_the_engine_that_answered() {
-        val whole = DeveloperToolsSecurityText.securityReport(geckoInfo, null, "GeckoView")
+        val whole = DeveloperToolsSecurityText.securityReport(
+            secureWithCertificate,
+            null,
+            "GeckoView",
+            true
+        )
         assertThat(whole).startsWith("Security -- engine: GeckoView")
         assertThat(whole).contains("Transport")
         assertThat(whole).contains("Certificate")
         assertThat(whole).contains("What the page can see -- (the page did not answer)")
+    }
+
+    @Test
+    fun the_copied_report_carries_the_same_certificate_verdict_the_section_shows() {
+        // A copy control that re-derives the sentence could disagree with the
+        // screen; both go through the same call, and this is what says so.
+        val whole = DeveloperToolsSecurityText.securityReport(
+            secureWithoutCertificate,
+            null,
+            "Android WebView",
+            false
+        )
+        assertThat(whole).contains(
+            DeveloperToolsSecurityText.certificateText(secureWithoutCertificate, false)
+        )
     }
 
     @Test

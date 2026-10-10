@@ -7,11 +7,13 @@ import java.time.Instant
  * The text every Security-panel copy control writes.
  *
  * THE ONE RULE THIS PANEL EXISTS TO KEEP: two different engines must not be made
- * to look the same. WebView cannot read the certificate of a live connection --
- * no WebView API exposes it -- so this edition says so in the certificate
- * section rather than leaving it blank, and it says "unavailable on this edition"
- * rather than inventing a TLS version. A blank certificate block would read as
- * "this page has no certificate", which is the opposite of the truth.
+ * to look the same. A missing certificate has two entirely different causes and
+ * the panel must not blur them -- an engine with no certificate API (WebView)
+ * can never fill the section in, while an engine that has one (GeckoView) simply
+ * found none on a connection that is not secured. So [certificatesReadable] is
+ * passed in by the panel rather than guessed here, and the two cases print
+ * different sentences. A blank certificate block would read as "this page has no
+ * certificate", which on WebView is the opposite of the truth.
  *
  * The engine's own state and the page's own answers are printed as separate
  * sections because they can disagree, and when they do that disagreement is the
@@ -21,7 +23,12 @@ import java.time.Instant
 internal object DeveloperToolsSecurityText {
 
     /** The whole panel, as one paste. */
-    fun securityReport(info: EngineSecurityInfo?, probe: SecurityProbe?, engineName: String): String {
+    fun securityReport(
+        info: EngineSecurityInfo?,
+        probe: SecurityProbe?,
+        engineName: String,
+        certificatesReadable: Boolean
+    ): String {
         val header = if (info == null) {
             "Security -- $engineName could not report the connection's state."
         } else {
@@ -32,7 +39,7 @@ internal object DeveloperToolsSecurityText {
             "",
             transportText(info),
             "",
-            certificateText(info),
+            certificateText(info, certificatesReadable),
             "",
             pageObservableText(probe)
         ).joinToString("\n").trimEnd()
@@ -54,17 +61,33 @@ internal object DeveloperToolsSecurityText {
     }
 
     /**
-     * The connection's certificate, or the sentence saying this edition has no
-     * way to read one.
+     * The connection's certificate, or the sentence saying why there is none.
+     *
+     * THREE CASES, THREE SENTENCES, and only the first is a fault. An edition
+     * with no certificate API (WebView) can never print a block, and saying so is
+     * the only honest answer -- silence would read as a page without a
+     * certificate. An edition that CAN read one and reported none (GeckoView on
+     * an http:// document, or on a failed handshake) did its job; the honest
+     * answer is that the connection presented none, not that the edition is
+     * limited. And a null [info] means the engine said nothing at all, which is
+     * a third thing again.
      *
      * [EngineSecurityInfo.secure] being true is NOT evidence of a certificate
      * block: WebView reports a secure connection and cannot report the
      * certificate, which is why the two are separate sections and why this
      * function never falls back to the transport state.
      */
-    fun certificateText(info: EngineSecurityInfo?): String {
+    fun certificateText(info: EngineSecurityInfo?, certificatesReadable: Boolean): String {
         val certificate = info?.certificate
-            ?: return "Certificate -- this edition cannot read the certificate a connection used."
+        if (certificate == null) {
+            val reason = when {
+                !certificatesReadable ->
+                    "this edition has no way to read a connection's certificate."
+                info == null -> "the engine did not report the connection's state."
+                else -> "the engine reported no certificate for this connection."
+            }
+            return "Certificate -- $reason"
+        }
         val lines = mutableListOf(
             "Certificate",
             "  subject: ${orAbsent(certificate.subject)}",
