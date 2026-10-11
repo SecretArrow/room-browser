@@ -7,8 +7,8 @@ import android.os.SystemClock
 import android.util.Log
 import android.webkit.CookieManager
 import androidx.webkit.WebViewFeature
-import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.DevToolsCapability
+import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.EngineConsoleMessage
 import com.roombrowser.engine.devtools.EngineCookie
 import com.roombrowser.engine.devtools.EngineInspector

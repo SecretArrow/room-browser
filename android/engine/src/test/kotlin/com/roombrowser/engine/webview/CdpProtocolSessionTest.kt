@@ -1,13 +1,13 @@
 package com.roombrowser.engine.webview
 
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.runBlocking
+import org.junit.Test
 import java.io.IOException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
-import kotlinx.coroutines.runBlocking
-import org.junit.Test
 
 /**
  * The request/reply bookkeeping of a CDP session, over a fake transport so it

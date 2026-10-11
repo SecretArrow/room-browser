@@ -1,8 +1,8 @@
 package com.roombrowser.engine.webview
 
 import com.google.common.truth.Truth.assertThat
-import java.util.Base64
 import org.junit.Test
+import java.util.Base64
 
 /**
  * The CDP frame codec, pinned on the JVM.
