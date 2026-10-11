@@ -19,6 +19,19 @@ class WebViewDevToolsTest {
     private val expectedResponseHeadersNote =
         "WebView reports a request to shouldInterceptRequest before it is sent and never hands back the response, so status and response headers are not observable without intercepting the body — which this app deliberately does not do because it would break streaming."
 
+    /**
+     * The two absences that carry a reason, and they are different kinds.
+     *
+     * Response headers are missing because we chose not to intercept bodies --
+     * unfinished work the owner could reverse. The certificate is missing
+     * because no WebView API exposes one, so no amount of work here produces it.
+     * Both get a note; nothing else may.
+     */
+    private val reasonedAbsences = setOf(
+        DevToolsCapability.NETWORK_RESPONSE_HEADERS,
+        DevToolsCapability.SECURITY_CERTIFICATE
+    )
+
     @Test
     fun the_capability_set_is_exactly_what_this_engine_serves() {
         val capabilities = WebViewDevTools.CAPABILITIES
@@ -26,9 +39,13 @@ class WebViewDevToolsTest {
             DevToolsCapability.PAGE_SCRIPTING,
             DevToolsCapability.CONSOLE_CAPTURE,
             DevToolsCapability.ENGINE_CONSOLE,
-            DevToolsCapability.NETWORK_REQUEST_LINE
+            DevToolsCapability.NETWORK_REQUEST_LINE,
+            DevToolsCapability.SECURITY_INFO
         )
         assertThat(capabilities.has(DevToolsCapability.NETWORK_RESPONSE_HEADERS)).isFalse()
+        // Declared so the Security panel exists at all; the certificate is what
+        // it cannot fill in, and that absence is stated rather than implied.
+        assertThat(capabilities.has(DevToolsCapability.SECURITY_CERTIFICATE)).isFalse()
     }
 
     @Test
@@ -38,8 +55,9 @@ class WebViewDevToolsTest {
         // one must stay silent, because "not yet" is not "cannot".
         assertThat(capabilities.noteFor(DevToolsCapability.NETWORK_RESPONSE_HEADERS))
             .isEqualTo(expectedResponseHeadersNote)
+        assertThat(capabilities.noteFor(DevToolsCapability.SECURITY_CERTIFICATE)).isNotNull()
         DevToolsCapability.entries
-            .filter { it != DevToolsCapability.NETWORK_RESPONSE_HEADERS }
+            .filter { it !in reasonedAbsences }
             .forEach { capability ->
                 assertThat(capabilities.noteFor(capability)).isNull()
             }
@@ -55,7 +73,8 @@ class WebViewDevToolsTest {
         assertThat(degraded.capabilities).containsExactly(
             DevToolsCapability.PAGE_SCRIPTING,
             DevToolsCapability.ENGINE_CONSOLE,
-            DevToolsCapability.NETWORK_REQUEST_LINE
+            DevToolsCapability.NETWORK_REQUEST_LINE,
+            DevToolsCapability.SECURITY_INFO
         )
         // And the absence is explained rather than silent, because on THIS
         // device it is a real limit the user can do nothing about.
