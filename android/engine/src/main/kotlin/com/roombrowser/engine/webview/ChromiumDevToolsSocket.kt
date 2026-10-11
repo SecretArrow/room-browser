@@ -4,11 +4,6 @@ import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import android.os.Process
 import com.roombrowser.engine.devtools.EngineProtocolSession
-import java.io.InputStream
-import java.io.OutputStream
-import java.net.SocketTimeoutException
-import java.net.URI
-import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.BufferOverflow
@@ -19,6 +14,11 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.InputStream
+import java.io.OutputStream
+import java.net.SocketTimeoutException
+import java.net.URI
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * What a devtools probe found, so an attempt that does not prove out can still
