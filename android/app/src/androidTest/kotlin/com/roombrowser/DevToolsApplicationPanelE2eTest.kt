@@ -7,6 +7,8 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
+import androidx.test.uiautomator.UiScrollable
+import androidx.test.uiautomator.UiSelector
 import androidx.test.uiautomator.Until
 import com.roombrowser.domain.model.ProfileId
 import kotlinx.coroutines.runBlocking
@@ -114,6 +116,14 @@ class DevToolsApplicationPanelE2eTest {
 
     /** Which step of the sheet walk failed, for the assertion that follows it. */
     private var openTrace: String = ""
+
+    /**
+     * What the last panel walk did: which scrollable nodes it found, which
+     * mechanism moved the body, and where the body's top ended up. A failure
+     * that says only "the key is not on screen" cannot separate "the panel never
+     * rendered it" from "the walk never reached it".
+     */
+    private var scrollTrace: String = ""
 
     @Before
     fun setUp() {
@@ -302,18 +312,9 @@ class DevToolsApplicationPanelE2eTest {
         )
         assertDevToolsOpened()
 
-        assertTrue(
-            "The manifest's name must reach the panel\n${uiTree()}",
-            scrollPanelToText(manifestName)
-        )
-        assertTrue(
-            "The manifest's own URL must reach the panel too\n${uiTree()}",
-            scrollPanelToText("manifest-$tag.webmanifest")
-        )
-        assertTrue(
-            "The registered service worker's script URL must reach the panel\n${uiTree()}",
-            scrollPanelToText("sw-$tag.js")
-        )
+        assertReached("The manifest's name must reach the panel", manifestName)
+        assertReached("The manifest's own URL must reach the panel too", "manifest-$tag.webmanifest")
+        assertReached("The registered service worker's script URL must reach the panel", "sw-$tag.js")
     }
 
     /**
@@ -332,30 +333,12 @@ class DevToolsApplicationPanelE2eTest {
         )
         assertDevToolsOpened()
 
-        assertTrue(
-            "A localStorage key must reach the panel\n${uiTree()}",
-            scrollPanelToText(localKey)
-        )
-        assertTrue(
-            "Every localStorage key must be listed, not just the first\n${uiTree()}",
-            scrollPanelToText(localKeyAlt)
-        )
-        assertTrue(
-            "A sessionStorage key must reach the panel\n${uiTree()}",
-            scrollPanelToText(sessionKey)
-        )
-        assertTrue(
-            "The IndexedDB database name must reach the panel\n${uiTree()}",
-            scrollPanelToText(databaseName)
-        )
-        assertTrue(
-            "The IndexedDB object store must be listed under its database\n${uiTree()}",
-            scrollPanelToText(databaseStore)
-        )
-        assertTrue(
-            "The Cache Storage cache name must reach the panel\n${uiTree()}",
-            scrollPanelToText(cacheName)
-        )
+        assertReached("A localStorage key must reach the panel", localKey)
+        assertReached("Every localStorage key must be listed, not just the first", localKeyAlt)
+        assertReached("A sessionStorage key must reach the panel", sessionKey)
+        assertReached("The IndexedDB database name must reach the panel", databaseName)
+        assertReached("The IndexedDB object store must be listed under its database", databaseStore)
+        assertReached("The Cache Storage cache name must reach the panel", cacheName)
     }
 
     /**
@@ -379,9 +362,9 @@ class DevToolsApplicationPanelE2eTest {
         // A positive control first: the panel really composed, and really read
         // the page. Without it, "the hidden labels are gone" would pass on a
         // panel that drew nothing at all.
-        assertTrue(
-            "The Application panel must be showing real content while the absent sections are checked\n${uiTree()}",
-            scrollPanelToText(manifestName)
+        assertReached(
+            "The Application panel must be showing real content while the absent sections are checked",
+            manifestName
         )
         val offender = firstHiddenSectionOnScreen()
         assertTrue(
@@ -545,26 +528,111 @@ class DevToolsApplicationPanelE2eTest {
     }
 
     /**
-     * Scrolls the panel body until [text] appears, checking BEFORE each drag so
+     * The top line of the panel body, or the fact that it is no longer on
+     * screen. The body's own first row is the only node whose position says
+     * whether the body moved at all: an absent tail section is equally
+     * consistent with "not rendered" and "not scrolled to".
+     */
+    private fun bodyTop(): String {
+        val node = device.findObjects(By.textContains(readDoneLine)).firstOrNull()
+        return runCatching { node?.visibleBounds?.toString() }.getOrNull() ?: "(off)"
+    }
+
+    /** Every scrollable node UiAutomator can see, with its geometry. */
+    private fun scrollables(): String = (0 until 5).joinToString(",") { i ->
+        val obj = runCatching { device.findObject(UiSelector().scrollable(true).instance(i)) }.getOrNull()
+        if (obj == null || !runCatching { obj.exists() }.getOrDefault(false)) {
+            "$i=absent"
+        } else {
+            val cls = runCatching { obj.className }.getOrDefault("?")
+            "$i=$cls@${runCatching { obj.visibleBounds }.getOrNull()}"
+        }
+    }
+
+    /**
+     * Scrolls the panel body by ADDRESSING the body's own scrollable node.
+     *
+     * A synthetic swipe is delivered by coordinate, and the live WebView sits
+     * directly under this panel, so when the body does not move the coordinates
+     * alone cannot say whether the drag was swallowed or went somewhere else. A
+     * scroll action aimed at the node cannot land anywhere else: it either moves
+     * that node or reports that it did not. The body is the scrollable node
+     * whose centre is in the LOWER half of the window -- the WebView is the one
+     * above it.
+     */
+    private fun scrollBodyByNode(): Boolean {
+        for (i in 0 until 5) {
+            val bounds = runCatching {
+                device.findObject(UiSelector().scrollable(true).instance(i))?.visibleBounds
+            }.getOrNull() ?: continue
+            if (bounds.height() <= 0 || bounds.centerY() < device.displayHeight / 2) continue
+            val moved = runCatching {
+                UiScrollable(UiSelector().scrollable(true).instance(i)).scrollForward()
+            }.getOrDefault(false)
+            device.waitForIdle(400)
+            if (moved) return true
+        }
+        return false
+    }
+
+    /**
+     * Walks the panel body until [text] appears, checking BEFORE each move so
      * evidence already on screen is never scrolled past.
      *
      * A docked body is only ~72% of the window, so a section near the bottom
-     * costs many short drags; taking the panel full screen first is the fallback,
-     * and is the shape the console/network suite already uses for its own
-     * below-the-fold row.
+     * costs many short movings; taking the panel full screen first is the
+     * fallback. Every attempt is recorded in [scrollTrace], so a failure says
+     * which of the three mechanisms the body answered to -- and whether it moved
+     * at all.
      */
     private fun scrollPanelToText(text: String, maxDrags: Int = 24): Boolean {
+        fun found() = device.findObjects(By.textContains(text)).isNotEmpty()
+        scrollTrace = "scrollables=[${scrollables()}] top=${bodyTop()}"
+        if (found()) {
+            scrollTrace += "|onScreen"
+            return true
+        }
+        repeat(6) {
+            if (!found() && scrollBodyByNode()) scrollTrace += "|node=moved"
+        }
+        if (found()) {
+            scrollTrace += "|node=hit top=${bodyTop()}"
+            return true
+        }
+        scrollTrace += "|node=miss top=${bodyTop()}"
         repeat(maxDrags) {
-            if (device.findObjects(By.textContains(text)).isNotEmpty()) return true
+            if (found()) return true
             dragUpHalf()
         }
-        if (device.findObjects(By.textContains(text)).isNotEmpty()) return true
-        if (!expandToFullScreen()) return false
+        if (found()) {
+            scrollTrace += "|drag=hit top=${bodyTop()}"
+            return true
+        }
+        scrollTrace += "|drag=miss top=${bodyTop()}"
+        if (!expandToFullScreen()) {
+            scrollTrace += "|fullscreen=no"
+            return found()
+        }
+        scrollTrace += "|fullscreen=yes"
         repeat(maxDrags) {
-            if (device.findObjects(By.textContains(text)).isNotEmpty()) return true
+            if (found()) return true
             dragUpHalf()
         }
-        return device.findObjects(By.textContains(text)).isNotEmpty()
+        repeat(6) { if (!found()) scrollBodyByNode() }
+        scrollTrace += "|end found=${found()} top=${bodyTop()} scrollables=[${scrollables()}]"
+        return found()
+    }
+
+    /**
+     * Walks the body to [text] and then reports the walk.
+     *
+     * The message is built HERE, after the walk. Kotlin evaluates a call's
+     * arguments left to right, so a dump written into the message expression of
+     * the call it reports on is taken before that call has moved anything.
+     */
+    private fun assertReached(label: String, text: String) {
+        val reached = scrollPanelToText(text)
+        assertTrue("$label [$scrollTrace]\n${uiTree()}", reached)
     }
 
     /**
