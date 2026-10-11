@@ -11,6 +11,7 @@ import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.UiSelector
 import androidx.test.uiautomator.Until
 import com.roombrowser.domain.model.ProfileId
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -62,6 +63,21 @@ class DevToolsApplicationPanelE2eTest {
     private val tag = (System.currentTimeMillis() % 100000).toString()
     private val pageHeading = "ROOM-DEVTOOLS-APP-$tag"
     private val seededMarker = "SEEDED-$tag"
+
+    /** The fixture's pre-ready words, so a red gate can say whether the script ran at all. */
+    private val waitingMarker = "WAITING-$tag"
+
+    /** Which half of the readiness gate failed, reported by [assertSeeded]. */
+    private var seedTrace: String = ""
+
+    /**
+     * How many times the fixture's script asked the server for its service
+     * worker. The script is the only thing that registers one, so this is the
+     * server's own witness that the engine ran the page's JavaScript -- which
+     * an empty marker cannot tell apart from a JavaScript engine that never
+     * started.
+     */
+    private val swRequests = AtomicInteger()
 
     private val fixturePath = "/app-$tag"
     private val manifestPath = "/manifest-$tag.webmanifest"
@@ -132,6 +148,7 @@ class DevToolsApplicationPanelE2eTest {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val path = (request.path ?: "").substringBefore('?')
+                if (path.startsWith("/sw-")) swRequests.incrementAndGet()
                 return when {
                     path.startsWith("/app-") -> MockResponse()
                         .setHeader("Content-Type", "text/html; charset=utf-8")
@@ -227,7 +244,17 @@ class DevToolsApplicationPanelE2eTest {
           (function () {
             var tag = '$tag';
             function ready() {
-              try { document.getElementById('ready').textContent = '$seededMarker'; } catch (e) {}
+              try {
+                var stay = document.getElementById('ready');
+                if (stay) stay.textContent = '$seededMarker';
+                if (!document.getElementById('ready-done')) {
+                  var done = document.createElement('div');
+                  done.id = 'ready-done';
+                  done.style.fontSize = '24px';
+                  done.textContent = '$seededMarker';
+                  document.body.appendChild(done);
+                }
+              } catch (e) {}
             }
             try {
               localStorage.setItem('$localKey', 'local-value-' + tag);
@@ -262,7 +289,6 @@ class DevToolsApplicationPanelE2eTest {
               try {
                 if (!('serviceWorker' in navigator)) { resolve(); return; }
                 navigator.serviceWorker.register('$serviceWorkerPath')
-                  .then(function () { return navigator.serviceWorker.ready; })
                   .then(resolve, resolve);
               } catch (e) { resolve(); }
             }));
@@ -306,10 +332,7 @@ class DevToolsApplicationPanelE2eTest {
             "A profile must be active before the engine can be cold-started\n${uiTree()}",
             ensureActiveProfile()
         )
-        assertTrue(
-            "The fixture page must render and seed before Developer Tools can read it\n${uiTree()}",
-            openSeededPage()
-        )
+        assertSeeded()
         assertDevToolsOpened()
 
         assertReached("The manifest's name must reach the panel", manifestName)
@@ -327,10 +350,7 @@ class DevToolsApplicationPanelE2eTest {
             "A profile must be active before the engine can be cold-started\n${uiTree()}",
             ensureActiveProfile()
         )
-        assertTrue(
-            "The fixture page must render and seed before Developer Tools can read it\n${uiTree()}",
-            openSeededPage()
-        )
+        assertSeeded()
         assertDevToolsOpened()
 
         assertReached("A localStorage key must reach the panel", localKey)
@@ -353,10 +373,7 @@ class DevToolsApplicationPanelE2eTest {
             "A profile must be active before the engine can be cold-started\n${uiTree()}",
             ensureActiveProfile()
         )
-        assertTrue(
-            "The fixture page must render and seed before Developer Tools can read it\n${uiTree()}",
-            openSeededPage()
-        )
+        assertSeeded()
         assertDevToolsOpened()
 
         // A positive control first: the panel really composed, and really read
@@ -368,7 +385,8 @@ class DevToolsApplicationPanelE2eTest {
         )
         val offender = firstHiddenSectionOnScreen()
         assertTrue(
-            "A section this build does not read must be absent, but '$offender' was on screen\n${uiTree()}",
+            "The walk must move the panel body and find no section this build does not " +
+                "read; it reported [$offender]\n${uiTree()}",
             offender == null
         )
     }
@@ -394,15 +412,39 @@ class DevToolsApplicationPanelE2eTest {
     }
 
     /**
-     * Opens the fixture page and waits for the seeds to settle.
+     * Opens the fixture page and waits for the seeds to settle, twice if need be.
      *
      * The heading proves the document rendered; the marker proves the manifest,
      * the storage areas, the database and the cache write all finished, so the
      * panel is only ever asked to read a page that is ready to be read.
+     *
+     * The first load in a cold engine is the one that can lose it. Measured on
+     * the CI emulator, the marker of a suite's first page arrived just past a 30s
+     * gate while the two later loads of the same run seeded in under a second, so
+     * the page is loaded again rather than called dead -- and [seedTrace] still
+     * names every attempt, [swRequests] included.
      */
     private fun openSeededPage(): Boolean {
-        if (!openPage(server.url(fixturePath).toString())) return false
-        return hasText(seededMarker, 30_000)
+        val url = server.url(fixturePath).toString()
+        repeat(2) { attempt ->
+            val opened = openPage(url)
+            if (opened && hasTextContains(seededMarker, 30_000)) return true
+            seedTrace += "attempt${attempt + 1}[opened=$opened " +
+                "heading=${visibleCount(pageHeading)} waiting=${visibleCount(waitingMarker)} " +
+                "seeded=${visibleCount(seededMarker)} swRequests=${swRequests.get()}] "
+        }
+        return false
+    }
+
+    private fun visibleCount(text: String): Int =
+        runCatching { device.findObjects(By.textContains(text)).size }.getOrDefault(-1)
+
+    private fun assertSeeded() {
+        val ready = openSeededPage()
+        assertTrue(
+            "The fixture page must render and seed before Developer Tools can read it [$seedTrace]\n${uiTree()}",
+            ready
+        )
     }
 
     /**
@@ -681,21 +723,39 @@ class DevToolsApplicationPanelE2eTest {
         fun found(): String? = hiddenSectionLabels.firstOrNull { label ->
             device.findObjects(By.textContains(label)).isNotEmpty()
         }
+        // Proof that the walk MOVED the body. Without it a body that never
+        // scrolled and a panel that never drew the sections both end in "not
+        // seen", and the assertion would pass on a panel nothing looked at.
+        var moved = false
+        var lastTop = bodyTop()
+        fun step() {
+            dragUpHalf()
+            val top = bodyTop()
+            if (top != lastTop) moved = true
+            lastTop = top
+        }
         repeat(16) {
             found()?.let { return it }
-            dragUpHalf()
+            step()
         }
         found()?.let { return it }
         // The walk has to reach the bottom, and a docked body is only ~72% of
         // the window; without this the sections below it are never looked at,
         // and "absent" would mean "not scrolled to".
-        if (!expandToFullScreen()) return found()
+        if (!expandToFullScreen()) return found() ?: if (moved) null else unwalked()
         repeat(16) {
             found()?.let { return it }
-            dragUpHalf()
+            step()
         }
-        return found()
+        return found() ?: if (moved) null else unwalked()
     }
+
+    /**
+     * Stands in for the "nothing forbidden was seen" answer when the body never
+     * moved, so a panel the walk never reached fails the assertion instead of
+     * satisfying it.
+     */
+    private fun unwalked(): String = "the panel body never scrolled"
 
     // ---------- Developer Tools: opening it (proven pattern) ----------------
 
