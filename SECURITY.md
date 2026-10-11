@@ -288,6 +288,55 @@ providers appear in the picker. YOLO is not a gate feature and is not
 restricted that way — it is a local decision, so it applies to every
 provider, Ollama included.
 
+## Developer Tools (Android)
+
+Developer Tools is a docked inspector that reads the **live** engine session.
+That makes it a privileged surface — it can see a page's request headers and the
+user's own authenticated session — so its rules are stated here rather than left
+only in the app.
+
+- **It is app UI, never reachable from page content.** The panel composes above
+  the engine view in the app's own Compose tree; page script has no handle to
+  it, so a page that screenshots itself cannot capture the panel. The app's own
+  `EngineSession.capturePixels` is a different path: on this edition it copies
+  the Activity window and crops to the engine's bounds, so a frame taken while
+  the panel is open would include it.
+- **Redaction happens at data entry.** Before a console or network entry reaches
+  a buffer, the values of the header names `Authorization`,
+  `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `x-api-key`, `api-key`,
+  `x-auth-token`, `x-csrf-token` and `www-authenticate` are replaced with
+  `<redacted>`, and a URL's `user:pass@` userinfo and credential query parameters
+  (`access_token`, `token`, `api_key`, `key`, `secret`, `password`) are masked.
+  The header NAME is kept, because "this request carried an Authorization
+  header" is the fact a bug report needs. A page's own console TEXT is left as
+  the page wrote it: this is the user's own view of their own page, and
+  rewriting it would make the panel lie about what the page said.
+- **No remote-debugging endpoint is exposed.** No listening port is opened, and
+  no inspector of this app's pages is reachable over the network or from another
+  app. Where WebView's own devtools channel is used at all, it is reached only
+  through a `LocalSocket` in the **abstract** namespace — a kernel namespace
+  socket with no TCP/IP address — whose only accepted peers are same-UID
+  processes and adb. `WebView.setWebContentsDebuggingEnabled` is process-wide
+  and static, so it is toggled from exactly one place: on for as long as a
+  Developer Tools panel holds that channel open, and off again when the last
+  holder closes. The app never opens an `adb forward`.
+- **Unavailable in private tabs.** The Developer Tools row is not offered on a
+  private tab and no inspector session is created for one; if a private tab is
+  opened while the panel is showing, the panel closes.
+
+### What the panel does not claim
+
+Its honesty is structural rather than editorial: the panel renders only the
+capabilities its engine actually reports, and each absent capability is
+explained with the reason the capability layer carries — where none exists, it
+says the capability is simply not built, never an invented cause. Its
+"Not Google Lighthouse" wording is pinned verbatim by a test, and no score or
+invented category number is produced. On WebView specifically, response status
+and headers are **not** observable: WebView reports a request to
+`shouldInterceptRequest` before it is sent and never hands back the response,
+and this app does not intercept the response body to obtain them because that
+would break streaming. Heap snapshots are not shipped on either edition.
+
 ## Reporting
 
 Security issues should be reported privately to the repository owner. Please
