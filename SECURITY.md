@@ -288,6 +288,50 @@ providers appear in the picker. YOLO is not a gate feature and is not
 restricted that way — it is a local decision, so it applies to every
 provider, Ollama included.
 
+## Developer Tools (Android)
+
+Developer Tools is a docked inspector that reads the **live** engine session.
+That makes it a privileged surface — it can see a page's request headers and the
+user's own authenticated session — so its rules are stated here rather than left
+only in the app.
+
+- **It is app UI, never reachable from page content.** The panel composes above
+  the engine view in the app's own Compose tree; page script has no handle to
+  it. Because it sits above the engine view, it is also absent from
+  `EngineSession.capturePixels`, which captures the engine view only — a page
+  that screenshots itself cannot capture the panel.
+- **Redaction happens at data entry.** Before a console or network entry reaches
+  a buffer, the values of the header names `Authorization`,
+  `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `x-api-key`, `api-key`,
+  `x-auth-token`, `x-csrf-token` and `www-authenticate` are replaced with
+  `<redacted>`, and a URL's `user:pass@` userinfo and credential query parameters
+  (`access_token`, `token`, `api_key`, `key`, `secret`, `password`) are masked.
+  The header NAME is kept, because "this request carried an Authorization
+  header" is the fact a bug report needs. A page's own console TEXT is left as
+  the page wrote it: this is the user's own view of their own page, and
+  rewriting it would make the panel lie about what the page said.
+- **No remote-debugging endpoint is exposed.** The app opens no debug socket and
+  never calls `WebView.setWebContentsDebuggingEnabled`; no inspector of this
+  app's pages is reachable over the network or from another app. This is a
+  property of the source as it stands — no such call exists anywhere in it — and
+  not merely a runtime toggle.
+- **Unavailable in private tabs.** The Developer Tools row is not offered on a
+  private tab and no inspector session is created for one; if a private tab is
+  opened while the panel is showing, the panel closes.
+
+### What the panel does not claim
+
+Its honesty is structural rather than editorial: the panel renders only the
+capabilities its engine actually reports, and each absent capability is
+explained with the reason the capability layer carries — where none exists, it
+says the capability is simply not built, never an invented cause. Its
+"Not Google Lighthouse" wording is pinned verbatim by a test, and no score or
+invented category number is produced. On WebView specifically, response status
+and headers are **not** observable: WebView reports a request to
+`shouldInterceptRequest` before it is sent and never hands back the response,
+and this app does not intercept the response body to obtain them because that
+would break streaming. Heap snapshots are not shipped on either edition.
+
 ## Reporting
 
 Security issues should be reported privately to the repository owner. Please
