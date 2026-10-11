@@ -87,6 +87,19 @@ class WebViewDevToolsTest {
     }
 
     @Test
+    fun the_protocol_session_is_absent_until_a_probe_proves_it() {
+        // The CDP socket is unproven on a device, so the capability must default
+        // absent and no panel that needs it can appear; only a proof declares it.
+        val unproven = WebViewDevTools.capabilities(documentStartScripts = true)
+        assertThat(unproven.has(DevToolsCapability.PROTOCOL_SESSION)).isFalse()
+
+        val proven = WebViewDevTools.capabilities(documentStartScripts = true, protocolSession = true)
+        assertThat(proven.has(DevToolsCapability.PROTOCOL_SESSION)).isTrue()
+        assertThat(proven.capabilities)
+            .containsExactlyElementsIn(unproven.capabilities + DevToolsCapability.PROTOCOL_SESSION)
+    }
+
+    @Test
     fun the_console_patch_carries_the_markers_both_sides_speak() {
         val patch = WebViewDevTools.CONSOLE_PATCH
         assertThat(patch).contains("__rbConsole")

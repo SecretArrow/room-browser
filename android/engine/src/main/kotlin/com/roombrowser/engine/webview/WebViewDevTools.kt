@@ -4,13 +4,17 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import androidx.webkit.WebViewFeature
 import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.DevToolsCapability
 import com.roombrowser.engine.devtools.EngineConsoleMessage
 import com.roombrowser.engine.devtools.EngineInspector
 import com.roombrowser.engine.devtools.EngineNetworkSignal
+import com.roombrowser.engine.devtools.EngineProtocolSession
 import com.roombrowser.engine.devtools.EngineSecurityInfo
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * What the WebView edition can serve to Developer Tools, and the handle that
@@ -65,11 +69,20 @@ internal object WebViewDevTools {
      * feed that can never fill. The engine's own message channel does not depend
      * on that feature, so it stays.
      *
-     * Pure, and takes the answer rather than asking for it, so both branches are
-     * testable off-device -- the device query itself cannot run in a JVM test.
+     * [protocolSession] defaults to false because the CDP socket is still
+     * UNPROVEN on a device -- only a real `Runtime.evaluate` answering `2` may
+     * flip it -- and while it is false [DevToolsCapability.PROTOCOL_SESSION] is
+     * absent, so no panel that needs it can appear.
+     *
+     * Pure, and takes the answers rather than asking for them, so both branches
+     * are testable off-device -- the device queries themselves cannot run in a
+     * JVM test.
      */
-    fun capabilities(documentStartScripts: Boolean): DeveloperToolsCapabilities =
-        if (documentStartScripts) {
+    fun capabilities(
+        documentStartScripts: Boolean,
+        protocolSession: Boolean = false
+    ): DeveloperToolsCapabilities {
+        val base = if (documentStartScripts) {
             CAPABILITIES
         } else {
             CAPABILITIES.copy(
@@ -80,6 +93,12 @@ internal object WebViewDevTools {
                     )
             )
         }
+        return if (protocolSession) {
+            base.copy(capabilities = base.capabilities + DevToolsCapability.PROTOCOL_SESSION)
+        } else {
+            base
+        }
+    }
 
     /**
      * The page-world console patch, installed at document start by the session
@@ -216,6 +235,21 @@ internal class WebViewInspector(
 ) : EngineInspector {
 
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * The live CDP session once a probe has proven one, held so [close] tears it
+     * down with the rest of the handle.
+     */
+    @Volatile
+    private var protocolSession: CdpProtocolSession? = null
+
+    /**
+     * What the last probe found, so a caller can report the attempt either way.
+     * Unproven outcomes leave [DevToolsCapability.PROTOCOL_SESSION] absent.
+     */
+    @Volatile
+    internal var lastProtocolOutcome: CdpProbeOutcome? = null
+        private set
 
     @Volatile
     private var consoleSink: ((EngineConsoleMessage) -> Unit)? = null
@@ -370,15 +404,46 @@ internal class WebViewInspector(
         )
     }
 
+    /**
+     * Run the CDP spike and hand back a live session only when it PROVED:
+     * `Runtime.evaluate` on `1+1` answered `2`. Any other outcome records a
+     * reason and returns null, and turns remote debugging back off, so a build
+     * that cannot reach the socket leaves no inspector exposed.
+     */
+    override suspend fun openProtocolSession(): EngineProtocolSession? {
+        ChromiumDevTools.enable()
+        val opened = withContext(Dispatchers.IO) {
+            val socket = ChromiumDevToolsSocket()
+            val outcome = runCatching { socket.probe() }
+                .getOrElse { CdpProbeOutcome.NoSocket(ChromiumDevToolsSocket.NO_SOCKET_REASON) }
+            lastProtocolOutcome = outcome
+            Log.i(TAG, "CDP spike: ${outcome.reason}")
+            if (outcome is CdpProbeOutcome.Proven) {
+                CdpProtocolSession(socket).also { protocolSession = it }
+            } else {
+                socket.close()
+                null
+            }
+        }
+        if (opened == null) ChromiumDevTools.disable()
+        return opened
+    }
+
     override fun close() {
         consoleSink = null
         networkSink = null
         engineBacklog.clear()
         networkBacklog.clear()
         session.armPageConsole(false)
+        protocolSession?.close()
+        protocolSession = null
+        ChromiumDevTools.disable()
     }
 
     private companion object {
+        /** The log tag a probe attempt reports under, so CI can read the outcome. */
+        const val TAG = "RoomDevTools"
+
         /**
          * How long an engine-origin message is held before it is delivered.
          *
