@@ -297,9 +297,10 @@ only in the app.
 
 - **It is app UI, never reachable from page content.** The panel composes above
   the engine view in the app's own Compose tree; page script has no handle to
-  it. Because it sits above the engine view, it is also absent from
-  `EngineSession.capturePixels`, which captures the engine view only — a page
-  that screenshots itself cannot capture the panel.
+  it, so a page that screenshots itself cannot capture the panel. The app's own
+  `EngineSession.capturePixels` is a different path: on this edition it copies
+  the Activity window and crops to the engine's bounds, so a frame taken while
+  the panel is open would include it.
 - **Redaction happens at data entry.** Before a console or network entry reaches
   a buffer, the values of the header names `Authorization`,
   `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `x-api-key`, `api-key`,
