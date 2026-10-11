@@ -741,16 +741,25 @@ class DevToolsApplicationPanelE2eTest {
         // scrolled and a panel that never drew the sections both end in "not
         // seen", and the assertion would pass on a panel nothing looked at.
         var moved = false
-        var lastTop = bodyTop()
-        fun step() {
-            dragUpHalf()
-            val top = bodyTop()
-            if (top != lastTop) moved = true
-            lastTop = top
+        var last = bodySignature()
+        fun step(drag: () -> Unit) {
+            drag()
+            val now = bodySignature()
+            if (now != last) moved = true
+            last = now
+        }
+        // Reach the top first. The content assertion before this one leaves the
+        // body wherever its own target sat, and a walk that starts at the
+        // bottom can only report that it never moved.
+        var topGuard = 0
+        while (topGuard++ < 16) {
+            val before = last
+            step { dragDownHalf() }
+            if (last == before) break
         }
         repeat(16) {
             found()?.let { return it }
-            step()
+            step { dragUpHalf() }
         }
         found()?.let { return it }
         // The walk has to reach the bottom, and a docked body is only ~72% of
@@ -759,9 +768,33 @@ class DevToolsApplicationPanelE2eTest {
         if (!expandToFullScreen()) return found() ?: if (moved) null else unwalked()
         repeat(16) {
             found()?.let { return it }
-            step()
+            step { dragUpHalf() }
         }
         return found() ?: if (moved) null else unwalked()
+    }
+
+    /**
+     * What UiAutomator can see inside the panel body right now, as one string.
+     *
+     * This is how the walk proves it moved. A single anchor row cannot answer
+     * that: measured on the CI emulator, the "read from the live page" line had
+     * already scrolled out when the walk began, so its bounds read "(off)"
+     * before and after every drag and a body that scrolled perfectly still
+     * reported that it never moved.
+     */
+    private fun bodySignature(): String {
+        val body = bodyRect() ?: return "(no body)"
+        val pkg = targetContext.packageName
+        val seen = sortedSetOf<String>()
+        runCatching {
+            device.findObjects(By.pkg(pkg)).forEach { node ->
+                val text = runCatching { node.text }.getOrNull()?.trim().orEmpty()
+                if (text.isEmpty()) return@forEach
+                val bounds = runCatching { node.visibleBounds }.getOrNull() ?: return@forEach
+                if (android.graphics.Rect.intersects(bounds, body)) seen.add(text)
+            }
+        }
+        return seen.joinToString("\u0001")
     }
 
     /**
@@ -769,7 +802,8 @@ class DevToolsApplicationPanelE2eTest {
      * moved, so a panel the walk never reached fails the assertion instead of
      * satisfying it.
      */
-    private fun unwalked(): String = "the panel body never scrolled"
+    private fun unwalked(): String =
+        "the panel body never scrolled, so an absent section cannot be told apart from one below the fold"
 
     // ---------- Developer Tools: opening it (proven pattern) ----------------
 
