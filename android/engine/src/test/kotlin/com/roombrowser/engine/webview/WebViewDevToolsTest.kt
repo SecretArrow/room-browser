@@ -2,6 +2,8 @@ package com.roombrowser.engine.webview
 
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.engine.devtools.DevToolsCapability
+import com.roombrowser.engine.devtools.DevToolsPanelId
+import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.EngineConsoleMessage
 import com.roombrowser.engine.devtools.EngineNetworkSignal
 import org.junit.Test
@@ -97,6 +99,33 @@ class WebViewDevToolsTest {
         assertThat(proven.has(DevToolsCapability.PROTOCOL_SESSION)).isTrue()
         assertThat(proven.capabilities)
             .containsExactlyElementsIn(unproven.capabilities + DevToolsCapability.PROTOCOL_SESSION)
+    }
+
+    @Test
+    fun the_protocol_capability_opens_no_panel_by_itself() {
+        // A raw CDP socket is the SUBSTRATE Sources and the profiler would be
+        // built on, not the thing that serves them: a proven session must not
+        // make a panel appear that the panel layer cannot back. Pinning the
+        // mapping here is what stops a later "CDP works, so turn Sources on"
+        // shortcut from shipping an empty panel.
+        val unproven = WebViewDevTools.capabilities(documentStartScripts = true)
+        val proven = WebViewDevTools.capabilities(documentStartScripts = true, protocolSession = true)
+
+        assertThat(unproven.has(DevToolsCapability.PROTOCOL_SESSION)).isFalse()
+        assertThat(proven.has(DevToolsCapability.PROTOCOL_SESSION)).isTrue()
+
+        // Proving the socket changes serving for NO panel, present or future.
+        DevToolsPanelId.entries.forEach { id ->
+            assertThat(proven.serves(id)).isEqualTo(unproven.serves(id))
+        }
+        assertThat(proven.servedPanels()).isEqualTo(unproven.servedPanels())
+
+        // And the capability on its own serves only the always-present Overview,
+        // which is what keeps Sources a JS_DEBUGGER concern rather than a CDP one.
+        val bare = DeveloperToolsCapabilities(setOf(DevToolsCapability.PROTOCOL_SESSION))
+        assertThat(bare.servedPanels()).containsExactly(DevToolsPanelId.OVERVIEW)
+        assertThat(bare.serves(DevToolsPanelId.SOURCES)).isFalse()
+        assertThat(bare.serves(DevToolsPanelId.PERFORMANCE)).isFalse()
     }
 
     @Test

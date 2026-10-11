@@ -41,6 +41,17 @@ internal sealed interface CdpProbeOutcome {
 }
 
 /**
+ * The transport [CdpProtocolSession] runs over, so the session's request and
+ * reply bookkeeping can be pinned by a JVM test against a fake instead of a
+ * device.
+ */
+internal interface CdpTransport {
+    fun sendText(text: String)
+    fun readTextMessage(deadlineMs: Long): String?
+    fun close()
+}
+
+/**
  * The abstract-namespace socket a WebView exposes when remote debugging is on:
  * `webview_devtools_remote_<pid>`, where the pid is this app's own process.
  *
@@ -51,7 +62,7 @@ internal sealed interface CdpProbeOutcome {
  */
 internal class ChromiumDevToolsSocket(
     private val pid: Int = Process.myPid()
-) {
+) : CdpTransport {
 
     private var socket: LocalSocket? = null
     private var input: InputStream? = null
@@ -91,15 +102,16 @@ internal class ChromiumDevToolsSocket(
         return CdpProbeOutcome.Unanswered(UNANSWERED_REASON)
     }
 
-    /** Write one masked text frame. */
-    fun sendText(text: String) = sendFrame(CdpFrameCodec.OPCODE_TEXT, text.toByteArray(Charsets.UTF_8))
+    /** Write one masked text frame. Throws if the socket is already closed. */
+    override fun sendText(text: String) =
+        sendFrame(CdpFrameCodec.OPCODE_TEXT, text.toByteArray(Charsets.UTF_8))
 
     /**
      * Blocking read of the next data message; null on close or error. A
      * [deadlineMs] of 0 waits indefinitely, which is what a session reader
      * wants: the socket closing is what ends it.
      */
-    fun readTextMessage(deadlineMs: Long): String? {
+    override fun readTextMessage(deadlineMs: Long): String? {
         val source = input ?: return null
         val chunk = ByteArray(READ_CHUNK_BYTES)
         while (true) {
@@ -113,7 +125,11 @@ internal class ChromiumDevToolsSocket(
                 is CdpFrameRead.Control -> {
                     rawBuffer = dropConsumed(read.consumed)
                     when (read.opcode) {
-                        CdpFrameCodec.OPCODE_PING -> sendFrame(CdpFrameCodec.OPCODE_PONG, read.payload)
+                        // A pong racing the close is not an error worth killing
+                        // the reader thread over.
+                        CdpFrameCodec.OPCODE_PING -> runCatching {
+                            sendFrame(CdpFrameCodec.OPCODE_PONG, read.payload)
+                        }
                         CdpFrameCodec.OPCODE_CLOSE -> return null
                         else -> Unit
                     }
@@ -125,7 +141,7 @@ internal class ChromiumDevToolsSocket(
         }
     }
 
-    fun close() {
+    override fun close() {
         runCatching { socket?.close() }
         socket = null
         input = null
@@ -227,7 +243,9 @@ internal class ChromiumDevToolsSocket(
     }
 
     private fun sendFrame(opcode: Int, payload: ByteArray) {
-        val out = output ?: return
+        // Throws rather than no-op: a dropped frame the caller is awaiting a
+        // reply to would otherwise stall until the request timeout.
+        val out = output ?: error("devtools socket is closed")
         val frame = codec.encodeFrame(opcode, payload, codec.newMaskKey())
         synchronized(writeLock) {
             out.write(frame)
@@ -267,11 +285,11 @@ internal class ChromiumDevToolsSocket(
 }
 
 /**
- * A live [EngineProtocolSession] over an already-upgraded [ChromiumDevToolsSocket].
+ * A live [EngineProtocolSession] over an already-upgraded [CdpTransport].
  * Only JSON strings cross: no socket or engine type is named above this module.
  */
 internal class CdpProtocolSession(
-    private val socket: ChromiumDevToolsSocket
+    private val socket: CdpTransport
 ) : EngineProtocolSession {
 
     private val pending = HashMap<Int, CompletableDeferred<String>>()
@@ -288,6 +306,13 @@ internal class CdpProtocolSession(
     @Volatile
     private var closed = false
 
+    /**
+     * How many requests are awaiting a reply. Exposed so a test can prove a
+     * failed write or a close leaves the map empty rather than leaking an
+     * entry.
+     */
+    internal val pendingCount: Int get() = synchronized(pendingLock) { pending.size }
+
     private val reader = Thread({ readLoop() }, "room-cdp-reader").apply {
         isDaemon = true
         start()
@@ -296,12 +321,15 @@ internal class CdpProtocolSession(
     override suspend fun send(method: String, paramsJson: String): String = withContext(Dispatchers.IO) {
         val id = nextId.getAndIncrement()
         val reply = CompletableDeferred<String>()
-        synchronized(pendingLock) {
-            check(!closed) { "the protocol session is closed" }
-            pending[id] = reply
-        }
-        socket.sendText(request(id, method, paramsJson))
+        // The write sits INSIDE the guarded region: a transport that throws on
+        // the way out (already closed, broken pipe) must still drop its pending
+        // entry, or the map leaks one deferred per failed request.
         try {
+            synchronized(pendingLock) {
+                check(!closed) { "the protocol session is closed" }
+                pending[id] = reply
+            }
+            socket.sendText(request(id, method, paramsJson))
             withTimeout(REQUEST_TIMEOUT_MS) { reply.await() }
         } finally {
             synchronized(pendingLock) { pending.remove(id) }

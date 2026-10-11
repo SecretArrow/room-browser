@@ -47,6 +47,20 @@ class CdpFrameCodecTest {
     }
 
     @Test
+    fun the_encoder_writes_the_expected_wire_bytes() {
+        // A fixed mask key, so the whole frame is a literal rather than a
+        // property check that a mirrored encoder would also pass.
+        val encoded = CdpFrameCodec().encodeTextFrame("hello", maskKey)
+        assertThat(encoded.toList()).isEqualTo(
+            listOf(
+                0x81.toByte(), 0x85.toByte(),
+                0x37.toByte(), 0xFA.toByte(), 0x21.toByte(), 0x3D.toByte(),
+                0x5F.toByte(), 0x9F.toByte(), 0x4D.toByte(), 0x51.toByte(), 0x58.toByte()
+            )
+        )
+    }
+
+    @Test
     fun an_unmasked_server_frame_is_read_as_is() {
         val bytes = frameBytes(CdpFrameCodec.OPCODE_TEXT, "hello".toByteArray(Charsets.UTF_8))
         val message = CdpFrameCodec().decode(bytes) as CdpFrameRead.Message
@@ -143,6 +157,41 @@ class CdpFrameCodecTest {
         val encoded = codec.encodeFrame(CdpFrameCodec.OPCODE_BINARY, payload, maskKey)
 
         assertThat(encoded[1].toInt() and 0x7F).isEqualTo(126)
+
+        val message = codec.decode(encoded) as CdpFrameRead.Message
+        assertThat(message.consumed).isEqualTo(encoded.size)
+        assertThat(message.payload.toList()).isEqualTo(payload.toList())
+    }
+
+    @Test
+    fun the_single_byte_length_form_carries_a_125_byte_frame() {
+        // 125 is the largest payload the 7-bit form carries: the boundary the
+        // next test steps over, so one over-long byte here would be encoded as
+        // a 16-bit length and misread.
+        val codec = CdpFrameCodec()
+        val payload = ByteArray(125) { (it % 251).toByte() }
+        val encoded = codec.encodeFrame(CdpFrameCodec.OPCODE_BINARY, payload, maskKey)
+
+        assertThat(encoded[1].toInt() and 0x7F).isEqualTo(125)
+        // Two header bytes, the four mask bytes, and no extended length.
+        assertThat(encoded.size).isEqualTo(2 + 4 + 125)
+
+        val message = codec.decode(encoded) as CdpFrameRead.Message
+        assertThat(message.consumed).isEqualTo(encoded.size)
+        assertThat(message.payload.toList()).isEqualTo(payload.toList())
+    }
+
+    @Test
+    fun the_16_bit_length_form_carries_a_65535_byte_frame() {
+        // 65535 is the largest length the 16-bit form carries; 65536 (the other
+        // test) is the first that needs the 64-bit form.
+        val codec = CdpFrameCodec()
+        val payload = ByteArray(65_535) { (it % 251).toByte() }
+        val encoded = codec.encodeFrame(CdpFrameCodec.OPCODE_BINARY, payload, maskKey)
+
+        assertThat(encoded[1].toInt() and 0x7F).isEqualTo(126)
+        assertThat(encoded[2].toInt() and 0xFF).isEqualTo(0xFF)
+        assertThat(encoded[3].toInt() and 0xFF).isEqualTo(0xFF)
 
         val message = codec.decode(encoded) as CdpFrameRead.Message
         assertThat(message.consumed).isEqualTo(encoded.size)
@@ -355,6 +404,32 @@ class CdpFrameCodecTest {
         assertThat(response.header("content-type"))
             .isEqualTo("application/json; charset=UTF-8")
         assertThat(response.body).isEqualTo(body)
+    }
+
+    @Test
+    fun an_http_reply_consumes_only_its_own_bytes() {
+        val body = "{\"a\":1}"
+        val response = (
+            "HTTP/1.1 200 OK\r\n" +
+                "Content-Length: ${body.toByteArray(Charsets.UTF_8).size}\r\n" +
+                "\r\n" +
+                body
+            ).toByteArray(Charsets.UTF_8)
+        // The first WebSocket frame of the same socket read, buffered behind the
+        // reply: a length computed against the buffer end would swallow it.
+        val trailing = byteArrayOf(0x81.toByte(), 0x85.toByte(), 0x37, 0xFA.toByte(), 0x21, 0x3D)
+        val buffered = response + trailing
+
+        val read = CdpFrameCodec().parseHttpResponse(buffered)
+        assertThat(read).isInstanceOf(CdpHttpRead.Response::class.java)
+        val parsed = (read as CdpHttpRead.Response).response
+
+        assertThat(parsed.body).isEqualTo(body)
+        // Consumed counts the reply's own bytes only, so the caller drops exactly
+        // those and the frame after it survives intact.
+        assertThat(parsed.consumed).isEqualTo(response.size)
+        assertThat(buffered.copyOfRange(parsed.consumed, buffered.size).toList())
+            .isEqualTo(trailing.toList())
     }
 
     @Test
