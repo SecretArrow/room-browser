@@ -310,11 +310,15 @@ only in the app.
   header" is the fact a bug report needs. A page's own console TEXT is left as
   the page wrote it: this is the user's own view of their own page, and
   rewriting it would make the panel lie about what the page said.
-- **No remote-debugging endpoint is exposed.** The app opens no debug socket and
-  never calls `WebView.setWebContentsDebuggingEnabled`; no inspector of this
-  app's pages is reachable over the network or from another app. This is a
-  property of the source as it stands — no such call exists anywhere in it — and
-  not merely a runtime toggle.
+- **No remote-debugging endpoint is exposed.** No listening port is opened, and
+  no inspector of this app's pages is reachable over the network or from another
+  app. Where WebView's own devtools channel is used at all, it is reached only
+  through a `LocalSocket` in the **abstract** namespace — a kernel namespace
+  socket with no TCP/IP address — whose only accepted peers are same-UID
+  processes and adb. `WebView.setWebContentsDebuggingEnabled` is process-wide
+  and static, so it is toggled from exactly one place: on for as long as a
+  Developer Tools panel holds that channel open, and off again when the last
+  holder closes. The app never opens an `adb forward`.
 - **Unavailable in private tabs.** The Developer Tools row is not offered on a
   private tab and no inspector session is created for one; if a private tab is
   opened while the panel is showing, the panel closes.
