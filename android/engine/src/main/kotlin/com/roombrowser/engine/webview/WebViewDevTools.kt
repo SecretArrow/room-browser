@@ -5,7 +5,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
-import android.webkit.CookieManagerimport androidx.webkit.WebViewFeature
+import android.webkit.CookieManager
+import androidx.webkit.WebViewFeature
 import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.DevToolsCapability
 import com.roombrowser.engine.devtools.EngineConsoleMessage
@@ -14,7 +15,8 @@ import com.roombrowser.engine.devtools.EngineInspector
 import com.roombrowser.engine.devtools.EngineNetworkSignal
 import com.roombrowser.engine.devtools.EngineProtocolSession
 import com.roombrowser.engine.devtools.EngineSecurityInfo
-import com.roombrowser.engine.devtools.parseCookieHeaderimport kotlinx.coroutines.Dispatchers
+import com.roombrowser.engine.devtools.parseCookieHeader
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
