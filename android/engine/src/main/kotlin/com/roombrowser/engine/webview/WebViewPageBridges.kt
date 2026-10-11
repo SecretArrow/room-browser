@@ -40,6 +40,9 @@ internal object WebViewPageChannels {
     /** The global JS sees for the wallet dApp provider bridge. */
     const val WALLET_INTERFACE = "RoomWallet"
 
+    /** The global JS sees for the DevTools console patch. */
+    const val CONSOLE_INTERFACE = "RoomConsole"
+
     /**
      * The `channel` an upward message carries: the name of the native entry
      * point that was called, which is the same string the page sees.
@@ -140,5 +143,32 @@ internal class WalletPageBridge(
             .toString()
         deliver(WebViewPageChannels.WALLET_CHANNEL, json)
         return ""
+    }
+}
+
+/**
+ * `window.RoomConsole`: the DevTools page patch's page-callable half.
+ *
+ * ONE method taking ONE string, like [WalletPageBridge] -- and for the stronger
+ * reason: the patch carries a console entry whose arguments may be objects,
+ * which `addJavascriptInterface` does not marshal, so the page `JSON.stringify`s
+ * the whole entry and the native side parses it. The payload is therefore a
+ * complete entry, not an argument to be packed, and there is nothing to
+ * envelope.
+ *
+ * It is a pure transport on purpose, exactly as the two bridges above: the
+ * parse and the route to the inspector live in the session's wiring, where the
+ * session's own inspector is at hand.
+ *
+ * NO RETURN VALUE. The page fires and forgets, and a synchronous return would
+ * be evaluated on WebView's JavaBridge thread where it is unreliable.
+ */
+internal class ConsolePageBridge(
+    private val deliver: (payload: String) -> Unit
+) {
+
+    @JavascriptInterface
+    fun entry(payload: String?) {
+        deliver(payload ?: "")
     }
 }
