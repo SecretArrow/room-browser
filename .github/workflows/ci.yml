@@ -319,6 +319,7 @@ jobs:
             android/app/build/reports/tests/
             android/core/domain/build/reports/tests/
             android/core/wallet/build/reports/tests/
+            android/engine/build/reports/tests/
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------
