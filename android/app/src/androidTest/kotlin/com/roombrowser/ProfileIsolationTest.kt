@@ -45,15 +45,20 @@ class ProfileIsolationTest {
 
     @Test
     fun process_binding_is_profile_exclusive() {
-        val a = ProfileId.new()
-        val b = ProfileId.new()
-        val first = ProfileEngine.bindProcessToProfile(a)
+        // The instrumentation process is SHARED by every suite in the run and
+        // the binding is once-per-process, so an earlier suite (the CDP spike)
+        // may already hold it. State the contract as the exclusivity it is --
+        // one profile, fixed -- rather than as "the first bind of THIS test
+        // succeeds", which would fail purely on suite order.
+        val alreadyBound = ProfileEngine.boundProfile()
+        val a = alreadyBound ?: ProfileId.new().also {
+            assertThat(ProfileEngine.bindProcessToProfile(it)).isTrue()
+        }
         // Re-binding to the SAME profile is a no-op success
         assertThat(ProfileEngine.bindProcessToProfile(a)).isTrue()
         // A second bind attempt to a DIFFERENT profile must fail — this is
         // the guard that makes cross-profile state reuse impossible.
-        assertThat(first).isTrue()
-        assertThat(ProfileEngine.bindProcessToProfile(b)).isFalse()
+        assertThat(ProfileEngine.bindProcessToProfile(ProfileId.new())).isFalse()
     }
 
     @Test

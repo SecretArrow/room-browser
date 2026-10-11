@@ -20,6 +20,7 @@ okhttp = "4.12.0"
 zxing = "3.5.3"
 web3j = "4.12.3"
 bouncycastle = "1.80"
+json = "20240303"
 junit = "4.13.2"
 mockk = "1.13.13"
 truth = "1.4.4"
@@ -72,6 +73,7 @@ zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 web3j-crypto = { module = "org.web3j:crypto", version.ref = "web3j" }
 bouncycastle-provider = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
 
+json = { module = "org.json:json", version.ref = "json" }
 junit = { module = "junit:junit", version.ref = "junit" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 truth = { module = "com.google.truth:truth", version.ref = "truth" }

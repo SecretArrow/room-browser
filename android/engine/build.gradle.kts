@@ -52,4 +52,8 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.truth)
+    // `org.json` ships inside android.jar, whose method bodies are throwing
+    // stubs on a JVM, so the CDP session tests -- which build a request frame
+    // and read a reply's id -- need a real implementation on this classpath.
+    testImplementation(libs.json)
 }
