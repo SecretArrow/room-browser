@@ -5,14 +5,17 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.webkit.CookieManager
 import androidx.webkit.WebViewFeature
 import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.DevToolsCapability
 import com.roombrowser.engine.devtools.EngineConsoleMessage
+import com.roombrowser.engine.devtools.EngineCookie
 import com.roombrowser.engine.devtools.EngineInspector
 import com.roombrowser.engine.devtools.EngineNetworkSignal
 import com.roombrowser.engine.devtools.EngineProtocolSession
 import com.roombrowser.engine.devtools.EngineSecurityInfo
+import com.roombrowser.engine.devtools.parseCookieHeader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -44,6 +47,10 @@ internal object WebViewDevTools {
             DevToolsCapability.CONSOLE_CAPTURE,
             DevToolsCapability.ENGINE_CONSOLE,
             DevToolsCapability.NETWORK_REQUEST_LINE,
+            // The cookies this WebView would send are readable, and that is all:
+            // `CookieManager` hands back a finished header, never a single
+            // cookie's flags.
+            DevToolsCapability.COOKIES,
             // The scheme and host of the committed document are readable, which
             // is the whole of what this edition can say about the connection.
             DevToolsCapability.SECURITY_INFO
@@ -51,6 +58,11 @@ internal object WebViewDevTools {
         notes = mapOf(
             DevToolsCapability.NETWORK_RESPONSE_HEADERS to
                 "WebView reports a request to shouldInterceptRequest before it is sent and never hands back the response, so status and response headers are not observable without intercepting the body — which this app deliberately does not do because it would break streaming.",
+            // COOKIE_ATTRIBUTES is absent, not unimplemented: `getCookie` returns
+            // the header the request would carry and no API describes one cookie,
+            // so no amount of work here would produce a flag.
+            DevToolsCapability.COOKIE_ATTRIBUTES to
+                "WebView's CookieManager returns the cookie header this browser would send — names and values, as one flat string — and no WebView API exposes a cookie's domain, path, expiry, HttpOnly or Secure flag, so this edition can list cookies but cannot describe them.",
             // SECURITY_CERTIFICATE is absent, not unimplemented: no WebView API
             // exposes a live connection's certificate, so no amount of work here
             // would produce one.
@@ -428,6 +440,26 @@ internal class WebViewInspector(
         if (opened == null) ChromiumDevTools.disable()
         return opened
     }
+
+    /**
+     * The cookies this WebView would send to [origin].
+     *
+     * `getCookie` answers with the whole `Cookie:` header as one flat string and
+     * with nothing else, so every cookie here is name-and-value with
+     * [EngineCookie.attributesKnown] false. The flags are NOT guessed from a
+     * localhost heuristic or a name prefix: a section that printed
+     * `secure=false` for a cookie that never said so would be inventing a fact,
+     * and the panel prints "unknown" instead.
+     *
+     * The read hops to the main thread, like everything else this module asks of
+     * a live WebView, and a throw becomes an empty list rather than a crash --
+     * the capability is declared, so "no cookies" is the honest floor.
+     */
+    override suspend fun cookies(origin: String): List<EngineCookie> =
+        withContext(Dispatchers.Main.immediate) {
+            val header = runCatching { CookieManager.getInstance().getCookie(origin) }.getOrNull()
+            parseCookieHeader(header)
+        }
 
     override fun close() {
         consoleSink = null

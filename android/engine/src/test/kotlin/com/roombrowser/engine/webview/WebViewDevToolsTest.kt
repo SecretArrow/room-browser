@@ -21,16 +21,22 @@ class WebViewDevToolsTest {
     private val expectedResponseHeadersNote =
         "WebView reports a request to shouldInterceptRequest before it is sent and never hands back the response, so status and response headers are not observable without intercepting the body — which this app deliberately does not do because it would break streaming."
 
+    private val expectedCookieAttributesNote =
+        "WebView's CookieManager returns the cookie header this browser would send — names and values, as one flat string — and no WebView API exposes a cookie's domain, path, expiry, HttpOnly or Secure flag, so this edition can list cookies but cannot describe them."
+
     /**
-     * The two absences that carry a reason, and they are different kinds.
+     * The absences that carry a reason, and response headers are the odd one out.
      *
      * Response headers are missing because we chose not to intercept bodies --
      * unfinished work the owner could reverse. The certificate is missing
-     * because no WebView API exposes one, so no amount of work here produces it.
-     * Both get a note; nothing else may.
+     * because no WebView API exposes one, and cookie attributes are missing
+     * because `getCookie` answers with a finished header and nothing else: for
+     * those two no amount of work here produces a flag. All three get a note;
+     * nothing else may.
      */
     private val reasonedAbsences = setOf(
         DevToolsCapability.NETWORK_RESPONSE_HEADERS,
+        DevToolsCapability.COOKIE_ATTRIBUTES,
         DevToolsCapability.SECURITY_CERTIFICATE
     )
 
@@ -42,9 +48,13 @@ class WebViewDevToolsTest {
             DevToolsCapability.CONSOLE_CAPTURE,
             DevToolsCapability.ENGINE_CONSOLE,
             DevToolsCapability.NETWORK_REQUEST_LINE,
+            DevToolsCapability.COOKIES,
             DevToolsCapability.SECURITY_INFO
         )
         assertThat(capabilities.has(DevToolsCapability.NETWORK_RESPONSE_HEADERS)).isFalse()
+        // The cookies are listed, but only as name and value: the flags are a
+        // capability of their own and this edition does not have it.
+        assertThat(capabilities.has(DevToolsCapability.COOKIE_ATTRIBUTES)).isFalse()
         // Declared so the Security panel exists at all; the certificate is what
         // it cannot fill in, and that absence is stated rather than implied.
         assertThat(capabilities.has(DevToolsCapability.SECURITY_CERTIFICATE)).isFalse()
@@ -57,6 +67,8 @@ class WebViewDevToolsTest {
         // one must stay silent, because "not yet" is not "cannot".
         assertThat(capabilities.noteFor(DevToolsCapability.NETWORK_RESPONSE_HEADERS))
             .isEqualTo(expectedResponseHeadersNote)
+        assertThat(capabilities.noteFor(DevToolsCapability.COOKIE_ATTRIBUTES))
+            .isEqualTo(expectedCookieAttributesNote)
         assertThat(capabilities.noteFor(DevToolsCapability.SECURITY_CERTIFICATE)).isNotNull()
         DevToolsCapability.entries
             .filter { it !in reasonedAbsences }
@@ -76,6 +88,7 @@ class WebViewDevToolsTest {
             DevToolsCapability.PAGE_SCRIPTING,
             DevToolsCapability.ENGINE_CONSOLE,
             DevToolsCapability.NETWORK_REQUEST_LINE,
+            DevToolsCapability.COOKIES,
             DevToolsCapability.SECURITY_INFO
         )
         // And the absence is explained rather than silent, because on THIS
