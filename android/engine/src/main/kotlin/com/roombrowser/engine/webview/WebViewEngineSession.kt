@@ -46,6 +46,7 @@ import com.roombrowser.engine.devtools.EngineNetworkSignal
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.roundToInt
 
 /**
  * One `WebView` behind the engine facade.
@@ -354,9 +355,16 @@ internal class WebViewEngineSession(
                 s.useWideViewPort = true
                 s.loadWithOverviewMode = false
             }
-            // No `textZoom` here: the profile's text scale is applied by the
-            // shared document-start shim, the same way in both editions. See
-            // `DeviceShim.textScaleScript`.
+            // The profile's text scale normally travels as the shared
+            // document-start shim, which a WebView too old for
+            // DOCUMENT_START_SCRIPT never receives -- so the engine's own text
+            // scaler carries it there instead, and is reset to 100 where the
+            // shim owns the property, so the two paths cannot drift.
+            s.textZoom = if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                100
+            } else {
+                (settings.fontScale * 100).roundToInt().coerceIn(50, 200)
+            }
 
             // Cookies are process-wide on WebView (one CookieManager for the
             // whole process), scoped on disk by the data-directory suffix
