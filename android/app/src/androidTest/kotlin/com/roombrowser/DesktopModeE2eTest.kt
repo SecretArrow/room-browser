@@ -10,6 +10,8 @@ import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
 import com.roombrowser.data.db.AppDatabase
+import com.roombrowser.di.AppGraph
+import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -284,6 +286,27 @@ class DesktopModeE2eTest {
     private fun desktopModeStored(): Boolean = runCatching {
         readStoredProfile()?.second?.desktopModeDefault == true
     }.getOrDefault(false)
+
+    /**
+     * The switch is a persisted profile setting and the suite shares one process,
+     * so a profile left in desktop mode would send the desktop UA in every later
+     * suite's pages. This profile is the test's own, so its default goes back off.
+     */
+    @After
+    fun restoreDesktopMode() {
+        val id = runCatching { readStoredProfile()?.first }.getOrNull() ?: return
+        runCatching {
+            runBlocking<Unit> {
+                val graph: AppGraph = (targetContext.applicationContext as RoomBrowserApp).graph
+                val current = graph.profileRepo.getProfile(ProfileId(id))?.settings
+                    ?: return@runBlocking
+                graph.profileManager.updateSettings(
+                    ProfileId(id),
+                    current.copy(desktopModeDefault = false)
+                )
+            }
+        }
+    }
 
     @Test
     fun desktop_mode_default_sends_the_desktop_user_agent_on_a_new_session() {
