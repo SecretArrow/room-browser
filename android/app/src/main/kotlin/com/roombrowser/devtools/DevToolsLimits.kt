@@ -116,7 +116,9 @@ internal fun sharedLimits(): List<LimitsSection> = listOf(
                 "The new agent tools read the same buffers the panels show, not a second " +
                     "capture. On the WebView edition response status and headers are not " +
                     "observable, so any header the agent reads here is a request header, " +
-                    "redacted at entry."
+                    "redacted at entry. The diagnostic report is not produced at all unless " +
+                    "the browser-wide \"Enable network diagnostics\" setting is on, and that " +
+                    "setting is off by default."
             )
         )
     )

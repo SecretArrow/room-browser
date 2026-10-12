@@ -180,7 +180,7 @@ object AgentAppActions {
     /**
      * Every per-profile setting the agent may read or write, by name, together
      * with the accessors that do it. Deliberately a WHITELIST: the settings
-     * blob has ~40 fields, several of them enum-valued (theme, tab layout,
+     * blob has ~40 fields, several of them enum-valued (tab layout,
      * device, UA mode, DNS mode), and writing one from a name the model
      * guessed is corruption the user cannot see. Those stay in the settings
      * screen.
@@ -213,8 +213,6 @@ object AgentAppActions {
         boolSwitch("showPrivacyStats", { it.showPrivacyStats }) { s, v -> s.copy(showPrivacyStats = v) },
         boolSwitch("showRecentSites", { it.showRecentSites }) { s, v -> s.copy(showRecentSites = v) },
         boolSwitch("showClock", { it.showClock }) { s, v -> s.copy(showClock = v) },
-        boolSwitch("reducedMotion", { it.reducedMotion }) { s, v -> s.copy(reducedMotion = v) },
-        boolSwitch("highContrast", { it.highContrast }) { s, v -> s.copy(highContrast = v) },
         text("searchEngineId", { it.searchEngineId }) { s, v -> s.copy(searchEngineId = v) },
         text("translateTargetLanguage", { it.translateTargetLanguage }) { s, v ->
             s.copy(translateTargetLanguage = v)

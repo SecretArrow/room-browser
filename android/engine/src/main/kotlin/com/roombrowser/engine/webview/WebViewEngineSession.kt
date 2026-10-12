@@ -31,7 +31,6 @@ import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.roombrowser.domain.model.Profile
-import com.roombrowser.domain.model.UaMode
 import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.engine.EnginePageScripts
 import com.roombrowser.engine.EngineSession
@@ -283,8 +282,8 @@ internal class WebViewEngineSession(
      * `UserAgents.effectiveUserAgent` means "use the engine's own UA" and it
      * must be APPLIED, not skipped -- a `?.let` alone would leave the previous
      * identity installed on every open WebView until the process restarted,
-     * which is the bug the app's own comment records. Same rule for
-     * `UaMode.DEFAULT` in [applyDesktopMode].
+     * which is the bug the app's own comment records. The mobile branch of
+     * [applyDesktopMode] follows the same rule.
      *
      * THE PAGE SCRIPTS ARE NOT INSTALLED HERE. They arrive through
      * [setPageScripts], because the script TEXT comes from above the facade
@@ -345,7 +344,19 @@ internal class WebViewEngineSession(
             val chosen = UserAgents.effectiveUserAgent(settings)
             s.userAgentString = chosen
                 ?: UserAgents.webViewNeutralUserAgent(WebViewStockUserAgent.of(s))
-            s.textZoom = (settings.fontScale * 100f).toInt().coerceIn(50, 200)
+            // Desktop mode is the LAST word on identity, and it belongs here as
+            // well as in [applyDesktopMode]: `configure` runs again on every
+            // settings change, including the one the app makes immediately
+            // after a session is created, so a profile whose default is desktop
+            // mode would otherwise be handed its mobile UA back by that pass.
+            if (settings.desktopModeDefault) {
+                s.userAgentString = UserAgents.desktopModeUserAgent
+                s.useWideViewPort = true
+                s.loadWithOverviewMode = false
+            }
+            // No `textZoom` here: the profile's text scale is applied by the
+            // shared document-start shim, the same way in both editions. See
+            // `DeviceShim.textScaleScript`.
 
             // Cookies are process-wide on WebView (one CookieManager for the
             // whole process), scoped on disk by the data-directory suffix
@@ -387,10 +398,12 @@ internal class WebViewEngineSession(
             } else {
                 s.useWideViewPort = true
                 s.loadWithOverviewMode = true
-                when (profile.settings.uaMode) {
-                    UaMode.DEFAULT -> s.userAgentString = null
-                    else -> UserAgents.effectiveUserAgent(profile.settings)?.let { s.userAgentString = it }
-                }
+                // The same two-step the mobile branch of [configure] uses: a
+                // null override means "the engine's own UA", which still
+                // announces a WebView, so the stock string is read back and its
+                // two WebView markers stripped before it is installed.
+                s.userAgentString = UserAgents.effectiveUserAgent(profile.settings)
+                    ?: UserAgents.webViewNeutralUserAgent(WebViewStockUserAgent.of(s))
             }
         }
         applyPageScripts()
