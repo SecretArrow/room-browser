@@ -45,6 +45,9 @@ class AgentToolForegroundPolicyTest {
         // it does not have to wait for the tab. A tab that is not attached to a
         // display has no frame and the tool fails honestly rather than waiting.
         AgentTools.SEE_PAGE,
+        // The same capture again, and the comparison happens in this process:
+        // nothing about it needs the tab the user is looking at.
+        AgentTools.COMPARE_SCREENSHOTS,
         AgentTools.SCROLL,
         AgentTools.OPEN_NEW_TAB,
         AgentTools.LIST_TABS,

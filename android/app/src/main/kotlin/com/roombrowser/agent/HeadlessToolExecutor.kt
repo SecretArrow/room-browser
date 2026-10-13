@@ -10,6 +10,7 @@ import com.roombrowser.domain.agent.DataTransform
 import com.roombrowser.domain.agent.KeyChord
 import com.roombrowser.domain.agent.PageSnapshotDto
 import com.roombrowser.domain.agent.PageSnapshotFormatter
+import com.roombrowser.domain.agent.ScreenshotDiff
 import com.roombrowser.domain.agent.SecretRedaction
 import com.roombrowser.domain.agent.SiteMemory
 import com.roombrowser.domain.agent.SiteMemoryStore
@@ -150,6 +151,13 @@ class HeadlessToolExecutor(
     private val lastStartedAt = AtomicLong(0L)
     private val lastFinishedAt = AtomicLong(0L)
 
+    /**
+     * The last frame this turn captured, for `compare_screenshots`. Held here
+     * rather than in a store because the executor is built per turn: the
+     * comparison is only ever against the page as it was a moment ago.
+     */
+    private val screenshotHistory = ScreenshotHistory()
+
     private val profileTools: AgentProfileTools? = profileData?.let {
         AgentProfileTools(
             data = it,
@@ -181,7 +189,8 @@ class HeadlessToolExecutor(
                     AgentTools.NAVIGATE -> navigate(str(args, "url"))
                     AgentTools.SEARCH_WEB -> searchWeb(str(args, "query"))
                     AgentTools.READ_PAGE -> readPage()
-                    AgentTools.SEE_PAGE -> seePage(str(args, "question"), str(args, "reason"))
+                    AgentTools.SEE_PAGE -> seePage(args)
+                    AgentTools.COMPARE_SCREENSHOTS -> compareScreenshots(args)
                     AgentTools.CLICK -> click(int(args, "ref"))
                     AgentTools.FILL_INPUT -> fillInput(int(args, "ref"), str(args, "text"))
                     AgentTools.PRESS_ENTER -> pressEnter(intOrNull(args, "ref"))
@@ -351,7 +360,7 @@ class HeadlessToolExecutor(
      * there is no private-tab refusal here; the profile's own switch and the
      * provider's ability to carry an image are the caller's to supply.
      */
-    private suspend fun seePage(question: String?, reason: String?): ToolResult {
+    private suspend fun seePage(args: Map<String, Any?>): ToolResult {
         if (!visionEnabled()) {
             return ToolResult(
                 false,
@@ -364,13 +373,41 @@ class HeadlessToolExecutor(
                 "see_page is not available on this provider — $why. Switch to a provider that accepts images."
             )
         }
-        val shot = PageScreenshot.capture(session).getOrElse {
+        val annotate = bool(args, "annotate")
+        val shot = (if (bool(args, "full_page")) {
+            PageScreenshot.captureFullPage(session, annotate)
+        } else {
+            PageScreenshot.capture(session, annotate)
+        }).getOrElse {
             return ToolResult(false, "could not capture the page: ${it.message ?: "unknown error"}")
         }
+        shot.frame?.let { screenshotHistory.record(it) }
         return ToolResult(
             true,
-            screenshotSummary(shot, question, reason),
+            screenshotSummary(shot, str(args, "question"), str(args, "reason")),
             images = listOf(shot.image)
+        )
+    }
+
+    private suspend fun compareScreenshots(args: Map<String, Any?>): ToolResult {
+        if (!visionEnabled()) {
+            return ToolResult(
+                false,
+                "compare_screenshots is turned off for this profile — turn on \"Agent can see " +
+                    "the page\" in AI Agent settings."
+            )
+        }
+        visionUnsupportedReason()?.let { why ->
+            return ToolResult(
+                false,
+                "compare_screenshots is not available on this provider — $why. Switch to a " +
+                    "provider that accepts images."
+            )
+        }
+        return compareWithLastScreenshot(
+            session,
+            screenshotHistory,
+            intOrNull(args, "tolerance") ?: ScreenshotDiff.DEFAULT_TOLERANCE
         )
     }
 
@@ -781,6 +818,10 @@ class HeadlessToolExecutor(
 
     private fun int(args: Map<String, Any?>, key: String): Int? = intOrNull(args, key)
 
+    /** Optional booleans default to false: an absent flag is the cheaper behaviour. */
+    private fun bool(args: Map<String, Any?>, key: String): Boolean =
+        (args[key] as? Boolean) ?: (args[key] as? String)?.toBooleanStrictOrNull() ?: false
+
     private fun intOrNull(args: Map<String, Any?>, key: String): Int? =
         (args[key] as? Number)?.toInt() ?: (args[key] as? String)?.toIntOrNull()
 
@@ -811,7 +852,7 @@ class HeadlessToolExecutor(
          */
         internal val SUPPORTED_TOOLS: Set<String> = setOf(
             AgentTools.NAVIGATE, AgentTools.SEARCH_WEB, AgentTools.READ_PAGE,
-            AgentTools.SEE_PAGE,
+            AgentTools.SEE_PAGE, AgentTools.COMPARE_SCREENSHOTS,
             AgentTools.CLICK, AgentTools.FILL_INPUT, AgentTools.PRESS_ENTER,
             AgentTools.SCROLL, AgentTools.GO_BACK, AgentTools.RELOAD, AgentTools.FORWARD,
             AgentTools.AUTO_LIKE,

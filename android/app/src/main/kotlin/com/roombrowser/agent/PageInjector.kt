@@ -21,6 +21,15 @@ object PageInjector {
     const val REF_ATTR = "data-agent-ref"
 
     /**
+     * How many numbered boxes [annotateJs] may draw.
+     *
+     * A ceiling rather than a target: the numbers are meant to be matched to
+     * elements by eye, and a page of a hundred of them is a wall of red rather
+     * than a legend.
+     */
+    private const val MAX_ANNOTATIONS = 120
+
+    /**
      * Builds the page snapshot: URL, title, viewport text, scroll position
      * and every visible interactive element tagged with a [ref] number.
      */
@@ -130,6 +139,109 @@ object PageInjector {
           window.scrollBy(0, $dy);
           return 'scrolled; now at ' + Math.round(window.scrollY || 0) + ' of ' +
             Math.round(Math.max(document.documentElement.scrollHeight - window.innerHeight, 0));
+        })()
+    """.trimIndent()
+
+    /**
+     * The three numbers a whole-document capture needs: how tall the document
+     * is, how tall the viewport is, and where the user had scrolled to.
+     *
+     * Returned as one comma-joined string so the whole measurement costs a
+     * single round trip, and the caller can put the user back where they were.
+     */
+    fun metricsJs(): String = """
+        (function(){
+          var d = document.documentElement;
+          return Math.round(d.scrollHeight) + ',' + Math.round(window.innerHeight) + ',' +
+            Math.round(window.scrollY || 0);
+        })()
+    """.trimIndent()
+
+    /**
+     * Scroll to [y] and report where the page actually ended up.
+     *
+     * `scroll-behavior: smooth` is overridden inline for the duration, because a
+     * stylesheet rule would animate the jump and the caller would then capture a
+     * frame from the middle of the animation -- a page that scrolls smoothly
+     * would produce a stitched image with bands in the wrong order. The inline
+     * override wins over the stylesheet and is put back, so the page keeps its
+     * own behaviour and no style is left behind.
+     */
+    fun scrollToJs(y: Int): String = """
+        (function(){
+          var d = document.documentElement;
+          var prev = d.style.scrollBehavior;
+          d.style.scrollBehavior = 'auto';
+          window.scrollTo(0, $y);
+          var at = Math.round(window.scrollY || 0);
+          d.style.scrollBehavior = prev;
+          return at + ',' + Math.round(d.scrollHeight);
+        })()
+    """.trimIndent()
+
+    /** The id of the annotation overlay, so it can be removed again. */
+    const val ANNOTATE_ID = "room-agent-annotate"
+
+    /**
+     * Draws the [REF_ATTR] numbers onto the elements they belong to, so a
+     * number the model SEES in a screenshot is the number `click` and
+     * `fill_input` take.
+     *
+     * It reuses the numbering [snapshotJs] already assigned rather than making
+     * its own: a second numbering would be a second thing to keep in step, and
+     * the two would drift apart on the page where it matters.
+     *
+     * Only elements intersecting the viewport are labelled, and only up to
+     * [MAX_ANNOTATIONS] of them: the overlay is `position: fixed`, so it is
+     * redrawn for whatever is on screen -- which also means a scrolled,
+     * stitched capture gets each element's number on the strip it appears in.
+     *
+     * Returns how many labels were drawn. The caller MUST remove the overlay
+     * afterwards; it is DOM the page did not write.
+     */
+    fun annotateJs(): String = """
+        (function(){
+          var old = document.getElementById('$ANNOTATE_ID');
+          if (old && old.parentNode) old.parentNode.removeChild(old);
+          var box = document.createElement('div');
+          box.id = '$ANNOTATE_ID';
+          box.setAttribute('aria-hidden', 'true');
+          box.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;pointer-events:none;z-index:2147483647;';
+          var nodes = document.querySelectorAll('[$REF_ATTR]');
+          var n = 0;
+          for (var i = 0; i < nodes.length && n < $MAX_ANNOTATIONS; i++) {
+            var el = nodes[i];
+            var r = el.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0) continue;
+            if (r.bottom <= 0 || r.top >= window.innerHeight) continue;
+            if (r.right <= 0 || r.left >= window.innerWidth) continue;
+            var left = Math.max(0, Math.round(r.left));
+            var top = Math.max(0, Math.round(r.top));
+            var outline = document.createElement('div');
+            outline.style.cssText = 'position:fixed;box-sizing:border-box;border:2px solid #d50000;' +
+              'border-radius:2px;background:transparent;pointer-events:none;' +
+              'left:' + left + 'px;top:' + top + 'px;width:' + Math.round(r.width) + 'px;' +
+              'height:' + Math.round(r.height) + 'px;';
+            var badge = document.createElement('div');
+            badge.textContent = el.getAttribute('$REF_ATTR');
+            badge.style.cssText = 'position:fixed;background:#d50000;color:#ffffff;' +
+              'font:bold 12px monospace;line-height:1;padding:2px 3px;border-radius:3px;' +
+              'pointer-events:none;left:' + left + 'px;top:' + top + 'px;';
+            box.appendChild(outline);
+            box.appendChild(badge);
+            n++;
+          }
+          document.documentElement.appendChild(box);
+          return n;
+        })()
+    """.trimIndent()
+
+    /** Removes the [annotateJs] overlay. Idempotent, and a no-op when absent. */
+    fun clearAnnotationJs(): String = """
+        (function(){
+          var el = document.getElementById('$ANNOTATE_ID');
+          if (el && el.parentNode) el.parentNode.removeChild(el);
+          return 1;
         })()
     """.trimIndent()
 

@@ -121,7 +121,8 @@ listed below; the two that must have their tab on screen are marked.
 | `data_transform(op, input, …)` | Pure host-side transform of data the agent already has — `json_path`, `csv_rows`, `aggregate`, `diff` — with no page and no engine (see below) |
 | `node_run(script)` | Runs a JavaScript program in the **embedded Node.js runtime**, in a process of its own, with Node's real APIs behind it — *not about the open page; refused to a scheduled run and in Plan mode* (see below) |
 | `node_packages(action, name?, spec?)` | Manages the npm packages installed beside that runtime — `list`, `install`, `remove` — for `node_run` to `require`. It never executes package code — *refused to a scheduled run and in Plan mode* (see below) |
-| `see_page(question?)` | Screenshots this chat's tab and sends the image to the provider — *off unless the profile enables it; refused on text-only providers and in a private tab* (see below) |
+| `see_page(question?, full_page?, annotate?)` | Screenshots this chat's tab and sends the image to the provider; `full_page` stitches the whole document (scaled down) and `annotate` draws the `[ref]` numbers onto the elements — *off unless the profile enables it; refused on text-only providers and in a private tab* (see below) |
+| `compare_screenshots(tolerance?)` | Captures the page and reports how much of it changed, and where, against the last screenshot taken in this turn — the cheap "did that click do anything?" check that sends the provider no second image |
 | `site_memory(op, key, …)` | Reads, writes or forgets a per-site note kept for this profile — *off unless the profile enables it* (see below) |
 | `plan(items)` | The agent's own step list, shown to you as a checklist card with what it has finished and what it is on now. It sends the **whole list every call** (it replaces the previous one), touches no page and stores nothing — see **The step list** below |
 | `download_file(url, name?)` | Hands a link that leads to a **file** (an invoice PDF, a CSV export, an image) to the browser's own download engine, so it lands in Downloads/RoomBrowser and the transfer outlives the turn. It queues the file and returns — the file is not ready when the call answers, so the agent checks `app_data kind=downloads`. Confirmed like a click, refused in plan mode, and refused in a scheduled run (see below) |
@@ -364,9 +365,47 @@ The honest limits are the point of the feature, not a footnote:
 * **Off by default.** `agentVisionEnabled` is false on every profile, and the
   setting's own description states the consequence in full.
 
-**Status in this build:** implemented — the `see_page` tool, the
-`agentVisionEnabled` switch and its settings row, the per-gateway image bodies
-and the text-only refusal are all present.
+#### Full page, numbered elements, comparing two captures
+
+`see_page` takes two optional flags, and `compare_screenshots` is a second tool
+built on the same capture. All three live **above the engine facade**, so there
+is no engine-specific code in any of them.
+
+* **`full_page=true`** stitches the whole document from viewport captures. It is
+  deliberately **not** a single document-sized draw: this edition's own capture
+  path documents that a synchronous `view.draw()` / `capturePicture` on the main
+  thread deadlocks on WebView-83-class stacks, so the tool scrolls, captures each
+  strip through the asynchronous `PixelCopy` path and stitches them with pure
+  arithmetic (`ScrollStitch` in `:core:domain`, JVM-tested). Honest limits: at
+  most **6 strips** per shot, so a very long page is **truncated and says so** in
+  the result rather than passing as complete; the stitched image is **scaled
+  down** to the size that is sent, so treat it as an overview and take a plain
+  viewport shot when you need to read text; the page's own scroll position is
+  restored afterwards.
+* **`annotate=true`** draws `read_page`'s `[ref]` numbers onto the elements they
+  belong to, as a fixed overlay capped at **120 labels** so a dense page does not
+  become a wall of digits. The overlay is installed before the capture and
+  removed in a `finally` block, so the page is left as the user had it even when
+  the capture fails. The result states how many labels were drawn — otherwise
+  "no numbers in the picture" and "numbers drawn then removed" look identical to
+  the model.
+* **`compare_screenshots`** captures the page and compares it against the last
+  screenshot taken **in this turn** — the history is scoped to the turn, so a
+  comparison can never reach back to a page from an earlier conversation — and
+  reports the changed fraction plus a coarse location ("upper left area"). The
+  **first** call in a turn has nothing to compare against; it records the frame,
+  says so, and becomes the baseline, so the sequence is screenshot → act →
+  compare. The comparison runs on the pixels that were actually sent, so it
+  measures what the model was shown. `tolerance` (default 12, coerced to 0–255)
+  is the per-channel difference below which a pixel is not counted as changed.
+* `compare_screenshots` shares the vision gate: it is refused when
+  `agentVisionEnabled` is off, on a text-only provider and in a private tab,
+  because it is the same capture.
+
+**Status in this build:** implemented — the `see_page` tool with its
+`full_page` / `annotate` flags, `compare_screenshots`, the `agentVisionEnabled`
+switch and its settings row, the per-gateway image bodies and the text-only
+refusal are all present.
 
 ### Site memory (`site_memory`) — an origin-keyed memory
 
