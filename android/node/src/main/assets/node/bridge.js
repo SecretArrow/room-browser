@@ -12,12 +12,50 @@
 // speaks HTTP by hand, is outside what these wrappers can see.
 
 const net = require('net');
+const fs = require('fs');
+const path = require('path');
 
 const argv = process.argv.slice(2);
 const socketName = argv[0];
 const token = argv[1];
 
+// ---- the runtime's own account of itself ---------------------------------
+//
+// One line of JSON per stage, written beside this script, from the first
+// statement on. The failure it exists for is a caller waiting for a socket that
+// never appears: without it, that side can only say the runtime did not start,
+// and a runtime that never ran, one that stopped before listening and one that
+// bound something else all read exactly the same. A write that fails costs the
+// diagnosis, never the run.
+
+const STATUS_FILE = path.join(__dirname, 'status.json');
+
+function report(stage, extra) {
+  try {
+    fs.writeFileSync(
+      STATUS_FILE,
+      JSON.stringify(Object.assign({ stage: stage, at: Date.now(), pid: process.pid }, extra))
+    );
+  } catch (err) {
+    // Deliberately silent: this is a diagnostic, not part of the protocol.
+  }
+}
+
+process.on('uncaughtException', (err) => {
+  report('threw', { error: err && err.message ? err.message : String(err) });
+  process.exit(1);
+});
+
+let cwd;
+try {
+  cwd = process.cwd();
+} catch (err) {
+  cwd = 'unreadable: ' + (err && err.message ? err.message : String(err));
+}
+report('loading', { argv: process.argv.slice(1), node: process.version, cwd: cwd });
+
 if (!socketName || !token) {
+  report('no-arguments', {});
   process.stderr.write('room-node: no socket name or token was given\n');
   process.exit(2);
 }
@@ -253,10 +291,14 @@ const server = net.createServer((connection) => {
 });
 
 server.on('error', (err) => {
+  report('listen-failed', { socket: socketName, error: err.message });
   process.stderr.write('room-node: listen failed: ' + err.message + '\n');
   process.exit(1);
 });
 
 server.listen({ path: '\0' + socketName }, () => {
+  // The bound address is reported as well as the name it was asked for: if the
+  // two ever disagree, the caller's connect is not the thing at fault.
+  report('listening', { socket: socketName, address: server.address() });
   process.stderr.write('room-node: ready on ' + process.version + '\n');
 });
