@@ -19,6 +19,7 @@ object NodeRuntime {
 
     private const val SCRIPT_NAME = "bridge.js"
     private const val STATUS_NAME = "status.json"
+    private const val SOCKET_SUFFIX = ".sock"
 
     /** False on an ABI this APK carries no libnode for. */
     val available: Boolean get() = NodeBridge.available
@@ -36,6 +37,29 @@ object NodeRuntime {
      * instead of guessing.
      */
     internal fun statusFile(context: Context): File = File(nodeDir(context), STATUS_NAME)
+
+    /**
+     * The socket the runtime binds and this side connects to, as a FILE in this
+     * app's own data directory rather than a name in the abstract namespace.
+     *
+     * The abstract namespace was the first choice and did not work here: the
+     * runtime bound the name it was asked for and reported it, no denial was
+     * logged, and the app's own other process still could not reach it for the
+     * full 30s — see the timeout message's own report. A socket file is also the
+     * conventional Android transport between two processes of one app: both are
+     * the same UID and the directory is theirs, so nothing else has to hold.
+     */
+    internal fun socketFile(context: Context, name: String): File =
+        File(nodeDir(context), name + SOCKET_SUFFIX)
+
+    /** Removes socket files left behind by calls whose runtime is gone. */
+    internal fun sweepSockets(context: Context, keep: File) {
+        nodeDir(context).listFiles()?.forEach { file ->
+            if (file.name.endsWith(SOCKET_SUFFIX) && file.name != keep.name) {
+                runCatching { file.delete() }
+            }
+        }
+    }
 
     private fun nodeDir(context: Context): File = File(context.filesDir, "node")
 

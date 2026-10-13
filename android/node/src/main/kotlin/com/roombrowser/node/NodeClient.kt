@@ -8,6 +8,7 @@ import android.os.Process
 import kotlinx.serialization.json.JsonObject
 import java.io.BufferedReader
 import java.io.Closeable
+import java.io.File
 import java.io.IOException
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
@@ -25,7 +26,8 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class NodeClient private constructor(
     private val socket: LocalSocket,
-    private val token: String
+    private val token: String,
+    private val socketFile: File
 ) : Closeable {
 
     private val out = OutputStreamWriter(socket.outputStream, Charsets.UTF_8)
@@ -86,6 +88,9 @@ class NodeClient private constructor(
     @Synchronized
     override fun close() {
         runCatching { socket.close() }
+        // The runtime creates this file and leaves it behind when it exits, so
+        // whoever made the call is who removes it.
+        runCatching { socketFile.delete() }
     }
 
     companion object {
@@ -143,15 +148,20 @@ class NodeClient private constructor(
             }
             val name = "roombrowser-node-${Process.myPid()}-${counter.incrementAndGet()}"
             val token = ByteArray(24).also(random::nextBytes).joinToString("") { "%02x".format(it) }
+            val socketFile = NodeRuntime.socketFile(context, name)
+            // A file left by a run that died is not ours to bind over, and a
+            // connect to it would reach a socket nobody is listening on.
+            runCatching { socketFile.delete() }
             val startedAt = System.currentTimeMillis()
             val deadline = startedAt + timeoutMillis
             var askedAt = 0L
+            var lastFailure: IOException? = null
             while (true) {
                 if (System.currentTimeMillis() - askedAt >= RESTART_EVERY_MS) {
                     val requested = runCatching {
                         context.startService(
                             Intent(context, NodeService::class.java)
-                                .putExtra(NodeRuntime.SOCKET_EXTRA, name)
+                                .putExtra(NodeRuntime.SOCKET_EXTRA, socketFile.absolutePath)
                                 .putExtra(NodeRuntime.TOKEN_EXTRA, token)
                         )
                     }.isSuccess
@@ -162,12 +172,20 @@ class NodeClient private constructor(
                 }
                 val socket = LocalSocket()
                 try {
-                    socket.connect(LocalSocketAddress(name, LocalSocketAddress.Namespace.ABSTRACT))
-                    return NodeClient(socket, token)
+                    socket.connect(
+                        LocalSocketAddress(
+                            socketFile.absolutePath,
+                            LocalSocketAddress.Namespace.FILESYSTEM
+                        )
+                    )
+                    return NodeClient(socket, token, socketFile)
                 } catch (err: IOException) {
+                    lastFailure = err
                     runCatching { socket.close() }
                     if (System.currentTimeMillis() >= deadline) {
-                        throw IOException(timedOut(context, timeoutMillis, name, startedAt))
+                        throw IOException(
+                            timedOut(context, timeoutMillis, socketFile.absolutePath, startedAt, lastFailure)
+                        )
                     }
                     Thread.sleep(RETRY_PAUSE_MS)
                 }
@@ -186,8 +204,9 @@ class NodeClient private constructor(
         private fun timedOut(
             context: Context,
             timeoutMillis: Long,
-            name: String,
-            startedAt: Long
+            socketPath: String,
+            startedAt: Long,
+            lastFailure: IOException?
         ): String {
             val status = NodeRuntime.statusFile(context)
             val report = if (status.lastModified() >= startedAt) {
@@ -195,13 +214,15 @@ class NodeClient private constructor(
             } else {
                 ""
             }
-            val tail = if (report.isEmpty()) {
+            val runtime = if (report.isEmpty()) {
                 "the runtime wrote nothing, so it never reached the first line of its script"
             } else {
                 "the runtime's own last report: $report"
             }
+            val connect = lastFailure?.message?.let { "the last connect said: $it" }
+                ?: "no connect was ever attempted"
             return "the Node runtime did not start within ${timeoutMillis / 1000}s " +
-                "(socket $name) — $tail"
+                "(socket $socketPath) — $runtime — $connect"
         }
     }
 }

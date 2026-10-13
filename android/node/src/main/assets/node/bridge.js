@@ -17,7 +17,7 @@ const path = require('path');
 const vm = require('vm');
 
 const argv = process.argv.slice(2);
-const socketName = argv[0];
+const socketPath = argv[0];
 const token = argv[1];
 
 // ---- the runtime's own account of itself ---------------------------------
@@ -55,7 +55,7 @@ try {
 }
 report('loading', { argv: process.argv.slice(1), node: process.version, cwd: cwd });
 
-if (!socketName || !token) {
+if (!socketPath || !token) {
   report('no-arguments', {});
   process.stderr.write('room-node: no socket name or token was given\n');
   process.exit(2);
@@ -402,14 +402,23 @@ const server = net.createServer((connection) => {
 });
 
 server.on('error', (err) => {
-  report('listen-failed', { socket: socketName, error: err.message });
+  report('listen-failed', { socket: socketPath, error: err.message });
   process.stderr.write('room-node: listen failed: ' + err.message + '\n');
   process.exit(1);
 });
 
-server.listen({ path: '\0' + socketName }, () => {
-  // The bound address is reported as well as the name it was asked for: if the
+// A socket file left behind by a runtime that died is not ours to reuse: the
+// bind would fail with EADDRINUSE and the caller's connect would reach a socket
+// nobody is listening on. ENOENT is the ordinary case.
+try {
+  fs.unlinkSync(socketPath);
+} catch (err) {
+  // Nothing to remove.
+}
+
+server.listen({ path: socketPath }, () => {
+  // The bound address is reported as well as the path it was asked for: if the
   // two ever disagree, the caller's connect is not the thing at fault.
-  report('listening', { socket: socketName, address: server.address() });
+  report('listening', { socket: socketPath, address: server.address() });
   process.stderr.write('room-node: ready on ' + process.version + '\n');
 });
