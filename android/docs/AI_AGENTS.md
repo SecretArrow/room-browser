@@ -123,6 +123,9 @@ listed below; the two that must have their tab on screen are marked.
 | `node_packages(action, name?, spec?)` | Manages the npm packages installed beside that runtime — `list`, `install`, `remove` — for `node_run` to `require`. It never executes package code — *refused to a scheduled run and in Plan mode* (see below) |
 | `see_page(question?)` | Screenshots this chat's tab and sends the image to the provider — *off unless the profile enables it; refused on text-only providers and in a private tab* (see below) |
 | `site_memory(op, key, …)` | Reads, writes or forgets a per-site note kept for this profile — *off unless the profile enables it* (see below) |
+| `plan(items)` | The agent's own step list, shown to you as a checklist card with what it has finished and what it is on now. It sends the **whole list every call** (it replaces the previous one), touches no page and stores nothing — see **The step list** below |
+| `download_file(url, name?)` | Hands a link that leads to a **file** (an invoice PDF, a CSV export, an image) to the browser's own download engine, so it lands in Downloads/RoomBrowser and the transfer outlives the turn. It queues the file and returns — the file is not ready when the call answers, so the agent checks `app_data kind=downloads`. Confirmed like a click, refused in plan mode, and refused in a scheduled run (see below) |
+| `save_pdf(name?)` | Keeps the **page itself** — a receipt, a ticket, a statement — as a PDF in Downloads/RoomBrowser. Use it when the user wants the page they are on kept, and `download_file` when a link already points at a file. Queues the same way a download does, confirmed like a click, refused in plan mode, and refused where there is no page on screen to render (see below) |
 
 A tool marked *needs the tab on screen* waits up to 8 seconds for its tab to
 come to the front, then refuses with an explanation. The reason is concrete:
@@ -384,6 +387,81 @@ per-profile table keyed by the tab's real origin, `AgentMemoryActivity` lists wh
 has been kept with per-entry and per-site delete, and the whole store stays off
 until the user turns on "Let the agent remember this site".
 
+### The step list (`plan`) — what a long run is doing
+
+A long autonomous run is otherwise a scroll of tool cards: it says what
+happened, and nothing says what the agent set out to do. `plan` is the agent's
+own checklist, rendered in the panel as a card with each step marked done,
+in progress or pending.
+
+Honest limits:
+
+* **Nothing is stored.** The list lives in the chat on screen; it is not written
+  to the transcript and it is gone when the chat is. The tool rows still record
+  that a list was set, so a reloaded chat is not silent about it.
+* **Every call carries the whole list** — the tool REPLACES the previous one.
+  A call that cannot be read (no items, an unknown status word, more than 24
+  steps) is refused and the list the user is watching stays as it was, rather
+  than being cleared by a malformed call.
+* **Nothing here is page-derived**, so the card is not fenced: the steps are the
+  model's own sentences about the task.
+* **A refusal names the words that work**, so a model that misspells a status
+  fixes it instead of retrying the same call.
+
+**Status in this build:** implemented — the tool is in the catalogue for chat
+turns and scheduled runs alike, and the card is `PlanCard` in the agent panel.
+
+### Downloads (`download_file`) — a link that is a file
+
+When a task ends in a file rather than a page — an invoice PDF, a CSV export,
+an image — the agent hands the link to the **browser's own download engine**
+rather than trying to read the bytes itself. The file lands where your own
+downloads do (Downloads/RoomBrowser), the transfer survives the turn, and it
+appears in the downloads list with pause, resume and open.
+
+Honest limits:
+
+* **It queues, it does not fetch.** The call returns as soon as the download is
+  queued, so the file is not on disk when the tool answers. The tool's own
+  result says so, and the agent is told to check `app_data kind=downloads`
+  before reporting the file as saved.
+* **A write, not a read.** It goes through the same confirmation chain as a
+  click (Confirm actions, or YOLO), and plan mode refuses it, because it carries
+  work out rather than proposing it.
+* **Refused in a scheduled run.** A run has one hidden page and no download
+  engine, so it cannot queue a file; the refusal says so and names the route
+  that works. A headless **chat** is different — the browser is up behind it, so
+  a chat turn on a hidden page does queue the file normally.
+* **Only `http(s)`.** A URL that is not one is refused rather than handed to the
+  engine.
+
+### Saving a page (`save_pdf`) — the page itself, not a link
+
+For a receipt, a ticket, a statement or any page worth keeping as it looked,
+`save_pdf` renders the page in this chat's tab and publishes the result through
+the same download engine, so it lands in Downloads/RoomBrowser beside a
+retrieved file. It takes an optional `name`; the browser names the file from the
+page when the model suggests nothing.
+
+The one to reach for is decided by the user's wording: `download_file` when a
+link already points at a file, `save_pdf` when the page itself is what is being
+kept.
+
+Honest limits:
+
+* **It renders, it does not fetch.** Like a download, the call returns as soon
+  as the work is queued, so the tool's own result says the file is not there yet
+  and tells the agent to check `app_data kind=downloads` first.
+* **A write, not a read.** It goes through the same confirmation chain as a
+  click (Confirm actions, or YOLO), and plan mode refuses it.
+* **Refused in a scheduled run and in a headless chat.** Rendering a PDF needs a
+  page that is on screen; a turn driving a hidden page has nothing to render, so
+  the refusal says so and names the route that works.
+* **Engine-dependent.** GeckoView renders the page itself and the file is real.
+  WebView has no PDF writer of its own, so the tool refuses there and names the
+  route that does work — the **Save as PDF** row in the page-actions sheet,
+  which opens the system print dialog with Save as PDF among its destinations.
+
 ### Deeper Developer Tools reach
 
 New agent tools that read the **same buffers the Developer Tools panels
@@ -459,7 +537,8 @@ change is picked up by the running browser instantly.
   default; also switchable from Browser Settings).
 * **Confirm actions** — require Allow/Deny approval before every click,
   type or submit (off by default = fully autonomous within the step budget).
-  The prompt has a third answer, **Always allow**, which turns YOLO on.
+  The prompt also offers **Allow on this site** — this tool, on this origin,
+  until the chat ends — and **Always allow**, which turns YOLO on.
 * **Local decision gate** — hand the *which* actions need a human to a local
   Ollama decision model, so Confirm actions stops interrupting you for
   routine work. See below.
@@ -469,9 +548,11 @@ change is picked up by the running browser instantly.
 * **Include current page by default** — attaches a page snapshot to the
   first message of each turn (the switch shows green when on, matching the
   panel chip's included state).
-* **Temperature** (0–1) and **max steps per turn** (5–50, default 25) —
-  the step budget bounds cost and runaway loops; when exhausted the agent
-  is asked once more, without tools, to produce a final answer.
+* **Temperature** (0–1) and **max steps per turn** (1–200, default 75,
+  typed rather than slid) — the step budget bounds cost and runaway loops;
+  when exhausted the agent is asked once more, without tools, to produce a
+  final answer. The stored value is clamped by the loop, so the ceiling is a
+  guard rather than a preference.
 * **System prompt override** — replace the built-in browsing-agent prompt.
 * **Data & privacy** — delete all agent chats (every profile; providers
   are kept).
@@ -554,6 +635,13 @@ they go to your own machine. Nothing about the gate leaves the device.
 Every prompt in the agent has a third answer next to Allow and Deny:
 **Always allow**. It is not "allow this one too" — it switches the asking
 off, for every action, from that moment until you turn it back on.
+
+Between the two sits **Allow on this site**: the same tool, on the same
+origin, until the chat ends. It is what a person means when the same prompt
+has arrived for the third time on the same form, and it is deliberately
+narrower than YOLO. It is withheld for an action that cannot be undone, for
+a wallet request, for a live authenticator code, and for a page with no
+origin — the cases where "this site" would be a promise about nothing.
 
 It exists because the alternative is worse. A person who is being interrupted
 by a prompt they do not want to read has two options without it: tap Allow

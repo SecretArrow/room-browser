@@ -50,13 +50,25 @@ data class AiTaskPermissions(
         // local tools above, it is bookkeeping the agent does on the device, so
         // it rides with the read group. Its own per-profile opt-in is the real
         // gate; this group is only the coarse unattended one.
-        AgentTools.SITE_MEMORY -> ToolGroup.READ_PAGE
+        AgentTools.SITE_MEMORY,
+        // plan is the model's own step list — no page, no profile, nothing
+        // stored — so it rides here for the same reason and is never worth
+        // refusing: it is how a run reports where it has got to.
+        AgentTools.PLAN -> ToolGroup.READ_PAGE
         AgentTools.NAVIGATE, AgentTools.SEARCH_WEB, AgentTools.GO_BACK,
         AgentTools.OPEN_NEW_TAB, AgentTools.LIST_TABS,
         AgentTools.SWITCH_TAB, AgentTools.CLOSE_TAB,
         AgentTools.RELOAD, AgentTools.FORWARD -> ToolGroup.NAVIGATE
         AgentTools.CLICK, AgentTools.FILL_INPUT, AgentTools.PRESS_ENTER,
-        AgentTools.SELECT_OPTION, AgentTools.PRESS_KEYS, AgentTools.RUN_JS -> ToolGroup.INTERACT
+        AgentTools.SELECT_OPTION, AgentTools.PRESS_KEYS, AgentTools.RUN_JS,
+        // A download is the same kind of act as a click — it follows a link —
+        // and it is allowed at the same tier. A run has no download engine of
+        // its own and refuses it in the executor; this is only the coarse
+        // grant, and the run's own gate is the sharper one.
+        AgentTools.DOWNLOAD_FILE,
+        // Saving a page as a PDF writes a file to the user's Downloads, so it
+        // rides here for the same reason and is refused by a run's own gate.
+        AgentTools.SAVE_PDF -> ToolGroup.INTERACT
         AgentTools.AUTO_LIKE, AgentTools.AUTO_REPOST,
         AgentTools.AUTO_REPLY, AgentTools.AUTO_POST -> ToolGroup.POST
         in AgentTools.WALLET_TOOLS -> ToolGroup.WALLET

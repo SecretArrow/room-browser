@@ -4,6 +4,7 @@ import android.os.SystemClock
 import com.roombrowser.domain.agent.ActionVerdict
 import com.roombrowser.domain.agent.AgentAppActions
 import com.roombrowser.domain.agent.AgentJson
+import com.roombrowser.domain.agent.AgentPlan
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.DataTransform
 import com.roombrowser.domain.agent.KeyChord
@@ -133,7 +134,17 @@ class HeadlessToolExecutor(
      * OFF unless the caller passes it, so a run that was not told the user
      * opted in keeps no notes.
      */
-    private val siteMemoryEnabled: suspend () -> Boolean = { false }
+    private val siteMemoryEnabled: suspend () -> Boolean = { false },
+    /**
+     * Queues a download through the browser's own download engine and answers
+     * the file name it will be saved as, or null when there is none.
+     *
+     * The same shape as [scratchpad]: a HEADLESS CHAT passes one, because the
+     * browser is up with its profile bound and the person who sent the turn is
+     * watching; a scheduled run passes nothing, and the tool then refuses
+     * rather than putting a file in the user's Downloads while they sleep.
+     */
+    private val download: (suspend (url: String, name: String?) -> String?)? = null
 ) : ToolExecutor {
 
     private val lastStartedAt = AtomicLong(0L)
@@ -192,6 +203,10 @@ class HeadlessToolExecutor(
                     AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
                     AgentTools.PRESS_KEYS -> pressKeys(str(args, "keys"), intOrNull(args, "ref"))
                     AgentTools.WAIT_FOR -> waitFor(str(args, "text"), intOrNull(args, "timeout_ms"))
+                    AgentTools.DOWNLOAD_FILE -> downloadFile(str(args, "url"), str(args, "name"))
+                    // The agent's own step list: no page and nothing stored, so
+                    // a scheduled run keeps one exactly as a chat turn does.
+                    AgentTools.PLAN -> AgentPlan.execute(argsJson)
                     AgentTools.APP_2FA, AgentTools.APP_NOTES -> profileTools
                         ?.execute(name, argsJson)
                         ?: ToolResult(false, "tool '$name' is not available in this run")
@@ -235,6 +250,23 @@ class HeadlessToolExecutor(
                 false,
                 "a scheduled run works in a single page and has no tabs, so '$name' is not " +
                     "available here — navigate to what you need and read_page it."
+            )
+        }
+        if (name in DOWNLOAD_TOOLS && download == null) {
+            return ToolResult(
+                false,
+                "a run that nobody is watching has no download engine of its own, so '$name' is " +
+                    "not available here — it would put a file in the user's Downloads while they " +
+                    "are not looking. Run this as a chat, where the file is queued in front of " +
+                    "them and shows up in the downloads list."
+            )
+        }
+        if (name in PDF_TOOLS) {
+            return ToolResult(
+                false,
+                "'$name' renders the page that is on screen, and this turn drives a hidden page " +
+                    "with no display — so there is nothing here for the browser to render. Switch " +
+                    "this chat to the browser tab and ask again there, where the page is visible."
             )
         }
         // Reading a generated code asks nobody; writing a note does. The app
@@ -622,6 +654,37 @@ class HeadlessToolExecutor(
         }
     }
 
+    /**
+     * Queue a download of a link that leads to a file, on the hidden page's
+     * behalf.
+     *
+     * The engine is the browser's own, so the file lands where the user's own
+     * downloads do and the transfer survives this turn. It returns as soon as
+     * the file is queued — the answer says so, because a model that reported it
+     * as saved would be describing something that has not happened.
+     */
+    private suspend fun downloadFile(rawUrl: String?, name: String?): ToolResult {
+        val url = normalizeUrl(rawUrl)
+            ?: return ToolResult(false, "missing or invalid 'url' argument")
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            return ToolResult(false, "download_file needs an http(s) URL, and '$url' is not one")
+        }
+        val sink = download
+            ?: return ToolResult(false, "this turn has no download engine to queue the file with.")
+        val saved = sink(url, name)
+            ?: return ToolResult(
+                false,
+                "the profile's download engine is not up, so nothing was queued — the browser " +
+                    "may still be starting."
+            )
+        return ToolResult(
+            true,
+            "Queued the download as \"$saved\". It is NOT saved yet: the transfer runs in the " +
+                "background, so read app_data kind=downloads to see when it finishes before " +
+                "telling the user the file is there."
+        )
+    }
+
     // ------------------------------------------------------------- helpers
 
     private fun jsonString(value: String): String =
@@ -740,10 +803,11 @@ class HeadlessToolExecutor(
         /**
          * The tools a headless run performs, declared rather than inferred so
          * [HeadlessToolCatalogTest] can hold the WHOLE catalogue to
-         * [SUPPORTED_TOOLS] ∪ [TAB_TOOLS] ∪ [APP_TOOLS] ∪ [DEVELOPER_TOOLS] ∪
-         * [AgentTools.WALLET_TOOLS]: a tool added to the catalogue later must
-         * be classified deliberately, because the wrong answer is either a tool
-         * the model is offered and refused, or one refused silently.
+         * [SUPPORTED_TOOLS] ∪ [TAB_TOOLS] ∪ [DOWNLOAD_TOOLS] ∪ [PDF_TOOLS] ∪ [APP_TOOLS] ∪
+         * [DEVELOPER_TOOLS] ∪ [AgentTools.WALLET_TOOLS]: a tool added to the
+         * catalogue later must be classified deliberately, because the wrong
+         * answer is either a tool the model is offered and refused, or one
+         * refused silently.
          */
         internal val SUPPORTED_TOOLS: Set<String> = setOf(
             AgentTools.NAVIGATE, AgentTools.SEARCH_WEB, AgentTools.READ_PAGE,
@@ -769,7 +833,10 @@ class HeadlessToolExecutor(
             // packages for it, are not about the page, so they are recognised
             // here — and a scheduled run is refused them by the task's own
             // permissions, not by being absent from this set.
-            AgentTools.NODE_RUN, AgentTools.NODE_PACKAGES
+            AgentTools.NODE_RUN, AgentTools.NODE_PACKAGES,
+            // The step list touches neither the page nor the profile: it is
+            // the model's own working state, so a run keeps one too.
+            AgentTools.PLAN
         )
 
         /**
@@ -782,6 +849,32 @@ class HeadlessToolExecutor(
             AgentTools.SWITCH_TAB,
             AgentTools.CLOSE_TAB
         )
+
+        /**
+         * The tools a run cannot use because it has no place to put a file.
+         *
+         * A download goes through the BROWSER's own download engine, which
+         * belongs to a profile bound to a browser that is up; a scheduled run
+         * has a hidden page and no engine, and giving it one would mean a file
+         * appearing in the user's Downloads while they sleep — the side effect
+         * the whole unattended design keeps out. Declared so
+         * [HeadlessToolCatalogTest] can hold the catalogue to it, and refused
+         * with a message that names the route that works rather than a bare no.
+         */
+        internal val DOWNLOAD_TOOLS: Set<String> = setOf(AgentTools.DOWNLOAD_FILE)
+
+        /**
+         * The one tool no hidden page can perform at all.
+         *
+         * A PDF is rendered by the page that is on screen and written by the
+         * profile's download engine, and a headless turn has neither: the
+         * session it drives is not attached to a display, and its download sink
+         * takes a URL rather than a stream. It is refused for a scheduled run
+         * AND for a headless chat, which is why it is not on
+         * [DOWNLOAD_TOOLS] — that set is about who is watching, and this is
+         * about what a hidden page can do.
+         */
+        internal val PDF_TOOLS: Set<String> = setOf(AgentTools.SAVE_PDF)
 
         /**
          * The tools that act on the BROWSER rather than on the page — its

@@ -58,6 +58,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:supportsRtl="true"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:usesCleartextTraffic="true"
         android:enableOnBackInvokedCallback="true"
         android:theme="@style/Theme.RoomBrowser"
@@ -72,6 +73,14 @@
           is required of a browser — it must be able to load http:// pages the
           user navigates to; the wallet's own RPC endpoints are separately
           restricted to https:// in WalletEngine.isValidNetworkConfig.
+
+          networkSecurityConfig points at the trust anchors this app accepts:
+          the platform's own, plus any the user installed through Android
+          Settings. That second source is what lets a site open on a network
+          whose traffic is inspected, without this app ever bypassing the
+          validation that refused it. Because the attribute above is ignored
+          once this file is referenced, the config restates
+          cleartextTrafficPermitted="true" itself — see that file.
         -->
 
         <!-- Launcher + default browser candidate: profile picker / profile chooser -->

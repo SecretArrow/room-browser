@@ -4,7 +4,9 @@ import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
+import android.net.http.SslCertificate
 import android.net.http.SslError
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -32,6 +34,7 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.UserAgents
+import com.roombrowser.engine.EngineCertificate
 import com.roombrowser.engine.EnginePageScripts
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.EngineSessionListener
@@ -45,6 +48,7 @@ import com.roombrowser.engine.devtools.EngineInspector
 import com.roombrowser.engine.devtools.EngineNetworkSignal
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
+import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.roundToInt
 
@@ -621,10 +625,24 @@ internal class WebViewEngineSession(
         }
     }
 
-    /** Not supported here: WebView's PDF lever is the Activity's PrintManager. */
+    /** No PDF writer here; [printAdapter] is the route that does work. */
     override fun saveAsPdf(onResult: (java.io.InputStream?) -> Unit) {
         onResult(null)
     }
+
+    override fun pdfUnsupportedReason(): String =
+        "WebView, the engine this edition runs on, has no PDF writer of its own, so no tool can " +
+            "turn a page into a PDF here. The browser can still do it for the user: the " +
+            "\"Save as PDF\" row in the page-actions sheet opens the system print dialog, where " +
+            "Save as PDF is one of the destinations. Say that instead of calling this again."
+
+    /**
+     * WebView's own print route: the platform print sheet renders the document
+     * and offers "Save as PDF" among its destinations. Main-thread only, which
+     * is where the browser UI calls it from.
+     */
+    override fun printAdapter(jobName: String): android.print.PrintDocumentAdapter =
+        webView.createPrintDocumentAdapter(jobName)
 
     /**
      * Capture the engine's back/forward state under an opaque token. Port of
@@ -1094,6 +1112,10 @@ internal class WebViewEngineSession(
          * committed url: for a main-frame navigation `getUrl()` still names the
          * previous page, and telling the user that address is insecure when it
          * is not is the same class of lie the app's comment records.
+         *
+         * The certificate the connection presented goes along with the report:
+         * it is the evidence behind the refusal, since a network intercepting
+         * TLS presents one no public CA signed.
          */
         override fun onReceivedSslError(
             view: WebView,
@@ -1108,7 +1130,8 @@ internal class WebViewEngineSession(
                 PageErrorKind.CERTIFICATE,
                 true,
                 error.primaryError,
-                null
+                null,
+                engineCertificate(error)
             )
         }
 
@@ -1786,4 +1809,41 @@ private fun kindOf(errorCode: Int): PageErrorKind = when (errorCode) {
     WebViewClient.ERROR_TIMEOUT -> PageErrorKind.TRANSPORT
 
     else -> PageErrorKind.OTHER
+}
+
+/**
+ * The certificate a refused connection presented, or null when WebView handed
+ * none over. Never throws: this runs on the error path, and a certificate the
+ * platform cannot read must not replace the report with a crash.
+ */
+private fun engineCertificate(error: SslError): EngineCertificate? = runCatching {
+    val certificate = error.certificate ?: return null
+    EngineCertificate(
+        subject = certificateName(certificate.issuedTo),
+        issuer = certificateName(certificate.issuedBy),
+        // The Date getters, not `validNotBefore`/`validNotAfter`: those two
+        // return a preformatted String.
+        validFromMs = certificate.validNotBeforeDate?.time,
+        validToMs = certificate.validNotAfterDate?.time,
+        fingerprint = certificateFingerprint(certificate)
+    )
+}.getOrNull()
+
+/** `cName` first, then `oName`, then the full `dName` (API 29). */
+private fun certificateName(name: SslCertificate.DName?): String? {
+    if (name == null) return null
+    val candidates = listOfNotNull(
+        name.cName,
+        name.oName,
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) name.dName else null
+    )
+    return candidates.firstOrNull { it.isNotBlank() }
+}
+
+/** SHA-256 of the DER bytes, uppercase and colon-separated. API 29+ only. */
+private fun certificateFingerprint(certificate: SslCertificate): String? {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+    val der = certificate.x509Certificate?.encoded ?: return null
+    return MessageDigest.getInstance("SHA-256").digest(der)
+        .joinToString(":") { "%02X".format(it) }
 }
