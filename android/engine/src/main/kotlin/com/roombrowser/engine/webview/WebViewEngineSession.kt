@@ -625,10 +625,24 @@ internal class WebViewEngineSession(
         }
     }
 
-    /** Not supported here: WebView's PDF lever is the Activity's PrintManager. */
+    /** No PDF writer here; [printAdapter] is the route that does work. */
     override fun saveAsPdf(onResult: (java.io.InputStream?) -> Unit) {
         onResult(null)
     }
+
+    override fun pdfUnsupportedReason(): String =
+        "WebView, the engine this edition runs on, has no PDF writer of its own, so no tool can " +
+            "turn a page into a PDF here. The browser can still do it for the user: the " +
+            "\"Save as PDF\" row in the page-actions sheet opens the system print dialog, where " +
+            "Save as PDF is one of the destinations. Say that instead of calling this again."
+
+    /**
+     * WebView's own print route: the platform print sheet renders the document
+     * and offers "Save as PDF" among its destinations. Main-thread only, which
+     * is where the browser UI calls it from.
+     */
+    override fun printAdapter(jobName: String): android.print.PrintDocumentAdapter =
+        webView.createPrintDocumentAdapter(jobName)
 
     /**
      * Capture the engine's back/forward state under an opaque token. Port of

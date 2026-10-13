@@ -1104,14 +1104,11 @@ class BrowserAgentController(
                     siteMemory = GraphSiteMemoryStore(graph, profileId),
                     siteMemoryEnabled = { vm.profileSettings().agentSiteMemoryEnabled },
                     scratchpad = pad,
-<<<<<<< HEAD
                     nodeRuntime = AgentNodeRuntime(appContext, vm.profile),
-                    nodePackages = AgentNodePackages(appContext)
-=======
+                    nodePackages = AgentNodePackages(appContext),
                     // The browser is up behind this hidden page, so a download
                     // goes to the user's own Downloads and outlives the turn.
                     download = { url, name -> visibleExecutor.startDownload(url, name) }
->>>>>>> 4b5397d (feat(agent): let the agent fetch a file the page links to)
                 )
             } else {
                 null
