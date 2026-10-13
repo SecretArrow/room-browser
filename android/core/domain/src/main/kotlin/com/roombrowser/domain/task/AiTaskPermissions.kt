@@ -160,6 +160,17 @@ fun devtoolsUnattendedRefusal(toolName: String): String =
         "Run this as a chat."
 
 /**
+ * The AI Agent settings row that decides whether an action is confirmed before
+ * it runs — the switch [unattendedRefusal] tells the model to point the user at.
+ *
+ * The two spellings live together on purpose: a refusal that names a switch the
+ * settings screen does not have sends the user looking for something that is not
+ * there, and it did once, because the row's title and this sentence were written
+ * in different files.
+ */
+const val CONFIRM_ACTIONS_SETTING = "Confirm actions"
+
+/**
  * The refusal for an action the task DOES allow but an unattended run must not
  * take: the confirmation the user asked for can only come from a person, and a
  * scheduled run has nobody to ask. It names the setting that would allow it,
@@ -167,7 +178,7 @@ fun devtoolsUnattendedRefusal(toolName: String): String =
  */
 fun unattendedRefusal(toolName: String): String =
     "tool '$toolName' would ask you to confirm it first, and a scheduled run has nobody to ask. " +
-        "Turn off \"Confirm actions before running\" in AI Agent settings, or run this in a chat."
+        "Turn off \"$CONFIRM_ACTIONS_SETTING\" in AI Agent settings, or run this in a chat."
 
 /**
  * The refusal for the wallet tools, which no setting can turn on: the promise
