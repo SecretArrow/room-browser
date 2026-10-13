@@ -119,6 +119,8 @@ listed below; the two that must have their tab on screen are marked.
 | `wait(ms)` | Waits for post-submit animations / infinite-scroll loading before reading again |
 | `compute_js(script)` | Evaluates JavaScript in a **detached scratchpad page**, never the user's page — for local calculation and text work (see **Local compute, vision, site memory** below) |
 | `data_transform(op, input, …)` | Pure host-side transform of data the agent already has — `json_path`, `csv_rows`, `aggregate`, `diff` — with no page and no engine (see below) |
+| `node_run(script)` | Runs a JavaScript program in the **embedded Node.js runtime**, in a process of its own, with Node's real APIs behind it — *not about the open page; refused to a scheduled run and in Plan mode* (see below) |
+| `node_packages(action, name?, spec?)` | Manages the npm packages installed beside that runtime — `list`, `install`, `remove` — for `node_run` to `require`. It never executes package code — *refused to a scheduled run and in Plan mode* (see below) |
 | `see_page(question?)` | Screenshots this chat's tab and sends the image to the provider — *off unless the profile enables it; refused on text-only providers and in a private tab* (see below) |
 | `site_memory(op, key, …)` | Reads, writes or forgets a per-site note kept for this profile — *off unless the profile enables it* (see below) |
 
@@ -186,7 +188,10 @@ So the two capabilities that leave the device or persist new data — vision
 per-profile Boolean (`agentVisionEnabled`, `agentSiteMemoryEnabled`) that is
 **false on every profile, new and old**, with its own settings row. The two
 local ones — `compute_js` and `data_transform` — are governed by the withheld
-`agent.compute` permission and are therefore on until the profile withholds it.
+`agent.compute` permission and are therefore on until the profile withholds it;
+`node_run` and `node_packages` have a permission of their own, `agent.node`, for
+the same reason — they reach wider than a scratchpad in every direction, so they
+should not ride another tool's switch.
 
 ### Tool catalogue shape
 
@@ -242,6 +247,92 @@ Honest limits:
 * **Malformed input is an error, never an empty success** — a caller that could
   not tell "no rows" from "not CSV" would answer the user with the wrong thing.
 * It shares the `agent.compute` permission with `compute_js`.
+
+### `node_run` — the embedded Node.js runtime
+
+A Node runtime ships inside the APK (`libnode.so`, arm64-v8a / armeabi-v7a /
+x86_64) and `node_run` sends it one JavaScript program, as the body of an async
+function: `return` sends a value back, `await` works, and `require` resolves
+whatever is installed beside the runtime. It runs in a **process of its own**
+(`:node`), started for the call and gone when the call ends, so a chat that
+never runs a script never pays for a runtime.
+
+The identity is the whole point of the plumbing. Node's own client announces
+`node` — the one thing on this device that is not the profile — so every request
+a script makes carries the identity the profile's pages send: the profile's own
+user agent, or the engine's default when the profile chose none. A script cannot
+supply one of its own — the profile's identity replaces whatever it sets, on
+`fetch`, on `http`/`https`, and on the request's own header setters alike. The
+rule covers those APIs and not the layer under them: a script that opens a raw
+`net`/`tls` socket, writes HTTP by hand, or calls the request classes'
+prototypes directly is outside the wrappers, so it is a rule rather than a
+sandbox. A profile with no identity at all makes no request: the tool refuses
+before the script runs rather than letting Node introduce itself.
+
+Honest limits — these are the feature, not a footnote:
+
+* **It is not a sandbox.** The `:node` process has its own memory and can be
+  killed on its own, but it shares this app's UID and data directory, so a
+  program it runs can read and write this profile's own files. That is a limit
+  to state, not to paper over.
+* **Node 18, which is end-of-life.** There is no newer nodejs-mobile release;
+  the runtime reports its own version and the honest answer is v18.20.4.
+* **No native modules.** A package that needs to compile C++ cannot be built
+  for Android here: it installs, and then fails when a script requires it, with a
+  message rather than a hang.
+* **A script gets a budget** (30s by default). The runtime stops it itself and
+  says so, so a wedged script arrives as a readable answer rather than a
+  connection that went quiet.
+* **Its output is data.** What a program prints can be a server's answer or a
+  package's own words, so it is fenced as untrusted content exactly like page
+  text.
+* **Never a scheduled run**, and never in Plan mode. It is governed by the
+  per-profile `agent.node` permission, and it is on the Confirm-actions /
+  YOLO axis like every other state-changing call: in YOLO it runs without
+  asking.
+
+**Status in this build:** implemented — `node_run` runs a script and returns
+its result, with the per-profile identity attached to every request, a budget
+the runtime enforces itself, and the `agent.node` permission and settings row.
+
+### `node_packages` — the packages `node_run` can `require`
+
+`node_run`'s `require` resolves whatever is installed beside the runtime, and
+`node_packages` is how a package gets there: `action=list` shows what is
+installed, `install` fetches a package and its dependencies from the public npm
+registry, and `remove` deletes one. It prepares what a later `node_run` will
+run — it never runs code itself.
+
+Honest limits:
+
+* **Nothing from a package is ever executed.** No `scripts` field is read and no
+  lifecycle script runs, at install time or afterwards; a package's `postinstall`
+  is inert here. That is a deliberate difference from `npm install`, and it is
+  why a package that needs a build step will not work.
+* **Plain JavaScript only.** A package with native code installs but fails to
+  load, because there is no way to build C++ for Android here — the same limit
+  `node_run` states.
+* **Only `dependencies` are installed.** A package's `devDependencies`,
+  `optionalDependencies` and `peerDependencies` are left alone, and the result
+  says which were skipped. Dependencies are nested under their parent rather
+  than hoisted, so two packages can each keep their own copy of a dependency and
+  a version conflict cannot arise.
+* **One registry.** Packuments and tarballs come from `registry.npmjs.org`
+  alone; a tarball from any other host is refused and redirects are not
+  followed. Each tarball is checked against the registry's own digest before it
+  is unpacked.
+* **One shared tree.** The packages live in the app's own data directory, which
+  every profile shares, so a package installed under one profile is visible to
+  every profile's agent. That is the directory `node_run` requires from.
+* **Never a scheduled run**, and never in Plan mode. It rides the `agent.node`
+  permission, and it is on the Confirm-actions / YOLO axis: the user is asked
+  before a package is installed or removed — with the package named in the
+  prompt — and in YOLO it happens without asking. `list` only reads the
+  directory, so it does not ask.
+
+**Status in this build:** implemented — `node_packages` lists, installs and
+removes packages, with the settings screen's "Installed packages" row to see
+and delete them.
 
 ### Vision (`see_page`) — a screenshot to the provider
 
@@ -505,6 +596,15 @@ and YOLO is what you get when you ask for the prompt to stop.
   decide for yourself whether that is acceptable for the sites you visit.
 * The agent inherits the profile's ad/tracker blocking: blocked requests
   never reach the provider or the page.
+* `node_run` is the one tool that runs a program rather than reading a page,
+  and its process is not a sandbox: it shares this app's UID and data
+  directory. What it sends to the network is whatever the script chooses,
+  under this profile's identity — so the honest statement is that it can reach
+  anything this app can, not that it is contained.
+* `node_packages` installs what that program can `require`. It talks to the
+  public npm registry and nothing else, never runs a package's own install
+  script, and writes into the app's shared data directory rather than a
+  per-profile one.
 
 ## Architecture
 
@@ -534,7 +634,17 @@ app (default process — agent settings activities, no WebView)
 ├── AgentSettingsController settings/providers persistence via Room
 └── agent/ui/*             AgentSettingsActivity, AgentProviderEditorActivity,
                           AgentSessionsActivity (own windows)
+
+node (libnode.so + the bridge; its own `:node` process at run time)
+├── NodeBridge             JNI entry into node::Start
+├── NodeRuntime            copies the entry script out of the APK and runs it
+├── NodeClient             starts the process, connects, one JSON line per call
+├── NodeRunner             one call at a time, as this profile's identity
+└── assets/node/bridge.js  the runtime side: status + run, and the UA rule
 ```
+
+`node/` names no engine type, so it is shared between the editions byte for
+byte; only the packaging in `app/build.gradle.kts` is engine-specific.
 
 Room schema **v3** added the `protocol` column to `agent_providers`
 (`OPENAI` | `OPENCODE`, default `OPENAI`); **v10** added
@@ -566,6 +676,13 @@ sessions are scoped to a profile and a tab.
   `OpenCodeAgentGatewayTest` — session creation, delta-only messaging,
   polled assistant replies with tool-call extraction, `/provider` model
   listing with endpoint fallback, timeout mapping.
+* **Node (JVM)**: `NodeProtocolTest` — the wire format, hand-written in the
+  shape `bridge.js` writes it rather than produced by the encoder under test:
+  the identity travelling with every command and a blank one being left out
+  rather than sent empty, the runtime's own refusal raised with its words, an
+  answer to another request being refused, and a script that threw arriving
+  inside a *successful* reply, because the envelope's outcome is the runtime's
+  and the script's is its own.
 * **E2E (emulator)**: `AgentSettingsE2eTest` — drives the real app UI
   across both processes: opens the agent panel from the page menu (the
   pill is hidden by default), adds a provider via the settings/editor
@@ -580,6 +697,14 @@ sessions are scoped to a profile and a tab.
   detached chat staying in the history list, adopting a chat moving it off
   the tab that had it, the same tab id under two profiles staying two
   conversations, and a blank tab id never resolving to an unbound chat.
+  `NodeRuntimeE2eTest` — the embedded runtime in the APK that ships it: the
+  process starts and boots, it echoes the identity it was handed, a script's
+  value comes back, a throw arrives as a readable failure rather than a broken
+  runtime, a script that outlives its budget is stopped and says so, and a
+  script's own HTTP request to a loopback server inside the script carries the
+  profile's user agent on the wire. Nothing there asserts on an ABI the APK
+  carries no `libnode.so` for — the release ships arm64-v8a, armeabi-v7a and
+  x86_64, so a 32-bit x86 device gets the honest "unavailable" answer.
 
 ## Tips
 

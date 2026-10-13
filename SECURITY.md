@@ -290,15 +290,19 @@ providers appear in the picker. YOLO is not a gate feature and is not
 restricted that way — it is a local decision, so it applies to every
 provider, Ollama included.
 
-## The agent's vision and site memory (Android)
+## The agent's newer capabilities (Android)
 
-Two of the agent's newer capabilities touch data that leaves the device or
-accumulates in the profile, so their limits are stated here rather than left in
-the user guide alone. Both are per-profile and both are **off on every profile,
-new and old**, carried by a defaulted Boolean (`agentVisionEnabled`,
-`agentSiteMemoryEnabled`) rather than by a withheld permission — that set is a
-deny-list, so a permission added later is granted by default and cannot express
-"off".
+Three of the agent's newer capabilities touch data that leaves the device, run
+code, or accumulate in the profile, so their limits are stated here rather than
+left in the user guide alone. Vision and site memory are per-profile and both
+are **off on every profile, new and old**, carried by a defaulted Boolean
+(`agentVisionEnabled`, `agentSiteMemoryEnabled`) rather than by a withheld
+permission — that set is a deny-list, so a permission added later is granted by
+default and cannot express "off". The embedded Node runtime is governed by the
+withheld `agent.node` permission instead, because it is a capability the agent
+is meant to be able to use rather than an opt-in consequence: it is on until
+the profile withholds it, and it asks before it runs unless the profile chose
+YOLO.
 
 ### Vision (a screenshot to the provider)
 
@@ -359,6 +363,64 @@ knows (the same header and query names listed under Developer Tools below), so a
 secret that reaches a note under some other shape is not caught. Site memory is
 stored in the profile's own database, in the same file as the rest of the
 profile's state, and is **off unless the profile opts in**.
+
+### The embedded Node runtime
+
+`node_run` sends a JavaScript program to a Node.js runtime bundled in the APK
+and returns what it produced. The runtime is a real Node — network, files,
+packages — and it is stated here in those terms rather than as a sandbox:
+
+- **It is not contained.** The runtime runs in a process of its own
+  (`android:process=":node"`), which buys memory isolation, a crash boundary and
+  the ability to kill it — and nothing else. That process shares this app's UID
+  and data directory, so a program it runs can read and write this profile's own
+  files, including the profile's databases. Calling it a sandbox would be false;
+  it is a separate process, not a separate principal.
+- **It reaches the network as this profile.** Every request a script makes
+  carries this profile's own user agent — the same identity its pages send, or
+  the engine's default when the profile chose none — and a script cannot supply
+  one of its own: the profile's identity *replaces* whatever a script sets, on
+  `fetch`, on `http`/`https`, and on the request's own header setters alike. The
+  wrappers cover those APIs, not the layer under them: a script that opens a raw
+  `net`/`tls` socket, writes HTTP by hand, or calls the request classes'
+  prototypes directly is outside them. That is the same boundary the next
+  paragraph draws — this is a rule, not a sandbox. A profile with no identity at
+  all makes no request: the tool refuses before the script runs rather than
+  letting Node announce itself. That is about *identity*, not about reach — the
+  script can still call anywhere this app can, and the two engine-level controls
+  that govern page traffic do not apply to it: neither the profile's proxy nor
+  its ad/tracker blocking sits in front of a raw socket.
+- **Its output is untrusted data.** What a program prints can be a server's
+  answer or a package's own words, so it is fenced exactly like page text and
+  carries no more authority than the page does.
+- **Installing a package has its own rails.** `node_packages` fetches
+  packuments and tarballs from `registry.npmjs.org` alone — the base is a
+  constant, so nothing a page or a package can reach points an install at
+  another host, a tarball whose URL is not that host's is refused, and a
+  redirect is not followed. Each tarball is checked against the registry's own
+  digest (`integrity`, else `shasum`) **before** it is unpacked, so a corrupted
+  or substituted download leaves the installed set exactly as it was. Nothing
+  from a package is ever executed: no `scripts` field is read and no lifecycle
+  script runs, at install time or afterwards. Only a package's `dependencies`
+  are installed; its dev, optional and peer dependencies are skipped and
+  reported. The packages land in `<filesDir>/node/node_modules`, the one tree
+  `require` resolves from — shared by every profile, not one tree per profile —
+  and listing or removing them never starts the runtime.
+- **Node 18, which is end-of-life.** There is no newer nodejs-mobile release;
+  the honest answer is the version the runtime reports, v18.20.4, with no
+  security-update channel behind it.
+- **It is never a scheduled run**, never runs in Plan mode, and is governed by
+  the per-profile `agent.node` permission — `node_packages` included, so a
+  profile that withholds the permission can neither run a program nor install
+  one. The runtime never starts by itself: the process is created when the tool
+  is called and exits when the call ends.
+
+The honest summary: with `agent.node` granted, the agent can run arbitrary
+JavaScript with this app's own privileges and install the packages that program
+can require. The mitigations are the confirmation before it runs — the package
+named in the prompt — the per-profile switch that can withhold it, the profile's
+identity on every request, the registry and digest rails on an install, and the
+fence around what it prints — not containment.
 
 ## Developer Tools (Android)
 

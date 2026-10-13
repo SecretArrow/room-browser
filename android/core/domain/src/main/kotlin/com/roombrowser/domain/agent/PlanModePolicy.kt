@@ -38,7 +38,13 @@ object PlanModePolicy {
         AgentTools.WALLET_SWITCH_NETWORK,
         // A patch runs script in a live page, so it belongs with run_js and
         // every other tool that can change what the page does.
-        AgentTools.DEVTOOLS_PATCH
+        AgentTools.DEVTOOLS_PATCH,
+        // A program with the network and this profile's files behind it: a mode
+        // that promised nothing is carried out cannot leave that open.
+        AgentTools.NODE_RUN,
+        // Installing a package reaches the registry and writes to disk, which
+        // is a change a plan-only turn has no business making.
+        AgentTools.NODE_PACKAGES
     )
 
     /**

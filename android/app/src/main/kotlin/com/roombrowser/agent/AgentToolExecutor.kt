@@ -118,6 +118,18 @@ class AgentToolExecutor(
      */
     private val scratchpad: AgentScratchpad? = null,
     /**
+     * The embedded Node runtime `node_run` drives. Null — a build whose
+     * device ABI carries no runtime, or a caller that supplied none — leaves
+     * the tool unavailable rather than pretending a program ran.
+     */
+    private val nodeRuntime: AgentNodeRuntime? = null,
+    /**
+     * The npm packages `node_packages` installs for that runtime, in the one
+     * directory `require` resolves from. Null leaves the tool unavailable
+     * rather than pretending a package was installed.
+     */
+    private val nodePackages: AgentNodePackages? = null,
+    /**
      * The agent's per-site memory, scoped to this turn's profile. Null leaves
      * the tool unavailable rather than writing under the wrong profile.
      */
@@ -236,6 +248,8 @@ class AgentToolExecutor(
                     AgentTools.WALLET_SWITCH_NETWORK -> walletTools.switchNetwork(str(args, "network_id"))
                     AgentTools.RUN_JS -> runJs(str(args, "script"))
                     AgentTools.COMPUTE_JS -> computeJs(str(args, "script"))
+                    AgentTools.NODE_RUN -> runNode(str(args, "script"))
+                    AgentTools.NODE_PACKAGES -> runNodePackages(args)
                     AgentTools.DATA_TRANSFORM -> dataTransform(args)
                     AgentTools.SITE_MEMORY -> siteMemoryTool(args)
                     AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
@@ -596,6 +610,51 @@ class AgentToolExecutor(
             true,
             "Scratchpad result (a detached page — the user's page was not touched):\n" + clip(unquote(raw))
         )
+    }
+
+    /**
+     * Runs a program in the embedded Node runtime. Unlike [computeJs] this one
+     * has Node's own APIs behind it — the network and this profile's files — so
+     * it is an interactive tool: the user is asked before it runs, unless YOLO
+     * was chosen. The runtime's own output is fenced as data by
+     * [AgentNodeRuntime]; nothing here needs to fence it again.
+     */
+    private suspend fun runNode(script: String?): ToolResult {
+        val code = nonBlank(script) ?: return ToolResult(false, "missing 'script' argument")
+        val runtime = nodeRuntime
+            ?: return ToolResult(false, "node_run is not available in this run")
+        return runtime.run(code)
+    }
+
+    /**
+     * Manages the packages `node_run` can `require`. Installing reaches the
+     * registry and writes under the runtime's own directory, so it asks first —
+     * with a label naming the package — unless YOLO was chosen; listing only
+     * reads that directory, so it does not ask. [AgentNodePackages] fences
+     * everything a package or the registry supplied.
+     */
+    private suspend fun runNodePackages(args: Map<String, Any?>): ToolResult {
+        val packages = nodePackages
+            ?: return ToolResult(false, "node_packages is not available in this run")
+        return when (val action = str(args, "action")?.lowercase()) {
+            "list" -> packages.list()
+            "install" -> {
+                val name = nonBlank(str(args, "name"))
+                    ?: return ToolResult(false, "action=install needs a 'name' argument")
+                val spec = str(args, "spec")
+                val label = "install package $name" + (spec?.let { "@$it" } ?: "")
+                refuse(AgentTools.NODE_PACKAGES, label)?.let { return it }
+                packages.install(name, spec)
+            }
+            "remove" -> {
+                val name = nonBlank(str(args, "name"))
+                    ?: return ToolResult(false, "action=remove needs a 'name' argument")
+                refuse(AgentTools.NODE_PACKAGES, "remove package $name")?.let { return it }
+                packages.remove(name)
+            }
+            null -> ToolResult(false, "missing 'action' argument")
+            else -> ToolResult(false, "unknown node_packages action: $action")
+        }
     }
 
     /**

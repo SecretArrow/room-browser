@@ -63,6 +63,12 @@ class AgentToolForegroundPolicyTest {
         // page, so it needs no tab on screen and starts no navigation. Its
         // per-profile opt-in is the gate, not this list.
         AgentTools.SITE_MEMORY,
+        // node_run runs in a process of its own and touches no page of this
+        // app's, so it needs no tab on screen and starts no navigation.
+        AgentTools.NODE_RUN,
+        // node_packages reads and writes the directory beside that runtime, not
+        // a page, so it too needs no tab on screen and starts no navigation.
+        AgentTools.NODE_PACKAGES,
         AgentTools.APP_OPEN,
         AgentTools.APP_TABS,
         AgentTools.APP_DATA,
