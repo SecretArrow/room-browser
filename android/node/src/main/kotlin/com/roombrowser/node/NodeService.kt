@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.IBinder
 import android.os.Process
 import android.util.Log
+import java.io.File
 import kotlin.concurrent.thread
 
 /**
@@ -33,6 +34,9 @@ class NodeService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        // Socket files whose runtime is gone are not the caller's business to
+        // clear up, and one per call would otherwise collect here forever.
+        NodeRuntime.sweepSockets(applicationContext, keep = File(socket))
         // A command naming a socket this process is not serving is the caller
         // asking for a runtime it has no way of reaching: the one here bound its
         // name at start-up and cannot rebind, and node::Start cannot run twice in
