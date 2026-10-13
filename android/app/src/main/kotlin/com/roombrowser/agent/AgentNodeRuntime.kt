@@ -2,6 +2,7 @@ package com.roombrowser.agent
 
 import android.content.Context
 import com.roombrowser.browser.engine.ProfileEngine
+import com.roombrowser.domain.agent.ToolResult
 import com.roombrowser.domain.agent.UntrustedContent
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.UserAgents
