@@ -18,6 +18,7 @@ object NodeRuntime {
     const val TOKEN_EXTRA = "com.roombrowser.node.token"
 
     private const val SCRIPT_NAME = "bridge.js"
+    private const val STATUS_NAME = "status.json"
 
     /** False on an ABI this APK carries no libnode for. */
     val available: Boolean get() = NodeBridge.available
@@ -28,8 +29,18 @@ object NodeRuntime {
     internal fun argvFor(script: File, socketName: String, token: String): Array<String> =
         arrayOf("node", script.absolutePath, socketName, token)
 
+    /**
+     * Where the runtime records how far it got, one line of JSON per stage. The
+     * script writes it beside itself, so nothing has to pass the path in; a
+     * caller that never connected reads it to say what the runtime was doing
+     * instead of guessing.
+     */
+    internal fun statusFile(context: Context): File = File(nodeDir(context), STATUS_NAME)
+
+    private fun nodeDir(context: Context): File = File(context.filesDir, "node")
+
     internal fun scriptFile(context: Context): File {
-        val target = File(File(context.filesDir, "node"), SCRIPT_NAME)
+        val target = File(nodeDir(context), SCRIPT_NAME)
         target.parentFile?.mkdirs()
         val packaged = context.assets.open("node/$SCRIPT_NAME").use { it.readBytes() }
         if (!target.exists() || !target.readBytes().contentEquals(packaged)) {

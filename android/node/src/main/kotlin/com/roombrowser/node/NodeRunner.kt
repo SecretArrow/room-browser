@@ -10,13 +10,12 @@ import java.util.concurrent.locks.ReentrantLock
  * The app side of the bridge: runs one script in the embedded runtime, one call
  * at a time.
  *
- * WHY THE LOCK. The runtime serves exactly ONE connection for its whole life,
- * and this class connects per call, so a second call that overlapped the first
- * would find the runtime already listening to somebody else: its own connect
- * would be refused until the first call finished, and its caller would read
- * "the runtime did not start" about a runtime that was up and working. The lock
- * is what turns that into a queue, and it is process-wide because the runtime
- * is one process shared by every chat in the app.
+ * WHY THE LOCK. Every call asks for the runtime under a name of its own, and a
+ * command naming a socket the running runtime is not serving is answered by
+ * ending the process that holds it (see [NodeService]) — so two calls that
+ * overlapped would have the second one kill the runtime the first is still
+ * talking to. The lock is what turns that into a queue, and it is process-wide
+ * because the runtime is one process shared by every chat in the app.
  *
  * NOTHING IS KEPT BETWEEN CALLS. The runtime is started for the call and exits
  * when the connection closes, so a chat that never runs a script never pays for

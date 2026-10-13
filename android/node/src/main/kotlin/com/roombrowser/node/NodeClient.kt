@@ -90,8 +90,11 @@ class NodeClient private constructor(
 
     companion object {
 
-        private const val CONNECT_TIMEOUT_MS = 20_000L
+        private const val CONNECT_TIMEOUT_MS = 30_000L
         private const val RETRY_PAUSE_MS = 50L
+
+        /** How often the start command is repeated while no connection is made. */
+        private const val RESTART_EVERY_MS = 250L
 
         /** How long a plain reply may take before the socket gives up. */
         private const val READ_TIMEOUT_MS = 45_000L
@@ -111,34 +114,52 @@ class NodeClient private constructor(
         private val random = SecureRandom()
 
         /**
-         * Starts the runtime if it is not running and connects to it.
+         * Starts the runtime and connects to it, under a name nothing has used
+         * before.
          *
-         * Blocking, and bounded by the deadline below rather than by a
-         * per-attempt timeout, because there is no per-attempt timeout to
-         * have: `LocalSocket.connect(LocalSocketAddress, int)` is an
-         * unimplemented stub in the framework and throws
-         * `UnsupportedOperationException` on every API level (the 30, 33 and 34
-         * sources all read `throw new UnsupportedOperationException()`, and the
-         * impl beneath it ignored the argument anyway). The one-argument
-         * overload is the real one, and a connect to an abstract name nobody is
-         * listening on fails immediately — which is what makes the retry loop
-         * the thing that actually waits for the runtime to come up.
+         * THE NAME IS THE REQUEST, and the start command is repeated until the
+         * deadline rather than sent once. A runtime already running in this
+         * app's `:node` process is listening on an older name and cannot rebind,
+         * so the process that receives the first command may be one nobody is
+         * connected to any more — still shutting down, or wedged in a script.
+         * [NodeService] ends such a process, and the command repeated on the
+         * next pass is what starts the fresh one; sending it once would leave
+         * this side waiting for a socket that will never be bound.
+         *
+         * Blocking, and bounded by the deadline rather than by a per-attempt
+         * timeout, because there is no per-attempt timeout to have:
+         * `LocalSocket.connect(LocalSocketAddress, int)` is an unimplemented
+         * stub in the framework and throws `UnsupportedOperationException` on
+         * every API level (the 30, 33 and 34 sources all read
+         * `throw new UnsupportedOperationException()`, and the impl beneath it
+         * ignored the argument anyway). The one-argument overload is the real
+         * one, and a connect to an abstract name nobody is listening on fails
+         * immediately — which is what makes the retry loop the thing that
+         * actually waits for the runtime to come up.
          */
         fun connect(context: Context, timeoutMillis: Long = CONNECT_TIMEOUT_MS): NodeClient {
+            if (!NodeRuntime.available) {
+                throw IOException("this build carries no Node runtime for this device's CPU")
+            }
             val name = "roombrowser-node-${Process.myPid()}-${counter.incrementAndGet()}"
             val token = ByteArray(24).also(random::nextBytes).joinToString("") { "%02x".format(it) }
-            val requested = runCatching {
-                context.startService(
-                    Intent(context, NodeService::class.java)
-                        .putExtra(NodeRuntime.SOCKET_EXTRA, name)
-                        .putExtra(NodeRuntime.TOKEN_EXTRA, token)
-                )
-            }.isSuccess
-            if (!requested) {
-                throw IOException("the system would not start the Node runtime's process")
-            }
-            val deadline = System.currentTimeMillis() + timeoutMillis
+            val startedAt = System.currentTimeMillis()
+            val deadline = startedAt + timeoutMillis
+            var askedAt = 0L
             while (true) {
+                if (System.currentTimeMillis() - askedAt >= RESTART_EVERY_MS) {
+                    val requested = runCatching {
+                        context.startService(
+                            Intent(context, NodeService::class.java)
+                                .putExtra(NodeRuntime.SOCKET_EXTRA, name)
+                                .putExtra(NodeRuntime.TOKEN_EXTRA, token)
+                        )
+                    }.isSuccess
+                    if (!requested) {
+                        throw IOException("the system would not start the Node runtime's process")
+                    }
+                    askedAt = System.currentTimeMillis()
+                }
                 val socket = LocalSocket()
                 try {
                     socket.connect(LocalSocketAddress(name, LocalSocketAddress.Namespace.ABSTRACT))
@@ -146,14 +167,41 @@ class NodeClient private constructor(
                 } catch (err: IOException) {
                     runCatching { socket.close() }
                     if (System.currentTimeMillis() >= deadline) {
-                        throw IOException(
-                            "the Node runtime did not start within ${timeoutMillis / 1000}s — " +
-                                "this build carries one for arm64-v8a, armeabi-v7a and x86_64"
-                        )
+                        throw IOException(timedOut(context, timeoutMillis, name, startedAt))
                     }
                     Thread.sleep(RETRY_PAUSE_MS)
                 }
             }
+        }
+
+        /**
+         * What to say when no connection was ever made.
+         *
+         * The runtime's own last report is carried, because it is the only thing
+         * that can say whether the runtime never started, stopped before it
+         * listened, or is listening on something else — and a caller reading
+         * "did not start" has no other way to tell those apart. A report older
+         * than this attempt belongs to a previous run and is ignored.
+         */
+        private fun timedOut(
+            context: Context,
+            timeoutMillis: Long,
+            name: String,
+            startedAt: Long
+        ): String {
+            val status = NodeRuntime.statusFile(context)
+            val report = if (status.lastModified() >= startedAt) {
+                runCatching { status.readText().trim() }.getOrNull().orEmpty()
+            } else {
+                ""
+            }
+            val tail = if (report.isEmpty()) {
+                "the runtime wrote nothing, so it never reached the first line of its script"
+            } else {
+                "the runtime's own last report: $report"
+            }
+            return "the Node runtime did not start within ${timeoutMillis / 1000}s " +
+                "(socket $name) — $tail"
         }
     }
 }
