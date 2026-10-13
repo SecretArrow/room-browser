@@ -118,6 +118,12 @@ class AgentToolExecutor(
      */
     private val scratchpad: AgentScratchpad? = null,
     /**
+     * The embedded Node runtime `node_run` drives. Null — a build whose
+     * device ABI carries no runtime, or a caller that supplied none — leaves
+     * the tool unavailable rather than pretending a program ran.
+     */
+    private val nodeRuntime: AgentNodeRuntime? = null,
+    /**
      * The agent's per-site memory, scoped to this turn's profile. Null leaves
      * the tool unavailable rather than writing under the wrong profile.
      */
@@ -236,6 +242,7 @@ class AgentToolExecutor(
                     AgentTools.WALLET_SWITCH_NETWORK -> walletTools.switchNetwork(str(args, "network_id"))
                     AgentTools.RUN_JS -> runJs(str(args, "script"))
                     AgentTools.COMPUTE_JS -> computeJs(str(args, "script"))
+                    AgentTools.NODE_RUN -> runNode(str(args, "script"))
                     AgentTools.DATA_TRANSFORM -> dataTransform(args)
                     AgentTools.SITE_MEMORY -> siteMemoryTool(args)
                     AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
@@ -596,6 +603,20 @@ class AgentToolExecutor(
             true,
             "Scratchpad result (a detached page — the user's page was not touched):\n" + clip(unquote(raw))
         )
+    }
+
+    /**
+     * Runs a program in the embedded Node runtime. Unlike [computeJs] this one
+     * has Node's own APIs behind it — the network and this profile's files — so
+     * it is an interactive tool: the user is asked before it runs, unless YOLO
+     * was chosen. The runtime's own output is fenced as data by
+     * [AgentNodeRuntime]; nothing here needs to fence it again.
+     */
+    private suspend fun runNode(script: String?): ToolResult {
+        val code = nonBlank(script) ?: return ToolResult(false, "missing 'script' argument")
+        val runtime = nodeRuntime
+            ?: return ToolResult(false, "node_run is not available in this run")
+        return runtime.run(code)
     }
 
     /**

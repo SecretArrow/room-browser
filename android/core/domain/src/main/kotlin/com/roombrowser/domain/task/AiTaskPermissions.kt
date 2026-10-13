@@ -21,6 +21,11 @@ import kotlinx.serialization.Serializable
  * browser itself — its settings, its saved per-site permissions, what it has
  * kept — and some of it cannot be undone (see [ToolGroup.APP]).
  *
+ * The embedded Node runtime is the seventh and is denied outright as well: a
+ * Node program reaches the network and this profile's files with no page in
+ * front of it, so an unattended run has nothing to gain from it and a great
+ * deal to lose (see [ToolGroup.NODE]).
+ *
  * The authenticator codes and the notes are the last two, and they differ from
  * every group above in one way: [allows] refuses them here, because a task must
  * never grant itself a live code, but the RUNNER may override that refusal when
@@ -56,6 +61,10 @@ data class AiTaskPermissions(
         AgentTools.AUTO_REPLY, AgentTools.AUTO_POST -> ToolGroup.POST
         in AgentTools.WALLET_TOOLS -> ToolGroup.WALLET
         in AgentTools.DEVTOOLS_TOOLS -> ToolGroup.DEVTOOLS
+        // A program with Node's own APIs behind it. A scheduled run is offered
+        // the same catalogue, so the refusal has to be a real one rather than a
+        // tool that runs because nobody classified it.
+        AgentTools.NODE_RUN -> ToolGroup.NODE
         AgentTools.APP_OPEN, AgentTools.APP_TABS, AgentTools.APP_DATA,
         AgentTools.APP_SETTINGS, AgentTools.APP_SHIELDS,
         AgentTools.APP_SITE_PERMISSION, AgentTools.APP_PAGE -> ToolGroup.APP
@@ -76,6 +85,10 @@ data class AiTaskPermissions(
         // The Developer Tools tools need a live Console and Network panel and a
         // person to confirm a patch; a scheduled run has neither.
         ToolGroup.DEVTOOLS -> false
+        // A Node program has the profile's files and the open network behind it
+        // and no page in front of it, so there is nothing a scheduled run could
+        // want it for that a chat turn could not do with the user watching.
+        ToolGroup.NODE -> false
         // The one group a SETTING can hand over: see [ToolGroup.TOTP].
         ToolGroup.TOTP, ToolGroup.NOTES -> false
         null -> false
@@ -105,6 +118,9 @@ enum class ToolGroup(val label: String) {
     /** Never granted to a task; see [devtoolsUnattendedRefusal]. */
     DEVTOOLS("the Developer Tools tools"),
 
+    /** Never granted to a task; see [nodeUnattendedRefusal]. */
+    NODE("the embedded Node runtime"),
+
     /** Never granted by a task itself; one setting can hand it over. */
     TOTP("the authenticator codes"),
 
@@ -123,6 +139,7 @@ internal fun refusalMessage(toolName: String, group: ToolGroup?): String = when 
     ToolGroup.WALLET -> walletUnattendedRefusal(toolName)
     ToolGroup.APP -> appUnattendedRefusal(toolName)
     ToolGroup.DEVTOOLS -> devtoolsUnattendedRefusal(toolName)
+    ToolGroup.NODE -> nodeUnattendedRefusal(toolName)
     ToolGroup.TOTP, ToolGroup.NOTES -> profileUnattendedRefusal(toolName)
     else -> "tool '$toolName' is switched off for this task: ${group.label} is not permitted"
 }
@@ -178,3 +195,14 @@ fun unattendedRefusal(toolName: String): String =
 fun walletUnattendedRefusal(toolName: String): String =
     "tool '$toolName' works only in a chat, never in a scheduled run: a wallet request is " +
         "approved by you, in person. Ask the user to approve it in the wallet sheet."
+
+/**
+ * The refusal for the embedded Node runtime in a scheduled run. A Node program
+ * has this profile's files and the open network behind it and no page in front
+ * of it, so a run nobody is watching is the wrong place for one: there is
+ * nothing it could do there that a chat could not do with the user present.
+ */
+fun nodeUnattendedRefusal(toolName: String): String =
+    "tool '$toolName' works only in a chat: it runs a program with Node's own APIs, which can " +
+        "reach the network and write to this profile's files, and a scheduled run has nobody to " +
+        "ask. Run it as a chat."

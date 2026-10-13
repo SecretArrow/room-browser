@@ -558,6 +558,21 @@ private fun AgentSettingsRoot(
                 }
             )
 
+            // ================= Node runtime =================
+            // Its own section rather than the Developer Tools one: node_run
+            // runs a program in a process of its own with Node's real APIs
+            // behind it, which is a wider surface than reading a panel, and it
+            // is what the switch below is about.
+            SectionHeader("Node runtime")
+            SettingSwitchRow(
+                title = AgentPermissions.label(AgentPermissions.AGENT_NODE),
+                subtitle = AgentPermissions.description(AgentPermissions.AGENT_NODE),
+                checked = AgentPermissions.AGENT_NODE !in controller.profileSettings.agentWithheldPermissions,
+                onCheckedChange = { checked ->
+                    controller.setAgentPermission(AgentPermissions.AGENT_NODE, checked)
+                }
+            )
+
             // ================= Agent vision =================
             // Its own section, not the Developer Tools one: see_page is a
             // reading tool like read_page, and the thing it sends is the page

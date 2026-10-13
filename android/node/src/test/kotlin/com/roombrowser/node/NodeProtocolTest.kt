@@ -74,6 +74,44 @@ class NodeProtocolTest {
         assertThat(status.userAgentEnforced).isTrue()
     }
 
+    @Test
+    fun a_run_request_carries_the_script_and_the_budget() {
+        val sent = Json.parseToJsonElement(
+            NodeProtocol.request(4, "run", "tok", "UA/1", script = "return 1", timeoutMs = 5000)
+        ).jsonObject
+        assertThat(sent["cmd"].toString()).isEqualTo("\"run\"")
+        assertThat(sent["script"].toString()).isEqualTo("\"return 1\"")
+        assertThat(sent["timeoutMs"].toString()).isEqualTo("5000")
+    }
+
+    @Test
+    fun a_request_that_carries_no_script_sends_none() {
+        val sent = Json.parseToJsonElement(
+            NodeProtocol.request(4, "status", "tok", "UA/1")
+        ).jsonObject
+        assertThat(sent.containsKey("script")).isFalse()
+        assertThat(sent.containsKey("timeoutMs")).isFalse()
+    }
+
+    @Test
+    fun a_script_that_threw_arrives_inside_a_successful_reply() {
+        // The envelope's `ok` is the RUNTIME's outcome, and a throwing script
+        // is not a broken runtime — so the caller reads a failure it can act
+        // on instead of an exception it would have to word itself.
+        val result = NodeProtocol.result(RUN_THAT_THREW, 2)
+        val run = NodeProtocol.runOf(result)
+        assertThat(run.ok).isFalse()
+        assertThat(run.output).contains("boom")
+        assertThat(run.ms).isEqualTo(12)
+    }
+
+    @Test
+    fun a_run_that_returned_a_value_reads_it_back_as_text() {
+        val run = NodeProtocol.runOf(NodeProtocol.result(RUN_THAT_RETURNED, 2))
+        assertThat(run.ok).isTrue()
+        assertThat(run.output).contains("42")
+    }
+
     private companion object {
         // Hand-written, in the shape assets/node/bridge.js actually writes:
         // these pin the wire format rather than the encoder that produced it.
@@ -82,5 +120,11 @@ class NodeProtocolTest {
 
         const val STATUS_WITHOUT_IDENTITY =
             """{"id":1,"ok":true,"result":{"node":"v18.20.4","platform":"linux","arch":"x64","pid":42,"workDir":"/","userAgent":null,"userAgentEnforced":true}}"""
+
+        const val RUN_THAT_THREW =
+            """{"id":2,"ok":true,"result":{"ok":false,"output":"the script threw: boom","ms":12}}"""
+
+        const val RUN_THAT_RETURNED =
+            """{"id":2,"ok":true,"result":{"ok":true,"output":"42","ms":3}}"""
     }
 }

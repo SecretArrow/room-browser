@@ -24,6 +24,20 @@ data class NodeStatus(
 )
 
 /**
+ * What one script produced.
+ *
+ * [ok] is the SCRIPT's outcome, not the runtime's: a script that throws is an
+ * answer the model has to read and correct, not a broken runtime, so it arrives
+ * with the same envelope as a success and the thrown words in [output].
+ */
+@Serializable
+data class NodeRunResult(
+    val ok: Boolean,
+    val output: String,
+    val ms: Long = 0
+)
+
+/**
  * One line of JSON each way. The other end is `assets/node/bridge.js`, and the
  * two spellings are one protocol: `id`, `cmd`, `token`, `userAgent` going out;
  * `id`, `ok`, `result` or `error` coming back.
@@ -32,7 +46,14 @@ internal object NodeProtocol {
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    fun request(id: Int, cmd: String, token: String, userAgent: String?): String =
+    fun request(
+        id: Int,
+        cmd: String,
+        token: String,
+        userAgent: String?,
+        script: String? = null,
+        timeoutMs: Long? = null
+    ): String =
         buildJsonObject {
             put("id", id)
             put("cmd", cmd)
@@ -41,6 +62,8 @@ internal object NodeProtocol {
             // missing identity as a refusal on every request, never as a
             // fallback to its own.
             if (!userAgent.isNullOrBlank()) put("userAgent", userAgent)
+            if (script != null) put("script", script)
+            if (timeoutMs != null) put("timeoutMs", timeoutMs)
         }.toString()
 
     /** The reply's `result`, or the runtime's own error as an exception. */
@@ -59,4 +82,7 @@ internal object NodeProtocol {
 
     fun statusOf(result: JsonObject): NodeStatus =
         json.decodeFromJsonElement(NodeStatus.serializer(), result)
+
+    fun runOf(result: JsonObject): NodeRunResult =
+        json.decodeFromJsonElement(NodeRunResult.serializer(), result)
 }

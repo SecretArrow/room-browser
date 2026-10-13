@@ -100,7 +100,7 @@ class AiTaskPermissionsTest {
         listOf(
             ToolGroup.READ_PAGE, ToolGroup.NAVIGATE, ToolGroup.INTERACT,
             ToolGroup.POST, ToolGroup.WALLET, ToolGroup.APP,
-            ToolGroup.TOTP, ToolGroup.NOTES, ToolGroup.DEVTOOLS
+            ToolGroup.TOTP, ToolGroup.NOTES, ToolGroup.DEVTOOLS, ToolGroup.NODE
         ).forEach { group ->
             assertThat(catalogue.filter { all.groupOf(it) == group }).isNotEmpty()
         }

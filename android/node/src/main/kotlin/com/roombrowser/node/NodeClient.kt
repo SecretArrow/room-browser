@@ -40,12 +40,45 @@ class NodeClient private constructor(
     @Synchronized
     fun status(userAgent: String?): NodeStatus = call("status", userAgent, NodeProtocol::statusOf)
 
+    /**
+     * Runs [script] and returns what it produced.
+     *
+     * [timeoutMillis] is the script's own budget, sent with the command so the
+     * runtime stops the script itself and says so; the read below waits longer
+     * than that, so the honest message from the runtime is what arrives and the
+     * socket timeout is only the backstop for a runtime that cannot answer at
+     * all.
+     */
     @Synchronized
-    private fun <T> call(cmd: String, userAgent: String?, read: (JsonObject) -> T): T {
+    fun run(
+        script: String,
+        userAgent: String?,
+        timeoutMillis: Long
+    ): NodeRunResult = call(
+        cmd = "run",
+        userAgent = userAgent,
+        read = NodeProtocol::runOf,
+        script = script,
+        timeoutMs = timeoutMillis,
+        readTimeoutMillis = readTimeoutFor(timeoutMillis)
+    )
+
+    @Synchronized
+    private fun <T> call(
+        cmd: String,
+        userAgent: String?,
+        read: (JsonObject) -> T,
+        script: String? = null,
+        timeoutMs: Long? = null,
+        readTimeoutMillis: Long = READ_TIMEOUT_MS
+    ): T {
         val id = ++nextId
-        out.write(NodeProtocol.request(id, cmd, token, userAgent))
+        out.write(NodeProtocol.request(id, cmd, token, userAgent, script, timeoutMs))
         out.write("\n")
         out.flush()
+        // A runtime that is wedged in a script would otherwise hold this
+        // thread — and the turn behind it — forever, with nothing to report.
+        socket.soTimeout = readTimeoutMillis.toInt()
         val line = input.readLine() ?: throw IOException("the Node runtime closed the connection")
         return read(NodeProtocol.result(line, id))
     }
@@ -59,6 +92,20 @@ class NodeClient private constructor(
 
         private const val CONNECT_TIMEOUT_MS = 20_000L
         private const val RETRY_PAUSE_MS = 50L
+
+        /** How long a plain reply may take before the socket gives up. */
+        private const val READ_TIMEOUT_MS = 45_000L
+
+        /** What a script's own budget is padded by before the read gives up. */
+        private const val READ_SLACK_MS = 15_000L
+
+        /**
+         * How long the socket waits for a script's reply. Deliberately longer
+         * than the budget the runtime was given, so a script the runtime stops
+         * on its own is reported in the runtime's words rather than as a dead
+         * connection.
+         */
+        internal fun readTimeoutFor(budgetMillis: Long): Long = budgetMillis + READ_SLACK_MS
 
         private val counter = AtomicInteger()
         private val random = SecureRandom()

@@ -12,6 +12,8 @@
 // speaks HTTP by hand, is outside what these wrappers can see.
 
 const net = require('net');
+const path = require('path');
+const vm = require('vm');
 
 const argv = process.argv.slice(2);
 const socketName = argv[0];
@@ -190,6 +192,99 @@ function status() {
   };
 }
 
+// ---- running a script ----------------------------------------------------
+
+// A script that never finishes must not take the runtime with it, so it is
+// bounded twice: the synchronous half by V8 itself, the asynchronous half by a
+// timer. The caller waits longer than both and answers honestly if even that
+// runs out.
+const DEFAULT_BUDGET_MS = 30000;
+const SYNC_CAP_MS = 10000;
+const MAX_OUTPUT_CHARS = 20000;
+
+// The entry script's own path: a script resolves packages from beside it, so
+// whatever is installed next to this file is reachable with require().
+const ENTRY_FILE = process.argv[1];
+
+function clipOutput(text) {
+  if (text.length <= MAX_OUTPUT_CHARS) return text;
+  return (
+    text.slice(0, MAX_OUTPUT_CHARS) + '\n...[truncated at ' + MAX_OUTPUT_CHARS + ' characters]'
+  );
+}
+
+function renderValue(value) {
+  if (value === undefined) return 'undefined';
+  try {
+    const json = JSON.stringify(value, null, 2);
+    return json === undefined ? String(value) : json;
+  } catch (err) {
+    return String(value);
+  }
+}
+
+function runFailed(err, startedAt) {
+  return {
+    ok: false,
+    output: 'the script threw: ' + (err && err.message ? err.message : String(err)),
+    ms: Date.now() - startedAt,
+  };
+}
+
+// The script is the body of an async function, so `return` sends a value back
+// and `await` works. The whole call is inside the evaluated source on purpose:
+// outside it, the vm timeout would cover only the function's creation and not
+// the synchronous part of its body, which is the half a runaway loop lives in.
+function runScript(source, budgetMs) {
+  const startedAt = Date.now();
+  const module_ = { exports: {} };
+  const syncCap = Math.min(SYNC_CAP_MS, Math.floor(budgetMs / 3));
+  globalThis.__roomNodeArgs = [
+    require,
+    module_,
+    module_.exports,
+    ENTRY_FILE,
+    path.dirname(ENTRY_FILE),
+  ];
+  let pending;
+  try {
+    pending = vm.runInThisContext(
+      '(async function (require, module, exports, __filename, __dirname) {\n' +
+        source +
+        '\n}).apply(undefined, globalThis.__roomNodeArgs)',
+      { filename: 'room-node-run.js', timeout: syncCap }
+    );
+  } catch (err) {
+    return Promise.resolve(runFailed(err, startedAt));
+  } finally {
+    delete globalThis.__roomNodeArgs;
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      resolve({
+        ok: false,
+        output: 'the script was still running after ' + budgetMs + 'ms and was stopped',
+        ms: Date.now() - startedAt,
+      });
+    }, budgetMs);
+    Promise.resolve(pending).then(
+      (value) => {
+        clearTimeout(timer);
+        // A script that assigns module.exports instead of returning gets that
+        // reported, which is what calling an installed package looks like.
+        const exported = module_.exports;
+        const shown =
+          value === undefined && exported && Object.keys(exported).length > 0 ? exported : value;
+        resolve({ ok: true, output: clipOutput(renderValue(shown)), ms: Date.now() - startedAt });
+      },
+      (err) => {
+        clearTimeout(timer);
+        resolve(runFailed(err, startedAt));
+      }
+    );
+  });
+}
+
 function handle(connection, line) {
   let command;
   try {
@@ -212,6 +307,23 @@ function handle(connection, line) {
       case 'status':
         reply(connection, command.id, true, status());
         break;
+      case 'run': {
+        if (typeof command.script !== 'string' || !command.script.trim()) {
+          reply(connection, command.id, false, 'the command carried no script to run');
+          break;
+        }
+        // The budget comes from the caller rather than from a constant here,
+        // so the app's own read timeout can be derived from the number the
+        // runtime is actually working to.
+        const budgetMs =
+          Number.isFinite(command.timeoutMs) && command.timeoutMs > 0
+            ? command.timeoutMs
+            : DEFAULT_BUDGET_MS;
+        runScript(command.script, budgetMs).then((result) =>
+          reply(connection, command.id, true, result)
+        );
+        break;
+      }
       default:
         reply(connection, command.id, false, 'unknown command: ' + String(command.cmd));
     }

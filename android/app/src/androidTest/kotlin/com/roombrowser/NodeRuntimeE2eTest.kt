@@ -37,4 +37,75 @@ class NodeRuntimeE2eTest {
             assertTrue("the user-agent rule was not installed", status.userAgentEnforced)
         }
     }
+
+    @Test
+    fun a_script_runs_and_its_value_comes_back() {
+        NodeClient.connect(targetContext).use { client ->
+            val run = client.run("return { answer: 42 };", profileUserAgent, BUDGET_MS)
+            assertTrue("the script did not return: ${run.output}", run.ok)
+            assertTrue("the value was not in the reply: ${run.output}", run.output.contains("42"))
+        }
+    }
+
+    @Test
+    fun every_request_a_script_makes_carries_the_profile_user_agent() {
+        // A server inside the script itself, so this is hermetic: no network
+        // beyond loopback, and what it reports is the header the runtime
+        // actually put on the wire rather than the identity it was handed.
+        val script = """
+            const http = require('http');
+            const seen = await new Promise((resolve, reject) => {
+              const server = http.createServer((req, res) => {
+                res.end('ok');
+                resolve(req.headers['user-agent']);
+                server.close();
+              });
+              server.on('error', reject);
+              server.listen(0, '127.0.0.1', () => {
+                http.get(
+                  { host: '127.0.0.1', port: server.address().port, path: '/' },
+                  (res) => res.resume()
+                );
+              });
+            });
+            return seen;
+        """.trimIndent()
+        NodeClient.connect(targetContext).use { client ->
+            val run = client.run(script, profileUserAgent, BUDGET_MS)
+            assertTrue("the request never arrived: ${run.output}", run.ok)
+            assertTrue(
+                "the request did not carry the profile identity: ${run.output}",
+                run.output.contains("Pixel 5")
+            )
+        }
+    }
+
+    @Test
+    fun a_script_that_throws_is_reported_rather_than_breaking_the_runtime() {
+        NodeClient.connect(targetContext).use { client ->
+            val run = client.run("throw new Error('boom');", profileUserAgent, BUDGET_MS)
+            assertTrue("a throw was reported as a success: ${run.output}", !run.ok)
+            assertTrue("the throw's own words were lost: ${run.output}", run.output.contains("boom"))
+        }
+    }
+
+    @Test
+    fun a_script_that_outlives_its_budget_is_stopped_and_says_so() {
+        // The runtime's own timer, not the socket's: the caller is given the
+        // number it was working to rather than a connection that went quiet.
+        val budget = 2_000L
+        NodeClient.connect(targetContext).use { client ->
+            val run = client.run("await new Promise(() => {});", profileUserAgent, budget)
+            assertTrue("a script that never finished was reported as done", !run.ok)
+            assertTrue(
+                "the stop was not reported in the runtime's words: ${run.output}",
+                run.output.contains("$budget")
+            )
+        }
+    }
+
+    private companion object {
+        /** The budget these scripts get; every one of them is meant to finish. */
+        const val BUDGET_MS = 20_000L
+    }
 }
