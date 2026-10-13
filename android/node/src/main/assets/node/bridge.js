@@ -8,8 +8,9 @@
 // thing on this device that is not the profile, and the profile is what the
 // whole browser exists to present. The rule wraps the request APIs rather than
 // passing a header at each call site, so a package that never heard of it
-// obeys it too. A script that builds a request on a raw `tls`/`net` socket, or
-// speaks HTTP by hand, is outside what these wrappers can see.
+// obeys it too. A script that builds a request on a raw `tls`/`net` socket,
+// speaks HTTP by hand, or reaches past the request it was handed to the request
+// classes' prototypes, is outside what these wrappers can see.
 
 const net = require('net');
 const fs = require('fs');
@@ -76,19 +77,31 @@ function currentUserAgent() {
 
 // ---- the user-agent rule -------------------------------------------------
 
+// The profile's identity REPLACES any the caller supplied rather than deferring
+// to it: a script that writes its own `User-Agent` would otherwise be able to
+// reach a server as something this profile is not, and `setHeader` and `fetch`
+// below already refuse that, so honouring it here would only make the rule
+// depend on which of the three a script happened to use.
 function withUserAgent(headers, ua) {
   if (headers == null) {
     return { 'User-Agent': ua };
   }
   if (Array.isArray(headers)) {
     const flat = typeof headers[0] === 'string';
-    const names = flat
-      ? headers.filter((_, index) => index % 2 === 0)
-      : headers.map((pair) => pair && pair[0]);
-    if (names.some((name) => String(name).toLowerCase() === 'user-agent')) {
-      return headers;
+    const named = (name) => String(name).toLowerCase() === 'user-agent';
+    if (flat) {
+      const kept = [];
+      for (let index = 0; index + 1 < headers.length; index += 2) {
+        if (!named(headers[index])) {
+          kept.push(headers[index], headers[index + 1]);
+        }
+      }
+      kept.push('User-Agent', ua);
+      return kept;
     }
-    return flat ? headers.concat(['User-Agent', ua]) : headers.concat([['User-Agent', ua]]);
+    const kept = headers.filter((pair) => !(pair && named(pair[0])));
+    kept.push(['User-Agent', ua]);
+    return kept;
   }
   if (typeof headers.set === 'function' && typeof headers.has === 'function') {
     headers.set('User-Agent', ua);
@@ -97,7 +110,7 @@ function withUserAgent(headers, ua) {
   if (typeof headers === 'object') {
     for (const key of Object.keys(headers)) {
       if (key.toLowerCase() === 'user-agent') {
-        return headers;
+        delete headers[key];
       }
     }
     headers['User-Agent'] = ua;

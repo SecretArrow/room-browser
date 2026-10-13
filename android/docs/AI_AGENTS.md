@@ -260,9 +260,14 @@ never runs a script never pays for a runtime.
 The identity is the whole point of the plumbing. Node's own client announces
 `node` — the one thing on this device that is not the profile — so every request
 a script makes carries the identity the profile's pages send: the profile's own
-user agent, or the engine's default when the profile chose none. A profile with
-no identity at all makes no request: the tool refuses before the script runs
-rather than letting Node introduce itself.
+user agent, or the engine's default when the profile chose none. A script cannot
+supply one of its own — the profile's identity replaces whatever it sets, on
+`fetch`, on `http`/`https`, and on the request's own header setters alike. The
+rule covers those APIs and not the layer under them: a script that opens a raw
+`net`/`tls` socket, writes HTTP by hand, or calls the request classes'
+prototypes directly is outside the wrappers, so it is a rule rather than a
+sandbox. A profile with no identity at all makes no request: the tool refuses
+before the script runs rather than letting Node introduce itself.
 
 Honest limits — these are the feature, not a footnote:
 

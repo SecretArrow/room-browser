@@ -378,8 +378,14 @@ packages — and it is stated here in those terms rather than as a sandbox:
   it is a separate process, not a separate principal.
 - **It reaches the network as this profile.** Every request a script makes
   carries this profile's own user agent — the same identity its pages send, or
-  the engine's default when the profile chose none. A profile with no identity
-  at all makes no request: the tool refuses before the script runs rather than
+  the engine's default when the profile chose none — and a script cannot supply
+  one of its own: the profile's identity *replaces* whatever a script sets, on
+  `fetch`, on `http`/`https`, and on the request's own header setters alike. The
+  wrappers cover those APIs, not the layer under them: a script that opens a raw
+  `net`/`tls` socket, writes HTTP by hand, or calls the request classes'
+  prototypes directly is outside them. That is the same boundary the next
+  paragraph draws — this is a rule, not a sandbox. A profile with no identity at
+  all makes no request: the tool refuses before the script runs rather than
   letting Node announce itself. That is about *identity*, not about reach — the
   script can still call anywhere this app can, and the two engine-level controls
   that govern page traffic do not apply to it: neither the profile's proxy nor

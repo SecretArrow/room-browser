@@ -84,6 +84,90 @@ class NodeRuntimeE2eTest {
     }
 
     @Test
+    fun a_script_cannot_put_a_user_agent_of_its_own_on_the_wire() {
+        // The rule is THIS PROFILE's identity, not "a user agent of some kind":
+        // a script that names itself would otherwise reach a server as
+        // something the profile is not. Every way of trying is asked here —
+        // a header object, a lower-case key, the setter afterwards, a header
+        // removed and set again, `setHeaders` with a Map, a removed header
+        // appended, and `fetch` with an object, an array of pairs or a Headers
+        // instance — and each gets its own loopback server, so what is compared
+        // is the header that went on the wire.
+        //
+        // The count is asserted rather than a fixed number: `fetch` is asked
+        // only if the runtime has it, and the array form is asked through
+        // `fetch` alone because Node drops an array `headers` on
+        // `http.request` before any header is written, which would prove
+        // nothing about the rule.
+        val script = """
+            const http = require('http');
+            const seen = [];
+            function serve(handler) {
+              return new Promise((resolve, reject) => {
+                const server = http.createServer((req, res) => {
+                  res.end('ok');
+                  seen.push(req.headers['user-agent']);
+                  server.close();
+                  resolve();
+                });
+                server.on('error', reject);
+                server.listen(0, '127.0.0.1', () => {
+                  Promise.resolve(handler(server)).catch(reject);
+                });
+              });
+            }
+            function ask(options, after) {
+              return serve((server) => {
+                const base = { host: '127.0.0.1', port: server.address().port, path: '/' };
+                const request = http.request(Object.assign(base, options), (res) => res.resume());
+                if (after) after(request);
+                request.end();
+              });
+            }
+            function askFetch(init) {
+              return serve(async (server) => {
+                const url = 'http://127.0.0.1:' + server.address().port + '/';
+                const response = await fetch(url, init);
+                await response.text();
+              });
+            }
+            await ask({ headers: { 'User-Agent': 'node' } });
+            await ask({ headers: { 'user-agent': 'node' } });
+            await ask({}, (request) => request.setHeader('User-Agent', 'node'));
+            await ask({}, (request) => {
+              request.removeHeader('User-Agent');
+              request.setHeader('User-Agent', 'node');
+            });
+            await ask({}, (request) => request.setHeaders(new Map([['User-Agent', 'node']])));
+            await ask({}, (request) => {
+              request.removeHeader('User-Agent');
+              request.appendHeader('User-Agent', 'node');
+            });
+            if (typeof fetch === 'function') {
+              await askFetch({ headers: { 'user-agent': 'node' } });
+              await askFetch({ headers: [['user-agent', 'node']] });
+              await askFetch({ headers: new Headers({ 'user-agent': 'node' }) });
+            }
+            return seen;
+        """.trimIndent()
+        NodeClient.connect(targetContext).use { client ->
+            val run = client.run(script, profileUserAgent, BUDGET_MS)
+            assertTrue("the requests never arrived: ${run.output}", run.ok)
+            val arrived = Regex("\"Mozilla/5.0").findAll(run.output).count()
+            assertTrue("too few requests reached a server: ${run.output}", arrived >= 4)
+            assertEquals(
+                "a script put its own identity on the wire: ${run.output}",
+                arrived,
+                Regex("Pixel 5").findAll(run.output).count()
+            )
+            assertTrue(
+                "the runtime announced itself as node: ${run.output}",
+                !run.output.contains("\"node\"")
+            )
+        }
+    }
+
+    @Test
     fun a_script_that_throws_is_reported_rather_than_breaking_the_runtime() {
         NodeClient.connect(targetContext).use { client ->
             val run = client.run("throw new Error('boom');", profileUserAgent, BUDGET_MS)
