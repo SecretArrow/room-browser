@@ -24,7 +24,7 @@ device. It is **not** an anonymity tool.
 | Downloads | Filename sanitization (path traversal / separators / double-dot collapse), explicit notifications |
 | Malicious sites | Bundled blocklist + heuristics (http, IP-literal URLs, punycode) surfaced as warnings/blocks |
 | Agent actions | Every state-changing tool call passes a gate: **Confirm actions** (a blanket Allow/Deny prompt) and, optionally, a local Ollama decision model that judges the action first. Both are bypassed while **YOLO** is on. None of the three is a security boundary — see below |
-| Agent vision | A screenshot of the current page can be sent to the model provider, signed-in content included; **off by default** (per-profile switch), refused on text-only providers and in a private tab — see *The agent's vision and site memory* below |
+| Agent vision | A screenshot of the current page can be sent to the model provider, signed-in content included; **on by default** (per-profile switch — turning it off takes `see_page` away), refused on text-only providers and in a private tab — see *The agent's vision and site memory* below |
 | Agent site memory | Per-profile, origin-keyed notes the agent keeps about a site; redaction at entry, user-visible and deletable per entry and per site, wiped with the profile — see *The agent's vision and site memory* below |
 | Credentials | **Never stored by Room Browser.** Autofill is delegated to the Android autofill framework; no plaintext (or any) credential storage exists in the app |
 | Secrets in repo | None. Signing comes exclusively from environment variables / CI secrets |
@@ -303,11 +303,13 @@ provider, Ollama included.
 
 Three of the agent's newer capabilities touch data that leaves the device, run
 code, or accumulate in the profile, so their limits are stated here rather than
-left in the user guide alone. Vision and site memory are per-profile and both
-are **off on every profile, new and old**, carried by a defaulted Boolean
-(`agentVisionEnabled`, `agentSiteMemoryEnabled`) rather than by a withheld
-permission — that set is a deny-list, so a permission added later is granted by
-default and cannot express "off". The embedded Node runtime is governed by the
+left in the user guide alone. Vision and site memory are per-profile and carried
+by a defaulted Boolean (`agentVisionEnabled`, `agentSiteMemoryEnabled`) rather
+than by a withheld permission — that set is a deny-list, so a permission added
+later is granted by default and cannot express "off". Site memory is **off on
+every profile, new and old**; vision is **on**, because a page that reads as
+nothing is a task the agent would otherwise give up on, and turning it off takes
+`see_page` away. The embedded Node runtime is governed by the
 withheld `agent.node` permission instead, because it is a capability the agent
 is meant to be able to use rather than an opt-in consequence: it is on until
 the profile withholds it, and it asks before it runs unless the profile chose
@@ -342,8 +344,10 @@ consequence, and it is not mitigated:
   `see_page` refuses before capture, the same rule that disables the Developer
   Tools panels there. The refusal is in the tool, so it holds whether the switch
   is on or off.
-- **Off by default.** `agentVisionEnabled` is false on every profile, and the
-  setting's own description states the consequence in full.
+- **On by default.** `agentVisionEnabled` is true on every profile, because a
+  page that reads as nothing is a task the agent would otherwise give up on.
+  The setting's own description states the consequence in full, and turning it
+  off takes `see_page` away.
 
 The honest summary: while vision is on, the agent can hand a provider a picture
 of whatever is on the screen, and nothing in the app stands between the page's

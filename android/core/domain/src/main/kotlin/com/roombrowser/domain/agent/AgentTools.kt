@@ -18,6 +18,7 @@ object AgentTools {
     const val SEARCH_WEB = "search_web"
     const val READ_PAGE = "read_page"
     const val SEE_PAGE = "see_page"
+    const val COMPARE_SCREENSHOTS = "compare_screenshots"
     const val CLICK = "click"
     const val FILL_INPUT = "fill_input"
     const val PRESS_ENTER = "press_enter"
@@ -111,7 +112,8 @@ object AgentTools {
     private val SCHEMA_TAB_INDEX = """{"type":"object","properties":{"index":{"type":"integer","description":"Tab index from list_tabs"}},"required":["index"]}"""
     private val SCHEMA_TEXT = """{"type":"object","properties":{"text":{"type":"string","description":"Text to send"}},"required":["text"]}"""
     private val SCHEMA_WAIT = """{"type":"object","properties":{"ms":{"type":"integer","description":"Milliseconds to wait, 200-20000, default 1500"}}}"""
-    private val SCHEMA_SEE_PAGE = """{"type":"object","properties":{"question":{"type":"string","description":"Optional: what you want to know about the page, so the picture is looked at with that in mind"},"reason":{"type":"string","description":"Optional: why a picture is needed rather than the text read_page returns"}}}"""
+    private val SCHEMA_SEE_PAGE = """{"type":"object","properties":{"question":{"type":"string","description":"Optional: what you want to know about the page, so the picture is looked at with that in mind"},"reason":{"type":"string","description":"Optional: why a picture is needed rather than the text read_page returns"},"full_page":{"type":"boolean","description":"Optional, default false. True captures the WHOLE document, not just the part on screen. It is an overview: the page is scrolled and the frames are stitched, then the result is scaled down, so small text is unreadable. Use it to see the layout, or to find something below the fold; leave it false when you need to read detail."},"annotate":{"type":"boolean","description":"Optional, default false. True draws the read_page [ref] numbers onto the elements they belong to, so a number you see in the picture is the number click and fill_input take."}}}"""
+    private val SCHEMA_COMPARE_SCREENSHOTS = """{"type":"object","properties":{"tolerance":{"type":"integer","description":"Optional, default 12. How far a colour channel must move (0-255) before that pixel counts as changed. Raise it to ignore rendering jitter, lower it to catch a subtle change."}}}"""
     private val SCHEMA_REQUEST_ID = """{"type":"object","properties":{"request_id":{"type":"string","description":"Request id from wallet_requests"}},"required":["request_id"]}"""
     private val SCHEMA_NETWORK_ID = """{"type":"object","properties":{"network_id":{"type":"string","description":"Network id from wallet_state, e.g. EVM:137. The wallet must already know it."}},"required":["network_id"]}"""
     private val SCHEMA_RUN_JS = """{"type":"object","properties":{"script":{"type":"string","description":"JavaScript to run in the page. Synchronous only: the value of the last expression comes back as text, and a returned Promise is not awaited."}},"required":["script"]}"""
@@ -235,6 +237,16 @@ object AgentTools {
                 "along with whatever the user is signed in to on this page. Refused in a private " +
                 "tab. Prefer read_page when text answers the question.",
             SCHEMA_SEE_PAGE
+        ),
+        def(
+            COMPARE_SCREENSHOTS,
+            "Take a screenshot and report how it differs from the previous one in this turn — " +
+                "the share of the frame that changed and where the change is. Use it to answer " +
+                "\"did that click actually do anything?\" without spending a second picture on it. " +
+                "It is the cheap check; see_page is what puts a picture in front of you. The " +
+                "first call in a turn has nothing to compare against and says so, so take a " +
+                "screenshot BEFORE the action you want to verify, then call this after it.",
+            SCHEMA_COMPARE_SCREENSHOTS
         ),
         def(CLICK, "Click an interactive element identified by its [ref] number from read_page.", SCHEMA_REF),
         def(FILL_INPUT, "Type text into an input/textarea field identified by its [ref] number from read_page.", SCHEMA_FILL),
@@ -451,6 +463,7 @@ object AgentTools {
             SEARCH_WEB -> "Search \"${str("query") ?: ""}\""
             READ_PAGE -> "Read current page"
             SEE_PAGE -> "See the page"
+            COMPARE_SCREENSHOTS -> "Compare the page with the previous screenshot"
             CLICK -> "Click [${int("ref") ?: "?"}]"
             FILL_INPUT -> "Type into [${int("ref") ?: "?"}]"
             PRESS_ENTER -> "Press Enter"

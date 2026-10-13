@@ -21,6 +21,7 @@ import com.roombrowser.domain.agent.PageSnapshotDto
 import com.roombrowser.domain.agent.PageSnapshotFormatter
 import com.roombrowser.domain.agent.ReadinessSample
 import com.roombrowser.domain.agent.ReadinessVerdict
+import com.roombrowser.domain.agent.ScreenshotDiff
 import com.roombrowser.domain.agent.SecretRedaction
 import com.roombrowser.domain.agent.SiteMemory
 import com.roombrowser.domain.agent.SiteMemoryStore
@@ -162,6 +163,14 @@ class AgentToolExecutor(
     /** Why the last failed readiness wait gave up; null when it did not fail. */
     private var lastReadinessMessage: String? = null
 
+    /**
+     * The last frame this turn captured, for `compare_screenshots`. Held here
+     * rather than in a store because the executor is built per turn: the
+     * comparison is only ever against the page as it was a moment ago, never
+     * against a page from an earlier conversation.
+     */
+    private val screenshotHistory = ScreenshotHistory()
+
     private val appTools by lazy {
         AgentAppTools(
             control = control,
@@ -226,6 +235,7 @@ class AgentToolExecutor(
                     AgentTools.SEARCH_WEB -> searchWeb(str(args, "query"))
                     AgentTools.READ_PAGE -> readPage()
                     AgentTools.SEE_PAGE -> seePage(args)
+                    AgentTools.COMPARE_SCREENSHOTS -> compareScreenshots(args)
                     AgentTools.CLICK -> click(int(args, "ref"))
                     AgentTools.FILL_INPUT -> fillInput(int(args, "ref"), str(args, "text"))
                     AgentTools.PRESS_ENTER -> pressEnter(intOrNull(args, "ref"))
@@ -373,13 +383,53 @@ class AgentToolExecutor(
             )
         }
         val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
-        val shot = PageScreenshot.capture(session).getOrElse {
+        val annotate = bool(args, "annotate")
+        val shot = (if (bool(args, "full_page")) {
+            PageScreenshot.captureFullPage(session, annotate)
+        } else {
+            PageScreenshot.capture(session, annotate)
+        }).getOrElse {
             return ToolResult(false, "could not capture the page: ${it.message ?: "unknown error"}")
         }
+        // Every capture is a candidate baseline, so the model can take one
+        // before an action and ask compare_screenshots about it afterwards.
+        shot.frame?.let { screenshotHistory.record(it) }
         return ToolResult(
             true,
             screenshotSummary(shot, str(args, "question"), str(args, "reason")),
             images = listOf(shot.image)
+        )
+    }
+
+    private suspend fun compareScreenshots(args: Map<String, Any?>): ToolResult {
+        visionUnsupportedReason()?.let { why ->
+            return ToolResult(
+                false,
+                "compare_screenshots is not available on this provider — $why. Switch to a " +
+                    "provider that accepts images."
+            )
+        }
+        if (!vm.profileSettings().agentVisionEnabled) {
+            return ToolResult(
+                false,
+                "compare_screenshots is turned off for this profile — turn on \"Agent can see " +
+                    "the page\" in AI Agent settings."
+            )
+        }
+        val id = tabId
+        if (id != null && vm.tabs.firstOrNull { it.id == id }?.isPrivate == true) {
+            return ToolResult(
+                false,
+                "compare_screenshots is not available in a private tab: the frames are compared " +
+                    "on the device and never sent, but this refuses for the same reason see_page " +
+                    "does — a private session is never captured."
+            )
+        }
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        return compareWithLastScreenshot(
+            session,
+            screenshotHistory,
+            intOrNull(args, "tolerance") ?: ScreenshotDiff.DEFAULT_TOLERANCE
         )
     }
 
@@ -1224,6 +1274,10 @@ class AgentToolExecutor(
     private fun strOrNull(args: Map<String, Any?>, key: String): String? = args[key] as? String
 
     private fun int(args: Map<String, Any?>, key: String): Int? = intOrNull(args, key)
+
+    /** Optional booleans default to false: an absent flag is the cheaper behaviour. */
+    private fun bool(args: Map<String, Any?>, key: String): Boolean =
+        (args[key] as? Boolean) ?: (args[key] as? String)?.toBooleanStrictOrNull() ?: false
 
     private fun intOrNull(args: Map<String, Any?>, key: String): Int? =
         (args[key] as? Number)?.toInt() ?: (args[key] as? String)?.toIntOrNull()
