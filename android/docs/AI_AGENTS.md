@@ -189,8 +189,10 @@ is a deny-list, so a permission added later is granted until the profile
 withholds it, and an empty set (a fresh or upgraded profile) grants everything.
 So the two capabilities that leave the device or persist new data — vision
 (`see_page`) and site memory (`site_memory`) — are instead gated by a
-per-profile Boolean (`agentVisionEnabled`, `agentSiteMemoryEnabled`) that is
-**false on every profile, new and old**, with its own settings row. The two
+per-profile Boolean (`agentVisionEnabled`, `agentSiteMemoryEnabled`) with its
+own settings row: site memory is **false on every profile, new and old**, and
+vision is **true**, because a page that reads as nothing is a task the agent
+would otherwise give up on. The two
 local ones — `compute_js` and `data_transform` — are governed by the withheld
 `agent.compute` permission and are therefore on until the profile withholds it;
 `node_run` and `node_packages` have a permission of their own, `agent.node`, for
@@ -362,8 +364,10 @@ The honest limits are the point of the feature, not a footnote:
   `OPENCODE` server take text prompts only, so the tool is refused for them
   **before capture**, with the reason (`AgentVisionSupport`). [OI]-compatible,
   Anthropic and Ollama providers can carry an image.
-* **Off by default.** `agentVisionEnabled` is false on every profile, and the
-  setting's own description states the consequence in full.
+* **On by default.** `agentVisionEnabled` is true on every profile, because a
+  page that reads as nothing is a task the agent would otherwise give up on.
+  The setting's own description states the consequence in full, and turning it
+  off takes `see_page` away.
 
 #### Full page, numbered elements, comparing two captures
 
