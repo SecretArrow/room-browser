@@ -69,6 +69,9 @@ class AgentToolForegroundPolicyTest {
         // node_packages reads and writes the directory beside that runtime, not
         // a page, so it too needs no tab on screen and starts no navigation.
         AgentTools.NODE_PACKAGES,
+        // plan is the model's own step list: it touches no page and starts no
+        // navigation, so it keeps working while the user is on another tab.
+        AgentTools.PLAN,
         AgentTools.APP_OPEN,
         AgentTools.APP_TABS,
         AgentTools.APP_DATA,

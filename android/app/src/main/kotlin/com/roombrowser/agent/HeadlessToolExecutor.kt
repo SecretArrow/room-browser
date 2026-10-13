@@ -4,6 +4,7 @@ import android.os.SystemClock
 import com.roombrowser.domain.agent.ActionVerdict
 import com.roombrowser.domain.agent.AgentAppActions
 import com.roombrowser.domain.agent.AgentJson
+import com.roombrowser.domain.agent.AgentPlan
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.DataTransform
 import com.roombrowser.domain.agent.KeyChord
@@ -192,6 +193,9 @@ class HeadlessToolExecutor(
                     AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
                     AgentTools.PRESS_KEYS -> pressKeys(str(args, "keys"), intOrNull(args, "ref"))
                     AgentTools.WAIT_FOR -> waitFor(str(args, "text"), intOrNull(args, "timeout_ms"))
+                    // The agent's own step list: no page and nothing stored, so
+                    // a scheduled run keeps one exactly as a chat turn does.
+                    AgentTools.PLAN -> AgentPlan.execute(argsJson)
                     AgentTools.APP_2FA, AgentTools.APP_NOTES -> profileTools
                         ?.execute(name, argsJson)
                         ?: ToolResult(false, "tool '$name' is not available in this run")
@@ -769,7 +773,10 @@ class HeadlessToolExecutor(
             // packages for it, are not about the page, so they are recognised
             // here — and a scheduled run is refused them by the task's own
             // permissions, not by being absent from this set.
-            AgentTools.NODE_RUN, AgentTools.NODE_PACKAGES
+            AgentTools.NODE_RUN, AgentTools.NODE_PACKAGES,
+            // The step list touches neither the page nor the profile: it is
+            // the model's own working state, so a run keeps one too.
+            AgentTools.PLAN
         )
 
         /**
