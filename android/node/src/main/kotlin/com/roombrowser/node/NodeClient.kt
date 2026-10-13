@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import android.os.Process
+import kotlinx.serialization.json.JsonObject
 import java.io.BufferedReader
 import java.io.Closeable
 import java.io.IOException
@@ -12,7 +13,6 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.security.SecureRandom
 import java.util.concurrent.atomic.AtomicInteger
-import kotlinx.serialization.json.JsonObject
 
 /**
  * The app side of the bridge: it starts the runtime's process, connects to it

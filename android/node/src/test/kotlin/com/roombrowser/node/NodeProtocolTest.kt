@@ -55,11 +55,7 @@ class NodeProtocolTest {
 
     @Test
     fun status_decodes_every_field_the_runtime_reports() {
-        val result = NodeProtocol.result(
-            """{"id":1,"ok":true,"result":{"node":"v18.20.4","platform":"linux","arch":"x64",""" +
-                """"pid":42,"workDir":"/data","userAgent":"UA/1","userAgentEnforced":true}}""",
-            1
-        )
+        val result = NodeProtocol.result(STATUS_WITH_IDENTITY, 1)
         val status = NodeProtocol.statusOf(result)
         assertThat(status.node).isEqualTo("v18.20.4")
         assertThat(status.platform).isEqualTo("linux")
@@ -72,13 +68,19 @@ class NodeProtocolTest {
 
     @Test
     fun a_runtime_that_reported_no_identity_decodes_as_none() {
-        val result = NodeProtocol.result(
-            """{"id":1,"ok":true,"result":{"node":"v18.20.4","platform":"linux","arch":"x64",""" +
-                """"pid":42,"workDir":"/","userAgent":null,"userAgentEnforced":true}}""",
-            1
-        )
+        val result = NodeProtocol.result(STATUS_WITHOUT_IDENTITY, 1)
         val status = NodeProtocol.statusOf(result)
         assertThat(status.userAgent).isNull()
         assertThat(status.userAgentEnforced).isTrue()
+    }
+
+    private companion object {
+        // Hand-written, in the shape assets/node/bridge.js actually writes:
+        // these pin the wire format rather than the encoder that produced it.
+        const val STATUS_WITH_IDENTITY =
+            """{"id":1,"ok":true,"result":{"node":"v18.20.4","platform":"linux","arch":"x64","pid":42,"workDir":"/data","userAgent":"UA/1","userAgentEnforced":true}}"""
+
+        const val STATUS_WITHOUT_IDENTITY =
+            """{"id":1,"ok":true,"result":{"node":"v18.20.4","platform":"linux","arch":"x64","pid":42,"workDir":"/","userAgent":null,"userAgentEnforced":true}}"""
     }
 }
