@@ -212,6 +212,9 @@ dependencies {
     // `implementation`, deliberately: this is what keeps android.webkit out of
     // this module's compile classpath, so `:app` cannot branch on the engine.
     implementation(project(":engine"))
+    // The embedded Node runtime. Names no engine type either, so it is shared
+    // with the sibling edition byte for byte.
+    implementation(project(":node"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
@@ -264,4 +267,7 @@ dependencies {
     androidTestImplementation(libs.androidx.room.testing)
     androidTestImplementation(libs.truth)
     androidTestImplementation(libs.okhttp.mockwebserver)
+    // The runtime's classes are `implementation` in the app, so the instrumented
+    // suite names them through this rather than by accident.
+    androidTestImplementation(project(":node"))
 }
