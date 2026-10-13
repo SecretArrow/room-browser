@@ -17,12 +17,6 @@ object NodeRuntime {
     const val SOCKET_EXTRA = "com.roombrowser.node.socket"
     const val TOKEN_EXTRA = "com.roombrowser.node.token"
 
-    /** The runtime exited because this build carries none for this ABI. */
-    const val NOT_AVAILABLE = -1
-
-    /** A runtime already runs in this process; the runtime is a process-wide singleton. */
-    const val ALREADY_RUNNING = -2
-
     private const val SCRIPT_NAME = "bridge.js"
 
     /** False on an ABI this APK carries no libnode for. */
@@ -45,18 +39,22 @@ object NodeRuntime {
     }
 
     /**
-     * Runs the runtime on the calling thread until it exits.
+     * Runs the runtime on the calling thread until it exits, and answers whether
+     * this call was the one that owned it.
      *
-     * The flag guards two runtimes at once, not two in a row: `node::Start` is a
-     * process-wide singleton that cannot be started a second time in the same
-     * process, which is why the service that calls this kills its process when
-     * this returns (see [NodeService]).
+     * `false` means nothing ran here — this build carries no runtime for this
+     * ABI, or another thread in this process got there first — and the caller
+     * must then leave the process alone, because killing it would take down a
+     * runtime that is serving somebody. `node::Start` is a process-wide
+     * singleton and cannot be started twice, which is why whoever owned it is
+     * also whoever ends the process (see [NodeService]).
      */
-    fun run(context: Context, socketName: String, token: String): Int {
-        if (!available) return NOT_AVAILABLE
-        if (!started.compareAndSet(false, true)) return ALREADY_RUNNING
+    fun run(context: Context, socketName: String, token: String): Boolean {
+        if (!available) return false
+        if (!started.compareAndSet(false, true)) return false
         try {
-            return NodeBridge.startNode(argvFor(scriptFile(context), socketName, token))
+            NodeBridge.startNode(argvFor(scriptFile(context), socketName, token))
+            return true
         } finally {
             started.set(false)
         }
