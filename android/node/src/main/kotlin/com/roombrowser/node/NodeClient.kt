@@ -58,7 +58,6 @@ class NodeClient private constructor(
     companion object {
 
         private const val CONNECT_TIMEOUT_MS = 20_000L
-        private const val ATTEMPT_TIMEOUT_MS = 250
         private const val RETRY_PAUSE_MS = 50L
 
         private val counter = AtomicInteger()
@@ -67,9 +66,16 @@ class NodeClient private constructor(
         /**
          * Starts the runtime if it is not running and connects to it.
          *
-         * Blocking, and bounded: the runtime is a process start plus a Node
-         * boot, so the caller waits on a worker thread and gets an exception
-         * naming the wait rather than an unbounded hang.
+         * Blocking, and bounded by the deadline below rather than by a
+         * per-attempt timeout, because there is no per-attempt timeout to
+         * have: `LocalSocket.connect(LocalSocketAddress, int)` is an
+         * unimplemented stub in the framework and throws
+         * `UnsupportedOperationException` on every API level (the 30, 33 and 34
+         * sources all read `throw new UnsupportedOperationException()`, and the
+         * impl beneath it ignored the argument anyway). The one-argument
+         * overload is the real one, and a connect to an abstract name nobody is
+         * listening on fails immediately — which is what makes the retry loop
+         * the thing that actually waits for the runtime to come up.
          */
         fun connect(context: Context, timeoutMillis: Long = CONNECT_TIMEOUT_MS): NodeClient {
             val name = "roombrowser-node-${Process.myPid()}-${counter.incrementAndGet()}"
@@ -88,10 +94,7 @@ class NodeClient private constructor(
             while (true) {
                 val socket = LocalSocket()
                 try {
-                    socket.connect(
-                        LocalSocketAddress(name, LocalSocketAddress.Namespace.ABSTRACT),
-                        ATTEMPT_TIMEOUT_MS
-                    )
+                    socket.connect(LocalSocketAddress(name, LocalSocketAddress.Namespace.ABSTRACT))
                     return NodeClient(socket, token)
                 } catch (err: IOException) {
                     runCatching { socket.close() }
