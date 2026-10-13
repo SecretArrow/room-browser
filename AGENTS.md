@@ -144,6 +144,12 @@ Keep CI fast — it is the only build loop there is:
 - When inspecting `~/.git-credentials` or `~/.netrc`, usernames only.
 - Never disable TLS or certificate validation globally, and never add a certificate-error
   bypass — the existing fallback paths around `onReceivedSslError` are deliberately narrow.
+  **Trust anchors from the user are not a bypass**: the app accepts the CAs the person
+  installed through Android Settings (`res/xml/network_security_config.xml`, referenced from
+  the manifest), because that is Android's standard way of saying "I trust this network".
+  A certificate untrusted under those anchors is still refused. Widening the anchors is
+  allowed; a `handler.proceed()`, a `TrustManager`, a `HostnameVerifier` or a per-host
+  allowlist is not, and none of them exists here.
 - Never upload wallet files or private keys anywhere.
 - Do not introduce artificial delays or aggressive blocking.
 - Fix root causes, not symptoms. A comment explaining a workaround is a reason to re-check
