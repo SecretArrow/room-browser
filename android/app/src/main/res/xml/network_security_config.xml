@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Which certificate authorities this app accepts.
+
+  THE TWO SOURCES ARE THE POINT. `system` is what the platform ships; `user` is
+  what the person installed themselves through Android Settings. A network that
+  inspects encrypted traffic presents a certificate signed by its own authority,
+  and installing that authority on the device is the standard, deliberate way to
+  say "I trust this network" — Android then validates the connection against it
+  exactly as it validates any other. NOTHING IS BYPASSED: a certificate that is
+  not trusted under these anchors is still refused, and no "continue anyway"
+  path is added anywhere in this app.
+
+  cleartextTrafficPermitted IS SPELLED OUT BECAUSE IT IS NOT OPTIONAL HERE. Once
+  this file is referenced, the manifest's usesCleartextTraffic attribute is
+  ignored on API 24+ and this base-config takes over — and the default would be
+  false, which would break http:// pages and the HTTPS-First fallback that
+  depends on them. The browser's existing behaviour is restated, not changed.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
