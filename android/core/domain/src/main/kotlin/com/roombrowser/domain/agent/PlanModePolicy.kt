@@ -41,7 +41,10 @@ object PlanModePolicy {
         AgentTools.DEVTOOLS_PATCH,
         // A program with the network and this profile's files behind it: a mode
         // that promised nothing is carried out cannot leave that open.
-        AgentTools.NODE_RUN
+        AgentTools.NODE_RUN,
+        // Installing a package reaches the registry and writes to disk, which
+        // is a change a plan-only turn has no business making.
+        AgentTools.NODE_PACKAGES
     )
 
     /**

@@ -387,17 +387,34 @@ packages — and it is stated here in those terms rather than as a sandbox:
 - **Its output is untrusted data.** What a program prints can be a server's
   answer or a package's own words, so it is fenced exactly like page text and
   carries no more authority than the page does.
+- **Installing a package has its own rails.** `node_packages` fetches
+  packuments and tarballs from `registry.npmjs.org` alone — the base is a
+  constant, so nothing a page or a package can reach points an install at
+  another host, a tarball whose URL is not that host's is refused, and a
+  redirect is not followed. Each tarball is checked against the registry's own
+  digest (`integrity`, else `shasum`) **before** it is unpacked, so a corrupted
+  or substituted download leaves the installed set exactly as it was. Nothing
+  from a package is ever executed: no `scripts` field is read and no lifecycle
+  script runs, at install time or afterwards. Only a package's `dependencies`
+  are installed; its dev, optional and peer dependencies are skipped and
+  reported. The packages land in `<filesDir>/node/node_modules`, the one tree
+  `require` resolves from — shared by every profile, not one tree per profile —
+  and listing or removing them never starts the runtime.
 - **Node 18, which is end-of-life.** There is no newer nodejs-mobile release;
   the honest answer is the version the runtime reports, v18.20.4, with no
   security-update channel behind it.
 - **It is never a scheduled run**, never runs in Plan mode, and is governed by
-  the per-profile `agent.node` permission. It never starts by itself: the
-  process is created when the tool is called and exits when the call ends.
+  the per-profile `agent.node` permission — `node_packages` included, so a
+  profile that withholds the permission can neither run a program nor install
+  one. The runtime never starts by itself: the process is created when the tool
+  is called and exits when the call ends.
 
-The honest summary: with `node_run` granted, the agent can run arbitrary
-JavaScript with this app's own privileges. The mitigations are the confirmation
-before it runs, the per-profile switch that can withhold it, the profile's
-identity on every request, and the fence around what it prints — not containment.
+The honest summary: with `agent.node` granted, the agent can run arbitrary
+JavaScript with this app's own privileges and install the packages that program
+can require. The mitigations are the confirmation before it runs — the package
+named in the prompt — the per-profile switch that can withhold it, the profile's
+identity on every request, the registry and digest rails on an install, and the
+fence around what it prints — not containment.
 
 ## Developer Tools (Android)
 

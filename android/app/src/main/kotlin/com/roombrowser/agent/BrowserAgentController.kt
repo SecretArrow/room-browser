@@ -1004,6 +1004,7 @@ class BrowserAgentController(
                 siteMemoryEnabled = { vm.profileSettings().agentSiteMemoryEnabled },
                 scratchpad = pad,
                 nodeRuntime = AgentNodeRuntime(appContext, vm.profile),
+                nodePackages = AgentNodePackages(appContext),
                 onPause = { state -> applyPauseState(state) },
                 awaitChallengeResume = { awaitChallengeDone() },
                 visionUnsupportedReason = {
@@ -1042,7 +1043,8 @@ class BrowserAgentController(
                     siteMemory = GraphSiteMemoryStore(graph, profileId),
                     siteMemoryEnabled = { vm.profileSettings().agentSiteMemoryEnabled },
                     scratchpad = pad,
-                    nodeRuntime = AgentNodeRuntime(appContext, vm.profile)
+                    nodeRuntime = AgentNodeRuntime(appContext, vm.profile),
+                    nodePackages = AgentNodePackages(appContext)
                 )
             } else {
                 null

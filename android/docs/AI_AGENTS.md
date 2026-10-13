@@ -120,6 +120,7 @@ listed below; the two that must have their tab on screen are marked.
 | `compute_js(script)` | Evaluates JavaScript in a **detached scratchpad page**, never the user's page — for local calculation and text work (see **Local compute, vision, site memory** below) |
 | `data_transform(op, input, …)` | Pure host-side transform of data the agent already has — `json_path`, `csv_rows`, `aggregate`, `diff` — with no page and no engine (see below) |
 | `node_run(script)` | Runs a JavaScript program in the **embedded Node.js runtime**, in a process of its own, with Node's real APIs behind it — *not about the open page; refused to a scheduled run and in Plan mode* (see below) |
+| `node_packages(action, name?, spec?)` | Manages the npm packages installed beside that runtime — `list`, `install`, `remove` — for `node_run` to `require`. It never executes package code — *refused to a scheduled run and in Plan mode* (see below) |
 | `see_page(question?)` | Screenshots this chat's tab and sends the image to the provider — *off unless the profile enables it; refused on text-only providers and in a private tab* (see below) |
 | `site_memory(op, key, …)` | Reads, writes or forgets a per-site note kept for this profile — *off unless the profile enables it* (see below) |
 
@@ -188,9 +189,9 @@ per-profile Boolean (`agentVisionEnabled`, `agentSiteMemoryEnabled`) that is
 **false on every profile, new and old**, with its own settings row. The two
 local ones — `compute_js` and `data_transform` — are governed by the withheld
 `agent.compute` permission and are therefore on until the profile withholds it;
-`node_run` has a permission of its own, `agent.node`, for the same reason —
-it reaches wider than a scratchpad in every direction, so it should not ride
-another tool's switch.
+`node_run` and `node_packages` have a permission of their own, `agent.node`, for
+the same reason — they reach wider than a scratchpad in every direction, so they
+should not ride another tool's switch.
 
 ### Tool catalogue shape
 
@@ -287,6 +288,45 @@ Honest limits — these are the feature, not a footnote:
 **Status in this build:** implemented — `node_run` runs a script and returns
 its result, with the per-profile identity attached to every request, a budget
 the runtime enforces itself, and the `agent.node` permission and settings row.
+
+### `node_packages` — the packages `node_run` can `require`
+
+`node_run`'s `require` resolves whatever is installed beside the runtime, and
+`node_packages` is how a package gets there: `action=list` shows what is
+installed, `install` fetches a package and its dependencies from the public npm
+registry, and `remove` deletes one. It prepares what a later `node_run` will
+run — it never runs code itself.
+
+Honest limits:
+
+* **Nothing from a package is ever executed.** No `scripts` field is read and no
+  lifecycle script runs, at install time or afterwards; a package's `postinstall`
+  is inert here. That is a deliberate difference from `npm install`, and it is
+  why a package that needs a build step will not work.
+* **Plain JavaScript only.** A package with native code installs but fails to
+  load, because there is no way to build C++ for Android here — the same limit
+  `node_run` states.
+* **Only `dependencies` are installed.** A package's `devDependencies`,
+  `optionalDependencies` and `peerDependencies` are left alone, and the result
+  says which were skipped. Dependencies are nested under their parent rather
+  than hoisted, so two packages can each keep their own copy of a dependency and
+  a version conflict cannot arise.
+* **One registry.** Packuments and tarballs come from `registry.npmjs.org`
+  alone; a tarball from any other host is refused and redirects are not
+  followed. Each tarball is checked against the registry's own digest before it
+  is unpacked.
+* **One shared tree.** The packages live in the app's own data directory, which
+  every profile shares, so a package installed under one profile is visible to
+  every profile's agent. That is the directory `node_run` requires from.
+* **Never a scheduled run**, and never in Plan mode. It rides the `agent.node`
+  permission, and it is on the Confirm-actions / YOLO axis: the user is asked
+  before a package is installed or removed — with the package named in the
+  prompt — and in YOLO it happens without asking. `list` only reads the
+  directory, so it does not ask.
+
+**Status in this build:** implemented — `node_packages` lists, installs and
+removes packages, with the settings screen's "Installed packages" row to see
+and delete them.
 
 ### Vision (`see_page`) — a screenshot to the provider
 
@@ -555,6 +595,10 @@ and YOLO is what you get when you ask for the prompt to stop.
   directory. What it sends to the network is whatever the script chooses,
   under this profile's identity — so the honest statement is that it can reach
   anything this app can, not that it is contained.
+* `node_packages` installs what that program can `require`. It talks to the
+  public npm registry and nothing else, never runs a package's own install
+  script, and writes into the app's shared data directory rather than a
+  per-profile one.
 
 ## Architecture
 

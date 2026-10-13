@@ -118,6 +118,11 @@ class HeadlessToolExecutor(
      */
     private val nodeRuntime: AgentNodeRuntime? = null,
     /**
+     * The npm packages `node_packages` installs for that runtime. Null leaves
+     * the tool unavailable rather than pretending a package was installed.
+     */
+    private val nodePackages: AgentNodePackages? = null,
+    /**
      * The agent's per-site memory, scoped to the profile this run works as.
      * Null — every scheduled run — leaves the tool unavailable rather than
      * writing under a profile the run was not given.
@@ -181,6 +186,7 @@ class HeadlessToolExecutor(
                     AgentTools.RUN_JS -> runJs(str(args, "script"))
                     AgentTools.COMPUTE_JS -> computeJs(str(args, "script"))
                     AgentTools.NODE_RUN -> runNode(str(args, "script"))
+                    AgentTools.NODE_PACKAGES -> runNodePackages(args)
                     AgentTools.DATA_TRANSFORM -> dataTransform(args)
                     AgentTools.SITE_MEMORY -> siteMemoryTool(args)
                     AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
@@ -487,6 +493,32 @@ class HeadlessToolExecutor(
     }
 
     /**
+     * Manages the packages `node_run` can `require`. A scheduled run is refused
+     * the tool before it gets here (see [AiTaskPermissions.ToolGroup.NODE]), so
+     * this message is the one a caller that built the executor without a store
+     * reads.
+     */
+    private suspend fun runNodePackages(args: Map<String, Any?>): ToolResult {
+        val packages = nodePackages
+            ?: return ToolResult(false, "node_packages is not available in this run")
+        return when (val action = str(args, "action")?.lowercase()) {
+            "list" -> packages.list()
+            "install" -> {
+                val name = nonBlank(str(args, "name"))
+                    ?: return ToolResult(false, "action=install needs a 'name' argument")
+                packages.install(name, str(args, "spec"))
+            }
+            "remove" -> {
+                val name = nonBlank(str(args, "name"))
+                    ?: return ToolResult(false, "action=remove needs a 'name' argument")
+                packages.remove(name)
+            }
+            null -> ToolResult(false, "missing 'action' argument")
+            else -> ToolResult(false, "unknown node_packages action: $action")
+        }
+    }
+
+    /**
      * Runs one of the pure host-side transforms. No engine and no page are
      * involved, so a headless run performs it exactly as a chat turn does.
      */
@@ -733,10 +765,11 @@ class HeadlessToolExecutor(
             // database, never the page, so a headless run reaches it exactly as
             // a chat turn does — and its own opt-in gate still applies.
             AgentTools.SITE_MEMORY,
-            // A program in the embedded runtime is not about the page, so it is
-            // recognised here — and a scheduled run is refused it by the task's
-            // own permissions, not by being absent from this set.
-            AgentTools.NODE_RUN
+            // A program in the embedded runtime, and the tool that installs
+            // packages for it, are not about the page, so they are recognised
+            // here — and a scheduled run is refused them by the task's own
+            // permissions, not by being absent from this set.
+            AgentTools.NODE_RUN, AgentTools.NODE_PACKAGES
         )
 
         /**

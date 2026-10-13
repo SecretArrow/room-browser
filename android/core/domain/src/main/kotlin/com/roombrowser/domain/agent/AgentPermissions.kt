@@ -61,8 +61,11 @@ object AgentPermissions {
 
         // Wider than the scratchpad in every direction: Node's own APIs, the
         // profile's files and the open network. It is its own permission for
-        // that reason rather than riding AGENT_COMPUTE.
-        AgentTools.NODE_RUN -> setOf(AGENT_NODE)
+        // that reason rather than riding AGENT_COMPUTE. Installing a package
+        // reaches the registry and writes under the same directory, so it
+        // rides the same switch.
+        AgentTools.NODE_RUN,
+        AgentTools.NODE_PACKAGES -> setOf(AGENT_NODE)
 
         else -> emptySet()
     }

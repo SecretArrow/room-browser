@@ -31,12 +31,19 @@ object NodeRuntime {
         arrayOf("node", script.absolutePath, socketName, token)
 
     /**
+     * The directory the runtime's own files live in, `<filesDir>/node`. Its
+     * `node_modules` is what `require()` resolves from, so a caller that
+     * installs packages must not build the path a second time.
+     */
+    fun directory(context: Context): File = File(context.filesDir, "node")
+
+    /**
      * Where the runtime records how far it got, one line of JSON per stage. The
      * script writes it beside itself, so nothing has to pass the path in; a
      * caller that never connected reads it to say what the runtime was doing
      * instead of guessing.
      */
-    internal fun statusFile(context: Context): File = File(nodeDir(context), STATUS_NAME)
+    internal fun statusFile(context: Context): File = File(directory(context), STATUS_NAME)
 
     /**
      * The socket the runtime binds and this side connects to, as a FILE in this
@@ -50,21 +57,19 @@ object NodeRuntime {
      * the same UID and the directory is theirs, so nothing else has to hold.
      */
     internal fun socketFile(context: Context, name: String): File =
-        File(nodeDir(context), name + SOCKET_SUFFIX)
+        File(directory(context), name + SOCKET_SUFFIX)
 
     /** Removes socket files left behind by calls whose runtime is gone. */
     internal fun sweepSockets(context: Context, keep: File) {
-        nodeDir(context).listFiles()?.forEach { file ->
+        directory(context).listFiles()?.forEach { file ->
             if (file.name.endsWith(SOCKET_SUFFIX) && file.name != keep.name) {
                 runCatching { file.delete() }
             }
         }
     }
 
-    private fun nodeDir(context: Context): File = File(context.filesDir, "node")
-
     internal fun scriptFile(context: Context): File {
-        val target = File(nodeDir(context), SCRIPT_NAME)
+        val target = File(directory(context), SCRIPT_NAME)
         target.parentFile?.mkdirs()
         val packaged = context.assets.open("node/$SCRIPT_NAME").use { it.readBytes() }
         if (!target.exists() || !target.readBytes().contentEquals(packaged)) {

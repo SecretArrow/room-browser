@@ -61,10 +61,11 @@ data class AiTaskPermissions(
         AgentTools.AUTO_REPLY, AgentTools.AUTO_POST -> ToolGroup.POST
         in AgentTools.WALLET_TOOLS -> ToolGroup.WALLET
         in AgentTools.DEVTOOLS_TOOLS -> ToolGroup.DEVTOOLS
-        // A program with Node's own APIs behind it. A scheduled run is offered
-        // the same catalogue, so the refusal has to be a real one rather than a
-        // tool that runs because nobody classified it.
-        AgentTools.NODE_RUN -> ToolGroup.NODE
+        // A program with Node's own APIs behind it, and the tool that installs
+        // packages for it. A scheduled run is offered the same catalogue, so the
+        // refusal has to be a real one rather than a tool that runs because
+        // nobody classified it.
+        AgentTools.NODE_RUN, AgentTools.NODE_PACKAGES -> ToolGroup.NODE
         AgentTools.APP_OPEN, AgentTools.APP_TABS, AgentTools.APP_DATA,
         AgentTools.APP_SETTINGS, AgentTools.APP_SHIELDS,
         AgentTools.APP_SITE_PERMISSION, AgentTools.APP_PAGE -> ToolGroup.APP
@@ -199,10 +200,11 @@ fun walletUnattendedRefusal(toolName: String): String =
 /**
  * The refusal for the embedded Node runtime in a scheduled run. A Node program
  * has this profile's files and the open network behind it and no page in front
- * of it, so a run nobody is watching is the wrong place for one: there is
- * nothing it could do there that a chat could not do with the user present.
+ * of it, and the packages it can require are installed the same way, so a run
+ * nobody is watching is the wrong place for either: there is nothing they could
+ * do there that a chat could not do with the user present.
  */
 fun nodeUnattendedRefusal(toolName: String): String =
-    "tool '$toolName' works only in a chat: it runs a program with Node's own APIs, which can " +
-        "reach the network and write to this profile's files, and a scheduled run has nobody to " +
-        "ask. Run it as a chat."
+    "tool '$toolName' works only in a chat: it runs a program with Node's own APIs, or installs " +
+        "a package for one, and both can reach the network and write to this profile's files. A " +
+        "scheduled run has nobody to ask, so run it as a chat."

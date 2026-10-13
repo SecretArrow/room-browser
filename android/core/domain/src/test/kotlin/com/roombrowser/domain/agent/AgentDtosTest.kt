@@ -196,6 +196,18 @@ class AgentDtosTest {
             .isEqualTo("Wait 2s")
         assertThat(AgentTools.describeTool(AgentTools.WAIT, null))
             .isEqualTo("Wait 1.5s")
+        // The approval prompt has to NAME the package, or the user cannot tell
+        // which install they are allowing.
+        assertThat(
+            AgentTools.describeTool(
+                AgentTools.NODE_PACKAGES,
+                """{"action":"install","name":"lodash","spec":"^4"}"""
+            )
+        ).isEqualTo("Packages: install lodash@^4")
+        assertThat(AgentTools.describeTool(AgentTools.NODE_PACKAGES, """{"action":"list"}"""))
+            .isEqualTo("Packages: list")
+        assertThat(AgentTools.describeTool(AgentTools.NODE_PACKAGES, """{"action":"remove","name":"@scope/pkg"}"""))
+            .isEqualTo("Packages: remove @scope/pkg")
     }
 
     @Test
@@ -230,6 +242,16 @@ class AgentDtosTest {
         ).forEach { name ->
             assertThat(prompt).contains(name)
         }
+    }
+
+    @Test
+    fun `prompt teaches the node tools`() {
+        // node_packages prepares what node_run runs, and the prompt has to say
+        // so — a model that reads the two as interchangeable installs a package
+        // and then expects it to have done something.
+        val prompt = AgentPrompts.DEFAULT
+        assertThat(prompt).contains(AgentTools.NODE_RUN)
+        assertThat(prompt).contains(AgentTools.NODE_PACKAGES)
     }
 
     @Test

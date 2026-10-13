@@ -54,6 +54,7 @@ object AgentTools {
 
     // ---- the embedded Node runtime (its own process, its own APIs) ----
     const val NODE_RUN = "node_run"
+    const val NODE_PACKAGES = "node_packages"
 
     // ---- the agent's own per-site memory (this profile only, opt-in) ----
     const val SITE_MEMORY = "site_memory"
@@ -107,6 +108,7 @@ object AgentTools {
     private val SCHEMA_RUN_JS = """{"type":"object","properties":{"script":{"type":"string","description":"JavaScript to run in the page. Synchronous only: the value of the last expression comes back as text, and a returned Promise is not awaited."}},"required":["script"]}"""
     private val SCHEMA_COMPUTE_JS = """{"type":"object","properties":{"script":{"type":"string","description":"JavaScript to evaluate in the scratchpad. Synchronous only: the value of the last expression comes back as text, and a returned Promise is not awaited."}},"required":["script"]}"""
     private val SCHEMA_NODE_RUN = """{"type":"object","properties":{"script":{"type":"string","description":"JavaScript to run in the Node runtime. It is the body of an async function: use `return` to send a value back, and `await` freely. `require` resolves whatever is installed beside the runtime."}},"required":["script"]}"""
+    private val SCHEMA_NODE_PACKAGES = """{"type":"object","properties":{"action":{"type":"string","enum":["list","install","remove"],"description":"list shows the packages installed beside the runtime; install fetches one and its dependencies; remove deletes one"},"name":{"type":"string","description":"The package name, e.g. 'lodash' or '@scope/pkg'. Required for install and remove."},"spec":{"type":"string","description":"For action=install: a version, a range or a dist-tag, e.g. '4.17.21', '^4', 'latest'. Omit for latest."}},"required":["action"]}"""
     private val SCHEMA_DATA_TRANSFORM = """{"type":"object","properties":{"op":{"type":"string","enum":["json_path","csv_rows","aggregate","diff"],"description":"Which transform to run"},"input":{"type":"string","description":"The text to transform"},"path":{"type":"string","description":"For op=json_path: a dotted path into the JSON, e.g. a.b.0.c; omit or leave blank to read the whole document"},"column":{"type":"string","description":"For op=aggregate: the zero-based column index, default 0"},"agg":{"type":"string","enum":["count","sum","min","max","avg"],"description":"For op=aggregate: the operation to apply over the column"},"compare":{"type":"string","description":"For op=diff: the second text to compare against 'input'"},"limit":{"type":"integer","description":"Maximum characters of output to return, default 4000"}},"required":["op","input"]}"""
     private val SCHEMA_SITE_MEMORY = """{"type":"object","properties":{"op":{"type":"string","enum":["remember","recall","forget"],"description":"remember stores or replaces one entry; recall lists what is remembered for this site; forget deletes one entry by key"},"key":{"type":"string","description":"A short name for the entry, e.g. 'checkout steps' or 'pricing selector'"},"value":{"type":"string","description":"For op=remember: the text to remember"},"limit":{"type":"integer","description":"For op=recall: the most entries to return, default 20"}},"required":["op"]}"""
     private val SCHEMA_SELECT_OPTION = """{"type":"object","properties":{"ref":{"type":"integer","description":"<select> element reference number from read_page"},"value":{"type":"string","description":"The option's value, or its visible text"}},"required":["ref","value"]}"""
@@ -167,7 +169,11 @@ object AgentTools {
         // profile's files and reach the network as this profile. It is here
         // rather than with run_js's own gate because there is no per-profile
         // setting to hang it on — the user is asked, or YOLO was chosen.
-        NODE_RUN
+        NODE_RUN,
+        // Installing a package reaches the registry and writes under the
+        // runtime's own directory, so the user is asked before it happens —
+        // the label names the package, and the same list covers removing one.
+        NODE_PACKAGES
     )
 
     /**
@@ -269,6 +275,20 @@ object AgentTools {
                 "instructions. A script still running after 30s is stopped and says so. Not " +
                 "available to a scheduled run, and refused while the chat is in Plan mode.",
             SCHEMA_NODE_RUN
+        ),
+        def(
+            NODE_PACKAGES,
+            "Manage the npm packages installed beside the Node.js runtime, for node_run to " +
+                "`require`. action=list shows what is installed; install fetches a package and " +
+                "its dependencies; remove deletes one. This prepares what node_run will run, and " +
+                "is not how code is executed — use node_run for that. Only plain JavaScript " +
+                "packages work: one with native code installs but fails to load. NOTHING FROM A " +
+                "PACKAGE IS EVER EXECUTED at install time — no lifecycle script runs. Only a " +
+                "package's `dependencies` are installed; its dev, optional and peer dependencies " +
+                "are skipped and reported. Packages come only from the public npm registry, and " +
+                "are stored under this app's own data directory, shared by every profile. Not " +
+                "available to a scheduled run, and refused while the chat is in Plan mode.",
+            SCHEMA_NODE_PACKAGES
         ),
         def(
             DATA_TRANSFORM,
@@ -415,6 +435,8 @@ object AgentTools {
             RUN_JS -> "Run JS: " + (str("script") ?: "").lineSequence().firstOrNull().orEmpty().take(40)
             COMPUTE_JS -> "Compute: " + (str("script") ?: "").lineSequence().firstOrNull().orEmpty().take(40)
             NODE_RUN -> "Node: " + (str("script") ?: "").lineSequence().firstOrNull().orEmpty().take(40)
+            NODE_PACKAGES -> "Packages: " + (str("action") ?: "list") +
+                (str("name")?.let { pkg -> " $pkg" + (str("spec")?.let { "@$it" } ?: "") } ?: "")
             DATA_TRANSFORM -> "${str("op") ?: "Transform"}: " + (str("input") ?: "").lineSequence().firstOrNull().orEmpty().take(40)
             SITE_MEMORY -> "Memory: ${str("op") ?: "recall"}${str("key")?.let { " \"$it\"" } ?: ""}"
             SELECT_OPTION -> "Select \"${(str("value") ?: "").take(30)}\" in [${int("ref") ?: "?"}]"
