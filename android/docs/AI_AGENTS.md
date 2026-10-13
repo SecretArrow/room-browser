@@ -278,7 +278,8 @@ Honest limits — these are the feature, not a footnote:
 * **Node 18, which is end-of-life.** There is no newer nodejs-mobile release;
   the runtime reports its own version and the honest answer is v18.20.4.
 * **No native modules.** A package that needs to compile C++ cannot be built
-  for Android here, so installing one fails with a message rather than a hang.
+  for Android here: it installs, and then fails when a script requires it, with a
+  message rather than a hang.
 * **A script gets a budget** (30s by default). The runtime stops it itself and
   says so, so a wedged script arrives as a readable answer rather than a
   connection that went quiet.
