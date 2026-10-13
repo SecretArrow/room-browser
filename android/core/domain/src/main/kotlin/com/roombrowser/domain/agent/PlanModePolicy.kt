@@ -39,6 +39,10 @@ object PlanModePolicy {
         // A patch runs script in a live page, so it belongs with run_js and
         // every other tool that can change what the page does.
         AgentTools.DEVTOOLS_PATCH,
+        // A download is not a submission, but it does WRITE a file into the
+        // user's storage — work carried out, which is what this mode promises
+        // not to do.
+        AgentTools.DOWNLOAD_FILE,
         // A program with the network and this profile's files behind it: a mode
         // that promised nothing is carried out cannot leave that open.
         AgentTools.NODE_RUN,
