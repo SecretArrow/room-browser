@@ -310,6 +310,25 @@ jobs:
             echo "::error::unfocused ABI leaked into the release build"; ls -l app/build/outputs/apk/release/; exit 1
           fi
 
+      - name: Report the release APK sizes
+        working-directory: android
+        # A measurement, not a gate. The embedded Node runtime adds tens of MB
+        # per ABI, and the only way a further jump gets noticed is for the
+        # number to be printed on every run rather than estimated once. The
+        # per-ABI libnode.so is listed beside it because that is where such a
+        # change would come from.
+        run: |
+          set -euo pipefail
+          for apk in app/build/outputs/apk/release/*.apk; do
+            printf 'release APK: %s MB  %s\n' \
+              "$(( $(stat -c%s "$apk") / 1024 / 1024 ))" "$(basename "$apk")"
+          done
+          for so in node/src/main/jniLibs/*/libnode.so; do
+            [ -f "$so" ] || continue
+            printf 'libnode.so:  %s MB  %s\n' \
+              "$(( $(stat -c%s "$so") / 1024 / 1024 ))" "$so"
+          done
+
       - name: Check the release APKs' archive packaging
         working-directory: android
         # The rules `zipalign -c -P 16` enforces: every Stored entry on a
