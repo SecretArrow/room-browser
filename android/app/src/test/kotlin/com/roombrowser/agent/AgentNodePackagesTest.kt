@@ -7,11 +7,11 @@ import com.roombrowser.node.packages.Packument
 import com.roombrowser.node.packages.Registry
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.runBlocking
+import org.junit.Test
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
-import kotlinx.coroutines.runBlocking
-import org.junit.Test
 
 /**
  * The app-side seam for `node_packages`, driven against a registry that always
