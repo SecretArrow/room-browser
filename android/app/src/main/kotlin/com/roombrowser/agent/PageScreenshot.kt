@@ -7,9 +7,9 @@ import android.util.Base64
 import androidx.core.graphics.scale
 import com.roombrowser.domain.agent.AgentImage
 import com.roombrowser.domain.agent.AgentVisionBounds
+import com.roombrowser.domain.agent.ScreenshotFrame
 import com.roombrowser.domain.agent.ScrollStitch
 import com.roombrowser.domain.agent.ScrollStitchPlan
-import com.roombrowser.domain.agent.ScreenshotFrame
 import com.roombrowser.engine.EngineSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
