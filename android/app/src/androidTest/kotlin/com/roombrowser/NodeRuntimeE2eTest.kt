@@ -32,7 +32,10 @@ class NodeRuntimeE2eTest {
         NodeClient.connect(targetContext).use { client ->
             val status = client.status(profileUserAgent)
             assertTrue("the runtime reported ${status.node}", status.node.startsWith("v18."))
-            assertEquals("linux", status.platform)
+            // nodejs-mobile is built with --dest-os=android, so the platform is
+            // its own name rather than the "linux" the same source reports on a
+            // desktop host.
+            assertEquals("android", status.platform)
             assertEquals(profileUserAgent, status.userAgent)
             assertTrue("the user-agent rule was not installed", status.userAgentEnforced)
         }
