@@ -350,13 +350,18 @@ jobs:
         run: |
           set -euo pipefail
           for apk in app/build/outputs/apk/release/*.apk; do
-            printf 'release APK: %s MB  %s\n' \
-              "$(( $(stat -c%s "$apk") / 1024 / 1024 ))" "$(basename "$apk")"
+            printf 'release APK: %s MB (%s bytes)  %s\n' \
+              "$(( $(stat -c%s "$apk") / 1024 / 1024 ))" "$(stat -c%s "$apk")" "$(basename "$apk")"
+            # HOW the native payload is stored, not just how big it is. A
+            # deflated libnode.so is unpacked at install time, and that is the
+            # one thing the zip-level packaging check below cannot see: it
+            # accepts a deflated library as readily as a stored one.
+            unzip -v "$apk" 'lib/*/libnode.so' 2>/dev/null | grep 'libnode\.so' || true
           done
           for so in node/src/main/jniLibs/*/libnode.so; do
             [ -f "$so" ] || continue
-            printf 'libnode.so:  %s MB  %s\n' \
-              "$(( $(stat -c%s "$so") / 1024 / 1024 ))" "$so"
+            printf 'libnode.so:  %s MB (%s bytes)  %s\n' \
+              "$(( $(stat -c%s "$so") / 1024 / 1024 ))" "$(stat -c%s "$so")" "$so"
           done
 
       - name: Check the release APKs' archive packaging
