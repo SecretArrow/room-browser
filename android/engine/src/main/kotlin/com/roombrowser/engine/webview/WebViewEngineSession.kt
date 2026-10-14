@@ -29,6 +29,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.WebViewDatabase
+import androidx.core.graphics.createBitmap
 import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -596,7 +597,10 @@ internal class WebViewEngineSession(
                 return@runOnMain
             }
             try {
-                val full = Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888)
+                // The KTX form, whose default config is the same ARGB_8888:
+                // written this way lint's UseKtx quickfix has nothing to
+                // rewrite, so it cannot land the call without this import.
+                val full = createBitmap(root.width, root.height)
                 PixelCopy.request(window, full, { result ->
                     if (result == PixelCopy.SUCCESS) {
                         onResult(

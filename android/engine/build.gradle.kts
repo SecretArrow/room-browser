@@ -41,6 +41,10 @@ dependencies {
     // signatures, so every consumer needs them on its own classpath.
     api(project(":core:domain"))
 
+    // The page-capture bitmap: writing that allocation as core-ktx's
+    // `createBitmap` leaves lint's UseKtx quickfix nothing to rewrite.
+    implementation(libs.androidx.core.ktx)
+
     // The DOCUMENT_START_SCRIPT API (WebViewCompat.addDocumentStartJavaScript)
     // is the only way the page-world scripts can be installed before the page's
     // own first script. Not `api`: no androidx.webkit type appears in a facade

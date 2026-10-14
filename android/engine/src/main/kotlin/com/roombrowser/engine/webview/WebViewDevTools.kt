@@ -1,11 +1,11 @@
 package com.roombrowser.engine.webview
 
-import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.webkit.CookieManager
+import androidx.core.net.toUri
 import androidx.webkit.WebViewFeature
 import com.roombrowser.engine.devtools.DevToolsCapability
 import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
@@ -408,7 +408,9 @@ internal class WebViewInspector(
      */
     override suspend fun securityInfo(): EngineSecurityInfo? {
         val url = session.url ?: return null
-        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
+        // The KTX form, so lint's UseKtx quickfix has nothing to rewrite --
+        // it would otherwise land `toUri()` without the import.
+        val uri = runCatching { url.toUri() }.getOrNull() ?: return null
         return EngineSecurityInfo(
             secure = uri.scheme?.equals("https", ignoreCase = true) == true,
             host = uri.host,
