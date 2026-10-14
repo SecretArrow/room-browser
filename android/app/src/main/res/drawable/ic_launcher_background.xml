@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Room Browser 2026 launcher mark — BACKGROUND layer.
-  Burnt-orange → orange → amber gradient (original identity,
-  not derived from any other product's assets).
+  Room Browser launcher mark — BACKGROUND layer.
+  Violet gradient: this is the WebView edition's colour. The GeckoView
+  edition is deliberately orange, so do not sync the two.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
@@ -14,9 +14,9 @@
         <aapt:attr name="android:fillColor">
             <gradient
                 android:type="linear"
-                android:startColor="#7C2D12"
-                android:centerColor="#EA580C"
-                android:endColor="#F59E0B"
+                android:startColor="#4C1D95"
+                android:centerColor="#7C3AED"
+                android:endColor="#A78BFA"
                 android:startX="0"
                 android:startY="0"
                 android:endX="108"

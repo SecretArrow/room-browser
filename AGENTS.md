@@ -64,6 +64,10 @@ change belongs in the sibling:
   repo needs it; the sibling does not) and `windowSoftInputMode`.
 - Engine-shaped tests: `BrowserNavigationE2eTest`, `WalletE2eTest`, `ProfileIsolationTest`,
   the `TabsE2eTest` live-engine probe.
+- `android/app/src/main/res/drawable/ic_launcher_background.xml` and
+  `ic_launcher_foreground.xml` — **the launcher icon is deliberately a different colour per
+  edition**: violet here, orange in the sibling. This is the one place `res/` is allowed to
+  differ, it is a decision rather than drift, and the two must not be "fixed" to match.
 - `README.md`, `SECURITY.md` where they name the engine.
 
 **The facade is the boundary.** Both repos converge on an app-owned facade in
