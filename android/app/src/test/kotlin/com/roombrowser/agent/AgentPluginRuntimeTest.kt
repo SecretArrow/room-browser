@@ -106,7 +106,8 @@ class AgentPluginRuntimeTest {
         runtime().run(
             7L,
             plugin(permissions = """["storage","network","agent.tools"]"""),
-            binding(granted = """["storage"]""")
+            binding(granted = """["storage"]"""),
+            PluginCallRequest.EVENT_PROBE
         )
         assertThat(calls.single().manifest.permissions).containsExactly("storage")
         assertThat(calls.single().manifest.permissions).containsNoDuplicates()
@@ -114,7 +115,7 @@ class AgentPluginRuntimeTest {
 
     @Test
     fun `the config is the schema defaults under the chat's overrides, and nothing else`() = runBlocking<Unit> {
-        runtime().run(7L, plugin(), binding())
+        runtime().run(7L, plugin(), binding(), PluginCallRequest.EVENT_PROBE)
         val config = calls.single().config
         // The declared override wins over the manifest default...
         assertThat(config["ignore_case"]?.jsonPrimitive?.booleanOrNull).isFalse()

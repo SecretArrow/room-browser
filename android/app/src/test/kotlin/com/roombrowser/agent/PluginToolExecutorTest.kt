@@ -106,8 +106,8 @@ class PluginToolExecutorTest {
     )
 
     private fun repoWith(plugins: List<PluginEntity>, bindings: List<ChatPluginEntity>): PluginRepository {
-        val pluginDao = mockk<PluginDao> { every { all() } returns plugins }
-        val chatDao = mockk<ChatPluginDao> { every { forSession(any()) } returns bindings }
+        val pluginDao = mockk<PluginDao> { coEvery { all() } returns plugins }
+        val chatDao = mockk<ChatPluginDao> { coEvery { forSession(any()) } returns bindings }
         val db = mockk<AppDatabase> {
             every { pluginDao() } returns pluginDao
             every { chatPluginDao() } returns chatDao

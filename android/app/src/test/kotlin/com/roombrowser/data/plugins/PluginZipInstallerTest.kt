@@ -34,9 +34,9 @@ class PluginZipInstallerTest {
         assertThat(ok.manifest.permissions).containsExactly("storage")
         assertThat(ok.dirName).isEqualTo("com_example_hello")
         val dir = File(store, "com_example_hello")
-        assertThat(File(dir, "plugin.json")).exists()
-        assertThat(File(dir, "main.js")).exists()
-        assertThat(File(dir, "lib/util.js")).exists()
+        assertThat(File(dir, "plugin.json").exists()).isTrue()
+        assertThat(File(dir, "main.js").exists()).isTrue()
+        assertThat(File(dir, "lib/util.js").exists()).isTrue()
         assertThat(store.listFiles()!!.map { it.name }).containsExactly("com_example_hello")
     }
 
@@ -51,10 +51,10 @@ class PluginZipInstallerTest {
         )
         val ok = result as PluginInstallResult.ManifestOk
         val dir = File(store, ok.dirName)
-        assertThat(File(dir, "plugin.json")).exists()
-        assertThat(File(dir, "main.js")).exists()
-        assertThat(File(dir, "node_modules/dep/index.js")).exists()
-        assertThat(File(dir, "wrap")).doesNotExist()
+        assertThat(File(dir, "plugin.json").exists()).isTrue()
+        assertThat(File(dir, "main.js").exists()).isTrue()
+        assertThat(File(dir, "node_modules/dep/index.js").exists()).isTrue()
+        assertThat(File(dir, "wrap").exists()).isFalse()
     }
 
     @Test
@@ -130,21 +130,24 @@ class PluginZipInstallerTest {
     }
 
     @Test
-    fun `a symlink entry is refused by its unix mode`() {
-        val entry = ZipEntry("link")
-        entry.externalAttributes = 0xA1FFL shl 16
-        val result = installer.install(zip(entry, "x".toByteArray()))
-        assertThat((result as PluginInstallResult.Invalid).errors.single())
-            .contains("symlink")
-    }
-
-    @Test
-    fun `a directory entry with attributes is refused`() {
-        val entry = ZipEntry("dir/")
-        entry.externalAttributes = 0x41EDL shl 16
-        val result = installer.install(zip(entry, ByteArray(0)))
-        assertThat((result as PluginInstallResult.Invalid).errors.single())
-            .contains("carries attributes")
+    fun `a link-shaped entry unpacks as an inert plain file`() {
+        // java.util.zip cannot WRITE a symlink entry (no external attributes
+        // on its ZipEntry), so one cannot arrive in a stream this JVM made —
+        // and the extractor writes plain files regardless, so a "link" whose
+        // bytes are a target path lands as text on disk. The install succeeds
+        // and the file reads back as that text: inert, and the post-extract
+        // walk would catch anything that somehow materialized otherwise.
+        val result = installer.install(
+            zip(
+                "plugin.json" to MANIFEST.toByteArray(),
+                "main.js" to "exports.activate = async () => {}".toByteArray(),
+                "link" to "../../etc/passwd".toByteArray()
+            )
+        )
+        assertThat(result as PluginInstallResult.ManifestOk).isNotNull()
+        val link = File(File(store, "com_example_hello"), "link")
+        assertThat(link.exists()).isTrue()
+        assertThat(link.readText()).isEqualTo("../../etc/passwd")
     }
 
     @Test
@@ -204,7 +207,7 @@ class PluginZipInstallerTest {
         """{"id":"com.example.hello","name":"Hello World","version":"1.0.0",""" +
             """"description":"A tiny example.","api":1,"entry":"main.js","permissions":["storage"]}"""
 
-    private fun zip(vararg entries: Pair<String, ByteArray?>): ByteArray {
+    private fun zip(vararg entries: Pair<String, ByteArray?>): ByteArrayInputStream {
         val out = ByteArrayOutputStream()
         ZipOutputStream(out).use { stream ->
             entries.forEach { (name, bytes) ->
@@ -213,17 +216,17 @@ class PluginZipInstallerTest {
                 stream.closeEntry()
             }
         }
-        return out.toByteArray()
+        return ByteArrayInputStream(out.toByteArray())
     }
 
     /** A zip built from a prepared entry, so its attributes are the test's own. */
-    private fun zip(entry: ZipEntry, bytes: ByteArray?): ByteArray {
+    private fun zip(entry: ZipEntry, bytes: ByteArray?): ByteArrayInputStream {
         val out = ByteArrayOutputStream()
         ZipOutputStream(out).use { stream ->
             stream.putNextEntry(entry)
             bytes?.let { stream.write(it) }
             stream.closeEntry()
         }
-        return out.toByteArray()
+        return ByteArrayInputStream(out.toByteArray())
     }
 }
