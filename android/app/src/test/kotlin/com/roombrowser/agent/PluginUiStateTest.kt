@@ -129,6 +129,7 @@ class PluginUiStateTest {
     fun `enabling with ungranted permissions asks first and stores nothing`() = runBlocking<Unit> {
         val state = ui()
         state.setEnabled(plugin.id, true)
+        awaitState { state.pendingGrant != null }
         assertThat(state.pendingGrant).isNotNull()
         assertThat(state.pendingGrant!!.pluginName).isEqualTo("Hello World")
         assertThat(state.pendingGrant!!.permissionLabels).hasSize(1)
@@ -142,14 +143,17 @@ class PluginUiStateTest {
     fun `accepted grants enable the plugin and run its activate`() = runBlocking<Unit> {
         val state = ui()
         state.setEnabled(plugin.id, true)
+        awaitState { state.pendingGrant != null }
         state.submitGrants(listOf("storage"))
         assertThat(state.pendingGrant).isNull()
+        // The state class launches on its own scope and the repository hops
+        // to Dispatchers.IO mid-flight, so the test WAITS for the events
+        // rather than assuming the launch finished before it read.
+        awaitEvent("probe")
+        awaitEvent("activate")
         assertThat(stored).isNotNull()
         assertThat(stored!!.enabled).isTrue()
         assertThat(stored!!.grantedPermissionsJson).contains("storage")
-        // The catalogue probed (the runtime's own re-read) and the activate
-        // event ran — the card it pushed is the chat's, not the test's.
-        assertThat(calls.map { it.event }).containsAtLeast("probe", "activate")
         val activate = calls.single { it.event == PluginCallRequest.EVENT_ACTIVATE }
         assertThat(activate.manifest.permissions).containsExactly("storage")
     }
@@ -193,9 +197,9 @@ class PluginUiStateTest {
         val state = ui()
         val consumed = state.interceptChatCommand("/definitely_not_a_plugin", sessionAtTap = 7L)
         assertThat(consumed).isFalse()
-        // The catalogue still had to probe to know that, which is the cost of
-        // an honest no; no other event ran.
-        assertThat(calls.map { it.event }).contains("probe")
+        // Probes ride ENABLED BINDINGS, and this chat has none: the honest no
+        // costs two database reads and not one runtime start.
+        assertThat(calls).isEmpty()
     }
 
     @Test
@@ -214,9 +218,9 @@ class PluginUiStateTest {
         assertThat(state.pickerVisible).isTrue()
         state.dismissPicker()
         assertThat(state.pickerVisible).isFalse()
-        // Listing asks nothing of the runtime beyond the catalogue's own
-        // probe of this chat — no plugin event runs for a sheet.
-        assertThat(calls.map { it.event }).containsExactly("probe")
+        // Listing a chat with no bindings asks the runtime nothing at all:
+        // the catalogue's answer came from the database alone.
+        assertThat(calls).isEmpty()
     }
 
     @Test
@@ -239,5 +243,22 @@ class PluginUiStateTest {
         val consumed = state.interceptChatCommand("/greet Room", sessionAtTap = null)
         assertThat(consumed).isFalse()
         assertThat(calls).isEmpty()
+    }
+
+    /** Waits up to 5 s for [condition], then lets the caller assert honestly. */
+    private fun awaitState(condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + 5_000
+        while (!condition() && System.currentTimeMillis() < deadline) Thread.sleep(20)
+    }
+
+    /**
+     * Waits up to 5 s for one [event] to reach the fake runtime. The state
+     * class launches on its own scope and the repository hops to
+     * Dispatchers.IO mid-flight, so a launched enable's events land
+     * asynchronously to the test thread.
+     */
+    private fun awaitEvent(event: String) {
+        awaitState { calls.any { it.event == event } }
+        assertThat(calls.map { it.event }).contains(event)
     }
 }
