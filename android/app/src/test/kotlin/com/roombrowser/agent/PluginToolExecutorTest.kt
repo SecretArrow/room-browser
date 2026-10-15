@@ -15,6 +15,7 @@ import com.roombrowser.domain.plugins.PluginCard
 import com.roombrowser.node.PluginCallRequest
 import com.roombrowser.node.PluginCallResult
 import com.roombrowser.node.PluginToolSpec
+import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
