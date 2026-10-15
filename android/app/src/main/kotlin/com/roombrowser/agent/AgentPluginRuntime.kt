@@ -36,7 +36,7 @@ import java.io.File
  * way, and a plugin's failure must be testable without starting one.
  */
 fun interface PluginCall {
-    operator suspend fun invoke(request: PluginCallRequest): PluginCallResult
+    suspend operator fun invoke(request: PluginCallRequest): PluginCallResult
 
     companion object {
         /** The production route: the one process-wide runner, one call at a time. */
