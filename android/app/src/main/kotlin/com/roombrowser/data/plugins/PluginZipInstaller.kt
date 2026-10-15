@@ -108,16 +108,24 @@ class PluginZipInstaller(private val pluginsDir: File) {
                 // invisible to the runtime.
                 val staging = File(pluginsDir, ".tmp-${UUID.randomUUID()}")
                 try {
-                    entries.filterNot { it.isDirectory }.forEach { entry ->
+                    entries.forEach { entry ->
                         val target = File(staging, entry.name.removePrefix(prefix))
-                        target.parentFile?.mkdirs()
-                        archive.getInputStream(entry).use { input ->
-                            target.outputStream().use { output ->
-                                if (copyCapped(input, output, MAX_ENTRY_BYTES) < 0) {
-                                    errors.add(
-                                        "the entry \"${entry.name}\" is larger than " +
-                                            "${MAX_ENTRY_BYTES / MB} MB"
-                                    )
+                        if (entry.isDirectory) {
+                            // Materialized rather than skipped: an empty
+                            // directory a package chose to carry is its own
+                            // statement, and the tree the rename commits
+                            // should match the archive's shape.
+                            target.mkdirs()
+                        } else {
+                            target.parentFile?.mkdirs()
+                            archive.getInputStream(entry).use { input ->
+                                target.outputStream().use { output ->
+                                    if (copyCapped(input, output, MAX_ENTRY_BYTES) < 0) {
+                                        errors.add(
+                                            "the entry \"${entry.name}\" is larger than " +
+                                                "${MAX_ENTRY_BYTES / MB} MB"
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -163,7 +171,10 @@ class PluginZipInstaller(private val pluginsDir: File) {
 
     /** Why this entry may not be extracted, or null when it may. */
     private fun entryProblem(entry: ZipEntry): String? {
-        val name = entry.name
+        // A directory entry's trailing slash is the zip's own spelling of a
+        // directory, not an empty path segment: the path checks read the
+        // trimmed name, so "lib/" is judged as "lib".
+        val name = if (entry.isDirectory) entry.name.trimEnd('/') else entry.name
         if (name.isEmpty()) return "the package has an entry with an empty name"
         if (name.length > ENTRY_NAME_CHARS) {
             return "the entry name \"$name\" is longer than $ENTRY_NAME_CHARS characters"

@@ -95,7 +95,7 @@ class PluginUiStateTest {
     private fun repo(): PluginRepository {
         val pluginDao = mockk<PluginDao> { coEvery { all() } returns listOf(plugin) }
         val chatDao = mockk<ChatPluginDao> {
-            coEvery { forSession(any()) } returns listOfNotNull(stored)
+            coEvery { forSession(any()) } answers { listOfNotNull(stored) }
             coEvery { upsert(any()) } answers {
                 stored = firstArg<ChatPluginEntity>()
                 Unit
