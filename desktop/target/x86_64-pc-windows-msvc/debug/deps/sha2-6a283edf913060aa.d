@@ -1,0 +1,13 @@
+/home/z/my-project/repos/room-browser/desktop/target/x86_64-pc-windows-msvc/debug/deps/sha2-6a283edf913060aa.d: /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/lib.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/core_api.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/sha256.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/sha512.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/consts.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/sha256/soft.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/sha256/x86.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/sha512/soft.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/sha512/x86.rs
+
+/home/z/my-project/repos/room-browser/desktop/target/x86_64-pc-windows-msvc/debug/deps/libsha2-6a283edf913060aa.rmeta: /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/lib.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/core_api.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/sha256.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/sha512.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/consts.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/sha256/soft.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/sha256/x86.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/sha512/soft.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/sha512/x86.rs
+
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/lib.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/core_api.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/sha256.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/sha512.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/consts.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/sha256/soft.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/sha256/x86.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/sha512/soft.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/sha512/x86.rs:

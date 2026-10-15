@@ -1,0 +1,23 @@
+/home/z/my-project/repos/room-browser/desktop/target/x86_64-pc-windows-msvc/debug/deps/ureq-47481a6b6d9e242e.d: /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/lib.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/agent.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/body.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/chunked/mod.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/chunked/decoder.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/error.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/header.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/middleware.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/pool.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/proxy.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/request.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/resolve.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/response.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/stream.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/unit.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/ntls.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/testserver.rs
+
+/home/z/my-project/repos/room-browser/desktop/target/x86_64-pc-windows-msvc/debug/deps/libureq-47481a6b6d9e242e.rmeta: /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/lib.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/agent.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/body.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/chunked/mod.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/chunked/decoder.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/error.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/header.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/middleware.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/pool.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/proxy.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/request.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/resolve.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/response.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/stream.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/unit.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/ntls.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/testserver.rs
+
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/lib.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/agent.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/body.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/chunked/mod.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/chunked/decoder.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/error.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/header.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/middleware.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/pool.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/proxy.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/request.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/resolve.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/response.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/stream.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/unit.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/ntls.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/testserver.rs:
+
+# env-dep:CARGO_PKG_VERSION=2.12.1

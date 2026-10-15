@@ -1,0 +1,13 @@
+/home/z/my-project/repos/room-browser/desktop/target/x86_64-pc-windows-msvc/debug/deps/blake2-670b719c2921d40a.d: /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/lib.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/as_bytes.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/consts.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/simd.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/simd/simd_opt.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/simd/simdint.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/simd/simdop.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/simd/simdty.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/macros.rs
+
+/home/z/my-project/repos/room-browser/desktop/target/x86_64-pc-windows-msvc/debug/deps/libblake2-670b719c2921d40a.rmeta: /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/lib.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/as_bytes.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/consts.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/simd.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/simd/simd_opt.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/simd/simdint.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/simd/simdop.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/simd/simdty.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/macros.rs
+
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/lib.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/as_bytes.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/consts.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/simd.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/simd/simd_opt.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/simd/simdint.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/simd/simdop.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/simd/simdty.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/macros.rs:

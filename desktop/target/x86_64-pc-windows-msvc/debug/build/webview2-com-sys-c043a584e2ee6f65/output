@@ -1,0 +1,2 @@
+cargo:rustc-link-search=native=/home/z/my-project/repos/room-browser/desktop/target/x86_64-pc-windows-msvc/debug/build/webview2-com-sys-c043a584e2ee6f65/out/x64
+cargo:rustc-link-lib=advapi32

@@ -1,0 +1,14 @@
+/home/z/my-project/repos/room-browser/desktop/target/debug/deps/tiff-16b5f43ef0560807.d: /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/lib.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/bytecast.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/decoder/mod.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/decoder/ifd.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/decoder/stream.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/encoder/mod.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/encoder/colortype.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/encoder/writer.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/error.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/tags.rs
+
+/home/z/my-project/repos/room-browser/desktop/target/debug/deps/libtiff-16b5f43ef0560807.rmeta: /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/lib.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/bytecast.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/decoder/mod.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/decoder/ifd.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/decoder/stream.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/encoder/mod.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/encoder/colortype.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/encoder/writer.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/error.rs /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/tags.rs
+
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/lib.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/bytecast.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/decoder/mod.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/decoder/ifd.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/decoder/stream.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/encoder/mod.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/encoder/colortype.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/encoder/writer.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/error.rs:
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tiff-0.6.1/src/tags.rs:

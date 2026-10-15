@@ -1,0 +1,5 @@
+/home/z/my-project/repos/room-browser/desktop/target/debug/deps/equivalent-f077759dd4f4b13c.d: /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/equivalent-1.0.3/src/lib.rs
+
+/home/z/my-project/repos/room-browser/desktop/target/debug/deps/libequivalent-f077759dd4f4b13c.rmeta: /home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/equivalent-1.0.3/src/lib.rs
+
+/home/z/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/equivalent-1.0.3/src/lib.rs:

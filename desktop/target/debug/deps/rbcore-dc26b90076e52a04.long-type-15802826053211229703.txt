@@ -1,0 +1,1 @@
+Decoder<image::dynimage::DynamicImage, image::buffer_::ImageBuffer<image::color::Luma<u8>, Vec<u8>>, std::string::String>

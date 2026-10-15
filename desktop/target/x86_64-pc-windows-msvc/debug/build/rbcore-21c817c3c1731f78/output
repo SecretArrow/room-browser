@@ -1,0 +1,2 @@
+cargo:rustc-env=RB_VERSION=0.0.0-dev
+cargo:rerun-if-env-changed=RB_VERSION

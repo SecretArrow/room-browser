@@ -1,0 +1,2 @@
+cargo:rustc-link-lib=static=WebView2LoaderStatic
+cargo:rustc-link-lib=dylib=runtimeobject
