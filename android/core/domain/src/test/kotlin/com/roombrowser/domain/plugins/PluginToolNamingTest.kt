@@ -42,7 +42,7 @@ class PluginToolNamingTest {
         val fitting = "n".repeat(24)
         assertThat(
             PluginToolNaming.pluginToolName("a.b", fitting)
-        ).isEqualTo("plugin_a_b_${fitting}")
+        ).isEqualTo("plugin_a_b_$fitting")
     }
 
     @Test
