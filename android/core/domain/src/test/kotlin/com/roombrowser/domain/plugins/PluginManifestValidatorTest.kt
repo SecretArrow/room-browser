@@ -298,6 +298,10 @@ class PluginManifestValidatorTest {
     private fun jsonArray(vararg values: String): JsonElement =
         JsonArray(values.map { JsonPrimitive(it) })
 
+    /** The same array for element payloads — schema items, command rows. */
+    private fun jsonArray(vararg values: JsonElement): JsonElement =
+        JsonArray(values.toList())
+
     private companion object {
         val VALID = """
             {"id":"com.example.hello","name":"Hello World","version":"1.0.0",
