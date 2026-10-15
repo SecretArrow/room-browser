@@ -48,7 +48,8 @@ change belongs in the sibling:
   engine host), `localai/`.
 - `android/app/src/main/kotlin/com/roombrowser/browser/WebClients.kt` — `RoomSessionListener`
   and `RoomVaultBridge`, written against the facade's `EngineSessionListener`. No engine type.
-- `desktop/` — the C desktop edition is engine-independent and identical in both.
+- `desktop/` — the Rust desktop edition (crates: rbcore, rbchrome, rbwin,
+  rblinux) is engine-independent and identical in both.
 - Everything under `android/app/src/main/assets/room_bridge/` that is page-side JavaScript
   with no engine API in it.
 
