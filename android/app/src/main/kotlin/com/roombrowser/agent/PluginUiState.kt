@@ -149,7 +149,7 @@ class PluginUiState(
                 onNotice(
                     "\"/${command.name}\" is declared by ${command.owners.joinToString(" and ")} — " +
                         "enable only one of them, or switch the other off in the chat plugins sheet.",
-                    error = false
+                    false
                 )
                 true
             }
@@ -192,10 +192,9 @@ class PluginUiState(
 
     /** The grant dialog's Cancel: nothing is enabled, nothing is stored. */
     fun cancelGrant() {
-        if (pendingGrant == null) return
-        val request = pendingGrant
+        val request = pendingGrant ?: return
         pendingGrant = null
-        onNotice("${request.pluginName} was not enabled — no permissions were granted.", error = false)
+        onNotice("${request.pluginName} was not enabled — no permissions were granted.", false)
     }
 
     /**
@@ -237,12 +236,12 @@ class PluginUiState(
                     onNotice(
                         "${result.manifest.name} ${result.manifest.version} installed. Turn it " +
                             "on for this chat here, or with /plugins.",
-                        error = false
+                        false
                     )
                 }
                 is PluginInstallResult.Invalid -> onNotice(
                     "The plugin was not installed:\n" + result.errors.joinToString("\n") { "— $it" },
-                    error = true
+                    true
                 )
             }
         }
@@ -264,7 +263,7 @@ class PluginUiState(
                     "No installed plugin matches \"$query\". Installed: " +
                         installed.joinToString(", ") { it.name } + "."
                 },
-                error = false
+                false
             )
             return
         }
@@ -313,7 +312,7 @@ class PluginUiState(
                 onNotice(
                     "${plugin.name} is on, but it could not be loaded: " +
                         firstLine(failed.probeError),
-                    error = true
+                    true
                 )
             }
         val activated = runtime.run(
@@ -325,11 +324,11 @@ class PluginUiState(
         )
         if (activated.ok) {
             appendCards(session, activated.cards, plugin.name)
-            onNotice("${plugin.name} is on for this chat.", error = false)
+            onNotice("${plugin.name} is on for this chat.", false)
         } else {
             onNotice(
                 "${plugin.name} is on, but its start-up failed: " + firstLine(activated.output),
-                error = true
+                true
             )
         }
     }
@@ -358,7 +357,7 @@ class PluginUiState(
             }
         }
         catalog.invalidate(session)
-        onNotice("${plugin.name} is off for this chat.", error = false)
+        onNotice("${plugin.name} is off for this chat.", false)
     }
 
     /** Runs one plugin command event and shows what it answered. */
@@ -367,7 +366,7 @@ class PluginUiState(
         val owner = catalog.sessionPlugins(chat)
             .firstOrNull { plugin -> plugin.manifest.commands.any { it.name == name } }
         if (owner == null) {
-            onNotice("\"/$name\" is no longer available in this chat.", error = true)
+            onNotice("\"/$name\" is no longer available in this chat.", true)
             return
         }
         val result = runtime.run(
@@ -381,12 +380,12 @@ class PluginUiState(
         if (result.ok) {
             appendCards(chat, result.cards, owner.plugin.name)
             if (result.cards.isEmpty()) {
-                onNotice("${owner.plugin.name} ran \"/$name\" and showed nothing.", error = false)
+                onNotice("${owner.plugin.name} ran \"/$name\" and showed nothing.", false)
             }
         } else {
             onNotice(
                 "${owner.plugin.name} failed on \"/$name\": " + firstLine(result.output),
-                error = true
+                true
             )
         }
     }
