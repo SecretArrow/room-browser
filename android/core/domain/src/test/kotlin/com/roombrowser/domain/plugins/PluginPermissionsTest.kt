@@ -39,7 +39,9 @@ class PluginPermissionsTest {
         val hosts = (1..20).map { "host$it.example.com" }
         val label = PluginPermissions.labelOf(PluginPermissions.NETWORK, hosts)
         assertThat(label).startsWith("Reach the internet (hosts: host1.example.com")
-        assertThat(label).endsWith("…")
+        // The list is cut INSIDE the interpolation, so the label closes
+        // with the ellipsis and the sentence's own paren after it.
+        assertThat(label).endsWith("…)")
         assertThat(label.length).isAtMost("Reach the internet (hosts: ".length + 120 + 2)
     }
 

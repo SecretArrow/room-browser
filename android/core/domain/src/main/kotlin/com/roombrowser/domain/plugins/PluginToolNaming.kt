@@ -62,7 +62,12 @@ object PluginToolNaming {
      */
     fun pluginIdOf(name: String, sanitizedPluginIds: Collection<String>): String? =
         sanitizedPluginIds.firstOrNull { id ->
-            name.length > id.length &&
+            // The separator must be IN the name with at least one tool
+            // character after it: a name that ends exactly at the id is a
+            // plugin spelling without a tool, and indexing it would read one
+            // past the end (the exact crash the first branch's looser bound
+            // let through).
+            name.length > AgentTools.PLUGIN_TOOL_PREFIX.length + id.length + 1 &&
                 name[AgentTools.PLUGIN_TOOL_PREFIX.length + id.length] == '_' &&
                 name.startsWith(AgentTools.PLUGIN_TOOL_PREFIX + id)
         }

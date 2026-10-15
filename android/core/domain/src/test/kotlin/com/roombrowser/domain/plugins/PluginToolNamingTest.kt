@@ -58,8 +58,12 @@ class PluginToolNamingTest {
         val known = setOf("com_example_hello", "a_b_word_count")
         assertThat(PluginToolNaming.pluginIdOf("plugin_com_example_hello_count_words", known))
             .isEqualTo("com_example_hello")
-        assertThat(PluginToolNaming.pluginIdOf("plugin_a_b_count", known))
+        assertThat(PluginToolNaming.pluginIdOf("plugin_a_b_word_count_total", known))
             .isEqualTo("a_b_word_count")
+        // And a name whose id-part is not itself a known id resolves to
+        // nobody: "a_b" is not in the set, and "a_b_count" does not start
+        // with any longer known id either.
+        assertThat(PluginToolNaming.pluginIdOf("plugin_a_b_count", known)).isNull()
         assertThat(PluginToolNaming.pluginIdOf("plugin_com_example_other_tool", known)).isNull()
         assertThat(PluginToolNaming.pluginIdOf("plugin_com_example_hello", known)).isNull()
     }
