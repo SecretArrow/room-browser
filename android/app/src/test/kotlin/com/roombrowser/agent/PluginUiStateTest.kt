@@ -12,7 +12,6 @@ import com.roombrowser.node.PluginCallRequest
 import com.roombrowser.node.PluginCallResult
 import io.mockk.every
 import io.mockk.mockk
-import io.mockk.slot
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking

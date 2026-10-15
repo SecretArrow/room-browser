@@ -8,6 +8,7 @@ import com.roombrowser.data.plugins.PluginZipInstaller
 import com.roombrowser.domain.agent.AgentJson
 import com.roombrowser.domain.plugins.PluginAuthor
 import com.roombrowser.domain.plugins.PluginManifest
+import com.roombrowser.domain.plugins.toJson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext

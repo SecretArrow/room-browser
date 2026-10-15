@@ -129,7 +129,9 @@ class PluginUiState(
     suspend fun interceptChatCommand(text: String, sessionAtTap: Long?): Boolean {
         val trimmed = text.trim()
         if (!trimmed.startsWith("/")) return false
-        val commands = sessionAtTap?.let { runCatching { catalog.commandOwners(it) } }.orEmpty()
+        val commands = sessionAtTap
+            ?.let { id -> runCatching { catalog.commandOwners(id) }.getOrElse { emptyMap() } }
+            ?: emptyMap()
         return when (val command = PluginCommandParser.parse(trimmed, commands)) {
             PluginCommand.ListPlugins -> {
                 openPicker()

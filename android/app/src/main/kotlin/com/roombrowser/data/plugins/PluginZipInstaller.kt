@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonObject
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
+import java.nio.file.Files
 import java.util.Locale
 import java.util.UUID
 import java.util.zip.ZipEntry
@@ -122,6 +123,23 @@ class PluginZipInstaller(private val pluginsDir: File) {
                         }
                     }
                     if (errors.isNotEmpty()) return PluginInstallResult.Invalid(errors)
+                    // The belt-and-braces walk: extraction writes plain files
+                    // only, but the rename is the commit, so the tree is
+                    // verified on the REAL filesystem first — a symlink that
+                    // materialized by any means fails here, and a failed
+                    // install leaves nothing behind but the temp dir the
+                    // finally-block removes.
+                    val linked = Files.walk(staging.toPath()).use { walk ->
+                        walk.filter { Files.isSymbolicLink(it) }.findFirst().orElse(null)
+                    }
+                    if (linked != null) {
+                        errors.add(
+                            "the package extracted a symlink (" +
+                                staging.toPath().relativize(linked).toString() +
+                                "), which a plugin may not carry"
+                        )
+                        return PluginInstallResult.Invalid(errors)
+                    }
                     val target = File(pluginsDir, manifest.dirName)
                     if (target.exists()) target.deleteRecursively()
                     if (!staging.renameTo(target)) {
@@ -159,18 +177,13 @@ class PluginZipInstaller(private val pluginsDir: File) {
         if (name.any { it.code < 0x20 || it.code == 0x7F }) {
             return "the entry name \"$name\" contains control characters"
         }
-        // The central directory's unix mode is the one place a symlink or a
-        // special file announces itself. Mode 0 — no unix attributes recorded,
-        // every zip a packer wrote honestly — is a plain file.
-        val mode = (entry.externalAttributes ushr 16).toInt() and 0xFFFF
-        val kind = mode and 0xF000
-        if (kind == 0xA000) return "the entry \"$name\" is a symlink"
-        if (kind != 0 && kind != 0x8000 && kind != 0x4000) {
-            return "the entry \"$name\" is not a plain file"
-        }
-        if (entry.isDirectory && entry.externalAttributes != 0L) {
-            return "the directory entry \"$name\" carries attributes"
-        }
+        // No symlink guard here on purpose: java.util.zip exposes no unix mode
+        // bits (ZipEntry has no externalAttributes), and the extraction below
+        // writes every entry as a PLAIN FILE through an OutputStream — a
+        // symlink entry's bytes land as a regular file holding the target
+        // path as text, which is inert. The post-extraction walk before the
+        // rename is the belt to that braces: it verifies on the real
+        // filesystem that nothing extracted as a link, however it got there.
         if (!entry.isDirectory) {
             val extension = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
             if (extension in FORBIDDEN_EXTENSIONS) {
