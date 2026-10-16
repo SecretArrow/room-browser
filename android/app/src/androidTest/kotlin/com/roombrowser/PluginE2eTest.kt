@@ -294,7 +294,9 @@ class PluginE2eTest {
         )
         assertTrue(
             "The agent.generate consent sentence must be in the dialog",
-            hasText("Have this chat's AI write text for it", 5_000)
+            // Contains, not equals: the dialog renders each label with its
+            // own "• " bullet prefix.
+            hasTextContains("Have this chat's AI write text for it", 5_000)
         )
         assertTrue(
             "Granting must be clickable",
