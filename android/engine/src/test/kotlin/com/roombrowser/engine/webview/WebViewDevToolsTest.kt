@@ -139,6 +139,9 @@ class WebViewDevToolsTest {
         assertThat(bare.servedPanels()).containsExactly(DevToolsPanelId.OVERVIEW)
         assertThat(bare.serves(DevToolsPanelId.SOURCES)).isFalse()
         assertThat(bare.serves(DevToolsPanelId.PERFORMANCE)).isFalse()
+        // Search is a page-scripting panel like Performance, so a raw socket
+        // serves it no more than it serves the panels it would be built on.
+        assertThat(bare.serves(DevToolsPanelId.SEARCH)).isFalse()
     }
 
     @Test
