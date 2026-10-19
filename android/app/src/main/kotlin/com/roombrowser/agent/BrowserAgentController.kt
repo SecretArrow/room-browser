@@ -548,8 +548,18 @@ class BrowserAgentController(
 
     // ------------------------------------------------------------- chat plugins
 
-    /** Runs the chat's plugin events in the embedded Node runtime. */
-    private val pluginRuntime = AgentPluginRuntime(appContext, vm.profile)
+    /**
+     * Runs the chat's plugin events in the embedded Node runtime. The
+     * runtime's one-call gate is a cancellable wait now, and a call that
+     * queues behind the one in flight says so on the status line — the
+     * person holding two plugin-running chats sees "waiting…" instead of a
+     * turn that looks wedged, and Stop stays honest while it waits.
+     */
+    private val pluginRuntime = AgentPluginRuntime(
+        appContext,
+        vm.profile,
+        onContended = { setStatus(RUNTIME_CONTENDED_NOTICE) }
+    )
 
     /** The per-chat catalogue of plugin tools, commands and hooks. */
     private val pluginCatalog = AgentPluginCatalog(pluginRepo, pluginRuntime)
