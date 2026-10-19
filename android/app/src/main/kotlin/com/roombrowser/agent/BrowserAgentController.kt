@@ -1305,6 +1305,39 @@ class BrowserAgentController(
             // list in memory. Landing anywhere else takes the row's, so a chat
             // deleted underneath us cannot lend its list to its replacement.
             if (sessionId != previousId) plan = AgentPlan.decode(known?.planJson)
+            // The catalogue read every later step of this turn needs — the
+            // message hooks below, the plugin prompt blocks, the tool
+            // definitions — is STARTED here, beside the turn, instead of being
+            // left to whichever step reads it first. That first read lands
+            // AFTER the input gate on a plain message, so with a cold cache its
+            // per-binding Node probes (one runtime start-up each, serialized
+            // under the process-wide runner lock) would all land between the
+            // person's "Allow and Run" and the first visible progress — the
+            // exact window the eye is on, and the source of the stall the
+            // submit used to carry. Started here, the same probes overlap the
+            // minutes the gate's form may hold the turn (or, with no form up,
+            // the turn's own start-up), and the catalogue's probe mutex makes
+            // the later readers JOIN this one rather than pay their own.
+            //
+            // A fire-and-forget job on the controller's scope, not the turn's
+            // lifetime: a stopped turn still leaves the cache warm for the
+            // next one. The invalidation discipline is unchanged — an install,
+            // uninstall or edit that lands while the warm probes still wins,
+            // because the catalogue's generation guard refuses to store a
+            // probe an invalidation has overtaken.
+            scope.launch {
+                try {
+                    pluginCatalog.sessionPlugins(sessionId)
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (_: Throwable) {
+                    // A warm that fails is only the cache miss the readers
+                    // would have paid anyway — every real reader keeps its own
+                    // runCatching and its own failure words, and a job whose
+                    // whole point is to be early must not take the app down
+                    // when the thing it warms is unavailable.
+                }
+            }
             // The chat's own input gate: an enabled binding whose required
             // inputs this chat never answered asks for them HERE — before the
             // row is written and before the model is called — and a form the
