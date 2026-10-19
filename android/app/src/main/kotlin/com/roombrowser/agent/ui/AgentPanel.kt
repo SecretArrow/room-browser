@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -714,18 +715,24 @@ private fun ChatModePicker(agent: BrowserAgentController) {
  * id of their own, and a timestamp is not unique on its own — two rows written
  * in the same millisecond would collide, and a duplicate key is a crash, not a
  * cosmetic problem. A repeat is therefore disambiguated by how many identical
- * ones preceded it. That number cannot move under a survivor: the list is only
- * ever appended to or updated in place, never spliced.
+ * ones preceded it. That number cannot move under a survivor when the list
+ * only grows at the end or is updated in place; the one splice the controller
+ * makes is "load older" prepending rows in front, and a prepended row shares
+ * no survivor's stem unless it carries the same class AND the same millisecond
+ * — possible only for rows written at opposite ends of a long chat within one
+ * clock tick, where the honest cost is a survivor losing remembered item state
+ * (an expanded "Thought process" closing), never a duplicate key: the pass
+ * recomputes from scratch, so uniqueness holds regardless.
  *
  * F-16, why this stays a POSITIONAL pass rather than a per-entry key lambda:
  * the disambiguating suffix counts the identical PREDECESSORS, which a lone
  * entry cannot know about itself — `itemsIndexed` with `keys[index]` is the
- * only cheap scheme that can express it. The no-splice invariant it leans on
- * is the controller's whole-list contract (every mutation appends a row or
- * copy()-replaces one in place; a chat switch swaps the entire list at once,
- * never rearranges it), and [TranscriptKeyCache] leans on the same contract
- * through [sameKeyStem], which must keep reading exactly the fields this
- * function reads — the branch plus `at`/`callId`, nothing else.
+ * only cheap scheme that can express it. The contract it leans on is the
+ * controller's whole-list rule (append a row, copy()-replace one in place,
+ * prepend a page of older rows, or swap the entire list at a chat switch —
+ * never rearrange the middle), and [TranscriptKeyCache] leans on the same
+ * contract through [sameKeyStem], which must keep reading exactly the fields
+ * this function reads — the branch plus `at`/`callId`, nothing else.
  *
  * `internal` so the JVM test can pin it; not `private`, because a key that
  * collides takes the whole panel down.
@@ -758,8 +765,8 @@ internal fun transcriptKeys(entries: List<AgentEntry>): List<String> {
  * so equal stems mean equal keys: the hit is correct by construction, not by
  * hope, and any controller change that does move a stem falls through to a
  * full recompute. The stem scan itself is allocation-free pointer and Long
- * compares; only a genuinely new shape — a row landed, a chat switched, the
- * list shrank — pays the HashMap again.
+ * compares; only a genuinely new shape — a row landed, older rows were
+ * prepended, a chat switched, the list shrank — pays the HashMap again.
  *
  * `internal` for the same reason as [transcriptKeys]: the JVM test pins the
  * hit/miss behavior that keeps item state attached to its row.
@@ -878,6 +885,24 @@ private fun AgentConversation(
     val entries = agent.entries
     val plan = agent.plan
 
+    // Keys are per ENTRY, not per slot. Position was the key before, so item
+    // state remembered inside an item — an expanded "Thought process" — stayed
+    // behind at that offset and was handed to whatever the next chat put there.
+    // The cache rather than a bare remember is what takes this off the
+    // per-token path: a streaming delta hands it a same-size, same-stem list
+    // and gets the very same key list back, with no HashMap pass and no
+    // allocation.
+    val keyCache = remember { TranscriptKeyCache() }
+    val keys = keyCache.keysFor(entries)
+    // The last entry's key — the one thing whose VALUE only moves when the
+    // tail itself moves. It is the auto-scroll's landing signal below.
+    val tailKey = keys.lastOrNull()
+    // The "load older" affordance occupies the list's slot 0 whenever older
+    // rows exist beyond the loaded window, so every index arithmetic below
+    // (and the auto-scroll's) counts it. A chat under one window renders
+    // with no leading item at all — the item list the pre-paging panel drew.
+    val leading = if (agent.hasOlderEntries) 1 else 0
+
     // Live auto-scroll: instant while streaming, animated for new entries.
     // The plan card and the ApprovalCard are composed as items AFTER the last
     // entry, so when either is showing it is the true last item and the list
@@ -886,18 +911,25 @@ private fun AgentConversation(
     // F-03: the old keys included entries.lastOrNull(), whose identity — and
     // equality, since the streaming Assistant is copy()-replaced on every
     // token — changed per delta, restarting this effect (and its
-    // scrollToItem) per token. The keys now move only when a row LANDS
-    // (size), when the plan/approval tail appears, or when the streaming
-    // heartbeat/bucket below moves: the newest row is re-pinned at most
-    // STREAM_REFRESH_MS behind its own growth while it streams, and the -1s
-    // make the completion flip re-fire (the fence leaving shrinks the row).
+    // scrollToItem) per token. The keys now move only when a row LANDS at
+    // the END (tailKey — a same-millisecond repeat still bumps its
+    // disambiguation suffix, so nothing that lands can go unnoticed), when
+    // the plan/approval tail appears, or when the streaming heartbeat/bucket
+    // below moves: the newest row is re-pinned at most STREAM_REFRESH_MS
+    // behind its own growth while it streams, and the -1s make the
+    // completion flip re-fire (the fence leaving shrinks the row).
+    //
+    // tailKey rather than entries.size is what keeps paging history in from
+    // jumping to the bottom: older rows land in FRONT, the tail's key —
+    // class, timestamp and predecessor count — is untouched by them, and the
+    // effect that pins the newest row simply does not fire.
     val lastRow = entries.lastOrNull()
     val streamingRow = if (lastRow is AgentEntry.Assistant && lastRow.streaming) lastRow else null
     val streamTick = rememberStreamTick(streamingRow != null) {
         (entries.lastOrNull() as? AgentEntry.Assistant)?.let { it.text.length + it.thinking.length } ?: 0
     }
     LaunchedEffect(
-        entries.size,
+        tailKey,
         agent.approval,
         plan.size,
         if (streamingRow == null) -1 else streamTick.value,
@@ -905,7 +937,7 @@ private fun AgentConversation(
         else (streamingRow.text.length + streamingRow.thinking.length) / STREAM_REPARSE_CHARS
     ) {
         if (entries.isNotEmpty()) {
-            var lastItem = entries.size - 1
+            var lastItem = leading + entries.size - 1
             if (plan.isNotEmpty()) lastItem++
             if (agent.approval != null) lastItem++
             listState.scrollToItem(lastItem)
@@ -964,15 +996,6 @@ private fun AgentConversation(
         return
     }
 
-    // Keys are per ENTRY, not per slot. Position was the key before, so item
-    // state remembered inside an item — an expanded "Thought process" — stayed
-    // behind at that offset and was handed to whatever the next chat put there.
-    // The cache rather than a bare remember is what takes this off the
-    // per-token path: a streaming delta hands it a same-size, same-stem list
-    // and gets the very same key list back, with no HashMap pass and no
-    // allocation.
-    val keyCache = remember { TranscriptKeyCache() }
-    val keys = keyCache.keysFor(entries)
     LazyColumn(
         state = listState,
         modifier = modifier,
@@ -981,6 +1004,9 @@ private fun AgentConversation(
         ),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
+        if (agent.hasOlderEntries) {
+            item(key = LOAD_OLDER_ITEM_KEY) { LoadOlderMessages(agent, listState) }
+        }
         itemsIndexed(entries, key = { index, _ -> keys[index] }) { _, entry ->
             when (entry) {
                 is AgentEntry.User -> UserBubble(entry)
@@ -997,6 +1023,54 @@ private fun AgentConversation(
         if (plan.isNotEmpty()) item { PlanCard(plan) }
         agent.approval?.let { approval -> item { ApprovalCard(approval, agent) } }
     }
+}
+
+/** The LazyColumn slot the "load older" affordance always occupies. */
+private const val LOAD_OLDER_ITEM_KEY = "load-older"
+
+/**
+ * The transcript's one promise about the past: rows older than the loaded
+ * window exist, and this brings the next window in.
+ *
+ * The viewport's anchor — its first visible item and that item's offset — is
+ * read on the tap, while the OLD layout is still the truth, and repaid the
+ * moment the rows land ([olderPageScrollTarget] says where to). One plain
+ * button, worded as the plain thing it does, because that is the panel's
+ * voice everywhere else.
+ */
+@Composable
+private fun LoadOlderMessages(agent: BrowserAgentController, listState: LazyListState) {
+    val scope = rememberCoroutineScope()
+    Box(Modifier.fillMaxWidth().padding(top = 4.dp), contentAlignment = Alignment.Center) {
+        TextButton(onClick = {
+            val firstIndex = listState.firstVisibleItemIndex
+            val firstOffset = listState.firstVisibleItemOffset
+            scope.launch {
+                val added = agent.loadOlderEntries()
+                val target = olderPageScrollTarget(firstIndex, added, agent.hasOlderEntries)
+                // scrollToItem lands before the next frame lays the grown
+                // list out, so the one frame the user sees is the one that
+                // already has both the new rows and the old position.
+                if (target != null) listState.scrollToItem(target, firstOffset)
+            }
+        }) { Text("Load older messages") }
+    }
+}
+
+/**
+ * Where the viewport's top goes after [added] older entries landed in front
+ * of it: null when nothing should move — nothing landed, or the reader was
+ * at the list's very top, where staying put is showing them exactly the
+ * older rows they asked for. Otherwise the entry that was at [firstIndex] is
+ * [added] slots further down, one less when the affordance left with the
+ * last page (it was the slot at 0).
+ *
+ * `internal` for the same reason as [transcriptKeys]: the panel's no-jump
+ * promise is only as good as this arithmetic, and a JVM test pins it.
+ */
+internal fun olderPageScrollTarget(firstIndex: Int, added: Int, stillMore: Boolean): Int? {
+    if (added <= 0 || firstIndex <= 0) return null
+    return firstIndex + added + (if (stillMore) 0 else -1)
 }
 
 /**

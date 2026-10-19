@@ -47,6 +47,7 @@ import com.roombrowser.domain.plugins.toJson
 import com.roombrowser.domain.task.AiTaskPermissions
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.node.PluginCallRequest
+import com.roombrowser.node.PluginChatEntry
 import com.roombrowser.node.PluginGenerateRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -58,6 +59,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
@@ -427,6 +429,24 @@ class BrowserAgentController(
         private set
 
     /**
+     * Whether the DB holds transcript rows older than the ones [entries]
+     * currently shows. The panel turns exactly this into its "load older"
+     * affordance, so a chat under one window renders an item list with
+     * nothing extra in it — byte-identical to the pre-paging panel.
+     */
+    var hasOlderEntries by mutableStateOf(false)
+        private set
+
+    /**
+     * The id of the oldest message row [entries] was built from — the keyset
+     * cursor "load older" pages below. Tracked from the ROWS and not from the
+     * entries because a row whose entry was dropped (an unparseable plugin
+     * card, say) must still be paged past, or the next window would re-read
+     * it, drop it again, and offer "load older" forever.
+     */
+    private var oldestLoadedRowId: Long? = null
+
+    /**
      * The "allow on this site for this session" answers, kept per controller —
      * so they last as long as the chat the user is in and no longer. See
      * [SessionApprovals] for what can never be remembered.
@@ -591,13 +611,15 @@ class BrowserAgentController(
         createSession = { title -> createSessionForPlugins(title) },
         onCard = { session, card, name -> appendPluginCard(session, card, name) },
         onNotice = { text, error -> note(text, error) },
-        history = { session -> AgentPluginRuntime.historyOf(repo.messages(session)) },
+        history = { session -> pluginHistoryOf(session) },
         // Staged activation's one question: a chat that has sent no user
         // message yet is fresh, and a module enabled into it stages rather
-        // than activates — the first message becomes its prompt.
+        // than activates — the first message becomes its prompt. The EXISTS
+        // probe keeps the answer exact at any chat length, where a capped
+        // window read would call a long chat fresh and re-run a module its
+        // own chat already ran.
         freshChat = { session ->
-            runCatching { repo.messages(session) }.getOrDefault(emptyList())
-                .none { it.role == "user" }
+            runCatching { !repo.hasUserMessage(session) }.getOrDefault(true)
         },
         generate = { session -> pluginGeneratorFor(session) },
         // /make_plugins composes with the SAME session resolution rule — the
@@ -908,6 +930,11 @@ class BrowserAgentController(
         // So does the step list: the next chat plans its own work.
         plan = emptyList()
         entries = emptyList()
+        // And its window: a chat with no rows loaded has nothing older to
+        // page in — leaving the cursor behind would offer a button that reads
+        // the previous chat's history into this one.
+        hasOlderEntries = false
+        oldestLoadedRowId = null
         // A failed turn belongs to the chat it was asked in; a fresh chat is
         // not where its Retry button should still be waiting.
         retryable = null
@@ -946,7 +973,7 @@ class BrowserAgentController(
             activeSessionId = session.id
             pointApprovalsAt(session.id)
             plan = AgentPlan.decode(session.planJson)
-            entries = repo.messages(id).mapNotNull(::entryFromRow)
+            loadTranscriptWindow(session.id)
             retryable = null
         }
     }
@@ -973,7 +1000,78 @@ class BrowserAgentController(
         // was told "for the rest of this chat".
         pointApprovalsAt(session?.id)
         plan = session?.let { AgentPlan.decode(it.planJson) }.orEmpty()
-        entries = session?.let { repo.messages(it.id).mapNotNull(::entryFromRow) } ?: emptyList()
+        if (session != null) loadTranscriptWindow(session.id) else clearTranscriptWindow()
+    }
+
+    /**
+     * Loads the chat's newest transcript window into [entries], off the main
+     * thread for the row→entry mapping: tool rows carry multi-KB payloads and
+     * plugin rows are JSON, and a tab switch used to re-parse a whole day's
+     * worth of them on Main. The Room query is bounded by
+     * [TRANSCRIPT_WINDOW_ROWS] on the same move — the read and the map were
+     * the two halves of the same stall.
+     */
+    private suspend fun loadTranscriptWindow(sessionId: Long) {
+        val page = repo.messagePage(sessionId, Long.MAX_VALUE, TRANSCRIPT_WINDOW_ROWS)
+        val mapped = withContext(Dispatchers.Default) { page.rows.mapNotNull(::entryFromRow) }
+        // Written together, and after the mapping, so a load overtaken by a
+        // faster tab switch lands all of its own state or none of it — the
+        // same staleness contract the token guard above already keeps.
+        hasOlderEntries = page.hasOlder
+        oldestLoadedRowId = page.rows.firstOrNull()?.id
+        entries = mapped
+    }
+
+    /** Empties [entries] and the window bookkeeping that paged it in. */
+    private fun clearTranscriptWindow() {
+        entries = emptyList()
+        hasOlderEntries = false
+        oldestLoadedRowId = null
+    }
+
+    /**
+     * Pages the next older window of THIS chat in front of [entries] and
+     * answers how many entries landed (0 when a turn is running, when nothing
+     * is loaded, or when the chat has nothing older).
+     *
+     * The return count is what the panel keeps its viewport put with: the
+     * rows land BEFORE the entry the user was reading, and the panel offsets
+     * its scroll by exactly the count so the frame that grows the list is
+     * also the frame that stays put. A turn running is refused rather than
+     * reconciled — the turn holds plain indices into `entries` (its streaming
+     * row), and shifting them under it would splice the live stream.
+     */
+    suspend fun loadOlderEntries(): Int {
+        if (running) return 0
+        val session = activeSessionId ?: return 0
+        val before = oldestLoadedRowId ?: return 0
+        val page = repo.messagePage(session, before, TRANSCRIPT_WINDOW_ROWS)
+        // Stale-page guard, read AFTER the query: a chat that took the panel
+        // while this page was in flight owns the window bookkeeping now, and
+        // a page answered for its predecessor must not write over it.
+        if (activeSessionId != session) return 0
+        if (page.rows.isEmpty()) {
+            // Rows were promised and are gone (the chat was cleared under
+            // us): the honest answer is the end of history, not a button
+            // that keeps promising it.
+            hasOlderEntries = false
+            return 0
+        }
+        val older = withContext(Dispatchers.Default) { page.rows.mapNotNull(::entryFromRow) }
+        // Re-read after the mapping, for the same reason plus one more: a
+        // turn that started meanwhile holds plain indices into `entries`
+        // (its streaming row), and prepending now would splice the live
+        // stream — the refusal above cannot cover a turn that began while
+        // the page was reading.
+        if (running || activeSessionId != session) return 0
+        // The cursor moves even when every entry was dropped (unparseable
+        // rows exist): paging past them is the only way the NEXT window gets
+        // a chance to hold something renderable.
+        hasOlderEntries = page.hasOlder
+        oldestLoadedRowId = page.rows.first().id
+        if (older.isEmpty()) return 0
+        entries = older + entries
+        return older.size
     }
 
     /**
@@ -1481,7 +1579,7 @@ class BrowserAgentController(
             // moment, and letting it spend another chat's staging would run a
             // module mid-conversation that its own chat never got (the flag
             // lives on the plugin row, shared by every chat that enabled it).
-            val chatIsFresh = runCatching { repo.messages(sessionId).none { it.role == "user" } }
+            val chatIsFresh = runCatching { !repo.hasUserMessage(sessionId) }
                 .getOrDefault(false)
             repo.addMessage(sessionId, "user", display)
 
@@ -1521,7 +1619,7 @@ class BrowserAgentController(
                 // Read at call time: a tool call can arrive several steps
                 // into the turn, and the conversation it should see is the
                 // one that exists then.
-                history = { AgentPluginRuntime.historyOf(repo.messages(sessionId)) },
+                history = { pluginHistoryOf(sessionId) },
                 onCards = { cards, name ->
                     cards.forEach { card -> appendPluginCard(sessionId, card, name) }
                 },
@@ -1573,11 +1671,21 @@ class BrowserAgentController(
             // this turn. The assembly itself lives in buildTurnHistory, where
             // the order — snapshot, then standing context, then attachments,
             // then the request — is pinned by unit tests.
+            //
+            // The prior rows are the chat's last MODEL_HISTORY_ROW_CAP rows,
+            // read through the paged query and filtered/mapped off the main
+            // thread — a chat shorter than the cap re-sends exactly what it
+            // always did, in the same order, byte for byte; a longer one
+            // re-sends its newest window and NOT the turns beyond the cap
+            // (documented in android/docs/AI_AGENTS.md).
+            val priorTurns = withContext(Dispatchers.Default) {
+                repo.messagePage(sessionId, Long.MAX_VALUE, MODEL_HISTORY_ROW_CAP).rows
+                    .filter { it.role == "user" || it.role == "assistant" }
+                    .map { ChatMessage(role = it.role, content = it.content) }
+            }
             val history = buildTurnHistory(
                 prompt = prompt,
-                priorTurns = repo.messages(sessionId)
-                    .filter { it.role == "user" || it.role == "assistant" }
-                    .map { ChatMessage(role = it.role, content = it.content) },
+                priorTurns = priorTurns,
                 pageSnapshot = when {
                     !includePage -> null
                     headless != null -> headless.snapshotContext()
@@ -1829,6 +1937,22 @@ class BrowserAgentController(
         )
 
     /**
+     * The transcript as a `chat.context` grant reads it: the chat's last
+     * MODEL_HISTORY_ROW_CAP rows through the paged query, shaped by the
+     * runtime's own entry/char caps, with the read and the shaping off the
+     * main thread. The same cap a turn re-sends (see the priorTurns read),
+     * because both surfaces answer "what has this chat said" — a chat under
+     * the cap hands a plugin byte-identically to what it always did; a longer
+     * one hands it the newest window and not the turns beyond the cap.
+     */
+    private suspend fun pluginHistoryOf(sessionId: Long): List<PluginChatEntry> =
+        withContext(Dispatchers.Default) {
+            AgentPluginRuntime.historyOf(
+                repo.messagePage(sessionId, Long.MAX_VALUE, MODEL_HISTORY_ROW_CAP).rows
+            )
+        }
+
+    /**
      * The chat's message hooks: every plugin enabled with the `message` hook
      * sees the user's text BEFORE the turn starts — its cards join the
      * conversation, its failure is one honest notice line, and the turn runs
@@ -1861,7 +1985,7 @@ class BrowserAgentController(
                     binding = plugin.binding,
                     event = PluginCallRequest.EVENT_MESSAGE,
                     payload = PluginPayloads.message(text),
-                    history = AgentPluginRuntime.historyOf(repo.messages(sessionId)),
+                    history = pluginHistoryOf(sessionId),
                     budgetMs = AgentPluginRuntime.MESSAGE_HOOK_BUDGET_MS,
                     generate = generate,
                     form = form
@@ -2406,6 +2530,28 @@ class BrowserAgentController(
 
     companion object {
         private const val APPROVAL_TIMEOUT_MS = 120_000L
+
+        /**
+         * How many transcript rows a chat opens with, and how many each
+         * "load older" pages in — the transcript's RAM window. 200 rows is a
+         * long afternoon's reading and an instant single query, where the
+         * whole history was a re-read of megabytes on every tab switch; the
+         * rest stays in the DB and comes back one tap at a time. A chat
+         * shorter than this renders exactly the item list it always did.
+         */
+        internal const val TRANSCRIPT_WINDOW_ROWS = 200
+
+        /**
+         * The row cap on what a turn re-sends as prior turns, and on what a
+         * `chat.context` grant reads — one number because both answer "what
+         * has this chat said" to something off-device. A chat shorter than
+         * this re-sends byte-identically to the uncapped reads; a longer one
+         * re-sends its newest 500 rows, and the turns beyond the cap are NOT
+         * re-sent (nor handed to plugins) — stated honestly in
+         * android/docs/AI_AGENTS.md rather than left for someone to discover
+         * from a token bill.
+         */
+        internal const val MODEL_HISTORY_ROW_CAP = 500
 
         /**
          * Name on the wallet approval prompt, distinct from a normal tool gate.

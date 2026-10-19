@@ -77,6 +77,26 @@ too.
 Chats written before per-tab chats existed are unbound: they are in the
 history list as before, but no tab claims them.
 
+### Long chats: the transcript window and the model's cap
+
+A long chat is **not** re-read in full every time you look at it. The panel
+opens a chat's newest **200 rows** (and re-reads only that window on a tab
+switch); anything older stays in the database until you tap **Load older
+messages** at the top of the transcript, which pages the next 200 rows in
+without moving the row you were reading. Nothing is deleted — every row is
+still in the database and every row is still exported by *Export chats*.
+
+The model's own memory of the chat is capped too, and this one is a real
+limit rather than a loading trick: **each turn re-sends only the chat's
+newest 500 rows** as prior turns (user and assistant rows among them), and a
+plugin's `chat.context` grant reads the same window. A chat shorter than
+that is re-sent exactly as before; in a longer one, **turns beyond the cap
+are not re-sent** — the model starts each turn with the newest 500 rows of
+context and no memory of anything older. The step list, standing context and
+the current request are unaffected by the cap. If a task genuinely needs the
+whole history in the model's head, start a fresh chat and re-state the
+essential background.
+
 ## Providers & models (manual input, like opencode)
 
 Any **OpenAI-compatible** endpoint works. In *AI Agent settings → Add
