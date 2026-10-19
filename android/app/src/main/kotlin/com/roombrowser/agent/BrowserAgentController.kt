@@ -220,6 +220,113 @@ internal fun buildTurnHistory(
 }
 
 /**
+ * Coalesces the model's streamed deltas into a few transcript writes.
+ *
+ * WHY: a streamed turn used to pay, for EVERY delta, a full copy of the
+ * entries list plus `current.text + delta` — O(tokens × transcript) work
+ * that also invalidated the whole chat list in Compose each time, at the
+ * 30–80 deltas a second a chatty provider sends. The user cannot read that
+ * fast; the list only needs to be right at reading speed. Deltas therefore
+ * accumulate in two builders here, and ONE flush hands the accumulated pair
+ * to [onFlush] — one entry update per window instead of one per token.
+ *
+ * THE CONTRACT (the e2e suite reads the transcript, so it is stated here):
+ *  - The final text and thinking are EXACTLY the concatenation of all
+ *    deltas, in arrival order. A flush drains both builders fully and the
+ *    next starts from empty, so nothing is reordered, edited or dropped.
+ *    Interleaving text and thinking is safe — they are different fields of
+ *    the same entry — and only the per-field order is load-bearing.
+ *  - [flush] is called at every boundary that replaces or closes the open
+ *    bubble (a tool starting, the final answer, an error, the turn's end),
+ *    so the last window's deltas are never stranded in the buffers when
+ *    something reads the transcript. A Stop cancels between events and
+ *    still lands in the turn's `finally`, where the flush runs first.
+ *
+ * WHY THE CADENCE IS EVENT-DRIVEN RATHER THAN A TICKER COROUTINE: the
+ * listener that feeds this runs inside the gateway's
+ * `withContext(Dispatchers.IO)`, so deltas arrive sequentially but on IO
+ * threads. A ticker coroutine on the controller's main scope would touch
+ * the same builders, and the same captured streaming index, from another
+ * thread — racing the very deltas it exists to drain. Keeping every append
+ * and flush on the listener's own sequence needs no locks and cannot
+ * interleave; the only cost is that a stream gone quiet shows its last
+ * sub-window of text when the next delta or boundary arrives, which at
+ * these cadences nobody can see.
+ *
+ * Not thread-safe by design (see above): one instance per turn, created in
+ * [BrowserAgentController.runTurn] and never shared. Pure JVM — no Android
+ * dependency — so the contract is unit-testable on the JVM.
+ */
+internal class AgentStreamCoalescer(
+    /** Minimum spacing between time-based flushes. */
+    private val intervalMs: Long = FLUSH_INTERVAL_MS,
+    /**
+     * Monotonic-ish milliseconds, injectable so the cadence is testable.
+     * nanoTime rather than currentTimeMillis because the wall clock can
+     * step backwards under NTP, and a window that runs backwards freezes
+     * flushing until the clock catches up.
+     */
+    private val nowMs: () -> Long = { System.nanoTime() / 1_000_000 },
+    private val onFlush: (text: String, thinking: String) -> Unit
+) {
+    private val text = StringBuilder()
+    private val thinking = StringBuilder()
+
+    /** When the last flush happened, in [nowMs] units; null before the first. */
+    private var lastFlushMs: Long? = null
+
+    fun appendText(delta: String) {
+        text.append(delta)
+        flushIfDue()
+    }
+
+    fun appendThinking(delta: String) {
+        thinking.append(delta)
+        flushIfDue()
+    }
+
+    /**
+     * Drains everything pending into [onFlush] NOW, clock be damned — this
+     * is the boundary call. A no-op when nothing is pending, so every
+     * boundary can call it unconditionally without paying for the quiet
+     * ones.
+     */
+    fun flush() {
+        if (text.isEmpty() && thinking.isEmpty()) return
+        val drainedText = text.toString()
+        val drainedThinking = thinking.toString()
+        text.setLength(0)
+        thinking.setLength(0)
+        onFlush(drainedText, drainedThinking)
+    }
+
+    /**
+     * The first delta flushes at once — the bubble should appear with the
+     * first token exactly as it did before coalescing — and after that at
+     * most one flush per [intervalMs] of delta arrivals.
+     */
+    private fun flushIfDue() {
+        val now = nowMs()
+        val last = lastFlushMs
+        if (last != null && now - last < intervalMs) return
+        lastFlushMs = now
+        flush()
+    }
+
+    companion object {
+        /**
+         * ~12 transcript writes a second: fast enough that streamed text
+         * still reads as streaming, slow enough that the per-token copy of
+         * the whole entries list is gone. The e2e suite waits whole seconds
+         * for rows, so a sub-100 ms window is invisible to it — and the
+         * FINAL text is not windowed at all (see [flush]), which is the
+         * part the suite actually reads.
+         */
+        const val FLUSH_INTERVAL_MS = 80L
+    }
+}
+
+/**
  * What the user answered at the approval prompt.
  *
  * [AlwaysAllow] is the third button and the only answer that outlives the
@@ -1133,6 +1240,16 @@ class BrowserAgentController(
             )
         }
         var streamingIndex = -1
+        // The turn's stream coalescer (see [AgentStreamCoalescer]): every
+        // streamed delta lands here and reaches the transcript one window
+        // at a time, through this one seam. `streamingIndex` stays the plain
+        // local it always was — the flush callback below and the boundary
+        // handlers in the event loop are its only writers, and all of them
+        // run on the turn's own event sequence (see the class's threading
+        // note for why that confinement is the design, not an accident).
+        val stream = AgentStreamCoalescer { textDelta, thinkingDelta ->
+            streamingIndex = upsertStreamingAssistant(streamingIndex, textDelta, thinkingDelta)
+        }
         // An error reported as an EVENT rather than thrown still means the turn
         // did not do what was asked, so it must not clear the retry offer.
         var turnFailed = false
@@ -1484,14 +1601,25 @@ class BrowserAgentController(
             loop.runTurn(history) { event ->
                 when (event) {
                     is AgentEvent.AssistantText -> {
-                        streamingIndex = upsertStreamingAssistant(streamingIndex, event.text, null)
+                        // The delta is buffered, not applied: one window of
+                        // deltas becomes ONE entries update when the next
+                        // flush fires (see AgentStreamCoalescer). setStatus
+                        // below is per-token on purpose — it dedupes
+                        // identical text at its own seam, so the repeated
+                        // "Writing…" costs a string compare and nothing else.
+                        stream.appendText(event.text)
                         setStatus("Writing…")
                     }
                     is AgentEvent.AssistantThinking -> {
-                        streamingIndex = upsertStreamingAssistant(streamingIndex, "", event.text)
+                        stream.appendThinking(event.text)
                         setStatus("Thinking…")
                     }
                     is AgentEvent.ToolStarted -> {
+                        // The bubble closes here, so its last window lands
+                        // first: finalizeAssistant reads the entry's text,
+                        // and the text it must read is every delta that
+                        // arrived, not just the ones a flush already carried.
+                        stream.flush()
                         streamingIndex = finalizeAssistant(streamingIndex)
                         entries = entries + AgentEntry.Tool(
                             callId = event.id,
@@ -1522,6 +1650,12 @@ class BrowserAgentController(
                         repo.setSessionPlan(sessionId, AgentPlan.encode(event.items))
                     }
                     is AgentEvent.FinalAnswer -> {
+                        // Same duty as a tool boundary, for a subtler reason:
+                        // the finished answer REPLACES the open bubble's text
+                        // but KEEPS its thinking, so the thinking buffer must
+                        // be drained here or the final entry would silently
+                        // lose whatever the last window was still holding.
+                        stream.flush()
                         // The model sometimes copies the fence's frame back out
                         // of the tool result it just read.
                         val answer = UntrustedContent.stripMarkers(event.text)
@@ -1539,6 +1673,9 @@ class BrowserAgentController(
                         setStatus(null)
                     }
                     is AgentEvent.AgentError -> {
+                        // finalize below reads the entry's text — drain first,
+                        // exactly as a tool boundary does.
+                        stream.flush()
                         streamingIndex = finalizeAssistant(streamingIndex)
                         turnFailed = true
                         entries = entries + AgentEntry.Notice(
@@ -1589,6 +1726,33 @@ class BrowserAgentController(
                 at = System.currentTimeMillis()
             )
         } finally {
+            // Drain before anything else. This is the boundary every ending
+            // shares — finish, failure, Stop — and the one the e2e suite's
+            // transcript reads depend on: the persisted row is written from
+            // events, but the on-screen bubble is written ONLY from these
+            // flushes, so a turn that ended with text still in the buffers
+            // would show (and Stop would freeze) a bubble missing its tail.
+            // Plain calls, no suspension: safe to run while the cancellation
+            // itself is unwinding, and after this the listener is gone for
+            // good, so nothing can append behind the drain.
+            //
+            // The drain is guarded by the bubble still being ours, and only
+            // on this path could it not be: a Stop drops `running` the
+            // instant it cancels, and everything that re-points the panel
+            // (openSession, newSession, the tab-change re-bind) is gated on
+            // exactly that flag — so one of them can win the dispatch race
+            // and swap `entries` for another chat's rows before this finally
+            // runs. Writing the tail THERE would put a stray streaming
+            // bubble into a conversation it never belonged to. Dropping it
+            // instead is the honest outcome: the partial bubble was never
+            // persisted, so a re-bind loses it today too. On every normal
+            // ending nothing could have re-bound (running stayed true until
+            // this finally), the guard holds, and the flush always lands.
+            if (streamingIndex >= 0 && streamingIndex < entries.size &&
+                (entries[streamingIndex] as? AgentEntry.Assistant)?.streaming == true
+            ) {
+                stream.flush()
+            }
             running = false
             setStatus(null)
             approval = null
@@ -1909,8 +2073,24 @@ class BrowserAgentController(
 
     // ------------------------------------------------------------- approvals
 
-    /** Sets the in-app status line and mirrors it to the background notification. */
+    /**
+     * Sets the in-app status line and mirrors it to the background
+     * notification.
+     *
+     * Identical text is dropped on purpose. This one seam sits in front of a
+     * path that rebuilds the whole notification — three fresh
+     * PendingIntents and a NotificationManager.notify() binder round-trip —
+     * and the streamed path used to call it per TOKEN with two constants
+     * ("Writing…"/"Thinking…"), a rebuild storm at 30–80 calls a second for
+     * a notification whose visible text never changed. The memory is
+     * [statusLine] itself — the one thing the panel reads — so it cannot
+     * drift behind a write that bypassed this seam: the only other writer
+     * is stop()'s reset to null, and skipping the matching null the
+     * turn's `finally` would have sent saves exactly the rebuild that
+     * ending the turn was about to make pointless.
+     */
     private fun setStatus(text: String?) {
+        if (text == statusLine) return
         statusLine = text
         AgentForeground.status(text ?: "Working…")
     }
