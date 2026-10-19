@@ -857,9 +857,12 @@ internal class WebViewEngineSession(
             ) ?: false
             // Side-effect only, and wrapped so it can never change the return
             // value below: a report happens whether or not the request was
-            // blocked, because a blocked request still "started". The main-thread
-            // marshalling lives in the inspector, since this runs on a WebView
-            // background thread.
+            // blocked, because a blocked request still "started". The signal is
+            // still built with no panel armed -- the inspector's backlog is what
+            // replays the document to a Network panel opened after the page --
+            // but the marshalling is gated on the inspector's armed sink, so
+            // this per-sub-resource call costs no main-thread post while
+            // Developer Tools is closed.
             runCatching {
                 devToolsInspector.onNetwork(
                     EngineNetworkSignal(

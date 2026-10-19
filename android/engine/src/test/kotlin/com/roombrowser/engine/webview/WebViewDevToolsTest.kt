@@ -215,6 +215,52 @@ class WebViewDevToolsTest {
         assertThat(backlog.drain().map { it.url }).containsExactly("https://example.com/asset.js")
     }
 
+    @Test
+    fun the_backlog_stays_bounded_and_real_when_filled_from_many_threads() {
+        // The armed-sink gate moved the fill onto the engine's calling thread,
+        // and a page's sub-resources are reported from more than one of those,
+        // so the drop-oldest has to hold under concurrency: a torn deque would
+        // surface here as a wrong size or an entry nobody offered.
+        val backlog = EngineSignalBacklog<Int>(capacity = 8)
+        val adders = (0 until 4).map { worker ->
+            Thread {
+                repeat(25) { index -> backlog.add(worker * 100 + index) }
+            }.apply { start() }
+        }
+        adders.forEach { it.join() }
+
+        val held = backlog.drain()
+        assertThat(held).hasSize(8)
+        assertThat(held).containsNoDuplicates()
+        assertThat(held.all { it in 0 until 400 }).isTrue()
+        assertThat(backlog.drain()).isEmpty()
+    }
+
+    @Test
+    fun the_backlog_neither_loses_nor_duplicates_a_signal_under_concurrent_drains() {
+        // Arming drains on the main thread while engine threads keep filling,
+        // which is exactly the burst a panel opened mid-load walks into, so the
+        // lock is what stands between a signal and being dropped or delivered
+        // twice. The capacity is larger than everything offered, so nothing is
+        // dropped by design and the union of EVERY drain must be exactly the
+        // offer, in whichever interleaving the scheduler chose.
+        val offered = (0 until 60).toList()
+        val backlog = EngineSignalBacklog<Int>(capacity = 10_000)
+        val drained = mutableListOf<Int>()
+        val drainer = Thread { repeat(12) { drained.addAll(backlog.drain()) } }
+        drainer.start()
+        offered.forEach(backlog::add)
+        drainer.join()
+        // The one drain the test thread itself makes, so a signal that landed
+        // after the drainer's last pass is counted rather than stranded.
+        drained.addAll(backlog.drain())
+
+        assertThat(drained).containsNoDuplicates()
+        // Unordered on purpose: the interleaving decides which drain took which
+        // signal, only the UNION is the contract.
+        assertThat(drained).containsExactlyElementsIn(offered)
+    }
+
     private fun signal(url: String) = EngineNetworkSignal(
         kind = EngineNetworkSignal.Kind.REQUEST,
         url = url,

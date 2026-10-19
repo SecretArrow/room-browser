@@ -239,8 +239,22 @@ internal object WebViewDevTools {
  *
  * THREADING. [onConsole] and [onNetwork] are called from the engine's own
  * threads -- the chrome client on the UI thread, the page bridge on WebView's
- * JavaBridge thread, `shouldInterceptRequest` on a background thread -- and the
- * facade requires the sink on the main thread, so every delivery is posted.
+ * JavaBridge thread, `shouldInterceptRequest` on a background thread -- and
+ * the facade requires the sink on the main thread.
+ *
+ * THE ARMED-SINK CONTRACT. Marshalling to main happens ONLY while a consumer
+ * is armed: [onConsole] and [onNetwork] read their sink -- a volatile written
+ * on the main thread by the start/stop members -- on the calling thread first
+ * and post only when it is set. While no panel is armed the bounded backlogs
+ * fill on the calling thread instead, so a signal costs no main-thread wake
+ * and no queued Runnable, yet a panel that opens late still gets the same
+ * replay it always did. This is why the gate sits BEFORE the post rather than
+ * after it: `shouldInterceptRequest` fires for every sub-resource of every
+ * tab and the chrome client reports every console line, and the old shape --
+ * post first, then discover on main that there is nothing to do but a backlog
+ * add -- was a burst of main-thread work a media-heavy page caused with no
+ * panel open anywhere. Any future panel that arms through
+ * [startConsoleCapture]/[startNetworkCapture] inherits the gate for free.
  */
 internal class WebViewInspector(
     private val session: WebViewEngineSession
@@ -299,7 +313,13 @@ internal class WebViewInspector(
      * this callback is the only source there is, the panel opened on an empty
      * feed and the page's own errors were gone for good. Bounded, oldest first.
      *
-     * Main-thread only, like [pageConsoleKeys].
+     * Filled on the CALLING thread while no panel is armed (the chrome client's
+     * own thread for engine copies), drained on main when one arms -- see the
+     * armed-sink contract above. Internally synchronised, which for THIS
+     * funnel is belt-and-braces rather than need -- engine copies arrive on
+     * the chrome client's main thread -- but the shared class's lock, not a
+     * thread relationship, is what keeps a fill and a drain from tearing, and
+     * which thread a WebView calls back on is the engine's to choose.
      */
     private val engineBacklog = EngineSignalBacklog<EngineConsoleMessage>(BACKLOG_MAX)
 
@@ -310,8 +330,12 @@ internal class WebViewInspector(
      * loads, so by the time a person opens the Network panel the page is
      * already over: without this, the panel opened on an empty feed and the one
      * request a reader most wants to see -- the document they are looking at --
-     * was the one that could never appear. Main-thread only, like the console
-     * backlog.
+     * was the one that could never appear.
+     *
+     * Filled on WebView's BACKGROUND thread while no panel is armed, drained on
+     * main when one arms, so it is the one structure here that is genuinely
+     * cross-thread -- the armed-sink contract above, and the lock inside
+     * [EngineSignalBacklog] that makes it safe.
      */
     private val networkBacklog = EngineSignalBacklog<EngineNetworkSignal>(BACKLOG_MAX)
 
@@ -321,8 +345,21 @@ internal class WebViewInspector(
         )
 
     fun onConsole(message: EngineConsoleMessage) {
-        // Every delivery lands on the main thread first, so [pageConsoleKeys]
-        // and [engineBacklog] are written and read by one thread only.
+        // The armed-sink gate, read on the calling thread (the chrome client's
+        // for an engine copy, the JavaBridge thread for a page copy). An engine
+        // copy that arrives with no panel armed is held in the backlog right
+        // here: engine copies come from the chrome client, which is this same
+        // main thread, so holding inline is order-identical to the old
+        // post-then-add and queues no Runnable at all. A page copy is dropped
+        // instead -- while disarmed the patch buffers in the page and arming is
+        // what flushes that buffer, so the patch's own ring IS the page copy's
+        // backlog and the panel that opens late still sees the line.
+        // [pageConsoleKeys] stays main-thread-only: the armed paths below are
+        // the only ones that touch it.
+        if (consoleSink == null) {
+            if (message.fromEngine) engineBacklog.add(message)
+            return
+        }
         if (message.fromEngine) {
             mainHandler.post { holdEngineCopy(message) }
         } else {
@@ -339,11 +376,46 @@ internal class WebViewInspector(
     }
 
     fun onNetwork(signal: EngineNetworkSignal) {
-        // Posted for the same reason as [onConsole]: the sink must run on the
-        // main thread and the backlog must stay main-thread-only.
+        // The armed-sink gate, read on this WebView background thread before
+        // anything is posted. The signal itself is still built by the caller
+        // with no panel armed -- this backlog is what replays the document to a
+        // Network panel that opens late -- but the marshalling is not: posting
+        // every sub-resource of every tab to main, only to reach main and add
+        // it to a backlog nobody was reading, was the burst of main-thread work
+        // the perf audit's F-06 flagged.
+        if (networkSink == null) {
+            networkBacklog.add(signal)
+            // Close the arm race: a panel that armed between the gate and the
+            // add above has already drained the backlog, so this signal would
+            // otherwise sit unseen until the NEXT panel opens. The re-read needs
+            // no lock of its own, because of the orders involved -- if the drain
+            // ran after the add, that very drain replayed the signal; if it ran
+            // before, the sink write that precedes it is already visible here.
+            if (networkSink != null) replayNetworkBacklog()
+            return
+        }
         mainHandler.post {
             val sink = networkSink ?: return@post networkBacklog.add(signal)
             sink(signal)
+        }
+    }
+
+    /**
+     * Delivers whatever the backlog holds to the armed panel, on the main
+     * thread.
+     *
+     * [drain] empties, so a signal is delivered exactly once however many
+     * replays race: whichever post drains first takes it. A panel that disarmed
+     * again before this runs keeps its signals held -- they go back into the
+     * backlog for the next arm, the same retention an armed-path post that
+     * finds the sink gone already had.
+     */
+    private fun replayNetworkBacklog() {
+        mainHandler.post {
+            val sink = networkSink
+            for (signal in networkBacklog.drain()) {
+                if (sink != null) sink(signal) else networkBacklog.add(signal)
+            }
         }
     }
 
@@ -505,18 +577,28 @@ internal class WebViewInspector(
  *
  * Separate from the inspector, and free of Android, so the drop-oldest and
  * drain behaviour is pinned by a JVM test rather than by a device.
+ *
+ * THREAD-SAFE ON ONE LOCK, and that is the armed-sink contract's other half:
+ * while no panel is armed this fills on the engine's CALLING thread (a WebView
+ * background thread for requests, the chrome client's thread for console
+ * copies) and the moment one arms it is drained on main, so add/drain/clear
+ * synchronise on the deque rather than on any thread relationship holding.
  */
 internal class EngineSignalBacklog<T>(private val capacity: Int) {
 
     private val entries = ArrayDeque<T>()
 
     fun add(entry: T) {
-        entries.addLast(entry)
-        while (entries.size > capacity) entries.removeFirst()
+        synchronized(entries) {
+            entries.addLast(entry)
+            while (entries.size > capacity) entries.removeFirst()
+        }
     }
 
     /** Everything held, oldest first. Empties the backlog. */
-    fun drain(): List<T> = entries.toList().also { entries.clear() }
+    fun drain(): List<T> = synchronized(entries) {
+        entries.toList().also { entries.clear() }
+    }
 
-    fun clear() = entries.clear()
+    fun clear() = synchronized(entries) { entries.clear() }
 }
