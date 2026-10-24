@@ -19,6 +19,7 @@ import android.webkit.CookieManager
 import android.webkit.GeolocationPermissions
 import android.webkit.HttpAuthHandler
 import android.webkit.PermissionRequest
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.SslErrorHandler
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -31,11 +32,13 @@ import android.webkit.WebViewClient
 import android.webkit.WebViewDatabase
 import androidx.core.graphics.createBitmap
 import androidx.webkit.ScriptHandler
+import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.engine.EngineCertificate
+import com.roombrowser.engine.EngineErrorCode
 import com.roombrowser.engine.EnginePageScripts
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.EngineSessionListener
@@ -332,7 +335,16 @@ internal class WebViewEngineSession(
             // because compatibility-first is what this mode means everywhere
             // else in the app.
             s.mediaPlaybackRequiresUserGesture = MEDIA_PLAYBACK_REQUIRES_USER_GESTURE
-            s.javaScriptCanOpenWindowsAutomatically = false
+            // TRUE routes every `window.open` through the app's popup gate
+            // (onNewWindowRequest) instead of letting the engine swallow the
+            // gesture-less ones at the JS level before a decision is made.
+            // The gate blocks exactly those anyway -- `blockPopups ||
+            // !hasUserGesture`, WebClients -- so the popup POLICY is
+            // unchanged; what changes is that it decides in one place, which
+            // is also how Chrome treats the same call: the window is offered
+            // and the popup blocker answers, rather than the offer never
+            // being made.
+            s.javaScriptCanOpenWindowsAutomatically = true
             // Mixed content: compatibility mode by default. NEVER_ALLOW blanked
             // real-world sites that still load http sub-resources (legacy CDNs,
             // older image hosts); a user who wants strictness enables "Block
@@ -377,6 +389,25 @@ internal class WebViewEngineSession(
             val cookieManager = CookieManager.getInstance()
             cookieManager.setAcceptCookie(true)
             cookieManager.setAcceptThirdPartyCookies(webView, !settings.blockThirdPartyCookies)
+
+            // The stock WebView stamps every request with
+            // `X-Requested-With: <applicationId>`. Sites read that as "an app
+            // is embedding a WebView, not a browser" -- Google sign-in's
+            // "This browser or app may not be secure" is the visible refusal
+            // -- and it hands every site the app's package name as a
+            // fingerprint for free, the same leak the UA work above closes.
+            // The allow-list API is the platform's own opt-out: an EMPTY list
+            // means no origin may receive the header, so it is never sent.
+            // Guarded because the feature belongs to the installed WebView
+            // provider, not to this APK -- a provider without it (an old
+            // WebView) keeps the header, there being no app-side way to
+            // remove a header the engine adds itself, and the neutralized UA
+            // is all such a device gets. The API hangs off [WebSettings], so
+            // it is applied here, where `configure` re-runs on every settings
+            // change and an old value cannot survive one.
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
+                WebSettingsCompat.setRequestedWithHeaderOriginAllowList(s, emptySet<String>())
+            }
 
             // Android Autofill integration: AUTO participates in the system
             // autofill framework; NO opts the WebView out when the profile
@@ -1140,6 +1171,50 @@ internal class WebViewEngineSession(
                 null,
                 engineCertificate(error)
             )
+        }
+
+        /**
+         * The renderer behind this WebView died -- it crashed, or the system
+         * reclaimed it for memory.
+         *
+         * NOT OVERRIDING THIS IS NOT NEUTRAL. The default answer is `false`,
+         * which tells the platform the app did NOT handle the death, and the
+         * platform's documented response is to kill or crash the whole app --
+         * a "the browser suddenly died" report that points nowhere near here.
+         * Returning true takes the recovery on ourselves, and the smallest
+         * honest recovery is the one the app already has: report the failure
+         * as a page error, which draws the retry surface the app knows how to
+         * draw and drops it for a background session (the app's error gate
+         * ignores non-active sessions), while a fresh navigation -- what the
+         * retry button, the omnibox and every other way back into this tab
+         * produce -- is what restarts a renderer.
+         *
+         * The platform's own fuller recipe -- destroy this WebView and build
+         * a new one -- would mean tearing the bridges, devtools and view
+         * wiring off the dead view and re-attaching them to the new one;
+         * that is session-lifecycle work that belongs above the facade (see
+         * the facade's own `onClosed`, still unwired), not this callback.
+         * Until that exists, this keeps the process alive and hands the user
+         * a retry instead of a frozen tab or a killed app.
+         *
+         * The report carries the page's own url ([mainFrameUrl]) and the
+         * OTHER kind -- nothing about the SITE is wrong -- with didCrash()
+         * only inside the free-form description, which the diagnostics
+         * screens show and nothing parses.
+         */
+        override fun onRenderProcessGone(
+            view: WebView,
+            detail: RenderProcessGoneDetail
+        ): Boolean {
+            listener?.onPageError(
+                this@WebViewEngineSession,
+                mainFrameUrl,
+                PageErrorKind.OTHER,
+                true,
+                EngineErrorCode.UNKNOWN,
+                "renderer process gone (crashed=" + detail.didCrash() + ")"
+            )
+            return true
         }
 
         /**
