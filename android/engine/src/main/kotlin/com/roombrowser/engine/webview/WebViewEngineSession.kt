@@ -1,5 +1,6 @@
 package com.roombrowser.engine.webview
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
@@ -300,7 +301,21 @@ internal class WebViewEngineSession(
      * are app constants). What this does do is re-apply whichever set is
      * stored, matching the GeckoView edition's `configure`, which re-sends the
      * scripts it holds.
+     *
+     * `@SuppressLint("RestrictedApi")`: the X-Requested-With opt-out below
+     * is guarded the way webkit's own `@RequiresFeature` prescribes -- check
+     * `WebViewFeature.isFeatureSupported` for the feature, then call -- but
+     * the CONSTANT naming it is `@RestrictTo(LIBRARY_GROUP)` in webkit 1.12.1,
+     * so the guard pattern their annotation demands is one lint refuses at
+     * the reference. The value the constant names is the Chromium
+     * support-library boundary's own feature string, matched across the
+     * process boundary by the WebView provider itself -- a wire contract,
+     * not an implementation detail -- so the suppression names a stable
+     * value while keeping the guard's shape honest. The repo's precedent is
+     * `BrowserActivity.dispatchKeyEvent`, which documents the same class of
+     * androidx-internal contradiction the same way.
      */
+    @SuppressLint("RestrictedApi")
     internal fun configure(profile: Profile) {
         runOnMain {
             if (closed) return@runOnMain
