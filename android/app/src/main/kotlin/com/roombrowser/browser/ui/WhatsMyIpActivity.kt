@@ -250,9 +250,11 @@ private suspend fun loadFacts(context: Context, profileId: ProfileId): IpFacts =
     }
 
 /**
- * The profile's own DNS choice. A mode with no endpoint stored falls back to
- * the system resolver, so the row says that rather than naming a setting the
- * engine cannot act on.
+ * The self-check, for the same five surfaces Settings reports.
+ *
+ * [chosen] is the profile's own answer and [engineStock] the engine's, and
+ * only one of them is ever on the wire: a profile that picks an identity
+ * replaces the engine's outright rather than adding to it.
  */
 private fun identityChecks(
     settings: ProfileSettings,
@@ -282,6 +284,11 @@ private fun identityChecks(
     }.getOrDefault(false)
 )
 
+/**
+ * The profile's own DNS choice. A mode with no endpoint stored falls back to
+ * the system resolver, so the row says that rather than naming a setting the
+ * engine cannot act on.
+ */
 private fun dnsSummary(settings: ProfileSettings): String = when (settings.dnsMode) {
     DnsMode.SYSTEM -> "System resolver"
     DnsMode.AUTO -> "Automatic - secure where the network offers it"
