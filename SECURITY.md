@@ -403,9 +403,9 @@ packages — and it is stated here in those terms rather than as a sandbox:
   paragraph draws — this is a rule, not a sandbox. A profile with no identity at
   all makes no request: the tool refuses before the script runs rather than
   letting Node announce itself. That is about *identity*, not about reach — the
-  script can still call anywhere this app can, and the two engine-level controls
-  that govern page traffic do not apply to it: neither the profile's proxy nor
-  its ad/tracker blocking sits in front of a raw socket.
+  script can still call anywhere this app can, and the engine-level controls that
+  govern page traffic do not apply to it: the profile's ad/tracker blocking sits
+  in front of page requests, not in front of a raw socket.
 - **Its output is untrusted data.** What a program prints can be a server's
   answer or a package's own words, so it is fenced exactly like page text and
   carries no more authority than the page does.

@@ -12,13 +12,11 @@ import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.domain.model.WebRtcPolicy
 import com.roombrowser.domain.model.claimedScreen
-import com.roombrowser.domain.proxy.ProxyScheme
 import com.roombrowser.engine.BlockedResourceSink
 import com.roombrowser.engine.EngineActivityDelegate
 import com.roombrowser.engine.EngineHost
 import com.roombrowser.engine.EngineOption
 import com.roombrowser.engine.EnginePageScripts
-import com.roombrowser.engine.EngineProxyConfig
 import com.roombrowser.engine.EngineRuntime
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.ResourceFilter
@@ -276,20 +274,12 @@ object ProfileEngine {
     }
 
     /**
-     * Whether this edition's engine can be pointed at a proxy at all.
-     *
-     * WebView answers from the installed provider's feature set, so an old provider says
-     * false and the settings screen shows that rather than a switch that does nothing.
-     */
-    fun proxySupported(): Boolean = host.proxySupported()
-
-    /**
      * Whether this edition's engine can keep the embedded-browser request
      * headers off the wire.
      *
-     * Asked rather than assumed, for the same reason as [proxySupported]: on
-     * WebView the answer is the installed provider's, and a provider older than
-     * the opt-out API sends `X-Requested-With: <applicationId>` on every request
+     * Asked rather than assumed: on WebView the answer is the installed
+     * provider's, and a provider older than the opt-out API sends
+     * `X-Requested-With: <applicationId>` on every request
      * with nothing this app can do about it. Google's "This browser or app may
      * not be secure" refusal reads exactly that header, so the app tells the
      * person when their engine cannot avoid it instead of letting them meet the
@@ -320,26 +310,6 @@ object ProfileEngine {
      * contradiction is what a sign-in page refuses.
      */
     fun supportsUserAgentClientHints(): Boolean = host.supportsUserAgentClientHints()
-
-    /**
-     * Whether this edition's engine can carry [scheme].
-     *
-     * Asked before a candidate is applied, so a SOCKS entry picked on the GeckoView
-     * edition is refused with a message on the WebView one instead of being accepted and
-     * silently ignored.
-     */
-    fun proxySupportsScheme(scheme: ProxyScheme): Boolean = host.proxySupportsScheme(scheme)
-
-    /**
-     * Point the engine's page traffic at [config], or back at the direct network when null.
-     *
-     * Process-wide on both editions, which is why it is called once per bind and not per
-     * session. Suspends until the engine has accepted the change — see [EngineHost.setProxy]
-     * for why that wait is the feature rather than an implementation detail.
-     */
-    suspend fun setProxy(config: EngineProxyConfig?) {
-        host.setProxy(config)
-    }
 
     /**
      * Clear ALL engine storage for the given profile. Must be called from a

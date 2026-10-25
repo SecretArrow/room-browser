@@ -51,8 +51,8 @@ dependencies {
     // signature.
     implementation(libs.androidx.webkit)
 
-    // setProxy suspends until the engine acknowledges the change; a page loaded
-    // before that point would go out over the real address.
+    // Engine calls suspend: an acknowledgement from the engine arrives on its
+    // own thread and the caller waits for it.
     implementation(libs.kotlinx.coroutines.android)
 
     testImplementation(libs.junit)
