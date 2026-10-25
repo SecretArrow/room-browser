@@ -301,6 +301,17 @@ internal class WebViewEngineHost : EngineHost {
         runCatching { WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT) }
             .getOrDefault(false)
 
+    /**
+     * The same provider question for the `Sec-CH-UA*` headers. `applyClientHints`
+     * already refuses to set metadata when this is unsupported, so asking here
+     * reports the fact a server will observe — on an older provider, headers
+     * naming `Android WebView` beside a User-Agent naming Chrome — rather than
+     * a second opinion about it.
+     */
+    override fun supportsUserAgentClientHints(): Boolean =
+        runCatching { WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA) }
+            .getOrDefault(false)
+
     /** HTTP and HTTPS only: the override has no SOCKS rule. */
     override fun proxySupportsScheme(scheme: ProxyScheme): Boolean =
         scheme == ProxyScheme.HTTP || scheme == ProxyScheme.HTTPS

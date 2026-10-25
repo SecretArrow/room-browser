@@ -311,6 +311,17 @@ object ProfileEngine {
     fun supportsDocumentStartScripts(): Boolean = host.supportsDocumentStartScripts()
 
     /**
+     * Whether this edition's engine lets the app replace the `Sec-CH-UA*`
+     * identity the engine derives from its own build.
+     *
+     * Asked for the same reason as [supportsDocumentStartScripts]: on a
+     * WebView provider older than the User-Agent-Metadata API, the headers keep
+     * naming `Android WebView` while the string says Chrome, and that
+     * contradiction is what a sign-in page refuses.
+     */
+    fun supportsUserAgentClientHints(): Boolean = host.supportsUserAgentClientHints()
+
+    /**
      * Whether this edition's engine can carry [scheme].
      *
      * Asked before a candidate is applied, so a SOCKS entry picked on the GeckoView

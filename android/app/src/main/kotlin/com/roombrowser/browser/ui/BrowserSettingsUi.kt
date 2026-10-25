@@ -29,9 +29,11 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -65,6 +67,8 @@ import androidx.compose.ui.unit.dp
 import com.roombrowser.BuildConfig
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.FoundProxy
+import com.roombrowser.browser.engine.IdentityCheck
+import com.roombrowser.browser.engine.IdentityDiagnostics
 import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.domain.agent.AgentPermissions
 import com.roombrowser.domain.engine.DnsValidator
@@ -235,6 +239,46 @@ private fun SettingsTopBar(title: String, onClose: () -> Unit) {
             actionIconContentColor = extras.icon
         )
     )
+}
+
+/**
+ * One row of the identity self-check: a tick or a warning, the surface's name,
+ * and what a site is actually told about it.
+ *
+ * A separate composable rather than a `SettingSwitchRow` because this is not a
+ * setting — nothing here is tappable, and a switch shape would invite a tap
+ * that does nothing.
+ */
+@Composable
+private fun IdentityCheckRow(check: IdentityCheck) {
+    val extras = LocalRoomExtras.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Icon(
+            imageVector = if (check.ok) Icons.Filled.CheckCircle else Icons.Filled.Warning,
+            contentDescription = if (check.ok) "OK" else "Problem",
+            tint = if (check.ok) extras.primary else MaterialTheme.colorScheme.error,
+            modifier = Modifier
+                .padding(top = 2.dp)
+                .size(18.dp)
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                check.label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = extras.textPrimary
+            )
+            Text(
+                check.detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = extras.textSecondary
+            )
+        }
+    }
 }
 
 /** Quiet explanatory note: tinted rounded box under a settings group. */
@@ -496,30 +540,36 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             }
         }
         InfoNote("Read-only diagnostics — the active engine is decided outside this screen; Room Browser cannot switch it.")
-        // The two things Google's sign-in reads that this app cannot supply
-        // for itself: both are properties of the installed WebView provider.
-        // On a provider too old to expose them, the identity Google sees is
-        // missing a piece and no app-side code can add it — so name the piece,
-        // rather than letting the person meet "This browser or app may not be
-        // secure" with nothing to act on.
-        val identityGaps = remember {
-            buildList {
-                if (!ProfileEngine.suppressesEmbeddedBrowserHeaders()) {
-                    add("hide the X-Requested-With header")
-                }
-                if (!ProfileEngine.supportsDocumentStartScripts()) {
-                    add("install the page-side identity script")
-                }
-            }
-        }
-        if (identityGaps.isNotEmpty()) {
-            InfoNote(
-                "This device's WebView is too old for Room Browser to " +
-                    identityGaps.joinToString(" or ") +
-                    ". Google's sign-in reads that as a sign of an embedded browser and " +
-                    "may refuse to sign in. Updating Android System WebView in the Play " +
-                    "Store fixes it; until then that sign-in may fail."
+        // What a site is told about this browser, surface by surface. Google's
+        // sign-in refusal lists four possible causes without saying which one
+        // applied; this app can name its own answer for each, and can tell a
+        // provider that is too old apart from an identity that is wrong.
+        //
+        // Keyed on the profile's SETTINGS rather than on its id: turning
+        // JavaScript off in this profile must move its own row, and a key on
+        // the id alone would leave the old answer on screen until the screen
+        // was reopened.
+        val identitySettings = viewModel.profileSettings()
+        val identityChecks = remember(identitySettings) {
+            val userAgent = UserAgents.effectiveUserAgent(identitySettings)
+                ?: UserAgents.webViewNeutralUserAgent(ProfileEngine.defaultUserAgent(context))
+                ?: ProfileEngine.defaultUserAgent(context)
+            IdentityDiagnostics.checks(
+                userAgent = userAgent,
+                javascriptEnabled = identitySettings.javascriptEnabled,
+                suppressesRequestedWith = ProfileEngine.suppressesEmbeddedBrowserHeaders(),
+                setsClientHints = ProfileEngine.supportsUserAgentClientHints(),
+                installsDocumentStartScripts = ProfileEngine.supportsDocumentStartScripts()
             )
+        }
+        SectionHeader("What sites are told")
+        InfoNote(
+            "Every surface a site can read about this browser, in the order it reads " +
+                "them. A warning here is why a sign-in page may call Room Browser " +
+                "\"an app\" rather than a browser."
+        )
+        for (check in identityChecks) {
+            IdentityCheckRow(check)
         }
 
         // ================= AI Agent =================

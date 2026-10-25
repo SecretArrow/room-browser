@@ -201,6 +201,21 @@ interface EngineHost {
     fun supportsDocumentStartScripts(): Boolean = true
 
     /**
+     * Whether this engine lets the app REPLACE the `Sec-CH-UA*` identity the
+     * engine would otherwise derive from its own build.
+     *
+     * The User-Agent string and the client-hint headers are two descriptions of
+     * one browser, and a site that receives contradictory ones has a stronger
+     * embedded-browser signal than the `wv` token ever was — it needs no
+     * JavaScript to see it. WebView answers from the installed provider: one
+     * older than the User-Agent-Metadata API sends its own brand list, which
+     * still names `Android WebView`, and nothing on the app side can replace a
+     * header the engine builds itself. GeckoView derives the hints from the
+     * User-Agent it was given, so it answers true.
+     */
+    fun supportsUserAgentClientHints(): Boolean = true
+
+    /**
      * Whether this engine's proxy mechanism can carry [scheme] at all.
      *
      * WebView's override speaks HTTP and HTTPS; Necko also speaks SOCKS. A candidate the
