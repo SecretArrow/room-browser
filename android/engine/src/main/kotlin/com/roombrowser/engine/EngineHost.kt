@@ -164,6 +164,24 @@ interface EngineHost {
     fun proxySupported(): Boolean
 
     /**
+     * Whether this engine can keep the request headers that identify an
+     * embedded browser off the wire.
+     *
+     * The header in question is `X-Requested-With: <applicationId>`, which
+     * WebView stamps on every request. Sites read it as "an app is embedding a
+     * browser, not a browser" — Google's sign-in refusal is the visible cost —
+     * and it hands every site the app's package name for free.
+     *
+     * WebView answers from the provider's own feature set, exactly like
+     * [proxySupported]: a provider that predates the opt-out API leaves no
+     * app-side way to remove a header the engine adds itself, and answers
+     * false here so the app can tell the person the truth instead of promising
+     * a sign-in that will be refused. GeckoView sends no such header and
+     * answers true.
+     */
+    fun suppressesEmbeddedBrowserHeaders(): Boolean = true
+
+    /**
      * Whether this engine's proxy mechanism can carry [scheme] at all.
      *
      * WebView's override speaks HTTP and HTTPS; Necko also speaks SOCKS. A candidate the

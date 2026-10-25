@@ -295,8 +295,13 @@ object DeviceShim {
         var out = {};
         for (var i = 0; i < wanted.length; i++) {
           switch (wanted[i]) {
-            case 'architecture': out.architecture = ''; break;
-            case 'bitness': out.bitness = ''; break;
+            // Chrome on Android answers these two with the ABI it was built
+            // for, and an EMPTY string is not one of its answers: it is the
+            // shape of an object assembled by hand. Every handset in the
+            // catalogue is a 64-bit ARM device, which is what the claimed
+            // identity is, so that is the truthful pair to report.
+            case 'architecture': out.architecture = 'arm'; break;
+            case 'bitness': out.bitness = '64'; break;
             case 'formFactor': out.formFactor = FORM; break;
             case 'model': out.model = MODEL; break;
             case 'platform': out.platform = 'Android'; break;

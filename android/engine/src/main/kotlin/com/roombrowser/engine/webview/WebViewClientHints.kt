@@ -82,7 +82,14 @@ internal object WebViewClientHints {
             device != null -> device.code
             else -> ANDROID_MODEL.find(resolvedUserAgent)?.groupValues?.get(1).orEmpty()
         }
-        val mobile = if (desktop) false else !resolvedUserAgent.contains(" Mobile")
+        // `Mobile` in the string is the token that makes an identity a phone
+        // one: Chrome emits it for handsets and omits it for tablets. The flag
+        // therefore follows the STRING, not the device's form factor — a
+        // profile that claims a handset but sends a tablet string must report
+        // what it actually sends, or `Sec-CH-UA-Mobile` contradicts the UA it
+        // arrived with. (This used to be the negation of the test, which
+        // announced every phone as a tablet and every tablet as a phone.)
+        val mobile = !desktop && resolvedUserAgent.contains(" Mobile")
 
         return UserAgentMetadata.Builder()
             .setBrandVersionList(brands(fullVersion))

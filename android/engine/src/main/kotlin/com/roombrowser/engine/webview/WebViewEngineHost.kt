@@ -270,6 +270,17 @@ internal class WebViewEngineHost : EngineHost {
         runCatching { WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE) }
             .getOrDefault(false)
 
+    /**
+     * The provider's answer, not this APK's: `X-Requested-With` is added by the
+     * engine itself, so only an engine that has the opt-out API can be stopped
+     * from sending it. `configure` applies the empty allow-list behind the same
+     * test, so the two cannot disagree about what is on the wire.
+     */
+    override fun suppressesEmbeddedBrowserHeaders(): Boolean =
+        runCatching {
+            WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)
+        }.getOrDefault(false)
+
     /** HTTP and HTTPS only: the override has no SOCKS rule. */
     override fun proxySupportsScheme(scheme: ProxyScheme): Boolean =
         scheme == ProxyScheme.HTTP || scheme == ProxyScheme.HTTPS

@@ -418,4 +418,18 @@ class DeviceShimTest {
             assertThat(js).doesNotContain("\$")
         }
     }
+
+    @Test
+    fun `the high-entropy hints answer the way a real Chrome build does`() {
+        // `getHighEntropyValues` is only reached when a site asks for these
+        // hints, and an EMPTY string is not one of Chrome's answers: it is the
+        // shape of an object assembled by hand, which is precisely the kind of
+        // detail a sign-in page can read. Every catalogue handset is 64-bit
+        // ARM, so that is the truthful pair.
+        val js = DeviceShim.scriptFor(device)
+        assertThat(js).contains("out.architecture = 'arm'")
+        assertThat(js).contains("out.bitness = '64'")
+        assertThat(js).doesNotContain("out.architecture = ''")
+        assertThat(js).doesNotContain("out.bitness = ''")
+    }
 }

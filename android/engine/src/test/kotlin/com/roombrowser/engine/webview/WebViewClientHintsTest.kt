@@ -69,6 +69,31 @@ class WebViewClientHintsTest {
         assertThat(ua).doesNotContain(" Mobile")
     }
 
+    /**
+     * THE FLAG MUST FOLLOW THE STRING, NOT THE HANDSET TABLE.
+     *
+     * `Sec-CH-UA-Mobile` and the `Mobile` token in the User-Agent are the same
+     * claim in two places, and a request that carries one without the other is
+     * a browser described two ways — the exact contradiction Google's sign-in
+     * refusal reads. This test walks EVERY device in the catalogue and asserts
+     * the two agree, because a single flipped comparison announced all 996
+     * phones as tablets while their UA strings said `Mobile`, and the two
+     * spot-check tests above each happened to miss it in one direction.
+     */
+    @Test
+    fun every_device_announces_the_same_mobile_flag_in_both_places() {
+        assertThat(Devices.all).isNotEmpty()
+
+        for (device in Devices.all) {
+            val settings = ProfileSettings(deviceId = device.id)
+            val ua = UserAgents.effectiveUserAgent(settings)!!
+            val hints = WebViewClientHints.forUserAgent(settings, ua)!!
+
+            assertThat(hints.isMobile)
+                .isEqualTo(ua.contains(" Mobile"))
+        }
+    }
+
     @Test
     fun a_preset_without_a_device_still_names_android_and_never_invents_a_model() {
         val settings = ProfileSettings(

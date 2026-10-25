@@ -284,6 +284,20 @@ object ProfileEngine {
     fun proxySupported(): Boolean = host.proxySupported()
 
     /**
+     * Whether this edition's engine can keep the embedded-browser request
+     * headers off the wire.
+     *
+     * Asked rather than assumed, for the same reason as [proxySupported]: on
+     * WebView the answer is the installed provider's, and a provider older than
+     * the opt-out API sends `X-Requested-With: <applicationId>` on every request
+     * with nothing this app can do about it. Google's "This browser or app may
+     * not be secure" refusal reads exactly that header, so the app tells the
+     * person when their engine cannot avoid it instead of letting them meet the
+     * refusal unexplained.
+     */
+    fun suppressesEmbeddedBrowserHeaders(): Boolean = host.suppressesEmbeddedBrowserHeaders()
+
+    /**
      * Whether this edition's engine can carry [scheme].
      *
      * Asked before a candidate is applied, so a SOCKS entry picked on the GeckoView
