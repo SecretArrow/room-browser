@@ -297,9 +297,11 @@ object DeviceShim {
           switch (wanted[i]) {
             // Chrome on Android answers these two with the ABI it was built
             // for, and an EMPTY string is not one of its answers: it is the
-            // shape of an object assembled by hand. Every handset in the
-            // catalogue is a 64-bit ARM device, which is what the claimed
-            // identity is, so that is the truthful pair to report.
+            // shape of an object assembled by hand. The catalogue lists
+            // Android 12-and-newer handsets, which are 64-bit ARM in practice,
+            // so that is the pair the claimed identity reports — and
+            // `WebViewClientHints` sends the same pair in `Sec-CH-UA-Arch` /
+            // `Sec-CH-UA-Bitness`, so the header half and this one agree.
             case 'architecture': out.architecture = 'arm'; break;
             case 'bitness': out.bitness = '64'; break;
             case 'formFactor': out.formFactor = FORM; break;

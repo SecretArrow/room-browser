@@ -496,6 +496,31 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             }
         }
         InfoNote("Read-only diagnostics — the active engine is decided outside this screen; Room Browser cannot switch it.")
+        // The two things Google's sign-in reads that this app cannot supply
+        // for itself: both are properties of the installed WebView provider.
+        // On a provider too old to expose them, the identity Google sees is
+        // missing a piece and no app-side code can add it — so name the piece,
+        // rather than letting the person meet "This browser or app may not be
+        // secure" with nothing to act on.
+        val identityGaps = remember {
+            buildList {
+                if (!ProfileEngine.suppressesEmbeddedBrowserHeaders()) {
+                    add("hide the X-Requested-With header")
+                }
+                if (!ProfileEngine.supportsDocumentStartScripts()) {
+                    add("install the page-side identity script")
+                }
+            }
+        }
+        if (identityGaps.isNotEmpty()) {
+            InfoNote(
+                "This device's WebView is too old for Room Browser to " +
+                    identityGaps.joinToString(" or ") +
+                    ". Google's sign-in reads that as a sign of an embedded browser and " +
+                    "may refuse to sign in. Updating Android System WebView in the Play " +
+                    "Store fixes it; until then that sign-in may fail."
+            )
+        }
 
         // ================= AI Agent =================
         // The floating agent button is hidden by default; this is the global

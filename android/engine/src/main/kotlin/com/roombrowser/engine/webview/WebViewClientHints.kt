@@ -32,8 +32,16 @@ import com.roombrowser.domain.model.UserAgents
  * are only sent to an origin that asked for them with `Accept-CH`, so leaving
  * them at their defaults would be safe — but `model` is exactly the hint that
  * names the handset, and a profile presenting a device should answer it with
- * that device rather than with the real phone. The three that a device cannot
- * describe honestly (`architecture`, `bitness`, `wow64`) are left alone.
+ * that device rather than with the real phone.
+ *
+ * `architecture` and `bitness` are answered for the same reason, and they are
+ * answered here because the PAGE already answers them: `DeviceShim` reports
+ * `arm` / `64` to `navigator.userAgentData.getHighEntropyValues`, so a network
+ * half that stayed empty would be the same contradiction in a different place
+ * — one browser, two descriptions. A desktop claim gets the x86 answer its
+ * Windows UA implies. A profile with NO device is the one case left alone: it
+ * presents the engine's real build, that build's architecture is whatever the
+ * device running it actually is, and this code cannot see it.
  */
 internal object WebViewClientHints {
 
@@ -91,6 +99,32 @@ internal object WebViewClientHints {
         // announced every phone as a tablet and every tablet as a phone.)
         val mobile = !desktop && resolvedUserAgent.contains(" Mobile")
 
+        // What the page-side shim reports for the same two hints, so the
+        // header half and the `getHighEntropyValues` half cannot disagree.
+        // Chrome on Android answers "arm"/64 whatever the SoC vendor is;
+        // "arm64" is not a value it ever emits. `bitness` is an Int in
+        // androidx.webkit (the provider renders it into the header), while the
+        // JS API hands the page the string "64" — the same fact, two types.
+        // Zero and empty are the "say nothing" values, used when no device is
+        // claimed: that profile presents the engine's real build, and this
+        // code has no honest answer for what that build was compiled for.
+        val architecture: String
+        val bitness: Int
+        when {
+            desktop -> {
+                architecture = "x86"
+                bitness = 64
+            }
+            device != null -> {
+                architecture = "arm"
+                bitness = 64
+            }
+            else -> {
+                architecture = ""
+                bitness = 0
+            }
+        }
+
         return UserAgentMetadata.Builder()
             .setBrandVersionList(brands(fullVersion))
             .setFullVersion(fullVersion)
@@ -98,6 +132,8 @@ internal object WebViewClientHints {
             .setPlatformVersion(platformVersion)
             .setModel(model)
             .setMobile(mobile)
+            .setArchitecture(architecture)
+            .setBitness(bitness)
             .build()
     }
 

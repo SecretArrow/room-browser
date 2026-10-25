@@ -94,6 +94,53 @@ class WebViewClientHintsTest {
         }
     }
 
+    /**
+     * THE HIGH-ENTROPY PAIR, MATCHED TO THE PAGE.
+     *
+     * `architecture` and `bitness` reach a site two ways once it sends
+     * `Accept-CH`: as `Sec-CH-UA-Arch` / `Sec-CH-UA-Bitness` from these hints,
+     * and as `getHighEntropyValues()` from `DeviceShim`. The shim answers
+     * `arm` / `64` for a claimed handset, so the header must say the same or
+     * the site reads one browser described two ways — the contradiction this
+     * whole file exists to remove.
+     */
+    @Test
+    fun a_device_answers_architecture_and_bitness_the_way_its_shim_does() {
+        val ua = UserAgents.effectiveUserAgent(deviceSettings())!!
+
+        val hints = WebViewClientHints.forUserAgent(deviceSettings(), ua)!!
+
+        assertThat(hints.architecture).isEqualTo("arm")
+        assertThat(hints.bitness).isEqualTo(64)
+    }
+
+    @Test
+    fun a_desktop_claim_answers_the_x86_pair_its_windows_user_agent_implies() {
+        val hints = WebViewClientHints.forUserAgent(
+            deviceSettings(),
+            UserAgents.desktopModeUserAgent
+        )!!
+
+        assertThat(hints.architecture).isEqualTo("x86")
+        assertThat(hints.bitness).isEqualTo(64)
+    }
+
+    @Test
+    fun a_profile_with_no_device_leaves_the_architecture_to_the_engine() {
+        // No device means the engine's REAL build is what is being presented,
+        // and only the engine knows what it was compiled for. Claiming `arm`
+        // here would be inventing an answer, and the shim does not claim one
+        // either (it installs nothing without a device).
+        val settings = ProfileSettings(uaMode = UaMode.PRESET, uaPresetId = "chrome_android")
+        val ua = UserAgents.effectiveUserAgent(settings)!!
+
+        val hints = WebViewClientHints.forUserAgent(settings, ua)!!
+
+        assertThat(hints.architecture).isEmpty()
+        // androidx.webkit models bitness as an Int, so "not stated" is 0.
+        assertThat(hints.bitness).isEqualTo(0)
+    }
+
     @Test
     fun a_preset_without_a_device_still_names_android_and_never_invents_a_model() {
         val settings = ProfileSettings(

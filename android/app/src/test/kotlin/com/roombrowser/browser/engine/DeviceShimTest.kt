@@ -1,6 +1,7 @@
 package com.roombrowser.browser.engine
 
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.roombrowser.domain.model.ClaimedScreen
 import com.roombrowser.domain.model.Device
 import com.roombrowser.domain.model.Devices
@@ -60,6 +61,28 @@ class DeviceShimTest {
         assertThat(DeviceShim.scriptFor(tablet)).contains("var FORM = 'Tablet';")
         assertThat(DeviceShim.scriptFor(device)).contains("var MOBILE = true;")
         assertThat(DeviceShim.scriptFor(device)).contains("var FORM = 'Mobile';")
+    }
+
+    @Test
+    fun `every device announces one mobile flag across all three surfaces`() {
+        // The identity reaches Google three ways: the User-Agent string, the
+        // `Sec-CH-UA-Mobile` header, and `navigator.userAgentData.mobile` from
+        // this shim. Disagreement between any two of them is the third tell.
+        // The header half is pinned against the string in
+        // WebViewClientHintsTest; this pins the page half to the SAME
+        // authority — the string — so a catalogue entry whose form factor and
+        // UA disagree cannot make one surface contradict the other two.
+        assertThat(Devices.all).isNotEmpty()
+        for (d in Devices.all) {
+            val js = DeviceShim.scriptFor(d)
+            val mobile = d.userAgent.contains(" Mobile")
+            assertWithMessage("device ${d.id}: the shim's MOBILE must match its own UA")
+                .that(js)
+                .contains(if (mobile) "var MOBILE = true;" else "var MOBILE = false;")
+            assertWithMessage("device ${d.id}: the shim's FORM must match its own UA")
+                .that(js)
+                .contains(if (mobile) "var FORM = 'Mobile';" else "var FORM = 'Tablet';")
+        }
     }
 
     @Test
