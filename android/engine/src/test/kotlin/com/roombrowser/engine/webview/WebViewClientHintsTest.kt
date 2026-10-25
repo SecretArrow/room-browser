@@ -38,7 +38,7 @@ class WebViewClientHintsTest {
         assertThat(hints.platform).isEqualTo("Android")
         assertThat(hints.platformVersion).isEqualTo("${device.androidVersion}.0.0")
         assertThat(hints.model).isEqualTo(device.code)
-        assertThat(hints.mobile).isEqualTo(device.formFactor != "tablet")
+        assertThat(hints.isMobile).isEqualTo(device.formFactor != "tablet")
     }
 
     @Test
@@ -65,7 +65,7 @@ class WebViewClientHintsTest {
 
         val hints = WebViewClientHints.forUserAgent(settings, ua)!!
 
-        assertThat(hints.mobile).isFalse()
+        assertThat(hints.isMobile).isFalse()
         assertThat(ua).doesNotContain(" Mobile")
     }
 
@@ -93,7 +93,7 @@ class WebViewClientHintsTest {
         val hints = WebViewClientHints.forUserAgent(deviceSettings(), ua)!!
 
         assertThat(hints.platform).isEqualTo("Windows")
-        assertThat(hints.mobile).isFalse()
+        assertThat(hints.isMobile).isFalse()
         assertThat(hints.model).isEmpty()
         assertThat(hints.platformVersion).isEqualTo("10.0.0")
     }
