@@ -37,6 +37,7 @@ import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.roombrowser.domain.model.Profile
+import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.engine.EngineCertificate
 import com.roombrowser.engine.EngineErrorCode
@@ -374,9 +375,14 @@ internal class WebViewEngineSession(
             // the stock string announces a WebView, and video sites in
             // particular serve a degraded player to that identity, so the two
             // WebView markers come off first (UserAgents.webViewNeutralUserAgent).
-            val chosen = UserAgents.effectiveUserAgent(settings)
-            s.userAgentString = chosen
+            // Resolved ONCE into a local before it is installed: the client
+            // hints below must describe the same identity, and reading the UA
+            // back out of the engine after assigning it would make the two a
+            // copy of each other only by accident.
+            val resolvedUserAgent = UserAgents.effectiveUserAgent(settings)
                 ?: UserAgents.webViewNeutralUserAgent(WebViewStockUserAgent.of(s))
+            s.userAgentString = resolvedUserAgent
+            applyClientHints(s, settings, resolvedUserAgent)
             // Desktop mode is the LAST word on identity, and it belongs here as
             // well as in [applyDesktopMode]: `configure` runs again on every
             // settings change, including the one the app makes immediately
@@ -384,6 +390,7 @@ internal class WebViewEngineSession(
             // mode would otherwise be handed its mobile UA back by that pass.
             if (settings.desktopModeDefault) {
                 s.userAgentString = UserAgents.desktopModeUserAgent
+                applyClientHints(s, settings, UserAgents.desktopModeUserAgent)
                 s.useWideViewPort = true
                 s.loadWithOverviewMode = false
             }
@@ -435,6 +442,30 @@ internal class WebViewEngineSession(
     }
 
     /**
+     * Install the `Sec-CH-UA*` identity that matches [resolvedUserAgent].
+     *
+     * The UA STRING is only half of what a server reads. The client-hint
+     * headers are built by the WebView provider from its own version, so a
+     * profile claiming Chrome 156 over an older provider sent a UA saying 156
+     * beside headers saying something else — and, on providers that still do
+     * it, the brand `"Android WebView"`. Google's sign-in refusal is the
+     * visible consequence; the general one is that every site gets two
+     * contradictory descriptions of the same client. Setting the metadata from
+     * the same string the session installed is what makes them agree.
+     *
+     * Guarded twice on purpose. The feature belongs to the installed provider,
+     * not to this APK, so an old provider keeps whatever it had (there is no
+     * app-side way to send a header the engine does not) — and a provider that
+     * advertises the feature and then refuses the call is a provider bug, not
+     * a reason to fail a page load.
+     */
+    private fun applyClientHints(s: WebSettings, settings: ProfileSettings, resolvedUserAgent: String) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) return
+        val metadata = WebViewClientHints.forUserAgent(settings, resolvedUserAgent) ?: return
+        runCatching { WebSettingsCompat.setUserAgentMetadata(s, metadata) }
+    }
+
+    /**
      * Desktop-site toggle for this session. Port of
      * `ProfileEngine.applyDesktopMode` (ProfileEngine.kt:400-427).
      *
@@ -452,6 +483,7 @@ internal class WebViewEngineSession(
             val s = webView.settings
             if (desktop) {
                 s.userAgentString = UserAgents.desktopModeUserAgent
+                applyClientHints(s, profile.settings, UserAgents.desktopModeUserAgent)
                 s.useWideViewPort = true
                 s.loadWithOverviewMode = false
             } else {
@@ -461,8 +493,10 @@ internal class WebViewEngineSession(
                 // null override means "the engine's own UA", which still
                 // announces a WebView, so the stock string is read back and its
                 // two WebView markers stripped before it is installed.
-                s.userAgentString = UserAgents.effectiveUserAgent(profile.settings)
+                val resolvedUserAgent = UserAgents.effectiveUserAgent(profile.settings)
                     ?: UserAgents.webViewNeutralUserAgent(WebViewStockUserAgent.of(s))
+                s.userAgentString = resolvedUserAgent
+                applyClientHints(s, profile.settings, resolvedUserAgent)
             }
         }
         applyPageScripts()
