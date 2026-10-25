@@ -1,5 +1,6 @@
 package com.roombrowser.engine.webview
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.util.Log
 import android.webkit.CookieManager
@@ -275,7 +276,16 @@ internal class WebViewEngineHost : EngineHost {
      * engine itself, so only an engine that has the opt-out API can be stopped
      * from sending it. `configure` applies the empty allow-list behind the same
      * test, so the two cannot disagree about what is on the wire.
+     *
+     * `@SuppressLint("RestrictedApi")` for the same reason `configure` carries
+     * it: the CONSTANT naming the feature is `@RestrictTo(LIBRARY_GROUP)` in
+     * webkit 1.12.1, so the guard pattern webkit's own `@RequiresFeature`
+     * prescribes is one lint refuses at the reference. The value it names is
+     * the Chromium support-library boundary's feature string, matched across
+     * the process boundary by the provider itself — a wire contract, not an
+     * implementation detail.
      */
+    @SuppressLint("RestrictedApi")
     override fun suppressesEmbeddedBrowserHeaders(): Boolean =
         runCatching {
             WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)
