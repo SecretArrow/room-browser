@@ -295,12 +295,20 @@
             android:windowSoftInputMode="adjustResize" />
 
         <!--
-          "What's My IP" — the diagnostics screen. Default process on purpose:
-          it reports on the network and the profile, never on the engine's
-          sessions, so it has no reason to sit next to them.
+          "What's My IP" — the diagnostics screen. It lives in ':browser', NOT
+          in the default process, and that is a correctness requirement rather
+          than a preference: five of its rows are answered by the WebView
+          provider (its name, its stock user agent, and whether it can suppress
+          the headers it stamps on a request), and only this process has a
+          provider that is already loaded and configured. Asked from a process
+          that has never created a WebView, the same questions make the
+          provider load there for the first time, and a load that does not
+          complete answers exactly like a provider that predates the feature —
+          which is the one wrong answer this screen exists to avoid.
         -->
         <activity
             android:name=".browser.ui.WhatsMyIpActivity"
+            android:process=":browser"
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode" />
 

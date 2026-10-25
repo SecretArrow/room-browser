@@ -112,8 +112,8 @@ class IdentityDiagnosticsTest {
         assertThat(checkNamed(checks, "Sec-CH-UA client hints").ok).isFalse()
         assertThat(checkNamed(checks, "navigator.userAgentData").ok).isFalse()
 
-        // Each names the provider as the cause, because "update Android System
-        // WebView" is the only action that can fix any of them.
+        // Each names the provider as the cause, because a newer Android System
+        // WebView is the only thing that can fix any of them.
         for (label in listOf(
             "X-Requested-With header",
             "Sec-CH-UA client hints",
@@ -121,6 +121,21 @@ class IdentityDiagnosticsTest {
         )) {
             assertThat(checkNamed(checks, label).detail).contains("Android System WebView")
         }
+    }
+
+    /**
+     * "Update Android System WebView" is only advice if the person can tell
+     * whether their copy is the one that needs updating. Each row therefore
+     * names the release that offers its surface, so the Engine row above it can
+     * be compared against a number instead of a feeling.
+     */
+    @Test
+    fun a_provider_row_names_the_version_that_offers_its_surface() {
+        val checks = legacy()
+
+        assertThat(checkNamed(checks, "X-Requested-With header").detail).contains("71")
+        assertThat(checkNamed(checks, "Sec-CH-UA client hints").detail).contains("77")
+        assertThat(checkNamed(checks, "navigator.userAgentData").detail).contains("81")
     }
 
     @Test

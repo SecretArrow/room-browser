@@ -175,11 +175,54 @@ private const val PROBE_TIMEOUT_MS = 8_000L
 
 private const val UNKNOWN = "unknown"
 
-private suspend fun loadFacts(context: Context, profileId: ProfileId): IpFacts =
-    withContext(Dispatchers.IO) {
-        val graph = (context.applicationContext as RoomBrowserApp).graph
-        val profile = runCatching { graph.profileRepo.getProfile(profileId) }.getOrNull()
-        val settings = profile?.settings ?: ProfileSettings()
+/**
+ * The engine's own answers, taken in one pass so the reading cannot mix two
+ * different providers.
+ */
+private data class EngineFacts(
+    val name: String,
+    val stockUserAgent: String,
+    val checks: List<IdentityCheck>
+)
+
+private suspend fun loadFacts(context: Context, profileId: ProfileId): IpFacts {
+    val graph = (context.applicationContext as RoomBrowserApp).graph
+    val profile = withContext(Dispatchers.IO) {
+        runCatching { graph.profileRepo.getProfile(profileId) }.getOrNull()
+    }
+    val settings = profile?.settings ?: ProfileSettings()
+    val source = NetFacts.uaSource(settings)
+    val chosen = UserAgents.effectiveUserAgent(settings)
+
+    // EVERYTHING THE ENGINE IS ASKED HAPPENS ON THE MAIN THREAD, and that is
+    // what makes the answers true rather than merely plausible.
+    //
+    // Each answer below comes from the installed WebView provider -- its name,
+    // its stock user agent, and whether it supports each opt-out -- and asking
+    // from a worker made the provider load on a thread with no Looper. A load
+    // that does not complete there answers exactly like a provider that
+    // predates the feature: `WebViewFeature.isFeatureSupported` reports false
+    // either way, so this screen told people their Android System WebView was
+    // too old on devices whose WebView was current. The provider's own calls
+    // are main-thread-only for the same reason, so this is where they belong
+    // rather than a workaround for one of them.
+    val engine = withContext(Dispatchers.Main) {
+        val host = runCatching { EngineRuntime.host() }.getOrNull()
+        // Asked only when the answer is the one on screen: the engine may not
+        // be able to say yet, and it is asked for nothing else here.
+        val stock = if (profile != null && chosen == null) {
+            runCatching { host?.defaultUserAgent(context) }.getOrNull().orEmpty()
+        } else {
+            ""
+        }
+        EngineFacts(
+            name = runCatching { host?.engineName(context) }.getOrNull().orEmpty(),
+            stockUserAgent = stock,
+            checks = identityChecks(settings, chosen, stock)
+        )
+    }
+
+    return withContext(Dispatchers.IO) {
         // A fresh client, never the browser's: the browser's carries this
         // profile's DNS choice, and a reading taken through that resolver is
         // the wrong answer to "what address does the internet see ME from".
@@ -196,15 +239,6 @@ private suspend fun loadFacts(context: Context, profileId: ProfileId): IpFacts =
             )
         }.getOrNull()
 
-        val host = runCatching { EngineRuntime.host() }.getOrNull()
-        val source = NetFacts.uaSource(settings)
-        val chosen = UserAgents.effectiveUserAgent(settings)
-        // Asked only when the answer is the one on screen: the engine may not
-        // be able to say yet, and it is asked for nothing else here.
-        val engineStock = if (profile != null && chosen == null) {
-            runCatching { host?.defaultUserAgent(context) }.getOrNull().orEmpty()
-        } else ""
-
         IpFacts(
             ipv4 = ipv4,
             ipv6 = ipv6,
@@ -212,7 +246,7 @@ private suspend fun loadFacts(context: Context, profileId: ProfileId): IpFacts =
                 userAgent = when {
                     profile == null -> UNKNOWN
                     chosen != null -> chosen
-                    engineStock.isNotEmpty() -> engineStock
+                    engine.stockUserAgent.isNotEmpty() -> engine.stockUserAgent
                     else -> UNKNOWN
                 },
                 sourceLabel = if (profile == null) {
@@ -220,15 +254,16 @@ private suspend fun loadFacts(context: Context, profileId: ProfileId): IpFacts =
                 } else {
                     NetFacts.uaSourceLabel(source)
                 },
-                engineName = runCatching { host?.engineName(context) }.getOrNull().orEmpty(),
-                engineStockUserAgent = engineStock,
-                checks = identityChecks(settings, chosen, engineStock)
+                engineName = engine.name,
+                engineStockUserAgent = engine.stockUserAgent,
+                checks = engine.checks
             ),
             dnsSummary = dnsSummary(settings),
             connection = SystemFacts.connection(context),
             device = SystemFacts.device(context)
         )
     }
+}
 
 /**
  * The self-check, for the same five surfaces Settings reports.
@@ -403,9 +438,10 @@ private fun WhatsMyIpScreen(
                     }
                     Text(
                         "A warning here is what makes a site answer \"this browser " +
-                            "or app may not be secure\". The rows naming Android System " +
-                            "WebView are fixed by updating it; the JavaScript row is " +
-                            "fixed in this profile's settings.",
+                            "or app may not be secure\". A row naming Android System " +
+                            "WebView also names the version that offers that " +
+                            "surface; the JavaScript row is fixed in this profile's " +
+                            "settings.",
                         style = MaterialTheme.typography.bodySmall,
                         color = extras.textSecondary,
                         modifier = Modifier.padding(top = 6.dp)
