@@ -134,4 +134,44 @@ class WebViewClientHintsTest {
         assertThat(hints.fullVersion).isEqualTo("131.0.6778.135")
         assertThat(hints.brandVersionList.map { it.brand }).doesNotContain("Android WebView")
     }
+
+    /**
+     * EVERY SHIPPED CHROME IDENTITY, not just the one a test happened to name.
+     *
+     * A single coherent preset proves the mapping works; this proves the
+     * catalogue cannot drift out from under it. A preset added later with a
+     * hand-typed version, a stale major, or a `wv` token would fail here
+     * rather than on a phone at the Google sign-in screen.
+     */
+    @Test
+    fun every_chrome_preset_describes_one_identity_with_no_embedded_browser_tell() {
+        val chromePresets = UserAgents.all.filter { it.value.contains("Chrome/") }
+        assertThat(chromePresets).isNotEmpty()
+
+        for (preset in chromePresets) {
+            val settings = ProfileSettings(uaMode = UaMode.PRESET, uaPresetId = preset.id)
+            val ua = UserAgents.effectiveUserAgent(settings)
+                ?: throw AssertionError("preset ${preset.id} resolved to no UA")
+
+            // The two tokens Google reads to decide a browser is an embedded
+            // WebView rather than a browser.
+            assertThat(ua).doesNotContain("; wv")
+            assertThat(ua).doesNotContain("Version/4.0")
+
+            val hints = WebViewClientHints.forUserAgent(settings, ua)
+                ?: throw AssertionError("preset ${preset.id} produced no client hints")
+
+            val major = ua.substringAfter("Chrome/").substringBefore('.')
+            assertThat(hints.fullVersion).isEqualTo(ua.substringAfter("Chrome/").substringBefore(' '))
+            assertThat(hints.brandVersionList.map { it.brand }).contains("Chromium")
+            assertThat(hints.brandVersionList.map { it.brand }).doesNotContain("Android WebView")
+            // One major version across the string and every REAL brand: this is
+            // the exact equality a sign-in check compares. The grease brand is
+            // excluded because its whole job is to carry a version nothing else
+            // has — Chrome emits it that way on purpose.
+            val realBrands = hints.brandVersionList.filterNot { it.brand.startsWith("Not") }
+            assertThat(realBrands).hasSize(2)
+            assertThat(realBrands.map { it.majorVersion }.toSet()).containsExactly(major)
+        }
+    }
 }
