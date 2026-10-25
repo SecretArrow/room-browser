@@ -517,7 +517,6 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
     )
 }
 
-@Composable
 /**
  * One surface of the self-check: a tick or a warning, the surface's name, and
  * what a site is actually told about it.
@@ -555,6 +554,7 @@ private fun IdentitySurfaceRow(check: IdentityCheck) {
     }
 }
 
+@Composable
 private fun FactRow(label: String, value: String, desc: String? = null) {
     val extras = LocalRoomExtras.current
     val description = desc
