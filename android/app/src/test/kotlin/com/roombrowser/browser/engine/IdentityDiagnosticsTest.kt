@@ -18,8 +18,15 @@ class IdentityDiagnosticsTest {
         "Mozilla/5.0 (Linux; Android 14; SM-S918B Build/UP1A.231005.007) " +
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.8078.48 Mobile Safari/537.36"
 
-    /** A current provider: every capability present. */
-    private fun modern(ua: String = chromeUa, js: Boolean = true) = IdentityDiagnostics.checks(
+    /**
+     * A current provider: every capability present.
+     *
+     * [ua] is nullable because "the engine has not reported a User-Agent yet"
+     * is one of the answers this has to be able to express — it is the state
+     * of a session before its first configure pass, and the row has to say so
+     * rather than call a missing string clean.
+     */
+    private fun modern(ua: String? = chromeUa, js: Boolean = true) = IdentityDiagnostics.checks(
         userAgent = ua,
         javascriptEnabled = js,
         suppressesRequestedWith = true,
@@ -28,7 +35,7 @@ class IdentityDiagnosticsTest {
     )
 
     /** A provider older than every identity API, as the CI emulator's WebView 83 is. */
-    private fun legacy(ua: String = chromeUa) = IdentityDiagnostics.checks(
+    private fun legacy(ua: String? = chromeUa) = IdentityDiagnostics.checks(
         userAgent = ua,
         javascriptEnabled = true,
         suppressesRequestedWith = false,

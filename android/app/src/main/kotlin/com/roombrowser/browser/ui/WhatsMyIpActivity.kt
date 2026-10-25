@@ -27,7 +27,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -48,6 +50,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.roombrowser.RoomBrowserApp
+import com.roombrowser.browser.engine.IdentityCheck
+import com.roombrowser.browser.engine.IdentityDiagnostics
+import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.data.net.ConnectionFacts
 import com.roombrowser.data.net.DeviceFacts
 import com.roombrowser.data.net.SystemFacts
@@ -141,7 +146,19 @@ private data class IdentityFacts(
     val userAgent: String,
     val sourceLabel: String,
     val engineName: String,
-    val engineStockUserAgent: String
+    val engineStockUserAgent: String,
+    /**
+     * The per-surface self-check, computed in the same reading as everything
+     * else on this screen.
+     *
+     * IT LIVES HERE RATHER THAN ONLY IN SETTINGS because this screen is where
+     * a person already goes to ask "what does the far end see me as", and
+     * because the question that sends them looking — "why does Google call
+     * this an app" — arrives while they are looking at a page, not while they
+     * are scrolling through settings. The rows are the same object either
+     * place; only the door is different.
+     */
+    val checks: List<IdentityCheck>
 )
 
 /** One reading of the screen, so a refresh replaces the whole picture at once. */
@@ -210,7 +227,8 @@ private suspend fun loadFacts(context: Context, profileId: ProfileId): IpFacts =
                     NetFacts.uaSourceLabel(source)
                 },
                 engineName = runCatching { host?.engineName(context) }.getOrNull().orEmpty(),
-                engineStockUserAgent = engineStock
+                engineStockUserAgent = engineStock,
+                checks = identityChecks(settings, chosen, engineStock)
             ),
             proxySummary = NetFacts.proxySummary(
                 finderEnabled = global.proxyEnabled,
@@ -236,6 +254,34 @@ private suspend fun loadFacts(context: Context, profileId: ProfileId): IpFacts =
  * the system resolver, so the row says that rather than naming a setting the
  * engine cannot act on.
  */
+private fun identityChecks(
+    settings: ProfileSettings,
+    chosen: String?,
+    engineStock: String
+): List<IdentityCheck> = IdentityDiagnostics.checks(
+    // The string the session actually installs: the profile's own choice when
+    // it has one, otherwise the engine's, with the WebView markers already off
+    // it (`EngineHost.defaultUserAgent` returns the neutral form).
+    userAgent = chosen ?: engineStock.takeIf { it.isNotBlank() },
+    javascriptEnabled = settings.javascriptEnabled,
+    // Every one of these is asked of the INSTALLED PROVIDER, and each is
+    // guarded inside the engine, so a device with no working provider answers
+    // false rather than taking this screen down. That is the honest answer
+    // there: nothing on this device can suppress the header or set the hints.
+    // Guarded again here because this screen must render its network facts even
+    // when the engine is unreachable — a spinner that never resolves would hide
+    // the one screen that could have explained the problem.
+    suppressesRequestedWith = runCatching {
+        ProfileEngine.suppressesEmbeddedBrowserHeaders()
+    }.getOrDefault(false),
+    setsClientHints = runCatching {
+        ProfileEngine.supportsUserAgentClientHints()
+    }.getOrDefault(false),
+    installsDocumentStartScripts = runCatching {
+        ProfileEngine.supportsDocumentStartScripts()
+    }.getOrDefault(false)
+)
+
 private fun dnsSummary(settings: ProfileSettings): String = when (settings.dnsMode) {
     DnsMode.SYSTEM -> "System resolver"
     DnsMode.AUTO -> "Automatic - secure where the network offers it"
@@ -355,6 +401,28 @@ private fun WhatsMyIpScreen(
                             "Not reported - this profile supplies its own"
                         }
                     )
+                    // The self-check, right under the string it is about. A
+                    // sign-in page that answers "this browser or app may not be
+                    // secure" is objecting to one of these five, and this is
+                    // where a person is already standing when they wonder which.
+                    Text(
+                        "Read by a sign-in page, surface by surface",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = extras.textSecondary,
+                        modifier = Modifier.padding(top = 10.dp, bottom = 2.dp)
+                    )
+                    for (check in shown.identity.checks) {
+                        IdentitySurfaceRow(check)
+                    }
+                    Text(
+                        "A warning here is what makes a site answer \"this browser " +
+                            "or app may not be secure\". The rows naming Android System " +
+                            "WebView are fixed by updating it; the JavaScript row is " +
+                            "fixed in this profile's settings.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = extras.textSecondary,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
                 }
 
                 Section("Route") {
@@ -450,6 +518,43 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
 }
 
 @Composable
+/**
+ * One surface of the self-check: a tick or a warning, the surface's name, and
+ * what a site is actually told about it.
+ */
+@Composable
+private fun IdentitySurfaceRow(check: IdentityCheck) {
+    val extras = LocalRoomExtras.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Icon(
+            imageVector = if (check.ok) Icons.Filled.CheckCircle else Icons.Filled.Warning,
+            contentDescription = if (check.ok) "OK" else "Problem",
+            tint = if (check.ok) extras.primary else MaterialTheme.colorScheme.error,
+            modifier = Modifier
+                .padding(top = 2.dp)
+                .size(15.dp)
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                check.label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = extras.textPrimary
+            )
+            Text(
+                check.detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = extras.textSecondary
+            )
+        }
+    }
+}
+
 private fun FactRow(label: String, value: String, desc: String? = null) {
     val extras = LocalRoomExtras.current
     val description = desc

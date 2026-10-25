@@ -133,8 +133,9 @@ object IdentityDiagnostics {
                     "possible cause; in this app it is off only when the profile's " +
                     "own toggle turned it off."
             } else {
-                "Off for this profile. Google's sign-in needs it: turn it on in " +
-                    "this profile's settings."
+                "Off for this profile, because the profile's own toggle turned it " +
+                    "off. Google's sign-in needs it: turn it back on in this " +
+                    "profile's settings."
             }
         )
     )
