@@ -379,8 +379,15 @@ internal class WebViewEngineSession(
             // hints below must describe the same identity, and reading the UA
             // back out of the engine after assigning it would make the two a
             // copy of each other only by accident.
+            // The second elvis is a real case, not belt-and-braces: the
+            // neutralizer answers null for a null/blank engine string, and
+            // WebSettings can hand back "" before it has settled. Assigning
+            // null is not an option (the setter takes a String), and
+            // assigning "" would send an empty User-Agent, so the raw stock
+            // string is the honest last resort.
             val resolvedUserAgent = UserAgents.effectiveUserAgent(settings)
                 ?: UserAgents.webViewNeutralUserAgent(WebViewStockUserAgent.of(s))
+                ?: WebViewStockUserAgent.of(s)
             s.userAgentString = resolvedUserAgent
             applyClientHints(s, settings, resolvedUserAgent)
             // Desktop mode is the LAST word on identity, and it belongs here as
@@ -495,6 +502,7 @@ internal class WebViewEngineSession(
                 // two WebView markers stripped before it is installed.
                 val resolvedUserAgent = UserAgents.effectiveUserAgent(profile.settings)
                     ?: UserAgents.webViewNeutralUserAgent(WebViewStockUserAgent.of(s))
+                    ?: WebViewStockUserAgent.of(s)
                 s.userAgentString = resolvedUserAgent
                 applyClientHints(s, profile.settings, resolvedUserAgent)
             }
