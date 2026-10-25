@@ -291,6 +291,16 @@ internal class WebViewEngineHost : EngineHost {
             WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)
         }.getOrDefault(false)
 
+    /**
+     * The same provider question for the document-start hook the identity
+     * shim is installed through. `applyPageScripts` already refuses to add a
+     * script when this is unsupported, so asking here reports the same fact
+     * the page will observe rather than a second opinion about it.
+     */
+    override fun supportsDocumentStartScripts(): Boolean =
+        runCatching { WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT) }
+            .getOrDefault(false)
+
     /** HTTP and HTTPS only: the override has no SOCKS rule. */
     override fun proxySupportsScheme(scheme: ProxyScheme): Boolean =
         scheme == ProxyScheme.HTTP || scheme == ProxyScheme.HTTPS

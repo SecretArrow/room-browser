@@ -298,6 +298,19 @@ object ProfileEngine {
     fun suppressesEmbeddedBrowserHeaders(): Boolean = host.suppressesEmbeddedBrowserHeaders()
 
     /**
+     * Whether this edition's engine can run a script before a page's own
+     * JavaScript — the hook every in-page identity surface is installed
+     * through.
+     *
+     * On WebView the answer is the installed provider's, so an old provider
+     * sends the right User-Agent while the page-side half of the identity
+     * (notably `navigator.userAgentData`) is simply missing. Reporting that is
+     * the difference between telling a person their WebView is behind and
+     * letting them conclude the browser is broken.
+     */
+    fun supportsDocumentStartScripts(): Boolean = host.supportsDocumentStartScripts()
+
+    /**
      * Whether this edition's engine can carry [scheme].
      *
      * Asked before a candidate is applied, so a SOCKS entry picked on the GeckoView

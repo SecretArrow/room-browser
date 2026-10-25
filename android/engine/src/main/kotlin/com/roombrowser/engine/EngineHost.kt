@@ -182,6 +182,25 @@ interface EngineHost {
     fun suppressesEmbeddedBrowserHeaders(): Boolean = true
 
     /**
+     * Whether this engine can install a script that runs BEFORE a page's own
+     * JavaScript.
+     *
+     * Every identity surface the app presents inside the page — the device
+     * shim that answers `navigator.userAgentData`, the WebRTC policy, the text
+     * scale — is a document-start script, and there is no earlier injection
+     * point in either engine. An engine that cannot do it still sends the right
+     * User-Agent (that is a settings value), but the page-side half of the
+     * identity is simply absent, and a sign-in page reads that absence as one
+     * more thing a browser would have had.
+     *
+     * WebView answers from the installed provider, exactly like
+     * [proxySupported]; a provider older than the API says false so the app can
+     * tell the person their engine is behind instead of blaming the site.
+     * GeckoView's `webview` has always answered true.
+     */
+    fun supportsDocumentStartScripts(): Boolean = true
+
+    /**
      * Whether this engine's proxy mechanism can carry [scheme] at all.
      *
      * WebView's override speaks HTTP and HTTPS; Necko also speaks SOCKS. A candidate the
