@@ -38,18 +38,25 @@ runs:
           echo "name=Room Browser $TAG" >> "$GITHUB_OUTPUT"
         else
           git fetch --tags -f origin
-          OWN=$(git tag --list 'v1.0.*' | sed 's/^v1\.0\.//' | sort -n | tail -1)
+          # STRICTLY NUMERIC candidates only (v1.0.N). Decorated siblings such
+          # as v1.0.186-rc or v1.0.187-beta match the v1.0.* glob but must
+          # never reach the 10#N arithmetic below: $(( 10#186-rc )) is an
+          # arithmetic error that would fail every release while such a tag
+          # exists in either edition. A filtered-out tag simply does not move
+          # the version counter.
+          OWN=$(git tag --list 'v1.0.*' | sed 's/^v1\.0\.//' | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
           # The sibling's newest tag, read over anonymous git rather than the
           # REST API: both repos are public, so it needs no token, and the git
           # protocol is not subject to the API's per-IP rate limit -- which a
           # shared runner IP exhausts. Failure is not fatal: a release that
           # cannot see its sibling continues from its own tags, which is what
           # this step did before the two editions were kept in step.
+          # The grep applies the same numeric-only rule to the sibling.
           PEER=$(git ls-remote --tags \
                    "https://github.com/${{ inputs.peer-repo }}.git" \
                    'refs/tags/v1.0.*' 2>/dev/null \
                  | sed 's#.*refs/tags/v1\.0\.##' | sed 's/\^{}//' \
-                 | sort -n | tail -1 || true)
+                 | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
           [ -n "$PEER" ] || echo "::warning::could not read tags from ${{ inputs.peer-repo }}; using this repo's own tags only"
           OWN=$(( 10#${OWN:-0} ))
           PEER=$(( 10#${PEER:-0} ))

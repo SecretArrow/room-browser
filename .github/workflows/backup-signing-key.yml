@@ -39,6 +39,10 @@ jobs:
   backup:
     name: Encrypt and verify a keystore backup
     runs-on: ubuntu-latest
+    # Encryption plus the round-trip restore proof is minutes of work; the
+    # explicit ceiling stops a hung gpg/keytool from holding a runner for
+    # the 360-minute default.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v7

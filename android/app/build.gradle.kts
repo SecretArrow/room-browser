@@ -49,6 +49,11 @@ android {
     // narrows the split set — the CI release job uses it to focus the
     // shippable artifacts on real-device ARM ABIs. Unset (local + all other
     // CI jobs): the full split set + universal, exactly as before.
+    // RB_UNIVERSAL_APK=true — set ONLY by the release job — adds the
+    // universal APK back on top of a focused split set, so every release
+    // ships one install-everywhere file next to the per-ABI APKs while the
+    // quality job's focused-set check (no universal/x86 in a focused
+    // build) keeps holding for every non-release job.
     splits {
         abi {
             isEnable = true
@@ -60,7 +65,8 @@ android {
             } else {
                 include(*focusAbis.toTypedArray())
             }
-            isUniversalApk = focusAbis.isNullOrEmpty()
+            isUniversalApk = focusAbis.isNullOrEmpty() ||
+                System.getenv("RB_UNIVERSAL_APK") == "true"
         }
     }
 
@@ -76,6 +82,9 @@ android {
                     "armeabi-v7a" -> 3
                     "x86_64" -> 2
                     "x86" -> 1
+                    // No ABI filter = the universal APK: it ranks BELOW every
+                    // per-ABI code, so a universal install can always be
+                    // upgraded by a per-ABI build of the same release.
                     else -> 0
                 }
                 impl.versionCode.set(abiRank * 100_000 + releaseCodeBase + baseVersionCode)

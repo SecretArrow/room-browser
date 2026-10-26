@@ -32,11 +32,22 @@ concurrency:
 env:
   # The daemon is left on: see ci.yml.
   GRADLE_OPTS: -Dorg.gradle.console=plain
+  # SHA-256 of the release signing certificate — the SAME pin ci.yml's
+  # release job enforces (the value is public data: every
+  # "apksigner --print-certs" prints it). Without it, a quick APK built
+  # from a swapped or regenerated keystore would pass this workflow's
+  # signature check and only fail later, on a phone, as an APK that can
+  # never upgrade a published release.
+  RELEASE_CERT_SHA256: 0ea926c1075213a9e04420fadca34d0c763ffe6c9e765d470ccf8c217318fec8
 
 jobs:
   quick-apk:
     name: Signed release APKs (no tests, no release)
     runs-on: ubuntu-latest
+    # A signed, ARM-focused release build plus verification fits well under
+    # an hour even cold; the explicit ceiling stops a hung gradle or SDK
+    # download from holding a runner for the 360-minute default.
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -72,18 +83,53 @@ jobs:
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v5
 
+      - name: Fetch the Node runtime (nodejs-mobile, pinned)
+        # Copied VERBATIM from ci.yml (same pinned tag, same ABIs, same
+        # checks): without it this job builds an APK with no libnode.so,
+        # i.e. a binary that differs from what the release pipeline ships —
+        # signed with the release keystore yet behaving differently (the
+        # Node runtime reports itself unavailable). A quick APK is used for
+        # on-phone testing, so it must match the release inputs.
+        working-directory: android
+        run: |
+          set -euo pipefail
+          TAG=v18.20.4
+          ZIP="$RUNNER_TEMP/nodejs-mobile-android.zip"
+          curl -sSL --retry 3 -o "$ZIP" \
+            "https://github.com/nodejs-mobile/nodejs-mobile/releases/download/${TAG}/nodejs-mobile-${TAG}-android.zip"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            mkdir -p "node/src/main/jniLibs/$abi"
+            unzip -o -j "$ZIP" "bin/$abi/libnode.so" -d "node/src/main/jniLibs/$abi" > /dev/null
+          done
+          mkdir -p node/src/main/cpp/nodejs-mobile
+          unzip -o -q "$ZIP" 'include/*' -d node/src/main/cpp/nodejs-mobile
+          test -f node/src/main/cpp/nodejs-mobile/include/node/node.h \
+            || { echo "::error::the Node headers were not unpacked"; exit 1; }
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            test -f "node/src/main/jniLibs/$abi/libnode.so" \
+              || { echo "::error::libnode.so is missing for $abi"; exit 1; }
+          done
+          echo "Node runtime unpacked: $(du -sh node/src/main/jniLibs | cut -f1)"
+
       - name: Compute the version to stamp
         id: ver
         env:
           GH_TOKEN: ${{ github.token }}
+          # The dispatch input reaches the script through the environment,
+          # not template interpolation into the script text (same
+          # anti-injection pattern ci.yml uses for E2E_FILTER): a value that
+          # is not a clean version string cannot become shell source.
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
           set -euo pipefail
           git fetch --tags -f origin
-          LATEST=$(git tag --list 'v1.0.*' | sed 's/^v1\.0\.//' | sort -n | tail -1)
+          # Strictly numeric candidates only (same rule as the
+          # release-version action): a decorated sibling such as v1.0.186-rc
+          # would otherwise reach the 10#N arithmetic below and kill the job.
+          LATEST=$(git tag --list 'v1.0.*' | sed 's/^v1\.0\.//' | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
           NEXT=$(( ${LATEST:-0} + 1 ))
-          NAME="${{ inputs.version }}"
+          NAME="$VERSION_INPUT"
           [ -n "$NAME" ] || NAME="1.0.$NEXT"
-          echo "name=$NAME" >> "$GITHUB_OUTPUT"
           # versionCode: app/build.gradle.kts derives it from GITHUB_RUN_NUMBER,
           # which is PER WORKFLOW — this one's counter starts near 1, and
           # Android refuses to install a lower versionCode over an installed
@@ -156,23 +202,37 @@ jobs:
           apks=(android/app/build/outputs/apk/release/*.apk)
           [ ${#apks[@]} -gt 0 ] || { echo "::error::no release APKs were produced"; exit 1; }
           BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          ls -l android/app/build/outputs/apk/release/
           for apk in "${apks[@]}"; do
-            echo "--- $apk"
-            unzip -l "$apk" | grep -iE 'META-INF/.*\.(RSA|DSA|EC)|META-INF/MANIFEST' || echo "(no JAR signature entries)"
-            "$BUILD_TOOLS/apksigner" verify --print-certs "$apk" > /tmp/apk-certs.txt 2>&1 || true
-            cat /tmp/apk-certs.txt
+            # NO `|| true`: the exit code IS the verdict — the exact pattern
+            # ci.yml's release job uses. The old version swallowed it and only
+            # grepped for a "certificate DN:" line, which catches a broken
+            # signature but not the WRONG keystore.
+            if ! "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/apk-certs.txt" 2>&1; then
+              cat "$RUNNER_TEMP/apk-certs.txt"
+              echo "::error::apksigner verify FAILED for $(basename "$apk")"
+              exit 1
+            fi
+            cat "$RUNNER_TEMP/apk-certs.txt"
             # The label depends on the build-tools version: older ones print
             # "Signer #1 certificate DN:", current ones print
             # "V2 Signer: certificate DN:". Match the tail both share, so a
             # routine SDK bump cannot turn a correctly signed APK into a
             # failed release.
-            DN=$(grep -m1 -E 'certificate DN:' /tmp/apk-certs.txt || true)
+            DN=$(grep -m1 -E 'certificate DN:' "$RUNNER_TEMP/apk-certs.txt" || true)
             [ -n "$DN" ] || { echo "::error::$apk is not signed"; exit 1; }
             case "$DN" in
               *"CN=Android Debug"*) echo "::error::$apk is signed with the DEBUG key"; exit 1 ;;
             esac
-            echo "$(basename "$apk"): $DN"
+            # A signature that verifies is not yet the RIGHT signature: a
+            # swapped or regenerated keystore also verifies. Pin the
+            # certificate digest, same as the release job.
+            SHA=$(awk -F': ' '/SHA-256 digest/{print $NF; exit}' "$RUNNER_TEMP/apk-certs.txt" | tr 'A-Z' 'a-z')
+            [ -n "$SHA" ] || { echo "::error::could not read the signing certificate's SHA-256 for $apk"; exit 1; }
+            [ "$SHA" = "$RELEASE_CERT_SHA256" ] || {
+              echo "::error::$apk is signed by the wrong key: certificate SHA-256 is $SHA, expected $RELEASE_CERT_SHA256"
+              exit 1
+            }
+            echo "$(basename "$apk"): $DN (cert sha256 $SHA)"
           done
 
       - name: Upload the APKs

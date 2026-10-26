@@ -56,7 +56,14 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded runs are cancelled ONLY on pull requests. A push to main or a
+  # v* tag must never be cancelled by the next push: the release job is the
+  # tail of this pipeline, and although the draft->publish flow below makes
+  # even a killed release recoverable, burning (and re-burning) a ~2h build
+  # + emulator run because a second push arrived five minutes later is pure
+  # waste — the runs queue instead. This is the audit's top robustness fix
+  # ("cancel-in-progress can kill an in-flight release mid-upload").
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # The daemon is left on: it is started once per job and reused by every
@@ -106,6 +113,9 @@ jobs:
   autofix:
     name: Auto-fix (lintFix)
     runs-on: ubuntu-latest
+    # lintFix is minutes of work; the explicit ceiling stops a hung gradle
+    # from holding a runner for the 360-minute default.
+    timeout-minutes: 30
     env:
       # The branch autofix commits onto, and it has to be named explicitly.
       #
@@ -193,6 +203,22 @@ jobs:
 
       - name: Commit and push fixes (if any)
         id: push
+        # Branch pushes and PR heads only — NEVER a v* tag push. On a tag
+        # push AUTOFIX_REF is the tag ref itself (refs/tags/vX) and
+        # "git push HEAD:refs/tags/vX" cannot succeed: a tag cannot be
+        # advanced, which made this job reliably red on every release tag.
+        # A tag points at an immutable snapshot; lint findings there are
+        # fixed on a branch like any other change.
+        if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/')
+        env:
+          # The tokens travel through the environment (the same pattern
+          # backup-signing-key.yml uses for PAT_TOKEN), never through
+          # template interpolation into the script text or the push URL.
+          # What runs — and everything that renders it, from debug logs to
+          # "ps" — sees only the variable name; log masking stays as a
+          # second layer.
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           git config user.name  "room-browser-autofix"
           git config user.email "actions@users.noreply.github.com"
@@ -210,12 +236,12 @@ jobs:
           git commit -m "chore(ci): auto-fix lint findings"
           # Prefer PAT_TOKEN: pushes with it re-trigger the workflow so the
           # fixed tree gets a full clean pipeline run (GITHUB_TOKEN would not).
-          if [ -n "${{ secrets.PAT_TOKEN }}" ]; then
-            git push "https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git" HEAD:${{ env.AUTOFIX_REF }}
+          if [ -n "$PAT_TOKEN" ]; then
+            git push "https://x-access-token:$PAT_TOKEN@github.com/${{ github.repository }}.git" HEAD:${{ env.AUTOFIX_REF }}
             echo "pushed_with_pat=true" >> "$GITHUB_OUTPUT"
             echo "Auto-fixes pushed with PAT — a fresh CI run now validates the fixed tree."
           else
-            git push "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:${{ env.AUTOFIX_REF }}
+            git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git" HEAD:${{ env.AUTOFIX_REF }}
             echo "pushed_with_pat=false" >> "$GITHUB_OUTPUT"
             echo "WARN: PAT_TOKEN secret not set — pushed with GITHUB_TOKEN (no re-trigger)."
           fi
@@ -797,6 +823,15 @@ jobs:
     # Rust, verified by its own jobs and riding the same release train).
     # `!cancelled()` lets this run even if a desktop
     # job failed rather than skipping the whole release.
+    #
+    # The release is ATOMIC AT THE END: build -> sign -> verify -> upload to
+    # a DRAFT release -> prove every asset landed -> publish. The draft is
+    # the staging area (invisible, tag-less, never "Latest"); the publish
+    # step is the single point where the tag is created and Latest moves.
+    # A failure before that leaves at most a draft that a re-run resumes —
+    # never a partial release marked Latest. Re-runs are idempotent per
+    # COMMIT (the guard step below), so "Re-run all jobs" cannot publish
+    # the same commit twice under two numbers.
     needs: [ quality, e2e, desktop-windows, desktop-linux ]
     # `!inputs.e2e_filter` is the guard that keeps a filtered run from ever
     # publishing: `needs.e2e.result == 'success'` means "the suite passed",
@@ -817,13 +852,52 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # -------------------------------------------------------------------
+      # IDEMPOTENT RESUME GUARD — the first decision this job makes.
+      #   * "Re-run all jobs" of a finished pipeline must NOT publish a
+      #     second release for the same commit. For a main push the version
+      #     action would compute the NEXT number (the first run's tag now
+      #     exists), so tag names cannot be the key — COMMITS are: if any
+      #     published release's tag resolves to this run's commit, the
+      #     release already happened and everything below is skipped,
+      #     cleanly and green.
+      #   * A run that died mid-publish left at most a DRAFT release (the
+      #     two steps at the bottom of this job): drafts create no tag and
+      #     are never "Latest", so a re-run recomputes the SAME version,
+      #     finds the draft, replaces its assets and publishes — completing
+      #     the release rather than duplicating it.
+      # -------------------------------------------------------------------
+      - name: Skip cleanly if this commit is already released
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --tags -f origin
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
+            --jq '.[] | select(.draft == false) | .tag_name' \
+            > "$RUNNER_TEMP/published-tags.txt" 2>/dev/null || true
+          released=false
+          while read -r rel_tag; do
+            case "${rel_tag:-}" in v*) ;; *) continue ;; esac
+            commit=$(git rev-parse "${rel_tag}^{commit}" 2>/dev/null || true)
+            if [ "$commit" = "$GITHUB_SHA" ]; then
+              echo "::notice::release $rel_tag already exists for commit ${GITHUB_SHA:0:12} — skipping (idempotent re-run)"
+              released=true
+              break
+            fi
+          done < "$RUNNER_TEMP/published-tags.txt"
+          echo "released=$released" >> "$GITHUB_OUTPUT"
+
       - name: Set up JDK 21
+        if: steps.guard.outputs.released != 'true'
         uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Cache the pinned Android SDK components
+        if: steps.guard.outputs.released != 'true'
         uses: actions/cache@v6
         with:
           # The runner image ships NDK 27.3/28.2/29.0 and CMake 3.31/4.1; this
@@ -837,6 +911,7 @@ jobs:
           key: android-sdk-ndk-27.0.12077973-cmake-3.22.1-${{ runner.os }}
 
       - name: Install NDK + CMake (on-device llama.cpp engine)
+        if: steps.guard.outputs.released != 'true'
         run: |
           NDK=/usr/local/lib/android/sdk/ndk/27.0.12077973
           CMAKE_DIR=$(ls -d /usr/local/lib/android/sdk/cmake/3.22.1 2>/dev/null || true)
@@ -849,9 +924,11 @@ jobs:
           test -d "$CMAKE_DIR" || test -d /usr/local/lib/android/sdk/cmake/3.22.1 || { echo "cmake 3.22.1 missing after install"; exit 1; }
 
       - name: Cache Gradle
+        if: steps.guard.outputs.released != 'true'
         uses: gradle/actions/setup-gradle@v5
 
       - name: Fetch the Node runtime (nodejs-mobile, pinned)
+        if: steps.guard.outputs.released != 'true'
         # libnode.so is 58-65 MB per ABI and does not belong in a public
         # repository, so CI downloads the pinned release instead of it being
         # committed. The CMake configure tolerates its absence — a checkout
@@ -893,12 +970,14 @@ jobs:
       # `com.roombrowser.gecko` publishing the SAME version instead of drifting
       # a release or two apart.
       - name: Compute release tag
+        if: steps.guard.outputs.released != 'true'
         id: tag
         uses: ./.github/actions/release-version
         with:
           peer-repo: SecretArrow/room-browser-geckoview
 
       - name: Decode the release keystore
+        if: steps.guard.outputs.released != 'true'
         env:
           KEYSTORE_B64: ${{ secrets.ROOMBROWSER_KEYSTORE_B64 }}
           STORE_PASSWORD: ${{ secrets.ROOMBROWSER_STORE_PASSWORD }}
@@ -919,21 +998,34 @@ jobs:
           echo "ROOMBROWSER_KEYSTORE=$KS" >> "$GITHUB_ENV"
           echo "Keystore decoded and verified."
 
-      - name: Build signed release APKs (ARM-focused)
+      - name: Build signed release APKs + AAB (ARM-focused + universal)
+        if: steps.guard.outputs.released != 'true'
         env:
           # Stamps versionName (and therefore the APK filenames) with the tag
           # this release is being published under.
           RB_VERSION_NAME: ${{ steps.tag.outputs.version }}
           # Real-device ARM ABIs only (user focus: arm64-v8a + armeabi-v7a).
           RB_RELEASE_ABIS: "arm64-v8a,armeabi-v7a"
+          # Plus the universal APK on top: one file that installs on either
+          # ARM device. build.gradle.kts gates isUniversalApk behind this
+          # flag, so every OTHER job's focused-set check (no universal in a
+          # focused build) keeps holding.
+          RB_UNIVERSAL_APK: "true"
           # ROOMBROWSER_KEYSTORE comes from the decode step via GITHUB_ENV;
           # these three are the other half of the `releaseFromEnv` config.
           ROOMBROWSER_STORE_PASSWORD: ${{ secrets.ROOMBROWSER_STORE_PASSWORD }}
           ROOMBROWSER_KEY_ALIAS: ${{ secrets.ROOMBROWSER_KEY_ALIAS }}
           ROOMBROWSER_KEY_PASSWORD: ${{ secrets.ROOMBROWSER_KEY_PASSWORD }}
-        run: cd android && ./gradlew assembleRelease --console=plain
+        # assembleRelease -> per-ABI + universal APKs; bundleRelease -> the
+        # Play AAB, signed by the same releaseFromEnv keystore config.
+        run: cd android && ./gradlew assembleRelease bundleRelease --console=plain
 
       - name: Verify the APKs carry the release signature
+        if: steps.guard.outputs.released != 'true'
+        # Guarded like every step below the guard: on the idempotent skip
+        # path nothing was built, so this check has nothing to verify and
+        # must not run — an unguarded "no release APKs were produced" here
+        # would turn a clean skip red.
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -978,7 +1070,36 @@ jobs:
             echo "$(basename "$apk"): $DN (cert sha256 $SHA)"
           done
 
+      - name: Verify the AAB carries the release certificate
+        if: steps.guard.outputs.released != 'true'
+        run: |
+          set -euo pipefail
+          # AGP honours VariantOutput.outputFileName for bundles only in some
+          # versions, so the AAB's on-disk name is discovered, not assumed:
+          # app-release.aab, or whatever single file the bundle directory
+          # holds (then proven to BE a bundle below).
+          aab=$(ls android/app/build/outputs/bundle/release/*.aab 2>/dev/null | head -1 || true)
+          if [ -z "$aab" ]; then
+            alt=$(ls android/app/build/outputs/bundle/release/ | head -1 || true)
+            [ -n "$alt" ] || { echo "::error::no AAB was produced (bundle/release is empty)"; exit 1; }
+            aab="android/app/build/outputs/bundle/release/$alt"
+          fi
+          unzip -l "$aab" | grep -q 'BundleConfig.pb' || { echo "::error::$aab is not an Android App Bundle"; exit 1; }
+          # The same bar as the APKs: not merely "a signature is present",
+          # but the pinned release certificate. keytool reads the JAR
+          # signature of the bundle and the digest is compared pin-exact.
+          # '/SHA256: ' (colon-space) matches only the fingerprint line, not
+          # "Signature algorithm name: SHA256withRSA" further down.
+          cert=$(keytool -printcert -jarfile "$aab" 2>/dev/null | awk -F': ' '/SHA256: /{print $NF; exit}' | tr -d ':' | tr 'A-Z' 'a-z' || true)
+          if [ "$cert" != "$RELEASE_CERT_SHA256" ]; then
+            keytool -printcert -jarfile "$aab" || true
+            echo "::error::AAB is signed by the wrong key: certificate SHA-256 is ${cert:-unreadable}, expected $RELEASE_CERT_SHA256"
+            exit 1
+          fi
+          echo "$(basename "$aab"): release certificate verified (sha256 $cert)"
+
       - name: Check the signed APKs' archive packaging
+        if: steps.guard.outputs.released != 'true'
         # Same rules as the quality job, re-run on the artifact that actually
         # ships: this is the last point before upload, and it costs seconds.
         run: |
@@ -986,6 +1107,7 @@ jobs:
           python3 tools/verify_apk_packaging.py android/app/build/outputs/apk/release/*.apk
 
       - name: Download desktop artifacts (this run, if any)
+        if: steps.guard.outputs.released != 'true'
         uses: actions/download-artifact@v8
         continue-on-error: true
         with:
@@ -993,6 +1115,7 @@ jobs:
           path: desktop-dist
 
       - name: Collect artifacts and checksums
+        if: steps.guard.outputs.released != 'true'
         env:
           # The same value the build stamped into versionName, so the names
           # below can be checked against it rather than assumed.
@@ -1013,18 +1136,41 @@ jobs:
             fi
             cp "$src" "release-out/room-browser-v${VERSION}-${abi}-release.apk"
           done
+          # The universal APK (RB_UNIVERSAL_APK=true) is a required
+          # deliverable of every release: one file that installs on either
+          # ARM device.
+          uni=$(ls android/app/build/outputs/apk/release/room-browser-*universal-release*.apk 2>/dev/null | head -1 || true)
+          if [ -z "$uni" ]; then
+            echo "::error::universal release APK missing"
+            ls -l android/app/build/outputs/apk/release/ || true
+            exit 1
+          fi
+          cp "$uni" "release-out/room-browser-v${VERSION}-universal-release.apk"
+          # The Play AAB. Its on-disk name is discovered rather than assumed
+          # (same reasoning as the signature step above); the signature step
+          # already proved the file is the real, correctly signed bundle.
+          aab=$(ls android/app/build/outputs/bundle/release/*.aab 2>/dev/null | head -1 || true)
+          if [ -z "$aab" ]; then
+            alt=$(ls android/app/build/outputs/bundle/release/ | head -1 || true)
+            [ -n "$alt" ] || { echo "::error::AAB bundle missing — bundleRelease failed?"; exit 1; }
+            aab="android/app/build/outputs/bundle/release/$alt"
+          fi
+          unzip -l "$aab" | grep -q 'BundleConfig.pb' || { echo "::error::$aab is not an Android App Bundle"; exit 1; }
+          cp "$aab" "release-out/room-browser-v${VERSION}-release.aab"
           # Desktop artifacts are OPTIONAL — attached only when the desktop
           # jobs succeeded (Android-first release policy). Never block on them.
           cp desktop-dist/desktop-windows/* release-out/ 2>/dev/null || true
           cp desktop-dist/desktop-linux/* release-out/ 2>/dev/null || true
-          # The Android APK is the required deliverable of every release.
+          # The Android APK and AAB are the required deliverables of every
+          # release.
           test -n "$(ls release-out/*.apk 2>/dev/null)" || { echo "APK missing — Android release build failed"; exit 1; }
+          test -n "$(ls release-out/*.aab 2>/dev/null)" || { echo "AAB missing — Android release build failed"; exit 1; }
           # A release whose files are named after a DIFFERENT version is how
           # this went unnoticed for 96 releases: the tag said v1.0.96 and every
           # APK said v1.0.0, and nothing compared the two.  Fail loudly rather
           # than publish artifacts that cannot be told apart.
           named=0
-          for f in release-out/room-browser-v*.apk; do
+          for f in release-out/room-browser-v*.apk release-out/room-browser-v*.aab; do
             [ -e "$f" ] || continue
             named=1
             case "$(basename "$f")" in
@@ -1032,86 +1178,199 @@ jobs:
               *) echo "::error::$(basename "$f") does not carry version ${VERSION}"; exit 1 ;;
             esac
           done
-          [ "$named" -eq 1 ] || { echo "::error::no APK is named room-browser-v${VERSION}-*"; exit 1; }
+          [ "$named" -eq 1 ] || { echo "::error::no artifact is named room-browser-v${VERSION}-*"; exit 1; }
           cd release-out && sha256sum * > checksums.sha256 && cd ..
           ls -lh release-out/
 
       - name: Upload artifacts
+        if: steps.guard.outputs.released != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: release-bundle
           path: release-out/
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: ${{ steps.tag.outputs.name }}
-          draft: false
-          # Stable, always — see the note in "Compute release tag". Set
-          # explicitly rather than from a step output: a step output that is
-          # empty for any reason would arrive here as neither true nor false
-          # and the action would fall back to its own default, which is how a
-          # flag silently stops meaning anything.
-          prerelease: false
-          # The newest release is also the repository's "Latest". Without
-          # this the badge can stay on an older tag, because a release that
-          # was created as a pre-release is never promoted by publishing a
-          # later one alone.
-          make_latest: true
-          generate_release_notes: true
-          files: release-out/*
-          body: |
-            ## Room Browser ${{ steps.tag.outputs.tag }}
+      # -------------------------------------------------------------------
+      # ATOMIC PUBLISH, STAGE 1 — DRAFT. The release exists as a draft
+      # (invisible, tag-less, never "Latest") while the assets land. Every
+      # asset — checksums.sha256 included — is uploaded here; the next step
+      # verifies them and flips the draft to published.
+      #
+      # TAG CREATION stays GitHub's own mechanism: the tag is created when
+      # the draft is published, from the draft's target_commitish — pinned
+      # explicitly to THIS run's commit so the guard above can match it
+      # exactly. Resume rules for a draft left by an earlier attempt at
+      # this same tag:
+      #   * draft targets THIS commit    -> reuse; same-named assets are
+      #     replaced, so a resumed draft is corrected, never duplicated
+      #   * draft targets another commit -> deleted and recreated (an
+      #     abandoned attempt whose run died before publishing must not
+      #     block, or leak into, the new release)
+      #   * no draft -> created fresh
+      # -------------------------------------------------------------------
+      - name: Create the draft release and upload every asset
+        id: draft
+        if: steps.guard.outputs.released != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          NAME: ${{ steps.tag.outputs.name }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/release-body.md" <<'BODY_EOF'
+          ## Room Browser @TAG@
 
-            **Android: SIGNED release APKs (R8-minified, release keystore), ARM-focused — install directly, no manual signing step.**
+          **Android: SIGNED release APKs (R8-minified, release keystore) + the Play AAB — install directly, no manual signing step.**
 
-            | Artifact | Target |
-            |---|---|
-            | `room-browser-v*-arm64-v8a-release.apk` | modern 64-bit ARM devices (recommended) |
-            | `room-browser-v*-armeabi-v7a-release.apk` | older 32-bit ARM devices |
+          | Artifact | Target |
+          |---|---|
+          | `room-browser-v*-arm64-v8a-release.apk` | modern 64-bit ARM devices (recommended) |
+          | `room-browser-v*-armeabi-v7a-release.apk` | older 32-bit ARM devices |
+          | `room-browser-v*-universal-release.apk` | one file for any ARM device, both ABIs (larger) |
+          | `room-browser-v*-release.aab` | Google Play upload bundle (same release keystore) |
 
-            The desktop edition (Windows portable zip, Ubuntu deb/tar.gz) is
-            built by the same pipeline — the desktop jobs run alongside the
-            Android gates and finish under the emulator's run, so a green
-            release carries both editions' artifacts below. When a desktop
-            job fails, the release stays Android-first: the APKs still ship
-            and the desktop files appear again on the next green run.
+          The desktop edition (Windows portable zip, Ubuntu deb/tar.gz) is
+          built by the same pipeline — the desktop jobs run alongside the
+          Android gates and finish under the emulator's run, so a green
+          release carries both editions' artifacts below. When a desktop
+          job fails, the release stays Android-first: the APKs still ship
+          and the desktop files appear again on the next green run.
 
-            ### Before you install
+          ### Before you install
 
-            Android reports a truncated or incomplete download as *"package
-            appears to be invalid"* — the same wording as a broken build, which
-            is why it is worth checking the file rather than the app. Let the
-            download finish, then compare it against the published checksum
-            before installing:
+          Android reports a truncated or incomplete download as *"package
+          appears to be invalid"* — the same wording as a broken build, which
+          is why it is worth checking the file rather than the app. Let the
+          download finish, then compare it against the published checksum
+          before installing:
 
-            ```bash
-            sha256sum -c checksums.sha256 --ignore-missing
-            ```
+          ```bash
+          sha256sum -c checksums.sha256 --ignore-missing
+          ```
 
-            If the device is nearly full, free space first: Android stages a
-            copy while installing, so a full device rejects an APK that is
-            perfectly valid.
+          If the device is nearly full, free space first: Android stages a
+          copy while installing, so a full device rejects an APK that is
+          perfectly valid.
 
-            The APKs are signed by CI with the project's release keystore and
-            verified with `apksigner` before publishing, so they upgrade in
-            place over any earlier release from this repository. Confirm the
-            signature yourself with:
+          The APKs are signed by CI with the project's release keystore and
+          verified with `apksigner` before publishing, so they upgrade in
+          place over any earlier release from this repository. Confirm the
+          signature yourself with:
 
-            ```bash
-            apksigner verify --print-certs room-browser-v*-arm64-v8a-release.apk
-            ```
+          ```bash
+          apksigner verify --print-certs room-browser-v*-arm64-v8a-release.apk
+          ```
 
-            Verify integrity with `sha256sum -c checksums.sha256`.
+          Verify integrity with `sha256sum -c checksums.sha256`.
 
-            ### CI gates passed
-            - Android Lint (with auto-fix stage)
-            - Unit tests (domain + app)
-            - E2E instrumented tests on emulator (profile CRUD, cross-process browsing, storage isolation)
-            - APK signature verified (v1 + v2 + v3) and pinned to the release certificate
-            - Archive packaging checked against the `zipalign -c -P 16` rules
+          ### CI gates passed
+          - Android Lint (with auto-fix stage)
+          - Unit tests (domain + app)
+          - E2E instrumented tests on emulator (profile CRUD, cross-process browsing, storage isolation)
+          - APK signature verified (v1 + v2 + v3) and pinned to the release certificate
+          - AAB signature verified and pinned to the release certificate
+          - Archive packaging checked against the `zipalign -c -P 16` rules
 
-            > Note: this repository moved — releases are signed with the NEW
-            > repository keystore. Updating over an APK from the previous
-            > repository requires a one-time uninstall/reinstall.
+          > Note: this repository moved — releases are signed with the NEW
+          > repository keystore. Updating over an APK from the previous
+          > repository requires a one-time uninstall/reinstall.
+          BODY_EOF
+          body=$(<"$RUNNER_TEMP/release-body.md")
+          printf '%s' "${body//@TAG@/$TAG}" > "$RUNNER_TEMP/release-body.md"
+
+          # A draft left behind by an earlier attempt at this same tag is the
+          # resume path (see the comment above the step).
+          ID=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
+                 --jq '.[] | select(.draft and .tag_name == env.TAG) | .id' \
+                 | head -1 || true)
+          if [ -n "$ID" ]; then
+            target=$(gh api "repos/$GITHUB_REPOSITORY/releases/$ID" --jq '.target_commitish // ""')
+            if [ -n "$target" ] && [ "$target" != "$GITHUB_SHA" ]; then
+              echo "Draft release $ID for $TAG targets $target, this run built $GITHUB_SHA — deleting the abandoned draft."
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$ID"
+              ID=""
+            else
+              echo "Resuming draft release $ID for $TAG."
+            fi
+          fi
+          if [ -z "$ID" ]; then
+            jq -n --arg tag "$TAG" --arg name "$NAME" --arg sha "$GITHUB_SHA" \
+                  --rawfile body "$RUNNER_TEMP/release-body.md" \
+              '{tag_name:$tag, name:$name, target_commitish:$sha, draft:true,
+                prerelease:false, generate_release_notes:true, body:$body}' \
+              > "$RUNNER_TEMP/draft-payload.json"
+            ID=$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+                   --input "$RUNNER_TEMP/draft-payload.json" --jq '.id')
+            echo "Created draft release $ID for $TAG."
+          fi
+          echo "release_id=$ID" >> "$GITHUB_OUTPUT"
+
+          for f in release-out/*; do
+            fname=$(basename "$f")
+            old=$(ASSET_NAME="$fname" gh api "repos/$GITHUB_REPOSITORY/releases/$ID/assets" \
+                    --jq '.[] | select(.name == env.ASSET_NAME) | .id' | head -1 || true)
+            if [ -n "$old" ]; then
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$old" > /dev/null
+              echo "replacing: $fname"
+            fi
+            enc=$(jq -rn --arg n "$fname" '$n | @uri')
+            gh api --method POST "repos/$GITHUB_REPOSITORY/releases/$ID/assets?name=$enc" \
+              -H "Content-Type: application/octet-stream" --input "$f" > /dev/null
+            echo "uploaded: $fname"
+          done
+
+      # -------------------------------------------------------------------
+      # ATOMIC PUBLISH, STAGE 2 — VERIFY, THEN PUBLISH. The flip is the
+      # release's single point of going live: GitHub creates the tag here
+      # (from the draft's target_commitish) and applies make_latest here.
+      # Nothing is visible to users until every local file is proven present
+      # on the draft at the exact uploaded size and the asset count matches.
+      # -------------------------------------------------------------------
+      - name: Verify every asset landed, then publish the release
+        if: steps.guard.outputs.released != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [ -n "$RELEASE_ID" ] || { echo "::error::no draft release id — the draft step did not run"; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" \
+            --jq '.[] | [.name, (.size | tostring)] | join(" ")' \
+            > "$RUNNER_TEMP/remote-assets.txt"
+          bad=0
+          for f in release-out/*; do
+            fname=$(basename "$f")
+            size=$(stat -c%s "$f")
+            remote=$(awk -v n="$fname" '$1 == n {print $2}' "$RUNNER_TEMP/remote-assets.txt")
+            if [ "${remote:-}" != "$size" ]; then
+              echo "::error::asset $fname is missing from the draft or the wrong size (remote: ${remote:-none}, local: $size)"
+              bad=1
+            fi
+          done
+          n_remote=$(wc -l < "$RUNNER_TEMP/remote-assets.txt")
+          n_local=$(ls release-out | wc -l)
+          if [ "$n_remote" != "$n_local" ]; then
+            echo "::error::asset count mismatch: draft has $n_remote, local has $n_local"
+            bad=1
+          fi
+          [ "$bad" -eq 0 ] || { echo "::error::refusing to publish an incomplete release — fix the cause and re-run (the draft is resumed, not duplicated)"; exit 1; }
+          # Last line of defence against the one race the guard cannot see:
+          # a main push and a v* tag push run in DIFFERENT concurrency groups,
+          # so two releases can compute the same number in parallel and both
+          # pass the guard before either publishes. If another run published
+          # this tag while this one was building, its release is the live one;
+          # this draft is a duplicate and is discarded instead of published
+          # over it. (Same-commit re-runs never reach here: the guard above
+          # skips them first.)
+          dup=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
+                  --jq '.[] | select(.draft == false and .tag_name == env.TAG) | .tag_name' \
+                  | head -1 || true)
+          if [ -n "$dup" ]; then
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > /dev/null
+            echo "::notice::release $dup was published by a concurrent run — duplicate draft discarded, nothing published twice"
+            exit 0
+          fi
+          jq -n '{draft:false, make_latest:"true"}' > "$RUNNER_TEMP/publish-payload.json"
+          url=$(gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+                  --input "$RUNNER_TEMP/publish-payload.json" --jq '.html_url')
+          echo "Published $TAG: $url"
