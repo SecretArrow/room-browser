@@ -100,7 +100,7 @@ class PluginE2eTest {
         // on every fresh-profile boot — suppress it (see E2eDeterminism).
         E2eDeterminism.suppressOrganicNetworkWarnings()
         clearPluginState()
-        seedProviderIfAbsent()
+        resetProviderState()
     }
 
     @After
@@ -122,8 +122,9 @@ class PluginE2eTest {
      * chat that has no session yet creates that session through the
      * controller, and that path refuses when no provider is configured — so
      * the picker on a brand-new chat needs this to be exercisable at all. The
-     * endpoint is deliberately dead (nothing listens on the discard port); a
-     * suite that left a provider behind is just as good.
+     * endpoint is deliberately dead (nothing listens on the discard port):
+     * [resetProviderState] empties the table first, so this row — not a
+     * leftover from another suite — is the endpoint every turn here dials.
      */
     private fun seedProviderIfAbsent() {
         runBlocking {
@@ -140,6 +141,31 @@ class PluginE2eTest {
                 )
             }
         }
+    }
+
+    /**
+     * Resets the provider table to THIS suite's own dead endpoint before any
+     * chat exists: every row an earlier suite left behind is deleted through
+     * the real repository, and [seedProviderIfAbsent] then actually seeds.
+     *
+     * WHY THE RESET: providers are app-global rows that survive the whole
+     * suite run (no orchestrator clearPackageData), and AgentSettingsE2eTest
+     * saves a "MockLLM" DEFAULT against its MockWebServer on an ephemeral
+     * port — the server dies in that suite's tearDown, the row and the
+     * default selection survive it. The conditional seed below is a no-op
+     * behind such a leftover, so refreshSelection resolved the stale row and
+     * every chat turn here dialed a dead localhost:<ephemeral> instead of the
+     * discard port — with a reused port it would hang to the read timeout.
+     * After the delete the stored default dangles, which refreshSelection
+     * resolves to the first row — the freshly seeded dead endpoint the test's
+     * timings and wordings are pinned to.
+     */
+    private fun resetProviderState() {
+        runBlocking {
+            val graph = (targetContext.applicationContext as RoomBrowserApp).graph
+            graph.agentRepo.providers().forEach { graph.agentRepo.deleteProvider(it.id) }
+        }
+        seedProviderIfAbsent()
     }
 
     @Test
@@ -1010,6 +1036,16 @@ class PluginE2eTest {
     }
 
     /**
+     * The thinnest rect that can still be a REAL card anchor, in px: a
+     * composed plugin card is never this thin — its icon row and the
+     * "via Hello Counter" footer alone measure ~60px — so anything shorter is
+     * the clipped-bottom SLIVER a row above the fold leaves in the tree when
+     * the end-pin has run its bottom edge 1px past the viewport's top and
+     * Compose has culled the body from the semantics subtree.
+     */
+    private val minAnchorPx = (12 * targetContext.resources.displayMetrics.density).toInt()
+
+    /**
      * Waits for a module message row the way a person finds one: the row IS
      * in the transcript, but the panel's transcript window is narrow — the
      * newest row pins at the bottom and the row before it can sit with its
@@ -1083,6 +1119,17 @@ class PluginE2eTest {
         var towardBeginning = true
         while (true) {
             device.findObjects(By.textContains(needle)).firstOrNull()?.let { return it }
+            // The poll above is LINE-BOUND: UiAutomator compiles textContains
+            // as a whole-string, line-bound regex, so a needle sitting on the
+            // second line of the card's multi-line body node ("Module:
+            // hello-counter v…" composes above the count in ONE text node)
+            // can never match it, fully on screen or not — see cardCarries.
+            // The walk reads the same rendered tree whole-text, so a revealed
+            // body is caught the very iteration it is revealed — including
+            // the first seconds when the module row is still the newest,
+            // auto-scroll-pinned row — instead of only once after the whole
+            // window has burned, at one instant that races the end-pin.
+            cardNodeCarrying(needle)?.let { return it }
             if (System.currentTimeMillis() >= deadline) return null
             if (!reopened && System.currentTimeMillis() >= reopenAt) {
                 reopened = true
@@ -1128,7 +1175,18 @@ class PluginE2eTest {
                 // lands after it, the auto-scroll follows the tail -- and the
                 // body of a row above the viewport is culled from the semantics
                 // tree.
-                val usable = bounds != null && bounds.width() > 0 && bounds.height() > 0 &&
+                // A CLIP SLIVER is not an anchor either: a rect a hair tall
+                // at the window's top edge is the clipped-bottom signature of
+                // a row above the fold, and the old height>0 guard let it
+                // rock ±120px around a card it only ever half-revealed —
+                // toward the beginning revealed the body, toward the end
+                // re-culled it, so the reveal was never held and the whole
+                // window burned oscillating. A real card is never this thin
+                // (minAnchorPx above), so a sliver takes the beginning-ward
+                // drag below: one full drag, the list clamps at its start,
+                // and the card stays revealed for the walk above to find.
+                val usable = bounds != null && bounds.width() > 0 &&
+                    bounds.height() >= minAnchorPx &&
                     bounds.centerY() in 0 until device.displayHeight
                 if (usable && bounds != null) {
                     val x = bounds.centerX()
@@ -1141,10 +1199,13 @@ class PluginE2eTest {
                     if (toY != fromY) device.swipe(x, fromY, x, toY, 60)
                     towardBeginning = !towardBeginning
                 } else {
-                    // The card is composed but has no place in the window, so
+                    // The card is composed but has no place in the window —
+                    // fully off it, or only a sliver of it (see usable) — so
                     // it is above the fold: drag toward the BEGINNING, finger
                     // down, content with it. The list clamps at its start, so
-                    // this is idempotent the same way the end-anchored walk is.
+                    // this is idempotent the same way the end-anchored walk
+                    // is, and a revealed card STAYS revealed for the next
+                    // iteration's whole-text walk.
                     device.swipe(
                         device.displayWidth / 2, device.displayHeight / 3,
                         device.displayWidth / 2, device.displayHeight * 4 / 5, 80

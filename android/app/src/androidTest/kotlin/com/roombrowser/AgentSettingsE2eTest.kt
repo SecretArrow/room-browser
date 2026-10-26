@@ -88,6 +88,24 @@ class AgentSettingsE2eTest {
     @After
     fun tearDown() {
         runCatching { server.shutdown() }
+        // Delete the provider row this suite saved ("MockLLM", pointed at
+        // THIS run's MockWebServer URL). The row — and the default selection
+        // the editor persisted with it — outlive the server: providers are
+        // app-global and the suite runs without clearPackageData, so a row
+        // left behind hands every LATER suite a default provider whose
+        // ephemeral port died here (PluginE2eTest's zagents-counter turn
+        // dialed it and failed against a dead localhost:<ephemeral> instead
+        // of its own discard-port seed; a reused port would hang instead).
+        // Same repository the app's own editor deletes through; a row that
+        // was never saved (an earlier step failed) makes this a no-op.
+        runCatching {
+            kotlinx.coroutines.runBlocking {
+                val graph = (targetContext.applicationContext as RoomBrowserApp).graph
+                graph.agentRepo.providers()
+                    .filter { it.name == "MockLLM" }
+                    .forEach { graph.agentRepo.deleteProvider(it.id) }
+            }
+        }
     }
 
     private fun launchMainActivity() {
