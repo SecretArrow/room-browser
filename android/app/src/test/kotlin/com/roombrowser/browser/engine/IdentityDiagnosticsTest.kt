@@ -1,6 +1,7 @@
 package com.roombrowser.browser.engine
 
 import com.google.common.truth.Truth.assertThat
+import com.roombrowser.engine.EmbeddedHeaderObservation
 import org.junit.Test
 
 /**
@@ -29,7 +30,7 @@ class IdentityDiagnosticsTest {
     private fun modern(ua: String? = chromeUa, js: Boolean = true) = IdentityDiagnostics.checks(
         userAgent = ua,
         javascriptEnabled = js,
-        suppressesRequestedWith = true,
+        requestedWith = EmbeddedHeaderObservation.ABSENT,
         setsClientHints = true,
         installsDocumentStartScripts = true
     )
@@ -38,7 +39,7 @@ class IdentityDiagnosticsTest {
     private fun legacy(ua: String? = chromeUa) = IdentityDiagnostics.checks(
         userAgent = ua,
         javascriptEnabled = true,
-        suppressesRequestedWith = false,
+        requestedWith = EmbeddedHeaderObservation.PRESENT,
         setsClientHints = false,
         installsDocumentStartScripts = false
     )
@@ -136,6 +137,45 @@ class IdentityDiagnosticsTest {
         assertThat(checkNamed(checks, "X-Requested-With header").detail).contains("71")
         assertThat(checkNamed(checks, "Sec-CH-UA client hints").detail).contains("77")
         assertThat(checkNamed(checks, "navigator.userAgentData").detail).contains("81")
+    }
+
+    /**
+     * THE REGRESSION THIS FILE EXISTS FOR. Chromium discontinued
+     * `X-Requested-With` and deprecated the opt-out with it, so a current
+     * provider reports the feature unsupported for the opposite reason an
+     * ancient one does. The old row read that flag and told the person their
+     * WebView was out of date — on a device where no request carried the
+     * header at all. The row now reports the measurement, so "no request
+     * carried it" is a pass no matter what the flag says.
+     */
+    @Test
+    fun a_current_provider_that_no_longer_sends_the_header_is_not_blamed() {
+        val row = checkNamed(modern(), "X-Requested-With header")
+
+        assertThat(row.ok).isTrue()
+        assertThat(row.detail).contains("Not sent")
+        // It must not carry the old advice on a clean device.
+        assertThat(row.detail).doesNotContain("older")
+        assertThat(row.detail).doesNotContain("Updating")
+    }
+
+    @Test
+    fun an_unmeasured_header_is_neither_a_pass_nor_a_failure() {
+        // Before a page has loaded there is nothing to measure, and both of the
+        // answers this row used to give would be wrong: a pass would reassure
+        // somebody on a device where sign-in cannot work, and a failure would
+        // send them to update a WebView that may be perfectly current.
+        val checks = IdentityDiagnostics.checks(
+            userAgent = chromeUa,
+            javascriptEnabled = true,
+            requestedWith = EmbeddedHeaderObservation.UNOBSERVED,
+            setsClientHints = true,
+            installsDocumentStartScripts = true
+        )
+        val row = checkNamed(checks, "X-Requested-With header")
+
+        assertThat(row.ok).isNull()
+        assertThat(row.detail).contains("Not measured yet")
     }
 
     @Test

@@ -307,37 +307,28 @@ class GoogleIdentityE2eTest {
     }
 
     /**
-     * The `X-Requested-With` half, asserted against what the installed engine
-     * can actually do.
+     * The `X-Requested-With` half, asserted on the bytes the server received.
      *
-     * The header is added by the engine itself, so only an engine with the
-     * opt-out API can stop it; on a provider that predates that API it goes out
-     * on every request and nothing in this app can remove it (see
-     * `WebViewEngineSession.configure`). The assertion is therefore the honest
-     * one — the header may be present ONLY when the engine says it cannot
-     * suppress it — which still fails on a modern provider that regressed, and
-     * names the engine when it passes for the other reason.
+     * THIS USED TO BE CONDITIONAL AND THAT WAS THE BUG. It tolerated the
+     * header whenever the provider's opt-out flag read false — but Chromium
+     * discontinued the header and deprecated the opt-out with it, so a current
+     * provider reports false for the opposite reason an ancient one does. The
+     * test therefore excused the header on exactly the devices where it was
+     * absent anyway, and proved nothing.
+     *
+     * The wire is the authority: the server either received the header or it
+     * did not. It must not have. The engine's own observation is deliberately
+     * NOT cross-checked here — the engine runs in the ':browser' process while
+     * this test runs in the instrumentation process, so reading it here would
+     * report that process's state, not the one that made the request.
      */
     private fun assertNoAppIdentifyingHeader(hit: RecordedRequest, where: String) {
         val header = hit.getHeader("X-Requested-With")
-        val canSuppress = ProfileEngine.suppressesEmbeddedBrowserHeaders()
-        if (canSuppress) {
-            assertNull(
-                "$where: this engine can suppress X-Requested-With, so it must — " +
-                    "Google reads the header as 'an app, not a browser' (saw '$header')",
-                header
-            )
-        } else {
-            // Not a pass dressed as a skip: the failure this test exists to
-            // catch (a modern engine that stopped suppressing) is asserted
-            // above, and this branch records WHY the header is tolerated here.
-            println(
-                "GoogleIdentityE2e: this engine's provider predates the " +
-                    "X-Requested-With opt-out, so the header ('$header') cannot be " +
-                    "removed from the app side — the UA and client-hint halves are " +
-                    "still asserted."
-            )
-        }
+        assertNull(
+            "$where: the request must not carry X-Requested-With — Google reads it " +
+                "as 'an app, not a browser' (server received '$header')",
+            header
+        )
     }
 
     /** The app's own profile creation path: a real handset from the catalogue. */

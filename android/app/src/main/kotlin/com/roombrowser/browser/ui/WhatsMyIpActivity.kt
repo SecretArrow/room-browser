@@ -28,6 +28,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
@@ -65,6 +66,7 @@ import com.roombrowser.domain.net.ExitIp
 import com.roombrowser.domain.net.IpAddress
 import com.roombrowser.domain.net.NetFacts
 import com.roombrowser.engine.EngineRuntime
+import com.roombrowser.engine.EmbeddedHeaderObservation
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomCardShape
@@ -282,16 +284,18 @@ private fun identityChecks(
     // it (`EngineHost.defaultUserAgent` returns the neutral form).
     userAgent = chosen ?: engineStock.takeIf { it.isNotBlank() },
     javascriptEnabled = settings.javascriptEnabled,
-    // Every one of these is asked of the INSTALLED PROVIDER, and each is
-    // guarded inside the engine, so a device with no working provider answers
-    // false rather than taking this screen down. That is the honest answer
-    // there: nothing on this device can suppress the header or set the hints.
-    // Guarded again here because this screen must render its network facts even
-    // when the engine is unreachable — a spinner that never resolves would hide
-    // the one screen that could have explained the problem.
-    suppressesRequestedWith = runCatching {
-        ProfileEngine.suppressesEmbeddedBrowserHeaders()
-    }.getOrDefault(false),
+    // The header is REPORTED FROM A MEASUREMENT, not from the provider's
+    // feature flag: Chromium discontinued it, so the flag reads false on a
+    // current device for the opposite reason an old one does. The other two
+    // are still asked of the installed provider, and each is guarded inside the
+    // engine, so a device with no working provider answers false rather than
+    // taking this screen down. Guarded again here because this screen must
+    // render its network facts even when the engine is unreachable — a spinner
+    // that never resolves would hide the one screen that could have explained
+    // the problem.
+    requestedWith = runCatching {
+        ProfileEngine.embeddedBrowserHeaderObservation()
+    }.getOrDefault(EmbeddedHeaderObservation.UNOBSERVED),
     setsClientHints = runCatching {
         ProfileEngine.supportsUserAgentClientHints()
     }.getOrDefault(false),
@@ -535,8 +539,12 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
 }
 
 /**
- * One surface of the self-check: a tick or a warning, the surface's name, and
- * what a site is actually told about it.
+ * One surface of the self-check: a tick, a warning, or an open question, the
+ * surface's name, and what a site is actually told about it.
+ *
+ * THREE ICONS BECAUSE THERE ARE THREE ANSWERS. A surface that has not been
+ * measured is not a pass and not a failure; painting it as either is how this
+ * screen came to tell people to update a WebView that was already current.
  */
 @Composable
 private fun IdentitySurfaceRow(check: IdentityCheck) {
@@ -547,10 +555,15 @@ private fun IdentitySurfaceRow(check: IdentityCheck) {
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.Top
     ) {
+        val (icon, tint, description) = when (check.ok) {
+            true -> Triple(Icons.Filled.CheckCircle, extras.primary, "OK")
+            false -> Triple(Icons.Filled.Warning, MaterialTheme.colorScheme.error, "Problem")
+            null -> Triple(Icons.Filled.Info, extras.textSecondary, "Not measured")
+        }
         Icon(
-            imageVector = if (check.ok) Icons.Filled.CheckCircle else Icons.Filled.Warning,
-            contentDescription = if (check.ok) "OK" else "Problem",
-            tint = if (check.ok) extras.primary else MaterialTheme.colorScheme.error,
+            imageVector = icon,
+            contentDescription = description,
+            tint = tint,
             modifier = Modifier
                 .padding(top = 2.dp)
                 .size(15.dp)

@@ -16,6 +16,7 @@ import com.roombrowser.engine.EngineActivityDelegate
 import com.roombrowser.engine.EngineHost
 import com.roombrowser.engine.EngineOption
 import com.roombrowser.engine.EngineSession
+import com.roombrowser.engine.EmbeddedHeaderObservation
 import com.roombrowser.engine.ResourceFilter
 import java.io.File
 
@@ -268,6 +269,35 @@ internal class WebViewEngineHost : EngineHost {
         runCatching {
             WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)
         }.getOrDefault(false)
+
+    /**
+     * The header's real state, from what this process has seen.
+     *
+     * THE FEATURE FLAG ALONE CANNOT ANSWER THIS. androidx's deprecation note
+     * says the header "was deprecated in late 2022, and its use discontinued",
+     * so a current provider reports no opt-out API precisely because it adds
+     * no header -- the same `false` an ancient provider returns while still
+     * sending it. Asking the flag alone therefore labelled every up-to-date
+     * device "older than the opt-out".
+     *
+     * A PRESENT sighting is conclusive: a request carried the header, and
+     * nothing later can unsend it. An ABSENT sighting is conclusive only when
+     * the provider makes no opt-out claim either, because a provider that DOES
+     * support the allow-list may list the header in the intercept callback and
+     * drop it on the way out -- in that case [suppressesEmbeddedBrowserHeaders]
+     * is the authority, since `configure` has emptied the allow-list.
+     */
+    override fun embeddedBrowserHeaderObservation(): EmbeddedHeaderObservation {
+        // The opt-out is the stronger answer where it exists: `configure` sets
+        // an EMPTY allow-list, so no origin may receive the header. It has to
+        // be checked first precisely because a provider can still LIST the
+        // header in the intercept callback while dropping it on the way out --
+        // a sighting there is not proof it reached the server.
+        if (suppressesEmbeddedBrowserHeaders()) return EmbeddedHeaderObservation.ABSENT
+        if (RequestedWithProbe.sawPresent()) return EmbeddedHeaderObservation.PRESENT
+        if (RequestedWithProbe.sawAbsent()) return EmbeddedHeaderObservation.ABSENT
+        return EmbeddedHeaderObservation.UNOBSERVED
+    }
 
     /**
      * The same provider question for the document-start hook the identity

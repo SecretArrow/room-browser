@@ -1,5 +1,7 @@
 package com.roombrowser.browser.engine
 
+import com.roombrowser.engine.EmbeddedHeaderObservation
+
 /**
  * One line of the identity self-check: what a site is told, and whether that
  * answer marks this browser as an embedded one.
@@ -7,8 +9,18 @@ package com.roombrowser.browser.engine
 data class IdentityCheck(
     /** The surface being reported, in the words a person can search for. */
     val label: String,
-    /** True when this surface says "a browser" rather than "an app". */
-    val ok: Boolean,
+    /**
+     * True when this surface says "a browser", false when it says "an app",
+     * and NULL when nothing has been measured yet.
+     *
+     * The third state is not a nicety: the header is decided per request, so
+     * before a page has loaded there is no answer to give. Reporting an
+     * unmeasured surface as a pass would reassure somebody on a device where
+     * sign-in cannot work, and reporting it as a failure is the mistake this
+     * screen already made once -- telling people to update a WebView that was
+     * current because a feature flag said false for the opposite reason.
+     */
+    val ok: Boolean?,
     /** The answer, plus what to do about it when [ok] is false. */
     val detail: String
 )
@@ -33,11 +45,20 @@ data class IdentityCheck(
  * turn it off. So the JavaScript row reports the profile's real answer and
  * nothing else.
  *
- * THE OTHER THREE ARE PROPERTIES OF THE INSTALLED WEBVIEW PROVIDER, not of
- * this APK. That is the whole point of reporting them separately: the same
- * engine code produces a clean identity on a current Android System WebView
- * and an incomplete one on a provider that predates the APIs, and only the
- * provider's version can explain the difference.
+ * TWO OF THE REMAINING THREE ARE PROPERTIES OF THE INSTALLED WEBVIEW PROVIDER,
+ * not of this APK — the client hints and the document-start hook. That is the
+ * whole point of reporting them separately: the same engine code produces a
+ * clean identity on a current Android System WebView and an incomplete one on
+ * a provider that predates the APIs, and only the provider's version can
+ * explain the difference.
+ *
+ * THE HEADER IS NOT ONE OF THEM ANY MORE, and that distinction is the whole
+ * reason [requestedWithCheck] exists. Chromium discontinued `X-Requested-With`
+ * and deprecated the opt-out API alongside it, so the provider's feature flag
+ * no longer answers "is it sent" — it answers "does this provider still have
+ * the thing to suppress", which is false at both ends of the version range.
+ * The header is therefore reported from what the engine OBSERVED on a real
+ * request, and is reported as unmeasured when nothing has been sent yet.
  */
 object IdentityDiagnostics {
 
@@ -99,25 +120,12 @@ object IdentityDiagnostics {
     fun checks(
         userAgent: String?,
         javascriptEnabled: Boolean,
-        suppressesRequestedWith: Boolean,
+        requestedWith: EmbeddedHeaderObservation,
         setsClientHints: Boolean,
         installsDocumentStartScripts: Boolean
     ): List<IdentityCheck> = listOf(
         userAgentCheck(userAgent),
-        IdentityCheck(
-            label = "X-Requested-With header",
-            ok = suppressesRequestedWith,
-            detail = if (suppressesRequestedWith) {
-                "Not sent. The engine can suppress the header WebView stamps on " +
-                    "every request, so no site learns this app's package name from it."
-            } else {
-                "Sent on every request, naming this app to every site. The engine " +
-                    "stamps this header itself, so only the engine can take it off, " +
-                    "and that opt-out needs Android System WebView " +
-                    "$REQUESTED_WITH_OPT_OUT_VERSION or newer. Updating Android " +
-                    "System WebView is what removes it."
-            }
-        ),
+        requestedWithCheck(requestedWith),
         IdentityCheck(
             label = "Sec-CH-UA client hints",
             ok = setsClientHints,
@@ -157,6 +165,44 @@ object IdentityDiagnostics {
             }
         )
     )
+
+    /**
+     * The header, from what the engine actually saw on a request.
+     *
+     * THE OLD ROW ASKED THE WRONG QUESTION. It read the provider's opt-out
+     * feature flag and, when that was false, said the header "is sent on every
+     * request" and that the device's WebView was "older than the opt-out". Both
+     * halves were wrong on a current device: Chromium discontinued the header
+     * in late 2022 and deprecated the opt-out with it, so the flag now reads
+     * false on a provider that adds no header at all -- the same answer an
+     * ancient provider gives for the opposite reason. People were sent to
+     * update a WebView that was already current, and the real state of the
+     * request stayed unknown.
+     */
+    private fun requestedWithCheck(observed: EmbeddedHeaderObservation): IdentityCheck =
+        IdentityCheck(
+            label = "X-Requested-With header",
+            ok = when (observed) {
+                EmbeddedHeaderObservation.ABSENT -> true
+                EmbeddedHeaderObservation.PRESENT -> false
+                EmbeddedHeaderObservation.UNOBSERVED -> null
+            },
+            detail = when (observed) {
+                EmbeddedHeaderObservation.ABSENT ->
+                    "Not sent. No request this app has made carried it, so no site " +
+                        "learns this app's package name from the header."
+                EmbeddedHeaderObservation.PRESENT ->
+                    "Sent, naming this app to every site. The engine stamps this " +
+                        "header itself, so only the engine can take it off, and that " +
+                        "opt-out needs Android System WebView " +
+                        "$REQUESTED_WITH_OPT_OUT_VERSION or newer. Updating Android " +
+                        "System WebView is what removes it."
+                EmbeddedHeaderObservation.UNOBSERVED ->
+                    "Not measured yet. The header is decided on each request, so " +
+                        "open a page and read this row again -- a browser that has " +
+                        "loaded nothing has nothing to report here."
+            }
+        )
 
     private fun userAgentCheck(userAgent: String?): IdentityCheck {
         if (userAgent.isNullOrBlank()) {

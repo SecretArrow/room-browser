@@ -938,6 +938,12 @@ internal class WebViewEngineSession(
         ): WebResourceResponse? {
             val url = request.url.toString()
             if (request.isForMainFrame) mainFrameUrl = url
+            // What the engine is about to put on the wire, recorded so the
+            // identity self-check can report the header's real state instead of
+            // inferring it from a provider feature flag that stopped meaning
+            // what it used to (see RequestedWithProbe). Side-effect only and
+            // allocation-light: this runs for every sub-resource of every tab.
+            RequestedWithProbe.record(request.requestHeaders)
             val blocked = listener?.onResourceRequest(
                 this@WebViewEngineSession,
                 url,

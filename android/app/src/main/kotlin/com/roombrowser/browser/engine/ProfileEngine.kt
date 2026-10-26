@@ -19,6 +19,7 @@ import com.roombrowser.engine.EngineOption
 import com.roombrowser.engine.EnginePageScripts
 import com.roombrowser.engine.EngineRuntime
 import com.roombrowser.engine.EngineSession
+import com.roombrowser.engine.EmbeddedHeaderObservation
 import com.roombrowser.engine.ResourceFilter
 import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 
@@ -286,6 +287,18 @@ object ProfileEngine {
      * refusal unexplained.
      */
     fun suppressesEmbeddedBrowserHeaders(): Boolean = host.suppressesEmbeddedBrowserHeaders()
+
+    /**
+     * What this process has actually seen about that header, which is not the
+     * same question as whether the provider offers an opt-out: Chromium
+     * discontinued the header, so a current provider reports no opt-out API
+     * because there is nothing to opt out of. Never throws — the diagnostics
+     * screen must render even when the engine is unreachable, and an engine
+     * that cannot answer is reported as unmeasured rather than as a failure.
+     */
+    fun embeddedBrowserHeaderObservation(): EmbeddedHeaderObservation =
+        runCatching { host.embeddedBrowserHeaderObservation() }
+            .getOrDefault(EmbeddedHeaderObservation.UNOBSERVED)
 
     /**
      * Whether this edition's engine can run a script before a page's own

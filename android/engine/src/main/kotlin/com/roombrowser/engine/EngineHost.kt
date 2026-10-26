@@ -20,6 +20,28 @@ data class EngineOption(
 )
 
 /**
+ * What this process has seen about the `X-Requested-With` header the engine
+ * stamps on requests.
+ *
+ * THREE STATES, because two cannot say the truth. "Supported" and "not
+ * supported" describe the provider's API surface; what a site receives is a
+ * property of the request. A provider that stopped adding the header reports
+ * no opt-out API (there is nothing left to opt out of) exactly as an ancient
+ * provider does, so a boolean would have to call one of them wrong.
+ */
+enum class EmbeddedHeaderObservation {
+
+    /** No request has been observed yet in this process. */
+    UNOBSERVED,
+
+    /** The header is not on the wire: either suppressed, or never added. */
+    ABSENT,
+
+    /** A request went out carrying it, naming this app to that site. */
+    PRESENT
+}
+
+/**
  * The engine, as the rest of the app is allowed to see it.
  *
  * ONE PROCESS, ONE PROFILE. This is not an implementation detail that leaked
@@ -169,6 +191,26 @@ interface EngineHost {
      * sends no such header and answers true.
      */
     fun suppressesEmbeddedBrowserHeaders(): Boolean = true
+
+    /**
+     * What has actually been OBSERVED about that header in this process, which
+     * is a different question from whether the provider offers an opt-out.
+     *
+     * The difference matters on WebView: Chromium discontinued the header, and
+     * the opt-out API was deprecated with it, so a current provider answers
+     * [suppressesEmbeddedBrowserHeaders] false for the best possible reason --
+     * there is no header to suppress. Reporting that as "your WebView is too
+     * old" sent people to update a provider that was already current. An
+     * engine that can see its own requests answers from what it saw; one that
+     * cannot (GeckoView never adds the header, so there is nothing to observe)
+     * answers from its own design, which is [EmbeddedHeaderObservation.ABSENT].
+     */
+    fun embeddedBrowserHeaderObservation(): EmbeddedHeaderObservation =
+        if (suppressesEmbeddedBrowserHeaders()) {
+            EmbeddedHeaderObservation.ABSENT
+        } else {
+            EmbeddedHeaderObservation.UNOBSERVED
+        }
 
     /**
      * Whether this engine can install a script that runs BEFORE a page's own

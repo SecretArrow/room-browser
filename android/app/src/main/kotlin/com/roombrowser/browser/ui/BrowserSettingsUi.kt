@@ -143,10 +143,15 @@ private fun IdentityCheckRow(check: IdentityCheck) {
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
+        val (icon, tint, description) = when (check.ok) {
+            true -> Triple(Icons.Filled.CheckCircle, extras.primary, "OK")
+            false -> Triple(Icons.Filled.Warning, MaterialTheme.colorScheme.error, "Problem")
+            null -> Triple(Icons.Filled.Info, extras.textSecondary, "Not measured")
+        }
         Icon(
-            imageVector = if (check.ok) Icons.Filled.CheckCircle else Icons.Filled.Warning,
-            contentDescription = if (check.ok) "OK" else "Problem",
-            tint = if (check.ok) extras.primary else MaterialTheme.colorScheme.error,
+            imageVector = icon,
+            contentDescription = description,
+            tint = tint,
             modifier = Modifier
                 .padding(top = 2.dp)
                 .size(18.dp)
@@ -423,7 +428,7 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             IdentityDiagnostics.checks(
                 userAgent = userAgent,
                 javascriptEnabled = identitySettings.javascriptEnabled,
-                suppressesRequestedWith = ProfileEngine.suppressesEmbeddedBrowserHeaders(),
+                requestedWith = ProfileEngine.embeddedBrowserHeaderObservation(),
                 setsClientHints = ProfileEngine.supportsUserAgentClientHints(),
                 installsDocumentStartScripts = ProfileEngine.supportsDocumentStartScripts()
             )
