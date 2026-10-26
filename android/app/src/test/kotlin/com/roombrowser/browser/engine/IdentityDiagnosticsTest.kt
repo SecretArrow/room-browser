@@ -106,22 +106,26 @@ class IdentityDiagnosticsTest {
     fun an_old_provider_blames_the_provider_and_not_the_profile() {
         val checks = legacy()
 
-        // The UA is the app's own string and stays correct; the three surfaces
-        // the provider owns are the ones that fail.
+        // The UA is the app's own string and stays correct; the surfaces the
+        // provider owns are the ones that fail.
         assertThat(checkNamed(checks, "User-Agent").ok).isTrue()
         assertThat(checkNamed(checks, "X-Requested-With header").ok).isFalse()
         assertThat(checkNamed(checks, "Sec-CH-UA client hints").ok).isFalse()
         assertThat(checkNamed(checks, "navigator.userAgentData").ok).isFalse()
 
-        // Each names the provider as the cause, because a newer Android System
-        // WebView is the only thing that can fix any of them.
-        for (label in listOf(
-            "X-Requested-With header",
-            "Sec-CH-UA client hints",
-            "navigator.userAgentData"
-        )) {
+        // The two surfaces a newer provider really does supply name it as the
+        // cause, because a newer Android System WebView is what fixes them.
+        for (label in listOf("Sec-CH-UA client hints", "navigator.userAgentData")) {
             assertThat(checkNamed(checks, label).detail).contains("Android System WebView")
         }
+        // The header row names the provider too, but it must NOT promise an
+        // update as the fix: the header is the engine's own, and the only
+        // control the platform offers is an allow-list the provider may ignore
+        // -- measured on a provider that lists it and sends the header anyway.
+        val header = checkNamed(checks, "X-Requested-With header")
+        assertThat(header.detail).contains("cannot remove it")
+        assertThat(header.detail).doesNotContain("Updating")
+        assertThat(header.detail).doesNotContain("or newer")
     }
 
     /**
@@ -129,14 +133,20 @@ class IdentityDiagnosticsTest {
      * whether their copy is the one that needs updating. Each row therefore
      * names the release that offers its surface, so the Engine row above it can
      * be compared against a number instead of a feeling.
+     *
+     * The header row is deliberately absent from this list: there is no
+     * release to name. The header is not a feature the provider turns on at a
+     * version -- it is one the provider stops adding, and the opt-out that used
+     * to control it has been discontinued, so naming a version there would be
+     * advice nobody could act on.
      */
     @Test
     fun a_provider_row_names_the_version_that_offers_its_surface() {
         val checks = legacy()
 
-        assertThat(checkNamed(checks, "X-Requested-With header").detail).contains("71")
         assertThat(checkNamed(checks, "Sec-CH-UA client hints").detail).contains("77")
         assertThat(checkNamed(checks, "navigator.userAgentData").detail).contains("81")
+        assertThat(checkNamed(checks, "X-Requested-With header").detail).doesNotContain("71")
     }
 
     /**

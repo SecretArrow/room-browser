@@ -105,7 +105,6 @@ object IdentityDiagnostics {
      * refusing, and no target to check their Play Store version against. The
      * number is the target.
      */
-    private const val REQUESTED_WITH_OPT_OUT_VERSION = "71"
     private const val CLIENT_HINTS_VERSION = "77"
     private const val DOCUMENT_START_VERSION = "81"
 
@@ -193,10 +192,14 @@ object IdentityDiagnostics {
                         "learns this app's package name from the header."
                 EmbeddedHeaderObservation.PRESENT ->
                     "Sent, naming this app to every site. The engine stamps this " +
-                        "header itself, so only the engine can take it off, and that " +
-                        "opt-out needs Android System WebView " +
-                        "$REQUESTED_WITH_OPT_OUT_VERSION or newer. Updating Android " +
-                        "System WebView is what removes it."
+                        "header itself and this app cannot remove it: the only " +
+                        "control the platform offers is an allow-list of origins, " +
+                        "which this app sets to empty on every configure, and " +
+                        "which the installed WebView is not obliged to honour. " +
+                        "Whether it is sent at all depends on that WebView -- a " +
+                        "current one discontinued the header in 2022, and this one " +
+                        "still sends it. The row is here so the fact is visible " +
+                        "rather than assumed."
                 EmbeddedHeaderObservation.UNOBSERVED ->
                     "Not measured yet. The header is decided on each request, so " +
                         "open a page and read this row again -- a browser that has " +

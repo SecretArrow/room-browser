@@ -184,11 +184,14 @@ interface EngineHost {
      * browser, not a browser" — Google's sign-in refusal is the visible cost —
      * and it hands every site the app's package name for free.
      *
-     * WebView answers from the provider's own feature set: a provider that
-     * predates the opt-out API leaves no app-side way to remove a header the
-     * engine adds itself, and answers false here so the app can tell the person
-     * the truth instead of promising a sign-in that will be refused. GeckoView
-     * sends no such header and answers true.
+     * THIS IS A CAPABILITY CLAIM, NOT AN OBSERVATION, and on WebView it is
+     * weaker than it reads. It answers whether the installed provider lists
+     * the opt-out feature, and a provider may list it and still send the
+     * header — measured, not assumed: a request arrived at a server carrying
+     * the package name after `configure` had emptied the allow-list. Nothing
+     * the app can do removes a header the engine adds itself. GeckoView sends
+     * no such header and answers true. Callers that need the real answer ask
+     * [embeddedBrowserHeaderObservation] instead.
      */
     fun suppressesEmbeddedBrowserHeaders(): Boolean = true
 
@@ -204,6 +207,12 @@ interface EngineHost {
      * engine that can see its own requests answers from what it saw; one that
      * cannot (GeckoView never adds the header, so there is nothing to observe)
      * answers from its own design, which is [EmbeddedHeaderObservation.ABSENT].
+     *
+     * The default therefore reports the design, not a measurement, and says so
+     * by returning [EmbeddedHeaderObservation.ABSENT] only for an engine that
+     * claims it never adds the header. An engine that cannot make that claim
+     * and has measured nothing is [EmbeddedHeaderObservation.UNOBSERVED], not
+     * a pass.
      */
     fun embeddedBrowserHeaderObservation(): EmbeddedHeaderObservation =
         if (suppressesEmbeddedBrowserHeaders()) {

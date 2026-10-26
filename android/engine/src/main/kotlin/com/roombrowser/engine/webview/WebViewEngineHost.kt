@@ -273,28 +273,37 @@ internal class WebViewEngineHost : EngineHost {
     /**
      * The header's real state, from what this process has seen.
      *
-     * THE FEATURE FLAG ALONE CANNOT ANSWER THIS. androidx's deprecation note
-     * says the header "was deprecated in late 2022, and its use discontinued",
-     * so a current provider reports no opt-out API precisely because it adds
-     * no header -- the same `false` an ancient provider returns while still
-     * sending it. Asking the flag alone therefore labelled every up-to-date
-     * device "older than the opt-out".
+     * THE FEATURE FLAG ALONE CANNOT ANSWER THIS, in either direction.
+     * androidx's deprecation note says the header "was deprecated in late 2022,
+     * and its use discontinued", so a current provider reports no opt-out API
+     * precisely because it adds no header -- the same `false` an ancient
+     * provider returns while still sending it. Asking the flag alone therefore
+     * labelled every up-to-date device "older than the opt-out".
      *
-     * A PRESENT sighting is conclusive: a request carried the header, and
-     * nothing later can unsend it. An ABSENT sighting is conclusive only when
-     * the provider makes no opt-out claim either, because a provider that DOES
-     * support the allow-list may list the header in the intercept callback and
-     * drop it on the way out -- in that case [suppressesEmbeddedBrowserHeaders]
-     * is the authority, since `configure` has emptied the allow-list.
+     * And the flag is not proof the other way either: a provider can list the
+     * feature and still stamp the header. That is not hypothetical -- on a
+     * WebView that lists it, a request was measured arriving at a server with
+     * `X-Requested-With: <applicationId>` after `configure` had emptied the
+     * allow-list. androidx's own contract allows it: an origin absent from the
+     * list "may not receive the header, depending on the current installed
+     * WebView provider".
+     *
+     * SO A SIGHTING OUTRANKS THE FLAG. `shouldInterceptRequest` sees every
+     * request this session makes; a request that carried the header is proof
+     * one reached the network, and nothing later can unsend it. The flag is
+     * consulted only when nothing was seen carrying it, where it still says
+     * something useful -- a provider with no opt-out at all, on a session that
+     * has not made a request yet.
+     *
+     * The order is chosen for which mistake is worse. Reporting PRESENT when
+     * the provider would have dropped the header is a needless warning;
+     * reporting ABSENT when it is being sent is the failure this screen
+     * already made once, telling somebody their identity was clean on the way
+     * to Google's refusal.
      */
     override fun embeddedBrowserHeaderObservation(): EmbeddedHeaderObservation {
-        // The opt-out is the stronger answer where it exists: `configure` sets
-        // an EMPTY allow-list, so no origin may receive the header. It has to
-        // be checked first precisely because a provider can still LIST the
-        // header in the intercept callback while dropping it on the way out --
-        // a sighting there is not proof it reached the server.
-        if (suppressesEmbeddedBrowserHeaders()) return EmbeddedHeaderObservation.ABSENT
         if (RequestedWithProbe.sawPresent()) return EmbeddedHeaderObservation.PRESENT
+        if (suppressesEmbeddedBrowserHeaders()) return EmbeddedHeaderObservation.ABSENT
         if (RequestedWithProbe.sawAbsent()) return EmbeddedHeaderObservation.ABSENT
         return EmbeddedHeaderObservation.UNOBSERVED
     }

@@ -275,16 +275,16 @@ object ProfileEngine {
     }
 
     /**
-     * Whether this edition's engine can keep the embedded-browser request
-     * headers off the wire.
+     * Whether this edition's engine CLAIMS it can keep the embedded-browser
+     * request headers off the wire.
      *
-     * Asked rather than assumed: on WebView the answer is the installed
-     * provider's, and a provider older than the opt-out API sends
-     * `X-Requested-With: <applicationId>` on every request
-     * with nothing this app can do about it. Google's "This browser or app may
-     * not be secure" refusal reads exactly that header, so the app tells the
-     * person when their engine cannot avoid it instead of letting them meet the
-     * refusal unexplained.
+     * On WebView the claim is the installed provider's, and it is not a
+     * promise: the provider may list the opt-out and still send
+     * `X-Requested-With: <applicationId>`, and no app-side code can remove a
+     * header the engine adds itself. Google's "This browser or app may not be
+     * secure" refusal reads exactly that header. A screen that needs the real
+     * answer asks [embeddedBrowserHeaderObservation], which reports what a
+     * request actually carried.
      */
     fun suppressesEmbeddedBrowserHeaders(): Boolean = host.suppressesEmbeddedBrowserHeaders()
 

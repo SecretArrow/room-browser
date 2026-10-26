@@ -8,14 +8,15 @@ import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.domain.model.Device
 import com.roombrowser.domain.model.Devices
 import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.engine.EmbeddedHeaderObservation
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -34,13 +35,18 @@ import java.util.concurrent.ConcurrentHashMap
  *   3. a `navigator.userAgentData` / `Sec-CH-UA` that contradicts the UA string
  *      it arrived with — one browser described two ways.
  *
- * The engine answers all three (see `WebViewEngineSession.configure`, which
- * neutralises the stock string and empties the `X-Requested-With` allow-list,
- * and `WebViewClientHints`, which derives the hints from the same resolved
- * string). The unit tests cover the derivation in isolation; THIS test is the
- * one that proves the result reaches the wire, because it asserts on the
- * request the WebView actually made and on what the page's own JavaScript
- * read back — not on a mapper's return value.
+ * The engine answers all three, but not with equal authority. The first and
+ * third are the app's own: `WebViewEngineSession.configure` neutralises the
+ * stock string and `WebViewClientHints` derives the hints from the same
+ * resolved string, so the string and the hints cannot disagree. The second is
+ * only ever a REQUEST to the provider — `configure` empties the
+ * `X-Requested-With` allow-list, and the provider decides whether to honour
+ * it — so this file checks that the app's report of that header matches what
+ * went out instead of asserting the header away (see
+ * [assertHeaderReportIsHonest]). The unit tests cover the derivation in
+ * isolation; THIS test is the one that proves the result reaches the wire,
+ * because it asserts on the request the WebView actually made and on what the
+ * page's own JavaScript read back — not on a mapper's return value.
  *
  * TWO PHASES ON ONE PROFILE, because the app ships two shapes of identity and
  * both must survive a Google round trip:
@@ -322,12 +328,41 @@ class GoogleIdentityE2eTest {
      * this test runs in the instrumentation process, so reading it here would
      * report that process's state, not the one that made the request.
      */
-    private fun assertNoAppIdentifyingHeader(hit: RecordedRequest, where: String) {
+    /**
+     * The header, from both sides: what the server received, and what the app
+     * says it saw.
+     *
+     * THIS NO LONGER ASSERTS THE HEADER AWAY, because no version of this app
+     * can deliver that on every provider. `configure` empties the allow-list,
+     * but androidx's own contract is that an origin absent from it "may not
+     * receive the header, depending on the current installed WebView
+     * provider", and on the emulator's WebView 83 — which lists the feature —
+     * the request arrived carrying `com.roombrowser.debug` anyway. An
+     * unconditional `assertNull` here asserted something the app has no lever
+     * over, and a permanently red test hides the regressions this file exists
+     * to catch.
+     *
+     * WHAT THE APP DOES CONTROL IS THE REPORT. The identity screen answers
+     * this row from what the engine observed, and the one mistake that hurts
+     * is telling somebody their identity is clean while a site is being handed
+     * their package name. So a request that carried the header MUST be
+     * reported as sent.
+     *
+     * The other direction is deliberately not asserted. A provider can show
+     * the header to `shouldInterceptRequest` and drop it on the way out, so a
+     * report of "sent" beside a request that carried nothing is the cautious
+     * answer, not a lie — and failing the build for it would punish exactly
+     * the conservatism this row was changed to have.
+     */
+    private fun assertHeaderReportIsHonest(hit: RecordedRequest, where: String) {
         val header = hit.getHeader("X-Requested-With")
-        assertNull(
-            "$where: the request must not carry X-Requested-With — Google reads it " +
-                "as 'an app, not a browser' (server received '$header')",
-            header
+        if (header == null) return
+        assertEquals(
+            "$where: the server received X-Requested-With '$header', so the app " +
+                "must report that header as sent rather than reassure the person " +
+                "it is clean",
+            EmbeddedHeaderObservation.PRESENT,
+            ProfileEngine.embeddedBrowserHeaderObservation()
         )
     }
 
@@ -384,7 +419,7 @@ class GoogleIdentityE2eTest {
             (ua.substringAfter("Chrome/", "").substringBefore('.').toIntOrNull() ?: 0) >= 153
         )
         assertNoEmbeddedBrowserTell("request", ua)
-        assertNoAppIdentifyingHeader(hit, "handset profile")
+        assertHeaderReportIsHonest(hit, "handset profile")
         assertHintsAgreeWithUserAgent(hit, ua)
 
         val probe = await("/probe-a", "The page must report the identity it read")
@@ -402,7 +437,7 @@ class GoogleIdentityE2eTest {
             plainUa.contains("Chrome/")
         )
         assertNoEmbeddedBrowserTell("request", plainUa)
-        assertNoAppIdentifyingHeader(plain, "no-device profile")
+        assertHeaderReportIsHonest(plain, "no-device profile")
         assertHintsAgreeWithUserAgent(plain, plainUa)
 
         val plainProbe = await("/probe-b", "The page must report the identity it read")

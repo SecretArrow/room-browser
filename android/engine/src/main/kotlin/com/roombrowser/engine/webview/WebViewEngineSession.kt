@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
+import android.util.Log
 import android.view.PixelCopy
 import android.view.View
 import android.view.ViewGroup
@@ -426,18 +427,27 @@ internal class WebViewEngineSession(
             // "This browser or app may not be secure" is the visible refusal
             // -- and it hands every site the app's package name as a
             // fingerprint for free, the same leak the UA work above closes.
-            // The allow-list API is the platform's own opt-out: an EMPTY list
-            // means no origin may receive the header, so it is never sent.
-            // Guarded because the feature belongs to the installed WebView
-            // provider, not to this APK -- a provider without it (an old
-            // WebView) keeps the header, there being no app-side way to
-            // remove a header the engine adds itself, and the neutralized UA
-            // is all such a device gets. The API hangs off [WebSettings], so
-            // it is applied here, where `configure` re-runs on every settings
-            // change and an old value cannot survive one.
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
+            //
+            // WHAT THIS CALL CAN AND CANNOT DO. It is the only control the
+            // platform offers, and it is WEAKER THAN IT LOOKS: androidx's own
+            // contract is that an origin absent from the allow-list "may not
+            // receive the header, depending on the current installed WebView
+            // provider", and a provider is free to keep stamping it anyway.
+            // Measured on the CI emulator, whose WebView 83 lists the feature
+            // and still sends the header: the request arrived at the server
+            // carrying `com.roombrowser.debug` after this call ran. So the
+            // call stays because it is the only lever there is and it is
+            // honoured on some providers, and the screen does not trust it --
+            // `RequestedWithProbe` reports what actually went out rather than
+            // what this asked for. A comment here once claimed an empty list
+            // meant the header was "never sent", which was false and sent
+            // people to update a WebView that was already current.
+            val optOutSupported =
+                WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)
+            if (optOutSupported) {
                 WebSettingsCompat.setRequestedWithHeaderOriginAllowList(s, emptySet<String>())
             }
+            logIdentityOnce(optOutSupported)
 
             // Android Autofill integration: AUTO participates in the system
             // autofill framework; NO opts the WebView out when the profile
@@ -1930,7 +1940,51 @@ internal class WebViewEngineSession(
          */
         const val ARM_PAGE_CONSOLE = "window.__rbConsole && window.__rbConsole.arm();"
         const val DISARM_PAGE_CONSOLE = "window.__rbConsole && window.__rbConsole.disarm();"
+
+        /** Where the identity questions are answered, in the device's own log. */
+        const val IDENTITY_TAG = "RoomIdentity"
+
+        /**
+         * Whether the provider line has been written already.
+         *
+         * `configure` re-runs on every settings change -- every theme toggle,
+         * every per-site override -- and the answer cannot change within a
+         * process, so the line is written once and the rest of the run is
+         * silent. A logcat full of the same line is a logcat nobody reads when
+         * a sign-in finally fails.
+         */
+        @Volatile
+        private var identityLogged: Boolean = false
     }
+
+    /**
+     * Records what the app was able to ask for, and which provider answered.
+     *
+     * WHY BOTH. Whether the opt-out EXISTS and whether it WORKS are different
+     * facts, and only the second one reaches a server. A provider that does not
+     * list the feature is one where this app has no lever at all; a provider
+     * that lists it and still stamps the header is one where the lever does
+     * nothing -- measured on the CI emulator's WebView 83, which lists the
+     * feature and sent the header anyway. One number without the other cannot
+     * be read.
+     */
+    private fun logIdentityOnce(optOutSupported: Boolean) {
+        if (identityLogged) return
+        identityLogged = true
+        Log.i(
+            IDENTITY_TAG,
+            "identity: x-requested-with opt-out supported=$optOutSupported " +
+                "webview=${currentWebViewIdentity()}"
+        )
+    }
+
+    /**
+     * The WebView provider this session runs on, as `package version`.
+     */
+    private fun currentWebViewIdentity(): String = runCatching {
+        val info = WebViewCompat.getCurrentWebViewPackage(webView.context)
+        "${info?.packageName ?: "unknown"} ${info?.versionName ?: "?"}"
+    }.getOrDefault("unreadable")
 }
 
 /**
