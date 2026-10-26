@@ -79,6 +79,21 @@ class PluginE2eTest {
     private val helloSwitch = "plugin_enable_com_example_hello"
     private val helloCard = "plugin_card_com_example_hello"
 
+    /**
+     * What the last mid-wait reopen in [rockingFind] landed on, kept for the
+     * failure messages.
+     *
+     * The reopen is the one thing that poll does which can REMOVE the
+     * transcript rather than refresh it: it closes the panel through the
+     * toolbar sheet and opens it again, and [panelUp] accepts the
+     * provider-empty surface as "up". A reopen that landed there would read as
+     * a healthy panel while the chat it exists to bring back is gone. One
+     * measured run failed exactly that way — the log showed the panel close at
+     * the halfway mark and the provider-empty screen come up, and every later
+     * probe saw no composer — so the next failure has to say which it was.
+     */
+    private var reopenNote: String = "(no mid-wait reopen)"
+
     @Before
     fun setUp() {
         // Determinism: the runner's shared IP arms the organic network warning
@@ -418,13 +433,28 @@ class PluginE2eTest {
                 .map { it.text }.firstOrNull()
             val notRun = device.findObjects(By.textContains("was not run"))
                 .map { it.text }.firstOrNull()
+            val showedNothing = device.findObjects(By.textContains("showed nothing"))
+                .map { it.text }.firstOrNull()
             val agentError = device.findObjects(By.textContains("Agent error"))
                 .map { it.text }.firstOrNull()
+            // THE CHAT'S OWN STORED ROWS, and the reason they are in this
+            // message. Everything else here describes the SCREEN, and a screen
+            // cannot say whether the module's message was never written or was
+            // written and not drawn — the two are different bugs in different
+            // files, and the run that produced this diagnostic had a composed
+            // card node with no body text in it, which is compatible with
+            // both. The rows settle it: a "plugin" row whose content carries
+            // the count means the write happened and the transcript is where
+            // to look.
             throw AssertionError(
                 "The module message must land with the chat's first message (count 1). " +
                     "startup=" + startup + " | notRun=" + notRun +
+                    " | showedNothing=" + showedNothing +
                     " | agentError=" + agentError + " | " + counterStateDiagnostics() +
-                    " | cards=" + cardSubtreeTexts() + " | tree=" + uiTree()
+                    " | reopen=" + reopenNote +
+                    " | stored=" + messagesDiagnostics() +
+                    " | cards=" + cardSubtreeTexts() +
+                    " | cardBounds=" + cardGeometry() + " | tree=" + uiTree()
             )
         }
         // The entry's layout position, captured ATOMICALLY with the find —
@@ -1046,7 +1076,13 @@ class PluginE2eTest {
             if (System.currentTimeMillis() >= deadline) return null
             if (!reopened && System.currentTimeMillis() >= reopenAt) {
                 reopened = true
-                openAgentPanelFromMenu()
+                val opened = openAgentPanelFromMenu()
+                // The reopen's own outcome, recorded before the next probe: a
+                // reopen that opened SOMETHING but not the chat is the one
+                // failure mode a screen dump taken two minutes later cannot
+                // tell apart from "the panel was never reopened".
+                reopenNote = "reopen opened=" + opened +
+                    " chat=" + hasDesc("agent_composer_field", 2_000)
                 continue
             }
             if (System.currentTimeMillis() < settledAt) {
@@ -1189,7 +1225,9 @@ class PluginE2eTest {
             if (System.currentTimeMillis() >= deadline) return null
             if (!reopened && System.currentTimeMillis() >= reopenAt) {
                 reopened = true
-                openAgentPanelFromMenu()
+                val opened = openAgentPanelFromMenu()
+                reopenNote = "reopen opened=" + opened +
+                    " chat=" + hasDesc("agent_composer_field", 2_000)
                 continue
             }
             device.swipe(
@@ -1206,28 +1244,43 @@ class PluginE2eTest {
      * the panel renders OR the silence a cancelled turn leaves — either way
      * the next round knows which of the two it was hunting, and the insert
      * order is the one ordering witness no scroll can take away.
+     *
+     * EVERY SESSION THE PROFILE HAS, not only the ones a plugin data folder
+     * exists for. The narrower version answered "no session messages found"
+     * whenever the module had not written a kv yet — exactly the case that
+     * needs the rows most — so a run could not tell "the turn wrote to a chat
+     * that is not the one on screen" from "the turn wrote nothing". The
+     * sessions are read through the profile list rather than through
+     * `ProfileEngine.boundProfile()`: this suite runs in the instrumentation
+     * process, not `':browser'`, so that binding answers null here no matter
+     * what the app is doing.
      */
     private fun messagesDiagnostics(): String = try {
         val graph = (targetContext.applicationContext as RoomBrowserApp).graph
-        // Both spellings a chat's data folder can sit under: the external
-        // chats tree the chat-folders release writes (and migrates into),
-        // and the legacy internal plugin-data tree a not-yet-migrated chat
-        // still holds. A session the migration split across both answers
-        // from the chats tree — the one the next call would finish into.
-        val sessionDirs = sessionDataDirs()
+        val profiles = runBlocking { graph.profileRepo.profiles() }
+        if (profiles.isEmpty()) return "(no profiles)"
         val sb = StringBuilder()
-        sessionDirs.forEach { (id, sessionDir) ->
-            val msgs = runBlocking { graph.database.agentDao().messages(id) }
-            if (msgs.isNotEmpty()) {
-                sb.append("session ").append(id).append(" last messages=[")
-                msgs.takeLast(8).forEach { m ->
+        profiles.take(3).forEach { profile ->
+            val sessions = runBlocking {
+                graph.database.agentDao().sessions(profile.id.value)
+            }
+            sessions.take(3).forEach { session ->
+                val msgs = runBlocking { graph.database.agentDao().messages(session.id) }
+                sb.append("session ").append(session.id).append(" rows=").append(msgs.size)
+                    .append(" last=[")
+                msgs.takeLast(6).forEach { m ->
+                    // A plugin row's content is the card's JSON, and the
+                    // question it has to answer is whether `text` is in there
+                    // at all -- 60 characters stops inside the module's first
+                    // log line, 120 reaches the count that line is followed by.
+                    val window = if (m.role == "plugin") 120 else 60
                     sb.append(m.role).append(':')
-                        .append(m.content.take(60).replace('\n', ' ')).append("; ")
+                        .append(m.content.take(window).replace('\n', ' ')).append("; ")
                 }
                 sb.append("]; ")
             }
         }
-        if (sb.isEmpty()) "(no session messages found)" else sb.toString()
+        if (sb.isEmpty()) "(no agent sessions)" else sb.toString()
     } catch (err: Exception) {
         "(messages diagnostics failed: ${err.message})"
     }
@@ -1468,6 +1521,28 @@ class PluginE2eTest {
         }.ifEmpty { "(no plugin card node on screen)" }
     } catch (_: Exception) {
         "(card walk failed)"
+    }
+
+    /**
+     * Where each plugin card row actually sits and how tall it is.
+     *
+     * WHY BOUNDS, NEXT TO THE TEXT. "The card node exists and its subtree has
+     * no text" has two readings, and they are different bugs: a card composed
+     * but measured to nothing (clipped at the transcript's edge, so Compose
+     * lays out no body) leaves exactly that trace, and so does a card whose
+     * body was never there. A non-zero height with no text means the body
+     * itself is missing; a zero or empty rect means the row is in the tree
+     * without being laid out, which is a scroll/measurement answer rather than
+     * a content one. One number separates them, so the dump carries it.
+     */
+    private fun cardGeometry(): String = try {
+        device.findObjects(By.descContains("plugin_card")).joinToString(" || ") { card ->
+            val bounds = runCatching { card.visibleBounds }.getOrNull()
+            (card.contentDescription ?: "?") + "@" + bounds +
+                " h=" + bounds?.height() + " w=" + bounds?.width()
+        }.ifEmpty { "(no plugin card node on screen)" }
+    } catch (_: Exception) {
+        "(card geometry failed)"
     }
 
     /**
