@@ -475,7 +475,22 @@ jobs:
     runs-on: ubuntu-24.04
     # A hung emulator boot or a stalled SDK download would otherwise hold a
     # runner for the 360-minute default.
-    timeout-minutes: 90
+    #
+    # 120, NOT 90, AND THE NUMBER IS A MEASUREMENT RATHER THAN A GUESS. At 90
+    # the cap CANCELLED a run that had 106 of 108 tests done with ZERO
+    # failures (run 40263798436: started 03:24:32, cancelled 04:54:44). A
+    # cancelled job reports nothing about the two it never reached, and the
+    # release job skips on it — so a suite that is merely slow enough read
+    # exactly like a suite that is broken. The suite is 108 instrumented tests
+    # driving a real UI on a 320x640 emulator; 80-95 minutes of test execution
+    # plus ~8 for the boot and the pre-boot APK build is the honest range, and
+    # the old ceiling sat inside it.
+    #
+    # This is a CEILING, not a budget: a run that finishes in 85 minutes still
+    # finishes in 85. The only thing it changes is how long a genuinely hung
+    # emulator is allowed to hold a runner, and 30 extra minutes is a cheaper
+    # price than a release that cannot tell "slow" from "broken".
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v7
