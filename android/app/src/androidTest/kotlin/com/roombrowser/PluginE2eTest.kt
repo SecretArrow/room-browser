@@ -437,6 +437,15 @@ class PluginE2eTest {
                 .map { it.text }.firstOrNull()
             val agentError = device.findObjects(By.textContains("Agent error"))
                 .map { it.text }.firstOrNull()
+            // The provider-empty surface, checked by name. `panelUp` accepts it
+            // as "the panel is up", so a reopen that landed there reads as a
+            // healthy panel to every helper in this file while the chat it
+            // exists to bring back is gone -- and one measured run's logcat
+            // showed exactly that screen arriving seconds after the mid-wait
+            // reopen. Naming it here keeps the next reader from having to
+            // reconstruct it from the log.
+            val providerEmpty = hasText("No AI provider configured", 1_000) ||
+                hasText("Configure providers", 1_000)
             // THE CHAT'S OWN STORED ROWS, and the reason they are in this
             // message. Everything else here describes the SCREEN, and a screen
             // cannot say whether the module's message was never written or was
@@ -451,6 +460,7 @@ class PluginE2eTest {
                     "startup=" + startup + " | notRun=" + notRun +
                     " | showedNothing=" + showedNothing +
                     " | agentError=" + agentError + " | " + counterStateDiagnostics() +
+                    " | providerEmpty=" + providerEmpty +
                     " | reopen=" + reopenNote +
                     " | stored=" + messagesDiagnostics() +
                     " | cards=" + cardSubtreeTexts() +
@@ -1258,7 +1268,6 @@ class PluginE2eTest {
     private fun messagesDiagnostics(): String = try {
         val graph = (targetContext.applicationContext as RoomBrowserApp).graph
         val profiles = runBlocking { graph.profileRepo.profiles() }
-        if (profiles.isEmpty()) return "(no profiles)"
         val sb = StringBuilder()
         profiles.take(3).forEach { profile ->
             val sessions = runBlocking {
@@ -1280,7 +1289,11 @@ class PluginE2eTest {
                 sb.append("]; ")
             }
         }
-        if (sb.isEmpty()) "(no agent sessions)" else sb.toString()
+        when {
+            sb.isNotEmpty() -> sb.toString()
+            profiles.isEmpty() -> "(no profiles)"
+            else -> "(no agent sessions)"
+        }
     } catch (err: Exception) {
         "(messages diagnostics failed: ${err.message})"
     }
