@@ -11,6 +11,11 @@ import org.junit.Test
  * Kotlin object by name and by arity, and nothing but this test would notice if
  * the two drifted apart. A mismatch does not fail loudly — the read simply
  * never reports, and the user sees a download that did nothing.
+ *
+ * The contract pinned here is begin-then-chunks: one
+ * `begin(id, size, name)` before anything moves, then the chunk pump — and the
+ * payload itself is read as a Blob through windowed `slice` calls, never as
+ * one whole ArrayBuffer in the page's heap.
  */
 class BlobReaderScriptTest {
 
@@ -71,5 +76,58 @@ class BlobReaderScriptTest {
         // page ever states a filename.
         assertThat(BlobReaderScript.forUrl("id", url))
             .contains("querySelectorAll('a[download]')")
+    }
+
+    @Test
+    fun the_response_is_read_as_a_blob_not_one_whole_array_buffer() {
+        // G-8: the old script answered the fetch with r.arrayBuffer(), which
+        // materialised the entire payload in the page's heap before the first
+        // byte moved and could OOM the renderer on a real export. The response
+        // is read as a Blob, and only each window pays for its own ArrayBuffer.
+        val script = BlobReaderScript.forUrl("id", url)
+        assertThat(script).contains("return r.blob()")
+        assertThat(script).doesNotContain("r.arrayBuffer()")
+        assertThat(script).contains("slice.arrayBuffer()")
+    }
+
+    @Test
+    fun the_read_is_windowed_through_blob_slices() {
+        // One window at a time in page memory: the slice is bounded by SLICE
+        // (256 KiB) at the front and the blob's own size at the back.
+        val script = BlobReaderScript.forUrl("id", url)
+        assertThat(script)
+            .contains("var slice = blob.slice(start, Math.min(start + SLICE, blob.size))")
+        assertThat(script).contains("var SLICE = ${256 * 1024};")
+    }
+
+    @Test
+    fun the_read_is_announced_before_anything_is_transferred() {
+        // The begin handshake is what lets the native side refuse an over-cap
+        // file before a single byte crosses the bridge, so the begin call has
+        // to precede the data pump in the generated script — measured against
+        // the btoa call, which is the first thing that encodes payload bytes.
+        val script = BlobReaderScript.forUrl("id", url)
+        val beginAt = script.indexOf(".begin(ID, blob.size, name)")
+        val dataAt = script.indexOf("btoa(bin)")
+        assertThat(beginAt).isAtLeast(0)
+        assertThat(dataAt).isAtLeast(0)
+        assertThat(beginAt).isLessThan(dataAt)
+    }
+
+    @Test
+    fun a_refused_begin_stops_the_read_without_transferring() {
+        // A false from begin is a refusal: the script must return without
+        // slicing, not fall through into the pump.
+        assertThat(BlobReaderScript.forUrl("id", url))
+            .contains("if (!iface.begin(ID, blob.size, name)) return;")
+    }
+
+    @Test
+    fun a_missing_begin_half_is_reported_like_any_other_failure() {
+        // Defensive, for a page world whose interface lacks begin: the read
+        // fails through the normal error channel instead of hanging the native
+        // side until its watchdog fires.
+        assertThat(BlobReaderScript.forUrl("id", url))
+            .contains("typeof iface.begin !== 'function'")
     }
 }

@@ -128,6 +128,11 @@ class AiTaskMigrationTest {
             // agent_messages and agent_skills drops, or the replay's
             // 18 -> 19 step dies on a duplicate column. (v10 replay)
             stripAgentMessageUsageColumns(db)
+            // And the v20 -> v21 delta on `downloads`: the replay from v10
+            // climbs all the way to the current version, so its 20 -> 21 step
+            // re-adds `referer` — it must not find the column already there.
+            // (Same contract as every other revertToV* in this suite.)
+            stripDownloadRefererColumn(db)
             db.version = 10
         } finally {
             db.close()

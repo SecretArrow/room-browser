@@ -197,13 +197,24 @@ class RoomSessionListener(
          * The page started a download, or navigated to something the engine
          * cannot render. The app owns the download queue, so it handles every
          * one of these.
+         *
+         * [contentLength] is the engine's declared size (-1 when unknown); it
+         * seeds the row's total so the progress bar has a denominator before
+         * the first response arrives. [referer] is the page URL that offered
+         * the file — it rides every transfer attempt as the Referer header,
+         * because some servers refuse a fetch that does not name the document
+         * that linked to it. A page URL is not a secret and may be persisted;
+         * cookies never travel through this callback at all — the engine
+         * answers those per-URL at request time and they are never stored.
          */
         fun onDownloadRequest(
             session: EngineSession,
             url: String,
             userAgent: String?,
             contentDisposition: String?,
-            mimeType: String?
+            mimeType: String?,
+            contentLength: Long,
+            referer: String?
         )
         fun openNewWindow(session: EngineSession, url: String)
         fun openInNewTab(url: String, isPrivate: Boolean)
@@ -587,9 +598,12 @@ class RoomSessionListener(
         userAgent: String?,
         contentDisposition: String?,
         mimeType: String?,
-        contentLength: Long
+        contentLength: Long,
+        referer: String?
     ): Boolean {
-        callbacks.onDownloadRequest(session, url, userAgent, contentDisposition, mimeType)
+        callbacks.onDownloadRequest(
+            session, url, userAgent, contentDisposition, mimeType, contentLength, referer
+        )
         return true
     }
 }

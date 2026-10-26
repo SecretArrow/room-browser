@@ -1,17 +1,21 @@
 package com.roombrowser.browser
 
+import android.Manifest
 import android.app.Application
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.roombrowser.RoomBrowserApp
@@ -79,6 +83,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
@@ -911,7 +916,9 @@ class BrowserViewModel(
             url: String,
             userAgent: String?,
             contentDisposition: String?,
-            mimeType: String?
+            mimeType: String?,
+            contentLength: Long,
+            referer: String?
         ) {
             // The engine may not know a MIME type; the helper takes a String
             // and only uses it to pick a file extension when neither the
@@ -927,7 +934,9 @@ class BrowserViewModel(
             }
             // The engine's own request UA, not a fresh one: the download must
             // present the same device identity as the page that linked to it.
-            download(url, name, mimeType ?: "", userAgent)
+            // contentLength and referer travel with the row so a resume/retry
+            // after a process death behaves like the original attempt.
+            download(url, name, mimeType ?: "", userAgent, contentLength, referer)
         }
 
         override fun openNewWindow(session: EngineSession, url: String) {
@@ -1173,7 +1182,13 @@ class BrowserViewModel(
             httpClient = dnsMonitor.apply(globalSettings, profile)
             agent.updateClient(httpClient)
             agent.start()
-            downloadEngine = DownloadEngine(getApplication(), browserRepo, httpClient, profileId)
+            downloadEngine = DownloadEngine(
+                getApplication(),
+                browserRepo,
+                httpClient,
+                profileId,
+                cookieProvider = ::cookieStringFor
+            )
             downloadEngine.ensureChannels()
             // Re-queue anything the previous engine left mid-flight and restart
             // the queue — without this a download interrupted by a profile
@@ -2414,8 +2429,80 @@ class BrowserViewModel(
 
     // ---------- Downloads ----------
 
-    /** Queues a download; false when this profile has no engine yet, so a caller does not report a file that was never queued. */
-    fun download(url: String, suggestedName: String, mime: String, userAgent: String? = null): Boolean {
+    /**
+     * How many downloads have asked for the legacy (API 28) storage
+     * permission.
+     *
+     * A COUNTER, not a flag: the browser UI launches the system dialog when
+     * the number grows (same shape as the agent-open signal), so a second
+     * download enqueued without the permission re-fires the ask — and a
+     * recomposition never relaunches one that is already up.
+     */
+    var storagePermissionRequests by mutableIntStateOf(0)
+        private set
+
+    /**
+     * Answers the just-in-time WRITE_EXTERNAL_STORAGE request raised from
+     * the UI. A denial is not fatal: the download was enqueued anyway and
+     * will fail with the engine's honest message naming the permission.
+     */
+    fun respondStoragePermission(granted: Boolean) {
+        if (!granted) {
+            showMessage("Storage permission is needed to save downloads on this Android version")
+        }
+    }
+
+    /**
+     * Raises the just-in-time WRITE_EXTERNAL_STORAGE prompt on API 28, where
+     * downloads are written to the shared Downloads directory directly and
+     * minSdk means the permission is always a runtime ask. Deliberately NOT
+     * a gate — the download is enqueued either way, and blocking the queue
+     * on a dialog that may never be answered is how downloads got lost.
+     */
+    private fun maybeAskLegacyStoragePermission() {
+        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) return
+        val granted = ContextCompat.checkSelfPermission(
+            getApplication(), Manifest.permission.WRITE_EXTERNAL_STORAGE
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) storagePermissionRequests++
+    }
+
+    /**
+     * Cookies for a download URL, answered by a LIVE engine session of this
+     * process.
+     *
+     * SAME-PROFILE BY CONSTRUCTION: a ':browser' process is bound to exactly
+     * one profile (BrowserActivity.bindProcessToProfile — one-shot,
+     * process-wide WebView data suffix), so every session in [tabManager]
+     * belongs to the profile this engine downloads for; there is no
+     * cross-profile session to filter out. That is also why ANY live session
+     * is the right asker, not the active tab's: the WebView edition answers
+     * through the process-global CookieManager, which is exactly what the
+     * bound profile rebinds per process. The call must run on the main
+     * thread ([TabManager.sessions] is main-thread state and the engine asks
+     * for cookies from its IO dispatcher), hence the bounded runBlocking hop.
+     */
+    private fun cookieStringFor(url: String): String? = runBlocking(Dispatchers.Main.immediate) {
+        tabManager.liveEngineSessions()
+            .firstNotNullOfOrNull { runCatching { it.engine?.cookiesFor(url) }.getOrNull() }
+    }
+
+    /**
+     * Queues a download; false when this profile has no engine yet, so a
+     * caller does not report a file that was never queued.
+     *
+     * [contentLength] and [referer] only apply to the HTTP branch: a
+     * page-local save has no request to authenticate, so they are ignored
+     * there rather than stored against a row that can never use them.
+     */
+    fun download(
+        url: String,
+        suggestedName: String,
+        mime: String,
+        userAgent: String? = null,
+        contentLength: Long = -1,
+        referer: String? = null
+    ): Boolean {
         if (!::downloadEngine.isInitialized) return false
         if (DownloadEngine.isPageLocal(url)) {
             // Callers that reach here with a blob:/data: URL (the automation
@@ -2428,7 +2515,10 @@ class BrowserViewModel(
             savePageLocalDownload(session, url, suggestedName, mime)
             return true
         }
-        downloadEngine.enqueue(url, suggestedName, mime, userAgent)
+        // Out of band, non-blocking: the enqueue below happens regardless of
+        // what the user answers (see maybeAskLegacyStoragePermission).
+        maybeAskLegacyStoragePermission()
+        downloadEngine.enqueue(url, suggestedName, mime, userAgent, contentLength, referer)
         return true
     }
 
@@ -2468,7 +2558,10 @@ class BrowserViewModel(
                 return@openDownloadStream
             }
             val name = body.suggestedName.ifBlank { fallbackName }
-            engine.saveStream(name, mime, body.stream, DownloadEngine.MAX_INLINE_BYTES) { ok ->
+            // The page-local cap, not the inline one: the page may hand over
+            // far more than a rendered PDF, and "download it from the site
+            // again" is not an answer for bytes it generated itself.
+            engine.saveStream(name, mime, body.stream, DownloadEngine.MAX_PAGE_LOCAL_BYTES) { ok ->
                 if (!ok) emitMessage("The file could not be saved to Downloads.")
             }
         }

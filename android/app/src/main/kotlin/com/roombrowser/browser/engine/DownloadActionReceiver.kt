@@ -7,11 +7,12 @@ import android.content.Intent
 /**
  * Carries the download notification's buttons back to the engine.
  *
- * These buttons — Pause, Resume, Cancel, Retry, Open — were broadcast to
- * `com.roombrowser.DOWNLOAD_ACTION` and nothing was listening, so every one of
- * them was inert: the notification appeared, the user tapped Pause, and the
- * download carried on. A broadcast receiver is the only way to reach a
- * notification action, and the engine is the only thing that can act on one.
+ * These buttons — Pause, Resume, Cancel, Retry, Open, Share — were broadcast
+ * to `com.roombrowser.DOWNLOAD_ACTION` and nothing was listening, so every
+ * one of them was inert: the notification appeared, the user tapped Pause,
+ * and the download carried on. A broadcast receiver is the only way to reach
+ * a notification action, and the engine is the only thing that can act on
+ * one.
  *
  * The receiver is declared with `process=":browser"` for the same reason:
  * [DownloadEngine.current] is per-process state that only the engine process
@@ -41,6 +42,7 @@ class DownloadActionReceiver : BroadcastReceiver() {
             "cancel" -> engine.cancel(id)
             "retry" -> engine.retry(id)
             "open" -> engine.open(id)
+            "share" -> engine.share(id)
         }
     }
 }

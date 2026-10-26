@@ -245,6 +245,34 @@ interface EngineSession {
     }
 
     /**
+     * The cookies the app's own download client should present for [url], as
+     * the engine's cookie jar sees it RIGHT NOW, or null when there are none
+     * or the URL cannot carry cookies.
+     *
+     * WHY THE APP ASKS THE ENGINE. Downloads are fetched by the app's own HTTP
+     * client, and that client must present the same cookie jar as the page
+     * that linked the file -- an authenticated file host answers a cookie-less
+     * transfer with a login redirect instead of bytes. The jar is also
+     * forbidden from travelling any further: it must never be persisted into
+     * the download database or a stored/resumed transfer, so the app asks
+     * fresh at every attempt and keeps no copy. Asking through this member
+     * rather than reaching into the engine's cookie store directly is what
+     * keeps an engine type off the app's download path; on the WebView edition
+     * the single process-wide `CookieManager` means the answer already
+     * reflects whichever profile the host bound at start-up.
+     *
+     * Only http/https URLs can carry cookies, so only those get an answer; a
+     * cookie string for a page-local scheme (`blob:`, `data:`) is meaningless
+     * and the answer is null, which is also the answer for "no cookies" -- the
+     * caller does not need to tell the two apart, because an absent header is
+     * the correct request either way.
+     *
+     * THE ANSWER IS A CREDENTIAL. Implementations must never log it, and a
+     * caller consumes it into the request header and drops it.
+     */
+    fun cookiesFor(url: String): String? = null
+
+    /**
      * A print adapter for the current document, or null when this engine has
      * no print route of its own.
      *

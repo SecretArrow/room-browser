@@ -9,12 +9,20 @@ package com.roombrowser.engine.webview
  * runs it only agree by inspection, so the agreement is pinned in a unit test
  * rather than left to whoever edits the string next.
  *
- * WHAT THE SCRIPT PROMISES. It calls
- * `window.<interface>.chunk(id, seq, base64, last, error, name)` once per
- * slice, in ascending `seq` from 0, ending with `last = true` — either on the
- * empty final call or on the error call. It stops slicing as soon as the
- * native side returns false, which is how a refused or abandoned read avoids
- * base64-ing a file nobody will take.
+ * WHAT THE SCRIPT PROMISES. It fetches [forUrl]'s url as a BLOB -- never
+ * `r.arrayBuffer()`, which materialised the whole payload in the page's heap
+ * before the first byte crossed the bridge and OOM-killed small devices on
+ * real exports -- and it ANNOUNCES the read before transferring anything:
+ * `window.<interface>.begin(id, size, name)` must return true first, which is
+ * how a file over the native cap is refused before a single byte moves. It
+ * then calls `window.<interface>.chunk(id, seq, base64, last, error, name)`
+ * once per window, in ascending `seq` from 0, ending with `last = true` --
+ * either on the empty final call or on the error call. Each window is
+ * `blob.slice(start, end).arrayBuffer()`, bounded to [SLICE_BYTES] in page
+ * memory at a time, joined in 0x8000-character runs before `btoa` because
+ * `String.fromCharCode.apply` has an argument-count ceiling. It stops slicing
+ * as soon as the native side returns false, which is how a refused or
+ * abandoned read avoids base64-ing a file nobody will take.
  */
 internal object BlobReaderScript {
 
@@ -45,25 +53,43 @@ internal object BlobReaderScript {
             return '';
           }
           var name = hint();
-          fetch(URL_).then(function (r) { return r.arrayBuffer(); }).then(function (buf) {
-            var bytes = new Uint8Array(buf);
+          var iface = window.${WebViewBlobDownloads.INTERFACE};
+          fetch(URL_).then(function (r) { return r.blob(); }).then(function (blob) {
+            // The begin handshake: the native side learns the size here and
+            // may refuse before a single byte crosses the bridge. A missing
+            // begin half is reported through the normal error channel rather
+            // than left hanging.
+            if (!iface || typeof iface.begin !== 'function') {
+              window.${WebViewBlobDownloads.INTERFACE}.chunk(
+                ID, 0, '', true, 'the page could not start the transfer', name
+              );
+              return;
+            }
+            if (!iface.begin(ID, blob.size, name)) return;
             var seq = 0;
             function send() {
               var start = seq * SLICE;
-              if (start >= bytes.length) {
+              if (start >= blob.size) {
                 window.${WebViewBlobDownloads.INTERFACE}.chunk(ID, seq, '', true, '', name);
                 return;
               }
-              var slice = bytes.subarray(start, Math.min(start + SLICE, bytes.length));
-              var bin = '';
-              for (var i = 0; i < slice.length; i += 0x8000) {
-                bin += String.fromCharCode.apply(null, slice.subarray(i, i + 0x8000));
-              }
-              var keep = window.${WebViewBlobDownloads.INTERFACE}.chunk(
-                ID, seq, btoa(bin), false, '', name
-              );
-              seq++;
-              if (keep) setTimeout(send, 0);
+              var slice = blob.slice(start, Math.min(start + SLICE, blob.size));
+              slice.arrayBuffer().then(function (buf) {
+                var bytes = new Uint8Array(buf);
+                var bin = '';
+                for (var i = 0; i < bytes.length; i += 0x8000) {
+                  bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+                }
+                var keep = window.${WebViewBlobDownloads.INTERFACE}.chunk(
+                  ID, seq, btoa(bin), false, '', name
+                );
+                seq++;
+                if (keep) setTimeout(send, 0);
+              }).catch(function (e) {
+                window.${WebViewBlobDownloads.INTERFACE}.chunk(
+                  ID, 0, '', true, String((e && e.message) || e), name
+                );
+              });
             }
             send();
           }).catch(function (e) {

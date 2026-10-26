@@ -85,9 +85,11 @@ import kotlin.math.roundToInt
  * whether to answer a page from [url], so it has to name the document that is
  * actually live and nothing else. NOTHING is published at navigation start:
  * see `onPageStarted` below for why the start url is deliberately a different
- * signal. `getUrl()` IS still read in exactly one place -- the certificate-frame
- * comparison below -- because that is a comparison of urls the engine itself
- * recorded, not a trust decision.
+ * signal. `getUrl()` IS still read in a few named places -- the
+ * certificate-frame comparison below, and the download-referer reads, which
+ * need the document the engine is SHOWING at the moment a download starts
+ * rather than the last committed one -- each a "what is on screen right now"
+ * question, never a trust anchor being published.
  *
  * THREADING. `url`, `title`, `progress` and the two history flags are written
  * by engine callbacks (main thread, via the clients below) and read from any
@@ -783,6 +785,27 @@ internal class WebViewEngineSession(
     }
 
     /**
+     * The process-wide jar's answer for [url], when there is an honest one.
+     *
+     * A cookie string only means anything for a scheme that carries cookies,
+     * so a non-http/https URL is answered null without consulting the manager
+     * -- `CookieManager.getCookie` cannot say anything true about a `blob:`
+     * or `data:` URI anyway. The `runCatching` guards the caller's attempt
+     * path rather than hiding a defect: the manager initialises the engine's
+     * storage lazily, and a download attempt that races process teardown must
+     * degrade to a cookie-less request, not crash the caller. The returned
+     * string is a credential and is NEVER logged -- see the facade member for
+     * the full contract.
+     */
+    override fun cookiesFor(url: String): String? {
+        val scheme = runCatching { Uri.parse(url).scheme }.getOrNull()
+        val carriesCookies = scheme != null &&
+            (scheme.equals("http", ignoreCase = true) || scheme.equals("https", ignoreCase = true))
+        if (!carriesCookies) return null
+        return runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull()
+    }
+
+    /**
      * Capture the engine's back/forward state under an opaque token. Port of
      * `saveEngineStateBeforeDestroy` (BrowserViewModel.kt:1452-1456).
      *
@@ -1469,7 +1492,10 @@ internal class WebViewEngineSession(
          * after [TRANSPORT_REAP_MS] whether or not it ever navigated: the
          * transport only dies when it NAVIGATES, and a `window.open()` with no
          * URL, or one the page keeps as a handle, would otherwise hold a
-         * renderer alive for the life of the process.
+         * renderer alive for the life of the process. One exception, added
+         * with the download wiring below: a target the app takes as a
+         * download never becomes a navigation, so that path reaps the
+         * transport directly once the app has accepted it.
          *
          * THE SECOND CALL'S RETURN VALUE IS NOT CONSULTED. By the time the
          * target is known the transport has already been handed to the engine
@@ -1543,6 +1569,43 @@ internal class WebViewEngineSession(
                     )
                     return true
                 }
+            }
+            // AUDIT G-11. The transport carried no DownloadListener, so a
+            // download opened through window.open() had no native handoff at
+            // the popup stage: the transport's own fetch machinery engaged,
+            // and when the target eventually surfaced through
+            // onNewWindowResolved the app fetched the same URL AGAIN -- a
+            // double GET that burns one-time signed URLs. Wiring the SAME
+            // download listener the session's own WebView has means the app
+            // can take the download here, from the popup, while the page that
+            // started it is still alive. The emit carries no cookies: the app
+            // reads them at transfer time through [cookiesFor], which answers
+            // from the same process-wide jar, fresh at every attempt, so a
+            // stored copy would only ever be a second, staler one.
+            temp.setDownloadListener { url, userAgent, contentDisposition, mimeType, contentLength ->
+                val handled = listener?.onDownloadRequest(
+                    this@WebViewEngineSession,
+                    url,
+                    userAgent,
+                    contentDisposition,
+                    mimeType,
+                    contentLength,
+                    downloadReferer(temp.url)
+                ) ?: false
+                if (handled) {
+                    // The app took the download: stop the transport so it
+                    // completes no fetch of its own, and reap it -- the popup
+                    // has resolved into a transfer rather than a page, so
+                    // there is nothing left for it to become. The same
+                    // stop-then-reap the resolve path above performs, posted
+                    // for the same reason: never destroy mid-callback.
+                    runCatching { temp.stopLoading() }
+                    temp.post { reap() }
+                }
+                // handled == false is today's behaviour, unchanged: the
+                // download machinery drops the body, the navigation callbacks
+                // already ran (or never will), and the reap timer still
+                // collects the transport.
             }
             (resultMsg?.obj as? WebView.WebViewTransport)?.webView = temp
             resultMsg?.sendToTarget()
@@ -1789,9 +1852,30 @@ internal class WebViewEngineSession(
                 userAgent,
                 contentDisposition,
                 mimeType,
-                contentLength
+                contentLength,
+                // Read HERE, at emit time, and never captured earlier: the
+                // page that started this download is whatever the engine is
+                // showing right now, which can be one hop ahead of the last
+                // committed url the facade publishes. A page-local read
+                // (blob:, data:) has no honest referer and offers none --
+                // see [downloadReferer].
+                downloadReferer(webView.url)
             )
         }
+    }
+
+    /**
+     * The page that started a download, when the engine can honestly name
+     * one. Only an http/https page qualifies: the value becomes the transfer's
+     * Referer header, and a `blob:`/`data:` document has no address a server
+     * could check -- sending one would be inventing a referer rather than
+     * reporting one. Null is the honest answer for those, and for "no page".
+     */
+    private fun downloadReferer(pageUrl: String?): String? {
+        val scheme = runCatching { Uri.parse(pageUrl ?: return null).scheme }.getOrNull()
+        val isHttp = scheme != null &&
+            (scheme.equals("http", ignoreCase = true) || scheme.equals("https", ignoreCase = true))
+        return if (isHttp) pageUrl else null
     }
 
     /** Reported when a sub-resource load is refused. Port of

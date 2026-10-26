@@ -49,7 +49,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ChatPluginEntity::class,
         AgentSkillEntity::class
     ],
-    version = 20,
+    version = 21,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -736,6 +736,22 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * v20 -> v21: the download's Referer. Some servers refuse a fetch
+         * that does not name the document that linked to the file, so the
+         * page URL the engine reported rides the transfer request as a
+         * header — and a re-queued row (resume after a process death) needs
+         * it persisted, exactly like the `user_agent` column beside it. A
+         * page URL is not a secret; the transfer's cookies deliberately get
+         * NO column — they are resolved fresh per request through the
+         * engine's cookie provider and must never touch the database.
+         */
+        internal val MIGRATION_20_21 = object : Migration(20, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `downloads` ADD COLUMN `referer` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /**
          * Every migration, oldest first — the ONE list. [build] applies it and
          * the migration tests apply it too, so a version bump cannot leave a
          * test registering a subset that stops short of the current version.
@@ -745,7 +761,8 @@ abstract class AppDatabase : RoomDatabase() {
             MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
             MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
             MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16,
-            MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20
+            MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20,
+            MIGRATION_20_21
         )
 
         @Volatile

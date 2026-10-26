@@ -135,3 +135,50 @@ internal fun stripTaskPlanJsonColumn(db: SQLiteDatabase) {
         "CREATE INDEX `index_ai_tasks_profile_id` ON `ai_tasks` (`profile_id`)"
     )
 }
+
+/**
+ * Undoes the v20->v21 delta on `downloads`, in place: the `referer` column
+ * goes, everything v20 had stays.
+ *
+ * Same pattern again: the migration tests that replay from below v21 must not
+ * leave the column in place, or the replay's 20 -> 21 ADD COLUMN dies with
+ * "duplicate column name" before it tests anything. The shape is the v20
+ * column set written out (the `user_agent` column carries no SQL default in
+ * the entity, so the rebuilt table has none either); the `profile_id` and
+ * `status` indices drop with the table and are recreated.
+ */
+internal fun stripDownloadRefererColumn(db: SQLiteDatabase) {
+    db.execSQL(
+        "CREATE TABLE `downloads_v20` (" +
+            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+            "`profile_id` TEXT NOT NULL, " +
+            "`url` TEXT NOT NULL, " +
+            "`file_name` TEXT NOT NULL, " +
+            "`mime_type` TEXT NOT NULL, " +
+            "`destination` TEXT NOT NULL, " +
+            "`total_bytes` INTEGER NOT NULL, " +
+            "`downloaded_bytes` INTEGER NOT NULL, " +
+            "`status` TEXT NOT NULL, " +
+            "`error` TEXT, " +
+            "`created_at` INTEGER NOT NULL, " +
+            "`completed_at` INTEGER, " +
+            "`user_agent` TEXT NOT NULL)"
+    )
+    db.execSQL(
+        "INSERT INTO `downloads_v20` " +
+            "(`id`, `profile_id`, `url`, `file_name`, `mime_type`, `destination`, " +
+            "`total_bytes`, `downloaded_bytes`, `status`, `error`, `created_at`, " +
+            "`completed_at`, `user_agent`) " +
+            "SELECT `id`, `profile_id`, `url`, `file_name`, `mime_type`, `destination`, " +
+            "`total_bytes`, `downloaded_bytes`, `status`, `error`, `created_at`, " +
+            "`completed_at`, `user_agent` FROM `downloads`"
+    )
+    db.execSQL("DROP TABLE `downloads`")
+    db.execSQL("ALTER TABLE `downloads_v20` RENAME TO `downloads`")
+    db.execSQL(
+        "CREATE INDEX `index_downloads_profile_id` ON `downloads` (`profile_id`)"
+    )
+    db.execSQL(
+        "CREATE INDEX `index_downloads_status` ON `downloads` (`status`)"
+    )
+}

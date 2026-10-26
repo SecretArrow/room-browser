@@ -423,6 +423,17 @@ interface EngineSessionListener {
      * offers a response and is told the app handled it will not fetch the
      * body itself, so returning true and then doing nothing is a silent failed
      * download rather than a harmless no-op.
+     *
+     * [referer] is the page that started the download, when the engine knows
+     * one and it is http/https -- the app sends it as the transfer's Referer
+     * because hotlink-protected hosts reject a fetch that names no page. Null
+     * when the engine has nothing honest to say (no page, or a page-local
+     * `blob:`/`data:` read).
+     *
+     * [referer] deliberately has NO default: a listener whose override no
+     * longer matches this signature has to be a compile error, because the
+     * silent alternative -- the engine's default answering a download the
+     * app's handler never saw -- is a failed download with nothing in any log.
      */
     fun onDownloadRequest(
         session: EngineSession,
@@ -430,7 +441,8 @@ interface EngineSessionListener {
         userAgent: String?,
         contentDisposition: String?,
         mimeType: String?,
-        contentLength: Long
+        contentLength: Long,
+        referer: String?
     ): Boolean = false
 
     /**

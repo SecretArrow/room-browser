@@ -1,5 +1,6 @@
 package com.roombrowser.browser.engine
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,12 +8,15 @@ import android.app.PendingIntent
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.SystemClock
 import android.provider.MediaStore
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.net.toUri
 import com.roombrowser.RoomBrowserApp
 import com.roombrowser.data.db.DownloadEntity
@@ -23,6 +27,7 @@ import com.roombrowser.domain.download.DownloadPlanner
 import com.roombrowser.domain.download.ResumePlan
 import com.roombrowser.domain.download.sanitiseDownloadSubfolder
 import com.roombrowser.domain.model.ProfileId
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -31,6 +36,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -40,6 +46,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
+import java.nio.charset.Charset
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -58,7 +65,20 @@ class DownloadEngine(
     private val context: Context,
     private val repo: BrowserRepository,
     private val client: OkHttpClient,
-    private val profileId: ProfileId
+    private val profileId: ProfileId,
+    /**
+     * Cookie source for the transfer requests, asked per URL at request time.
+     *
+     * PRIVACY PROPERTY: the string returned is scoped by the ENGINE's own
+     * CookieManager to the exact [url] it is asked for — it goes into that
+     * one request's `Cookie` header and nowhere else. It is read FRESH on
+     * every attempt (initial, resume, retry), so a re-login during a long
+     * download keeps working, and nothing is ever persisted: the downloads
+     * table has no cookie column by design, and the value is never logged.
+     * This indirection, rather than a CookieManager import, is also what
+     * keeps the engine type out of the app module (EngineBoundaryTest).
+     */
+    private val cookieProvider: (String) -> String? = { null }
 ) {
 
     companion object {
@@ -74,6 +94,23 @@ class DownloadEngine(
          * page can be enormous; refusing beats filling the user's storage.
          */
         const val MAX_INLINE_BYTES = 64L * 1024 * 1024
+
+        /**
+         * Cap on PAGE-produced bytes published through [saveStream] — a
+         * `blob:`/`data:` read the page itself handed over. Mirrors
+         * `WebViewBlobDownloads.MAX_BYTES` on the engine side (same number,
+         * so the bridge refuses what the saver would refuse and a large
+         * blob never dies on one side of the boundary alone). The old 64 MiB
+         * value stays on [MAX_INLINE_BYTES]: an app-produced render (a page
+         * PDF) is bounded by the print pipeline, while a page can build a
+         * far larger export, and "download it from the site again" is not
+         * always an option for one it generated in the browser.
+         */
+        const val MAX_PAGE_LOCAL_BYTES = 512L * 1024 * 1024
+
+        /** The honest failure a re-queued page-local save (blank url) reports. */
+        private const val PAGE_LOCAL_RETRY_ERROR =
+            "this file was built by the page — download it from the site again"
 
         /** The action the notification buttons broadcast. */
         const val ACTION = "com.roombrowser.DOWNLOAD_ACTION"
@@ -124,12 +161,15 @@ class DownloadEngine(
             return scheme == "blob" || scheme == "data"
         }
 
-        /** RFC 6266-ish filename extraction used by WebView download events. */
+        /** RFC 6266/5987 filename extraction used by engine download events. */
         fun guessFileName(url: String, contentDisposition: String?, mimeType: String): String {
             val fromDisposition = contentDisposition?.let { disposition ->
-                Regex("filename\\*?=(?:UTF-8''|\"?)([^\";]+)\"?", RegexOption.IGNORE_CASE)
-                    .find(disposition)?.groupValues?.get(1)
-            }?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+                // RFC 6266: when a header carries BOTH forms, `filename*`
+                // outranks the plain one — it is the only form that can carry
+                // a non-ASCII name at all, so a server that sends both is
+                // telling us the plain one is a lossy ASCII fallback.
+                rfc5987Filename(disposition) ?: plainFilename(disposition)
+            }
             if (!fromDisposition.isNullOrBlank()) return sanitizeFileName(fromDisposition)
             // A page-local URL's last segment is a UUID or the bytes
             // themselves -- never a filename -- so it is not a source of one.
@@ -141,20 +181,102 @@ class DownloadEngine(
                 }
             }
             if (fromUrl.isNotBlank() && fromUrl.contains('.')) return sanitizeFileName(fromUrl)
+            // Pure Kotlin on purpose: android.webkit.MimeTypeMap lives behind
+            // the engine facade, and this table is the app-side answer for
+            // "what should this MIME call itself" — the common set only,
+            // because a MIME nobody serves a file under is not worth a row.
             val ext = when (mimeType.substringBefore(';').lowercase()) {
                 "text/html" -> ".html"
                 "text/plain" -> ".txt"
+                "text/csv" -> ".csv"
+                "text/calendar" -> ".ics"
                 "image/png" -> ".png"
                 "image/jpeg" -> ".jpg"
                 "image/gif" -> ".gif"
                 "image/webp" -> ".webp"
+                "image/svg+xml" -> ".svg"
                 "application/pdf" -> ".pdf"
                 "application/zip" -> ".zip"
+                "application/json" -> ".json"
+                "application/vnd.android.package-archive" -> ".apk"
+                "application/msword" -> ".doc"
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> ".docx"
+                "application/vnd.ms-excel" -> ".xls"
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" -> ".xlsx"
+                "application/vnd.ms-powerpoint" -> ".ppt"
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation" -> ".pptx"
+                "application/epub+zip" -> ".epub"
+                "application/gzip" -> ".gz"
+                "application/x-tar" -> ".tar"
+                "application/vnd.rar" -> ".rar"
+                "application/x-7z-compressed" -> ".7z"
+                "font/ttf" -> ".ttf"
+                "font/otf" -> ".otf"
                 "audio/mpeg" -> ".mp3"
+                "audio/mp4" -> ".m4a"
+                "audio/x-wav" -> ".wav"
+                "audio/ogg" -> ".ogg"
                 "video/mp4" -> ".mp4"
+                "video/webm" -> ".webm"
+                "video/x-matroska" -> ".mkv"
                 else -> ""
             }
             return "download-${System.currentTimeMillis()}$ext"
+        }
+
+        /**
+         * The RFC 5987 form, `filename*=charset'lang'percent-encoded`, decoded
+         * — or null when this header does not carry one (so the plain form
+         * gets its turn). Percent decoding is done by hand because
+         * [java.net.URLDecoder] treats `+` as a space, which is form
+         * encoding, not RFC 5987: a literal plus in a served name would
+         * silently become a space.
+         */
+        private fun rfc5987Filename(disposition: String): String? {
+            val raw = Regex("filename\\*\\s*=\\s*\"?([^\";]+)\"?", RegexOption.IGNORE_CASE)
+                .find(disposition)?.groupValues?.get(1)?.trim()
+                ?: return null
+            // charset'language'value — the language part may be empty.
+            val parts = raw.split("'", limit = 3)
+            if (parts.size != 3) return null
+            val charset = when (parts[0].trim().lowercase()) {
+                "utf-8" -> Charsets.UTF_8
+                "iso-8859-1" -> Charsets.ISO_8859_1
+                // An unknown charset cannot be decoded faithfully; the plain
+                // form, when present, beats mojibake.
+                else -> return null
+            }
+            return percentDecode(parts[2], charset)
+        }
+
+        /** The plain `filename=` form, quoted and percent-escaped as allowed. */
+        private fun plainFilename(disposition: String): String? =
+            Regex("filename\\s*=\\s*\"?([^\";]+)\"?", RegexOption.IGNORE_CASE)
+                .find(disposition)?.groupValues?.get(1)
+                ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+
+        /** Decodes RFC 5987 percent-encoding as [charset]; null when malformed. */
+        private fun percentDecode(value: String, charset: Charset): String? {
+            val out = java.io.ByteArrayOutputStream()
+            var i = 0
+            while (i < value.length) {
+                when {
+                    value[i] == '%' -> {
+                        if (i + 3 > value.length) return null
+                        val byte = value.substring(i + 1, i + 3).toIntOrNull(16) ?: return null
+                        out.write(byte)
+                        i += 3
+                    }
+                    // Extended-values are ASCII apart from the %-escapes;
+                    // anything above 127 is a malformed header, not bytes.
+                    value[i].code > 127 -> return null
+                    else -> {
+                        out.write(value[i].code)
+                        i++
+                    }
+                }
+            }
+            return runCatching { out.toString(charset.name()) }.getOrNull()
         }
 
         /**
@@ -168,14 +290,24 @@ class DownloadEngine(
          * `publish` joins it to the Downloads directory with `File(dir, name)`.
          * A name of `../../foo` would then be written outside it.
          *
-         * Separators and the Windows-illegal set become `_`, runs of dots
+         * Separators and the Windows-illegal set become `_`, control
+         * characters become `_` too (a LF or NUL inside a name is unreadable
+         * at best and a shell-injection prank at worst), runs of dots
          * collapse, and the result is bounded — which is also what keeps a
-         * hostile name from being a path at all.
+         * hostile name from being a path at all. The bound can split a
+         * surrogate pair (a name ending mid-emoji); a lone high surrogate
+         * with no low after it is dropped, because a broken filename is
+         * worse than a shortened one.
          */
         fun sanitizeFileName(name: String): String =
             name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
                 .replace(Regex("\\.{2,}"), ".")
-                .take(120).ifBlank { "download" }
+                .replace(Regex("[\\u0000-\\u001f]"), "_")
+                .take(120)
+                // A high surrogate as the LAST char can only be a dangling
+                // half of a pair — its low half did not fit inside the bound.
+                .let { if (it.isNotEmpty() && it.last().isHighSurrogate()) it.dropLast(1) else it }
+                .ifBlank { "download" }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -209,7 +341,25 @@ class DownloadEngine(
         }
     }
 
-    fun enqueue(url: String, suggestedName: String, mime: String, userAgent: String?) {
+    /**
+     * Queues an HTTP download.
+     *
+     * [contentLength] seeds the row's total when the engine knew the size
+     * (-1 otherwise), so the progress bar has its denominator before the
+     * first response arrives. [referer] is the page that offered the file;
+     * it rides every transfer attempt as the Referer header, because some
+     * servers refuse a fetch that does not name the linking document. Both
+     * travel with the row so resume/retry after a process death behaves
+     * like the original attempt.
+     */
+    fun enqueue(
+        url: String,
+        suggestedName: String,
+        mime: String,
+        userAgent: String?,
+        contentLength: Long = -1,
+        referer: String? = null
+    ) {
         scope.launch {
             val entity = DownloadEntity(
                 profileId = profileId.value,
@@ -217,11 +367,12 @@ class DownloadEngine(
                 fileName = dedupeName(profileId, sanitizeFileName(suggestedName)),
                 mimeType = mime.ifBlank { "application/octet-stream" },
                 destination = "",
-                totalBytes = -1,
+                totalBytes = if (contentLength > 0) contentLength else -1,
                 downloadedBytes = 0,
                 status = DownloadStatus.QUEUED.name,
                 createdAt = System.currentTimeMillis(),
-                userAgent = userAgent.orEmpty()
+                userAgent = userAgent.orEmpty(),
+                referer = referer.orEmpty()
             )
             repo.insertDownload(entity)
             pump()
@@ -342,14 +493,22 @@ class DownloadEngine(
         val job = scope.launch {
             repo.updateDownloadStatus(entity.id, DownloadStatus.RUNNING.name, null)
             try {
+                // A page-local save's row (blank url) that got re-queued — a
+                // Retry tap, or recover() after a process death — cannot be
+                // executed: there is no URL to request, and the bytes only
+                // ever lived inside the page that made them. Failing honestly
+                // beats a request to "" that dies on the URL scheme. Cancel
+                // keeps working on these rows: this failure respects the same
+                // only-if-still-RUNNING rule recordFailure applies.
+                if (entity.url.isBlank()) throw IOException(PAGE_LOCAL_RETRY_ERROR)
                 val partFile = partFileFor(entity.id).apply { parentFile?.mkdirs() }
                 val declaredTotal = transfer(entity, partFile)
                 val size = partFile.length()
-                val destination = publish(entity, partFile)
+                val published = publish(entity, partFile, entity.id)
                 repo.completeDownload(
                     id = entity.id,
                     status = DownloadStatus.COMPLETED.name,
-                    destination = destination,
+                    destination = published.destination,
                     downloaded = size,
                     total = if (declaredTotal > 0) declaredTotal else size,
                     completedAt = System.currentTimeMillis()
@@ -357,7 +516,7 @@ class DownloadEngine(
                 _speeds.value = _speeds.value - entity.id
                 paused -= entity.id
                 cancelled -= entity.id
-                notifyDone(entity.id, entity.fileName, destination)
+                notifyDone(entity.id, published.fileName, published.destination)
             } catch (e: Throwable) {
                 // NonCancellable: a paused or cancelled job is already cancelled,
                 // and a plain suspend write here would throw before it recorded
@@ -457,9 +616,38 @@ class DownloadEngine(
                 // different UA than the page it came from would be a second,
                 // contradictory identity from the same "handset".
                 entity.userAgent.takeIf { it.isNotBlank() }?.let { header("User-Agent", it) }
+                // Read FRESH on every attempt — initial, resume, retry — so a
+                // re-login during a long download keeps working. The string is
+                // scoped by the engine's own CookieManager to this exact URL
+                // and goes into this request's header and nowhere else: it is
+                // never persisted and never logged.
+                cookieProvider(entity.url)?.takeIf { it.isNotBlank() }
+                    ?.let { header("Cookie", it) }
+                // The document that offered the file — a server that refuses
+                // anonymous fetches of its own links needs to see it.
+                entity.referer.takeIf { it.isNotBlank() }?.let { header("Referer", it) }
             }
             .build()
-        return client.newBuilder().followRedirects(true).build().newCall(request).execute()
+        val response = client.newBuilder().followRedirects(true).build().newCall(request).execute()
+        when (response.code) {
+            // An auth wall is not a network error and cannot heal by asking
+            // again: the body is a sign-in page at best, and streaming it into
+            // the part file would corrupt the download while the progress bar
+            // kept moving. The body is closed and the failure is stated
+            // plainly — no automatic retry.
+            401, 403, 407 -> {
+                response.close()
+                throw IOException(authWallMessage(response.code))
+            }
+        }
+        return response
+    }
+
+    /** User-facing wording for the statuses that mean "sign in first". */
+    private fun authWallMessage(code: Int): String = when (code) {
+        401 -> "The server refused this download (HTTP 401) — the file may need you to sign in to the site first"
+        403 -> "The server refused this download (HTTP 403)"
+        else -> "The server refused this download (HTTP $code) — the network's proxy requires authentication"
     }
 
     /** Bytes per second since the last sample, published for the UI. Null until
@@ -522,12 +710,15 @@ class DownloadEngine(
         }
     }
 
+    /** Where a finished transfer landed, and the name the file has ON DISK. */
+    private data class Published(val destination: String, val fileName: String)
+
     /**
      * Move the finished file into shared Downloads storage.
      * API 29+: MediaStore.Downloads with RELATIVE_PATH Download/<subfolder>.
-     * API 28:  legacy public Downloads directory.
+     * API 28:  legacy public Downloads directory (see [legacyPublish]).
      */
-    private suspend fun publish(entity: DownloadEntity, partFile: File): String {
+    private suspend fun publish(entity: DownloadEntity, partFile: File, rowId: Long): Published {
         // Sanitised where the path is built: the value is user text and the
         // agent can write it too, so the settings row is not the only writer.
         val stored = runCatching {
@@ -551,14 +742,74 @@ class DownloadEngine(
             values.put(MediaStore.Downloads.IS_PENDING, 0)
             resolver.update(uri, values, null, null)
             partFile.delete()
-            uri.toString()
+            Published(uri.toString(), entity.fileName)
         } else {
-            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), subfolder)
-            if (!dir.exists()) dir.mkdirs()
-            val target = File(dir, entity.fileName)
-            partFile.copyTo(target, overwrite = true)
-            partFile.delete()
-            Uri.fromFile(target).toString()
+            legacyPublish(entity, partFile, subfolder, rowId)
+        }
+    }
+
+    /**
+     * The API 28 branch: the shared Downloads directory, written directly.
+     *
+     * TWO properties the old version got wrong. First, permission: without
+     * WRITE_EXTERNAL_STORAGE the write died with a raw EACCES from the
+     * filesystem, which reads as "download failed" with no hint why — the
+     * missing permission is stated instead, and the ViewModel asks for it
+     * out of band, so a retry can actually succeed. Second, clobbering:
+     * `copyTo(overwrite = true)` happily replaced ANY file already in
+     * Downloads with that name — one the DB-only dedupe had never seen
+     * (another app wrote it, or an earlier row was deleted). The name is
+     * therefore resolved against the FILESYSTEM, and when the filesystem
+     * forced a different one the row is updated to match, so the
+     * notification and the list name the file that actually exists.
+     */
+    private suspend fun legacyPublish(
+        entity: DownloadEntity,
+        partFile: File,
+        subfolder: String,
+        rowId: Long
+    ): Published {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            throw IOException("storage permission is needed to save downloads on this Android version")
+        }
+        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), subfolder)
+        if (!dir.exists()) dir.mkdirs()
+        val target = resolveFreeLegacyTarget(dir, entity.fileName)
+        // overwrite = false is the point: the resolution above already picked
+        // a free name, and a concurrent writer winning the race is a file we
+        // did not write and must not replace.
+        partFile.copyTo(target, overwrite = false)
+        partFile.delete()
+        if (target.name != entity.fileName) {
+            // Re-read then rename: a stale full-row write of the entity this
+            // transfer started from would clobber whatever progress or pause
+            // state moved since. (A page-local save hands in rowId 0 until
+            // its insert returns; renaming that would be an update on row 0,
+            // which is a no-op the guard skips.)
+            repo.download(rowId)?.let { repo.updateDownload(it.copy(fileName = target.name)) }
+        }
+        return Published(Uri.fromFile(target).toString(), target.name)
+    }
+
+    /**
+     * The first `name (n).ext` that is free on the FILESYSTEM — not in the
+     * database. The DB dedupe ([dedupeName]) only knows this app's rows;
+     * shared storage holds files from everywhere, and trusting the row set
+     * alone is how a copy landed on top of an existing file.
+     */
+    private fun resolveFreeLegacyTarget(dir: File, wanted: String): File {
+        if (!File(dir, wanted).exists()) return File(dir, wanted)
+        val taken = dir.listFiles()?.mapTo(HashSet()) { it.name } ?: HashSet()
+        val dot = wanted.lastIndexOf('.')
+        val base = if (dot > 0) wanted.substring(0, dot) else wanted
+        val ext = if (dot > 0) wanted.substring(dot) else ""
+        var i = 1
+        while (true) {
+            val candidate = "$base ($i)$ext"
+            if (candidate !in taken) return File(dir, candidate)
+            i++
         }
     }
 
@@ -593,18 +844,23 @@ class DownloadEngine(
                 id = repo.insertDownload(entity)
                 val partFile = partFileFor(id).apply { parentFile?.mkdirs() }
                 val size = source.use { input ->
-                    FileOutputStream(partFile).use { out -> copyCapped(input, out, limitBytes) }
+                    FileOutputStream(partFile).use { out ->
+                        // isActive of THIS coroutine, so a shutdown mid-save
+                        // stops draining the page's stream instead of riding
+                        // it out to the cap.
+                        copyCapped(input, out, limitBytes) { this@launch.isActive }
+                    }
                 }
-                val destination = publish(entity, partFile)
+                val published = publish(entity, partFile, id)
                 repo.completeDownload(
                     id = id,
                     status = DownloadStatus.COMPLETED.name,
-                    destination = destination,
+                    destination = published.destination,
                     downloaded = size,
                     total = size,
                     completedAt = System.currentTimeMillis()
                 )
-                notifyDone(id, entity.fileName, destination)
+                notifyDone(id, published.fileName, published.destination)
                 ok = true
             } catch (e: Throwable) {
                 runCatching { source.close() }
@@ -612,20 +868,42 @@ class DownloadEngine(
                     // A capped or interrupted save leaves a `.part` behind, and
                     // nothing else in the app ever looks at it again.
                     runCatching { partFileFor(id).delete() }
-                    val message = e.message ?: "save failed"
-                    repo.updateDownloadStatus(id, DownloadStatus.FAILED.name, message)
-                    notifyFailure(id, entity.fileName, message)
+                    when {
+                        // Our own cooperative stop (isActive went false) and
+                        // the engine scope being torn down mid-save are the
+                        // same outcome: the save did not finish, and nobody
+                        // pressed a button that deserves a failure notice.
+                        // NonCancellable because a cancelled coroutine would
+                        // throw before recording anything — the same wedge
+                        // start()'s catch guards.
+                        e is CancelledException || e is CancellationException ->
+                            withContext(NonCancellable) {
+                                repo.updateDownloadStatus(id, DownloadStatus.CANCELLED.name, null)
+                                dismiss(id)
+                            }
+                        else -> withContext(NonCancellable) {
+                            val message = e.message ?: "save failed"
+                            repo.updateDownloadStatus(id, DownloadStatus.FAILED.name, message)
+                            notifyFailure(id, entity.fileName, message)
+                        }
+                    }
                 }
             }
             withContext(Dispatchers.Main) { onResult(ok) }
         }
     }
 
-    /** Copies [input] to [out], refusing a source past [limit] bytes. */
-    private fun copyCapped(input: InputStream, out: FileOutputStream, limit: Long): Long {
+    /**
+     * Copies [input] to [out], refusing a source past [limit] bytes and
+     * abandoning the copy the moment [isActive] turns false — otherwise a
+     * shutdown (or any other cancellation of the launching coroutine) kept
+     * draining a page-local stream all the way to the cap.
+     */
+    private fun copyCapped(input: InputStream, out: FileOutputStream, limit: Long, isActive: () -> Boolean): Long {
         val buffer = ByteArray(16 * 1024)
         var total = 0L
         while (true) {
+            if (!isActive()) throw CancelledException()
             val read = input.read(buffer)
             if (read == -1) break
             total += read
@@ -649,7 +927,7 @@ class DownloadEngine(
         scope.launch {
             val dl = repo.download(id) ?: return@launch
             if (dl.status != DownloadStatus.COMPLETED.name) return@launch
-            val uri = dl.destination.toUri()
+            val uri = shareableUri(dl.destination)
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, dl.mimeType)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -662,7 +940,7 @@ class DownloadEngine(
         scope.launch {
             val dl = repo.download(id) ?: return@launch
             if (dl.status != DownloadStatus.COMPLETED.name) return@launch
-            val uri = dl.destination.toUri()
+            val uri = shareableUri(dl.destination)
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = dl.mimeType
                 putExtra(Intent.EXTRA_STREAM, uri)
@@ -720,6 +998,7 @@ class DownloadEngine(
             .setAutoCancel(true)
             .setContentIntent(contentIntent(id, destination))
             .addAction(0, "Open", actionIntent(id, "open"))
+            .addAction(0, "Share", actionIntent(id, "share"))
         post(id, builder.build())
     }
 
@@ -744,12 +1023,34 @@ class DownloadEngine(
     }
 
     /**
+     * The URI another app may be handed for [destination].
+     *
+     * MediaStore content:// destinations pass through unchanged. The legacy
+     * (API 28) branch publishes a raw `file:` URI in shared storage, and
+     * handing one of those to ACTION_VIEW / ACTION_SEND is a
+     * FileUriExposedException on every targetSdk this repo ships — so it is
+     * re-wrapped as a FileProvider content URI first (the provider's
+     * external-path entry covers exactly the directory the legacy branch
+     * writes, Download/). runCatching because a path outside every declared
+     * root throws before the intent is ever built; falling back to the
+     * original URI keeps the tap from doing nothing at all.
+     */
+    private fun shareableUri(destination: String): Uri {
+        val uri = destination.toUri()
+        if (uri.scheme != "file") return uri
+        val path = uri.path ?: return uri
+        return runCatching {
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", File(path))
+        }.getOrDefault(uri)
+    }
+
+    /**
      * Tapping a finished notification opens the file directly, which needs the
      * VIEW intent to be carried by an activity PendingIntent rather than the
      * broadcast the action buttons use.
      */
     private fun contentIntent(id: Long, destination: String): PendingIntent? = runCatching {
-        val uri = destination.toUri()
+        val uri = shareableUri(destination)
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, context.contentResolver.getType(uri) ?: "*/*")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)

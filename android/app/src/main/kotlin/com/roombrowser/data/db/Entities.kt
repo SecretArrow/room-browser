@@ -92,7 +92,17 @@ data class DownloadEntity(
      * went out under a different UA than the original request would be two
      * identities fetching one file.
      */
-    @ColumnInfo(name = "user_agent") val userAgent: String = ""
+    @ColumnInfo(name = "user_agent") val userAgent: String = "",
+    /**
+     * The page URL that offered the file, sent as the transfer request's
+     * `Referer` header — some servers refuse a fetch that does not name the
+     * document that linked to the file, so a re-queued row (resume after a
+     * process death) needs it persisted exactly like the User-Agent beside
+     * it. A page URL is not a secret, so it may be persisted; the transfer's
+     * cookies deliberately have NO column — they are resolved fresh per
+     * request through the engine and must never touch the database.
+     */
+    @ColumnInfo(name = "referer", defaultValue = "") val referer: String = ""
 )
 
 /** Per-profile, per-site permission decisions. */

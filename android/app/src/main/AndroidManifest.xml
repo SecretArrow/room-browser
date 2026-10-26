@@ -438,11 +438,11 @@
             tools:node="merge" />
 
         <!--
-          Download notification actions (Pause / Resume / Cancel / Retry / Open).
-          A notification action can only be delivered as a broadcast, and these
-          were being sent to nothing before this receiver existed. Not exported:
-          the PendingIntents set the package explicitly, so only this app can
-          reach it.
+          Download notification actions (Pause / Resume / Cancel / Retry / Open
+          / Share). A notification action can only be delivered as a broadcast,
+          and these were being sent to nothing before this receiver existed.
+          Not exported: the PendingIntents set the package explicitly, so only
+          this app can reach it.
 
           process=":browser" is load-bearing. The receiver resolves the live
           queue through DownloadEngine.current, a per-process @Volatile that

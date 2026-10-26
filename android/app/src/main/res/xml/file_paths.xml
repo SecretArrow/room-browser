@@ -2,4 +2,11 @@
 <paths>
     <files-path name="downloads" path="downloads/" />
     <cache-path name="shared_cache" path="shared/" />
+    <!-- The legacy (API 28) download branch writes straight into the shared
+         public Downloads directory; external-path is rooted at the external
+         storage root, so "Download/" covers it (including the per-profile
+         subfolder beneath it). Without this entry the open/share path cannot
+         hand a file:// destination to another app as a content URI, and on a
+         targetSdk that means a FileUriExposedException instead of a file. -->
+    <external-path name="external_downloads" path="Download/" />
 </paths>

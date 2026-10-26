@@ -457,6 +457,11 @@ class PluginMigrationTest {
             // agent_messages, agent_skills dropped) or the replay's
             // 18 -> 19 step dies on a duplicate column.
             stripAgentMessageUsageColumns(db)
+            // And the v20 -> v21 delta on `downloads`: the replay from v16
+            // climbs all the way to the current version, so its 20 -> 21 step
+            // re-adds `referer` — it must not find the column already there.
+            // (Same contract as every other revertToV* in this suite.)
+            stripDownloadRefererColumn(db)
             db.version = 16
         } finally {
             db.close()
@@ -478,6 +483,9 @@ class PluginMigrationTest {
             // guard as revertToV16 above.
             stripMessageUsageColumns(db)
             stripTaskPlanJsonColumn(db)
+            // And the v20 -> v21 delta on `downloads`: same duplicate-column
+            // guard as revertToV16 above.
+            stripDownloadRefererColumn(db)
             db.execSQL("DROP TABLE IF EXISTS `room_master_table`")
             db.execSQL(
                 "CREATE TABLE `plugins_v17` (" +

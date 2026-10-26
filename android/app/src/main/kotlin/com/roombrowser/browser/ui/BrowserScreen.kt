@@ -1,5 +1,6 @@
 package com.roombrowser.browser.ui
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
@@ -146,6 +147,28 @@ fun BrowserScreen(
         if (launchedChooser.value === request) return@LaunchedEffect
         launchedChooser.value = request
         filePicker.launch(request.intent)
+    }
+
+    // Legacy (API 28) download storage. The ViewModel bumps the counter when
+    // a download is enqueued without the permission this Android version
+    // needs to save it; the system dialog itself is fired HERE, because only
+    // an Activity can carry a permission request. The guard mirrors the file
+    // chooser above: a recomposition must not relaunch a dialog already up.
+    // Enqueue is never gated on the answer — see the ViewModel's
+    // maybeAskLegacyStoragePermission for the why.
+    val storagePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> viewModel.respondStoragePermission(granted) }
+    val storageAskCount by viewModel.storagePermissionRequests
+    // Saveable, unlike the chooser guard above: the ViewModel counter outlives
+    // an activity recreation, and a plain `remember` would restart at 0 and
+    // re-raise the dialog after a rotation.
+    var storageAskLaunched by rememberSaveable { mutableStateOf(0) }
+    LaunchedEffect(storageAskCount) {
+        if (storageAskCount > 0 && storageAskCount != storageAskLaunched) {
+            storageAskLaunched = storageAskCount
+            storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        }
     }
 
     val printRequest = viewModel.pendingPrint

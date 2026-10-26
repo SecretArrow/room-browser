@@ -255,6 +255,10 @@ class AgentSkillMigrationTest {
         // from here crosses 19 -> 20, and the current-shape table would make
         // that ADD COLUMN die with "duplicate column name".
         stripTaskPlanJsonColumn(openRaw())
+        // v18 also predates the downloads referer column (v21): the replay
+        // from here crosses 20 -> 21, and the current-shape table would make
+        // that ADD COLUMN die with "duplicate column name".
+        stripDownloadRefererColumn(openRaw())
         val db = openRaw()
         try {
             db.execSQL(
