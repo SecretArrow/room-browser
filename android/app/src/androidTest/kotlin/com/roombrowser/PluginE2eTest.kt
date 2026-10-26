@@ -1115,7 +1115,22 @@ class PluginE2eTest {
                 } catch (_: StaleObjectException) {
                     null
                 }
-                if (bounds != null) {
+                // A node whose rect is empty or sits off the window is not an
+                // anchor: an empty Rect answers centerX()/centerY() with 0, so
+                // the rock below would swipe from x=0 -- the screen's own edge,
+                // where the gesture is eaten -- and repeat that for the whole
+                // window. The measured case is the counter card: the dump of a
+                // failed run had its node in the tree with an EMPTY subtree, no
+                // user row and no card text anywhere on screen, and the
+                // assistant's error row at the bottom. The transcript was
+                // pinned at its end with the card above the fold, which is the
+                // ordinary order of events -- the card lands, the turn's tail
+                // lands after it, the auto-scroll follows the tail -- and the
+                // body of a row above the viewport is culled from the semantics
+                // tree.
+                val usable = bounds != null && bounds.width() > 0 && bounds.height() > 0 &&
+                    bounds.centerY() in 0 until device.displayHeight
+                if (usable && bounds != null) {
                     val x = bounds.centerX()
                     val fromY = bounds.centerY().coerceIn(16, device.displayHeight - 16)
                     val toY = if (towardBeginning) {
@@ -1125,6 +1140,15 @@ class PluginE2eTest {
                     }
                     if (toY != fromY) device.swipe(x, fromY, x, toY, 60)
                     towardBeginning = !towardBeginning
+                } else {
+                    // The card is composed but has no place in the window, so
+                    // it is above the fold: drag toward the BEGINNING, finger
+                    // down, content with it. The list clamps at its start, so
+                    // this is idempotent the same way the end-anchored walk is.
+                    device.swipe(
+                        device.displayWidth / 2, device.displayHeight / 3,
+                        device.displayWidth / 2, device.displayHeight * 4 / 5, 80
+                    )
                 }
             } else {
                 // No card composed: the list is scrolled somewhere a card is
