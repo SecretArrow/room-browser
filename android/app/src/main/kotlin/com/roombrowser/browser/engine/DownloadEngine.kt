@@ -130,7 +130,7 @@ class DownloadEngine(
                 Regex("filename\\*?=(?:UTF-8''|\"?)([^\";]+)\"?", RegexOption.IGNORE_CASE)
                     .find(disposition)?.groupValues?.get(1)
             }?.let { java.net.URLDecoder.decode(it, "UTF-8") }
-            if (!fromDisposition.isNullOrBlank()) return sanitize(fromDisposition)
+            if (!fromDisposition.isNullOrBlank()) return sanitizeFileName(fromDisposition)
             // A page-local URL's last segment is a UUID or the bytes
             // themselves -- never a filename -- so it is not a source of one.
             val fromUrl = if (isPageLocal(url)) {
@@ -140,7 +140,7 @@ class DownloadEngine(
                     java.net.URLDecoder.decode(it, "UTF-8")
                 }
             }
-            if (fromUrl.isNotBlank() && fromUrl.contains('.')) return sanitize(fromUrl)
+            if (fromUrl.isNotBlank() && fromUrl.contains('.')) return sanitizeFileName(fromUrl)
             val ext = when (mimeType.substringBefore(';').lowercase()) {
                 "text/html" -> ".html"
                 "text/plain" -> ".txt"
@@ -157,7 +157,22 @@ class DownloadEngine(
             return "download-${System.currentTimeMillis()}$ext"
         }
 
-        private fun sanitize(name: String): String =
+        /**
+         * A filename that cannot leave the directory it is joined to.
+         *
+         * PUBLIC BECAUSE THE PAGE CAN SUPPLY ONE. Every name this engine stores
+         * used to come either from `guessFileName` — which sanitises on the way
+         * out — or from the app itself. A `blob:` download breaks that: the
+         * only place the page ever states a filename is the anchor's `download`
+         * attribute, so the value arrives from a page verbatim, and on API 28
+         * `publish` joins it to the Downloads directory with `File(dir, name)`.
+         * A name of `../../foo` would then be written outside it.
+         *
+         * Separators and the Windows-illegal set become `_`, runs of dots
+         * collapse, and the result is bounded — which is also what keeps a
+         * hostile name from being a path at all.
+         */
+        fun sanitizeFileName(name: String): String =
             name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
                 .replace(Regex("\\.{2,}"), ".")
                 .take(120).ifBlank { "download" }
@@ -199,7 +214,7 @@ class DownloadEngine(
             val entity = DownloadEntity(
                 profileId = profileId.value,
                 url = url,
-                fileName = dedupeName(profileId, suggestedName),
+                fileName = dedupeName(profileId, sanitizeFileName(suggestedName)),
                 mimeType = mime.ifBlank { "application/octet-stream" },
                 destination = "",
                 totalBytes = -1,
@@ -564,7 +579,7 @@ class DownloadEngine(
             val entity = DownloadEntity(
                 profileId = profileId.value,
                 url = "",
-                fileName = dedupeName(profileId, suggestedName),
+                fileName = dedupeName(profileId, sanitizeFileName(suggestedName)),
                 mimeType = mime.ifBlank { "application/octet-stream" },
                 destination = "",
                 totalBytes = -1,

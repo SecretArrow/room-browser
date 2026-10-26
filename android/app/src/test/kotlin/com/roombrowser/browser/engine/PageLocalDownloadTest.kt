@@ -61,4 +61,22 @@ class PageLocalDownloadTest {
         )
         assertThat(name).isEqualTo("report.pdf")
     }
+
+    @Test
+    fun a_name_from_the_page_cannot_become_a_path() {
+        // The anchor's `download` attribute is page-controlled, and the stored
+        // name is joined to the Downloads directory with `File(dir, name)`, so
+        // a name with separators in it would be a write outside that directory.
+        val name = DownloadEngine.sanitizeFileName("../../data/system/passwords.txt")
+        assertThat(name).doesNotContain("/")
+        assertThat(name).doesNotContain("\\")
+        assertThat(name).doesNotContain("..")
+        assertThat(name).isNotEmpty()
+    }
+
+    @Test
+    fun a_name_with_nothing_usable_in_it_falls_back() {
+        assertThat(DownloadEngine.sanitizeFileName("   ")).isEqualTo("download")
+        assertThat(DownloadEngine.sanitizeFileName("")).isEqualTo("download")
+    }
 }
