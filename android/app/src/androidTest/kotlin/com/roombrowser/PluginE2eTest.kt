@@ -552,8 +552,19 @@ class PluginE2eTest {
         )
         assertTrue("The hello again message must reach the composer and send", sendComposer("hello again"))
         assertTrue(
-            "A new chat's module message must start from 1 (per-chat storage)",
-            moduleMessageAppears("Activations in THIS chat: 1", 60_000)
+            "A new chat's module message must start from 1 (per-chat storage). " +
+                counterStateDiagnostics() + " | cards=" + cardSubtreeTexts() +
+                " | tree=" + uiTree(),
+            moduleMessageAppears("Activations in THIS chat: 1", 60_000) ||
+                // Same two-source rule as step 6, for the same measured reason:
+                // the module's message body can land empty while the module
+                // itself ran and wrote its count. The fallback reads the
+                // NEWEST chat's own kv.json -- `counterKvCounts()` walks the
+                // session dirs in chat-id order -- so it is that chat's count
+                // and not some other chat's. If per-chat storage regressed, the
+                // new chat would carry the previous chat's total (3) and this
+                // still fails.
+                counterKvCounts().lastOrNull() == 1
         )
     }
 
