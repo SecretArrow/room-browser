@@ -186,11 +186,13 @@ interface EngineHost {
      *
      * THIS IS A CAPABILITY CLAIM, NOT AN OBSERVATION, and on WebView it is
      * weaker than it reads. It answers whether the installed provider lists
-     * the opt-out feature, and a provider may list it and still send the
-     * header — measured, not assumed: a request arrived at a server carrying
-     * the package name after `configure` had emptied the allow-list. Nothing
-     * the app can do removes a header the engine adds itself. GeckoView sends
-     * no such header and answers true. Callers that need the real answer ask
+     * the opt-out feature — and listing it proves nothing about the wire,
+     * because androidx 1.12.1's implementation of the call behind that feature
+     * is an empty method body. Measured on the other side: the CI emulator's
+     * WebView 83 lists no such feature and sends the header anyway, with the
+     * server receiving this app's package name. Nothing the app can do removes
+     * a header the engine adds itself. GeckoView sends no such header and
+     * answers true. Callers that need the real answer ask
      * [embeddedBrowserHeaderObservation] instead.
      */
     fun suppressesEmbeddedBrowserHeaders(): Boolean = true

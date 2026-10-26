@@ -428,20 +428,29 @@ internal class WebViewEngineSession(
             // -- and it hands every site the app's package name as a
             // fingerprint for free, the same leak the UA work above closes.
             //
-            // WHAT THIS CALL CAN AND CANNOT DO. It is the only control the
-            // platform offers, and it is WEAKER THAN IT LOOKS: androidx's own
-            // contract is that an origin absent from the allow-list "may not
-            // receive the header, depending on the current installed WebView
-            // provider", and a provider is free to keep stamping it anyway.
-            // Measured on the CI emulator, whose WebView 83 lists the feature
-            // and still sends the header: the request arrived at the server
-            // carrying `com.roombrowser.debug` after this call ran. So the
-            // call stays because it is the only lever there is and it is
-            // honoured on some providers, and the screen does not trust it --
-            // `RequestedWithProbe` reports what actually went out rather than
-            // what this asked for. A comment here once claimed an empty list
-            // meant the header was "never sent", which was false and sent
-            // people to update a WebView that was already current.
+            // WHAT THIS CALL CAN AND CANNOT DO, in the two cases that exist.
+            //
+            // WHERE THE PROVIDER LISTS THE FEATURE, the call is a no-op anyway:
+            // androidx 1.12.1's `setRequestedWithHeaderOriginAllowList` is an
+            // EMPTY METHOD BODY whose javadoc says the origin trial "has
+            // ended, so this API no longer does anything". So the lever does
+            // nothing on a provider new enough to offer it.
+            //
+            // WHERE IT DOES NOT LIST IT, there is no lever at all -- and that
+            // is the measured case: on the CI emulator, WebView 83 reports
+            // `isFeatureSupported(REQUESTED_WITH_HEADER_ALLOW_LIST) = false`
+            // and the request still arrived at the server carrying
+            // `com.roombrowser.debug` (logcat tag `RoomIdentity`). androidx's
+            // contract language agrees it is the provider's call -- an origin
+            // absent from the list "may not receive the header, depending on
+            // the current installed WebView provider".
+            //
+            // THE CALL STAYS because it is the only control the platform
+            // offers and it costs one guarded line, and the screen does not
+            // trust it: `RequestedWithProbe` reports what actually went out
+            // rather than what this asked for. A comment here once claimed an
+            // empty list meant the header was "never sent", which was false
+            // and sent people to update a WebView that was already current.
             val optOutSupported =
                 WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)
             if (optOutSupported) {
@@ -1962,11 +1971,12 @@ internal class WebViewEngineSession(
      *
      * WHY BOTH. Whether the opt-out EXISTS and whether it WORKS are different
      * facts, and only the second one reaches a server. A provider that does not
-     * list the feature is one where this app has no lever at all; a provider
-     * that lists it and still stamps the header is one where the lever does
-     * nothing -- measured on the CI emulator's WebView 83, which lists the
-     * feature and sent the header anyway. One number without the other cannot
-     * be read.
+     * list the feature is one where this app has no lever at all -- the CI
+     * emulator's WebView 83, which reports false here and still sends the
+     * header. A provider that lists it is one where the lever is called and
+     * does nothing, because androidx's own implementation of the call is an
+     * empty method. One number without the other cannot be read, which is why
+     * they are written on one line.
      */
     private fun logIdentityOnce(optOutSupported: Boolean) {
         if (identityLogged) return

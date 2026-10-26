@@ -252,9 +252,15 @@ internal class WebViewEngineHost : EngineHost {
 
     /**
      * The provider's answer, not this APK's: `X-Requested-With` is added by the
-     * engine itself, so only an engine that has the opt-out API can be stopped
-     * from sending it. `configure` applies the empty allow-list behind the same
-     * test, so the two cannot disagree about what is on the wire.
+     * engine itself, so only an engine that has the opt-out API can be asked
+     * to stop sending it.
+     *
+     * IT IS AN ANSWER ABOUT THE PROVIDER, NOT A PROMISE ABOUT THE WIRE, and
+     * the name is the closest a capability flag can honestly get. `configure`
+     * calls the opt-out behind this same test, but androidx 1.12.1's
+     * implementation of that call is an empty method, so even a `true` here
+     * means only "the provider advertises the feature". `embeddedBrowserHeaderObservation`
+     * is what callers that need the real answer must use.
      *
      * `@SuppressLint("RestrictedApi")` for the same reason `WebViewEngineSession`
      * carries it: the CONSTANT naming the feature is `@RestrictTo(LIBRARY_GROUP)`
@@ -280,13 +286,16 @@ internal class WebViewEngineHost : EngineHost {
      * provider returns while still sending it. Asking the flag alone therefore
      * labelled every up-to-date device "older than the opt-out".
      *
-     * And the flag is not proof the other way either: a provider can list the
-     * feature and still stamp the header. That is not hypothetical -- on a
-     * WebView that lists it, a request was measured arriving at a server with
-     * `X-Requested-With: <applicationId>` after `configure` had emptied the
-     * allow-list. androidx's own contract allows it: an origin absent from the
-     * list "may not receive the header, depending on the current installed
-     * WebView provider".
+     * And the flag is not proof the other way either, for a reason that has
+     * nothing to do with any one provider: where the feature IS listed, the
+     * call it guards is an empty method body in androidx 1.12.1, so the app
+     * cannot remove the header there either. The measured case is the other
+     * one -- the CI emulator's WebView 83 reports the feature false and sends
+     * `X-Requested-With: <applicationId>` regardless (logcat tag
+     * `RoomIdentity`, and the server received `com.roombrowser.debug`).
+     * androidx's contract language agrees the provider decides: an origin
+     * absent from the allow-list "may not receive the header, depending on the
+     * current installed WebView provider".
      *
      * SO A SIGHTING OUTRANKS THE FLAG. `shouldInterceptRequest` sees every
      * request this session makes; a request that carried the header is proof

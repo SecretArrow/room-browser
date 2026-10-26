@@ -323,13 +323,14 @@ class GoogleIdentityE2eTest {
      *
      * IT THEN BECAME AN UNCONDITIONAL `assertNull`, AND THAT WAS A SECOND
      * BUG, the opposite one. No build of this app can deliver it on every
-     * provider. `configure` empties the allow-list, but androidx's own contract
-     * is that an origin absent from it "may not receive the header, depending
-     * on the current installed WebView provider", and the emulator's WebView 83
-     * — which lists the feature — sent `com.roombrowser.debug` anyway. A test
-     * that asserts a fact no code can control is red for reasons no commit here
-     * can fix, and a permanently red test hides the regressions this file
-     * exists to catch.
+     * provider. `configure` calls the opt-out where the provider lists it, but
+     * androidx 1.12.1's implementation of that call is an empty method body;
+     * and where the provider lists nothing there is no call to make at all —
+     * the emulator's WebView 83 reports the feature false and sent
+     * `com.roombrowser.debug` anyway (logcat tag `RoomIdentity`). A test that
+     * asserts a fact no code can control is red for reasons no commit here can
+     * fix, and a permanently red test hides the regressions this file exists
+     * to catch.
      *
      * THE REPORT CANNOT BE CROSS-CHECKED FROM HERE EITHER, which is why this
      * does not compare the wire against the app's own answer. `BrowserActivity`
