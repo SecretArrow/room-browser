@@ -159,7 +159,7 @@ fun BrowserScreen(
     val storagePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted -> viewModel.respondStoragePermission(granted) }
-    val storageAskCount by viewModel.storagePermissionRequests
+    val storageAskCount = viewModel.storagePermissionRequests
     // Saveable, unlike the chooser guard above: the ViewModel counter outlives
     // an activity recreation, and a plain `remember` would restart at 0 and
     // re-raise the dialog after a rotation.
