@@ -208,6 +208,20 @@ class RoomSessionListener(
         fun openNewWindow(session: EngineSession, url: String)
         fun openInNewTab(url: String, isPrivate: Boolean)
 
+        /**
+         * A navigation to a scheme no engine can render (`tel:`, `sms:`,
+         * `mailto:`, `geo:`, `market://`, `intent://`, ...). The engine has
+         * already abandoned the navigation, so nothing is on screen; the app
+         * hands the URI to the operating system, which owns the apps behind
+         * those schemes.
+         *
+         * [session] is the tab that navigated, and it matters twice: the app
+         * must not launch an external app over a page the user is not looking
+         * at, and an `intent://` fallback URL belongs in [session]'s own web
+         * history, not in whichever tab happens to be active.
+         */
+        fun openExternal(session: EngineSession, url: String)
+
         /** A refused `oct://` navigation: the app's own loader opens it. */
         fun onCircleNavigation(session: EngineSession, url: String)
         fun currentUrl(): String?
@@ -475,6 +489,17 @@ class RoomSessionListener(
      */
     override fun onNewWindowResolved(session: EngineSession, url: String, hasUserGesture: Boolean) {
         callbacks.openNewWindow(session, url)
+    }
+
+    /**
+     * A non-document scheme the engine refused to render. Forwarding only:
+     * which schemes may reach the OS at all was the engine's classifier
+     * ([com.roombrowser.engine.ExternalUrlPolicy], asked only after THIS
+     * class's own navigation policy let the URL through), and building the
+     * Intent, launching it and wording the refusal is the host's policy.
+     */
+    override fun onExternalSchemeRequested(session: EngineSession, uri: String) {
+        callbacks.openExternal(session, uri)
     }
 
     // --------------------------------------------------------- permissions

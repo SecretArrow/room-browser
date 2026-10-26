@@ -33,7 +33,16 @@ data class TabSession(
 class TabManager {
 
     private val sessions = linkedMapOf<String, TabSession>()
-    private val thumbnails = HashMap<String, Bitmap>()
+
+    /**
+     * Captured page renders, capped at [MAX_THUMBS]. INSERTION-ORDERED on
+     * purpose: the cap's eviction takes [LinkedHashMap.keys].firstOrNull --
+     * the entry saved LONGEST AGO -- and a plain HashMap iterates in hash
+     * order, which made that claim false (a newer thumbnail could be dropped
+     * while an arbitrary older one survived). Re-saving an id re-inserts it
+     * at the newest end, so "oldest" means least-recently captured.
+     */
+    private val thumbnails = LinkedHashMap<String, Bitmap>()
 
     /**
      * Back/forward state saved right before an engine is destroyed
@@ -47,8 +56,14 @@ class TabManager {
      * serialised — a WebView `Bundle` in one edition, a GeckoView
      * `SessionState` in the other — is an engine type that may not appear
      * on this side of the facade.
+     *
+     * INSERTION-ORDERED for the same reason as [thumbnails]: the cap below
+     * evicts the entry saved longest ago, which only holds when iteration
+     * follows insertion order (a HashMap's does not). Re-saving an id
+     * re-inserts it at the newest end, so a state freshly written over an
+     * older one counts as fresh.
      */
-    private val savedStates = HashMap<String, EngineState>()
+    private val savedStates = LinkedHashMap<String, EngineState>()
 
     /**
      * Reverse index over live engines: engine -> (owning tab id, that tab's
@@ -174,6 +189,10 @@ class TabManager {
      *  this, which is the same "no history to restore" answer the WebView
      *  edition's empty-bundle guard gave. */
     fun saveEngineState(id: String, state: EngineState) {
+        // remove-then-put moves an existing id to the newest end: the cap
+        // bounds memory, and the entry it may drop is the one saved LONGEST
+        // AGO, not a hash-order accident.
+        savedStates.remove(id)
         savedStates[id] = state
         if (savedStates.size > MAX_SAVED_STATES) {
             savedStates.keys.firstOrNull()?.let { savedStates.remove(it) }
@@ -185,6 +204,10 @@ class TabManager {
 
     fun captureThumbnail(id: String, bitmap: Bitmap?) {
         if (bitmap == null) return
+        // Same save-recency order as [saveEngineState]: re-capturing an id
+        // makes it the newest, so the cap's victim is the least-recently
+        // captured thumbnail, never a hash-order accident.
+        thumbnails.remove(id)
         thumbnails[id] = bitmap
         if (thumbnails.size > MAX_THUMBS) {
             val oldest = thumbnails.keys.firstOrNull()
@@ -204,6 +227,22 @@ class TabManager {
     }
 
     fun privateTabs(): List<TabSession> = sessions.values.filter { it.entity.isPrivate }
+
+    /**
+     * Privacy of the tab OWNING [engine], or [fallback] when no tracked tab
+     * owns it.
+     *
+     * WHY THE FALLBACK IS THE CALLER'S, NOT `false`. The one caller today is
+     * the popup handler, which reaches here only after confirming the firing
+     * session IS the active one; for a session the index has already lost
+     * (mid-teardown, a late callback) the active tab's own flag is the honest
+     * answer, and a hardcoded `false` was exactly the leak this exists to
+     * close: a `window.open` from a PRIVATE tab used to produce a regular
+     * tab, whose cookies went into the profile's on-disk jar and whose visit
+     * went into history — the private session's contents outlived it.
+     */
+    fun ownerIsPrivate(engine: EngineSession?, fallback: Boolean): Boolean =
+        idFor(engine)?.let { get(it)?.entity?.isPrivate } ?: fallback
 
     /** Sessions that currently hold a LIVE engine (the active one included). */
     fun liveEngineSessions(): List<TabSession> =

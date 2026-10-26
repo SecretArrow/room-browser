@@ -47,6 +47,7 @@ import com.roombrowser.engine.EnginePageScripts
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.EngineSessionListener
 import com.roombrowser.engine.EngineState
+import com.roombrowser.engine.ExternalUrlPolicy
 import com.roombrowser.engine.HttpAuthResponder
 import com.roombrowser.engine.NavigationDecision
 import com.roombrowser.engine.PageErrorKind
@@ -1054,6 +1055,29 @@ internal class WebViewEngineSession(
                 request.isForMainFrame,
                 request.hasGesture()
             ) ?: NavigationDecision.Allow
+            // THE APP'S POLICY ANSWERED FIRST: oct:// circles, the
+            // malicious-site list and the https upgrade all decide in
+            // onNavigationRequest, and a Block or LoadDifferent never reaches
+            // the handoff below. What is left and still names a non-document
+            // scheme (`tel:`, `mailto:`, `market://`, `intent://`, ...) cannot
+            // be rendered by any engine -- loading it produces only
+            // ERR_UNKNOWN_URL_SCHEME -- so it is abandoned here and reported
+            // as a handoff the OS may pick up. MAIN FRAME ONLY: a hidden
+            // iframe must not be able to launch the dialer, so a sub-frame's
+            // external navigation keeps the platform's own silent failure,
+            // which is what it did before the handoff existed.
+            //
+            // mainFrameUrl is deliberately NOT updated: the handed-off
+            // navigation never becomes a document, and this field exists to
+            // tell which page a failing certificate belongs to.
+            if (
+                decision == NavigationDecision.Allow &&
+                request.isForMainFrame &&
+                ExternalUrlPolicy.isHandoffTarget(url)
+            ) {
+                listener?.onExternalSchemeRequested(this@WebViewEngineSession, url)
+                return true
+            }
             return when (decision) {
                 NavigationDecision.Allow -> {
                     mainFrameUrl = url
@@ -1494,6 +1518,17 @@ internal class WebViewEngineSession(
                     val target = request.url.toString()
                     tempView.stopLoading()
                     tempView.post { reap() }
+                    // A `target="_blank"` link to a non-document scheme is a
+                    // handoff, not a tab: reporting it through
+                    // onNewWindowResolved would open a tab the engine can only
+                    // fill with ERR_UNKNOWN_URL_SCHEME. The classifier's
+                    // in-app set covers oct://, so a circle link asking for a
+                    // new tab still resolves as a popup exactly as before,
+                    // and http/https popups are untouched.
+                    if (ExternalUrlPolicy.isHandoffTarget(target)) {
+                        listener?.onExternalSchemeRequested(this@WebViewEngineSession, target)
+                        return true
+                    }
                     // The gate above already said yes; this is the second half
                     // of the protocol, and it is the ONLY call that carries a
                     // URL. Reporting it as a fresh request -- which is what an

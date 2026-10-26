@@ -1,6 +1,7 @@
 package com.roombrowser.browser
 
 import android.app.Application
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -935,7 +936,26 @@ class BrowserViewModel(
             // change while the popup's URL is being resolved, so ownership is
             // re-checked here against the tab that actually asked.
             if (session !== activeSession) return
-            viewModelScope.launch { openNewTab(url, isPrivate = false) }
+            // THE POPUP INHERITS THE ASKER'S PRIVACY. A `window.open` from a
+            // private tab used to be hardwired to a regular tab: the popup's
+            // cookies went into the profile's on-disk jar (which the private
+            // session's teardown never touches), its visit went into history,
+            // and it survived the private tab it came from. The owner's row is
+            // the authority; the active tab's own flag is the fallback for a
+            // session the index has already lost (see [TabManager.ownerIsPrivate]).
+            val ownerPrivate = tabManager.ownerIsPrivate(session, pageState.isPrivate)
+            viewModelScope.launch { openNewTab(url, isPrivate = ownerPrivate) }
+        }
+
+        override fun openExternal(session: EngineSession, url: String) {
+            // The same rule the popup gate and every prompt follow: a
+            // background engine must not launch anything over the page the
+            // user is reading. The navigation is already blocked engine-side,
+            // so dropping here is silent and safe. (The popup transport can
+            // fire this after the active tab changed while the target was
+            // being resolved -- the same window openNewWindow re-checks.)
+            if (session !== activeSession) return
+            openExternalUrl(session, url)
         }
 
         /** A circle click. The tab's model URL is set here because the engine reports only
@@ -1392,6 +1412,75 @@ class BrowserViewModel(
                 Log.d(NAV_TAG, "vm=$navId loadUrl same-tab url=$url attached=${session.view.parent != null}")
                 beginLoad(session, url)
             }
+        }
+    }
+
+    /**
+     * Hands a non-document URI to the operating system: `tel:`, `sms:`,
+     * `mailto:`, `geo:`, `market://` and friends name actions, not documents,
+     * and the engine has already abandoned the navigation, so nothing is on
+     * screen to replace.
+     *
+     * intent:// is the one scheme with a documented second life. It is parsed
+     * with the platform's own [Intent.parseUri] and hardened with Chromium's
+     * recipe for page-supplied intents: BROWSABLE only (so only components a
+     * browser may reach resolve it), no explicit component, no selector, no
+     * package -- a page cannot aim it at a private component of some app, and
+     * nothing here overrides the manifest. When nothing resolves, the
+     * standard behaviour is the intent's own `S.browser_fallback_url`, which
+     * this loads in the tab that asked (http/https only; the fallback is
+     * still a web document, and only those are ours to render).
+     *
+     * NO HANDLER AT ALL IS A NOTICE, NOT AN ERROR PAGE. The navigation never
+     * reached the engine, so the user never saw ERR_UNKNOWN_URL_SCHEME; the
+     * snackbar only has to say why nothing opened. startActivity runs from
+     * the application context, which is why NEW_TASK is set (same as
+     * [openScreen]).
+     */
+    private fun openExternalUrl(session: EngineSession, url: String) {
+        val context = getApplication<Application>()
+        val noHandler = { emitMessage("No app on this device can open that link") }
+        if (url.startsWith("intent:", ignoreCase = true)) {
+            val intent = runCatching { Intent.parseUri(url, Intent.URI_INTENT_SCHEME) }
+                .getOrNull()
+            if (intent == null) {
+                noHandler()
+                return
+            }
+            // Chromium's hardening for page-supplied intents (see above).
+            intent.addCategory(Intent.CATEGORY_BROWSABLE)
+            intent.component = null
+            intent.selector = null
+            intent.setPackage(null)
+            // CLEAR_TASK would let a page tear down another app's task stack
+            // as a side effect of opening it; nothing here needs it.
+            intent.flags = intent.flags and Intent.FLAG_ACTIVITY_CLEAR_TASK.inv() or
+                Intent.FLAG_ACTIVITY_NEW_TASK
+            val fallback = intent.getStringExtra(BROWSER_FALLBACK_URL_EXTRA)
+                ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+            try {
+                context.startActivity(intent)
+            } catch (e: ActivityNotFoundException) {
+                if (fallback != null) {
+                    // The fallback navigates the tab that asked -- through the
+                    // ordinary load funnel, so it lands in that tab's history.
+                    viewModelScope.launch { beginLoad(session, fallback) }
+                } else {
+                    noHandler()
+                }
+            } catch (e: SecurityException) {
+                noHandler()
+            }
+            return
+        }
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            context.startActivity(intent)
+        } catch (e: ActivityNotFoundException) {
+            noHandler()
+        } catch (e: SecurityException) {
+            noHandler()
         }
     }
 
@@ -3566,6 +3655,14 @@ class BrowserViewModel(
 
     companion object {
         const val DAY_MS = 24L * 60 * 60 * 1000
+
+        /**
+         * The string extra Chromium writes into an `intent://` URI as
+         * `S.browser_fallback_url` (Intent.parseUri maps the `S.` prefix to
+         * string extras). When nothing on the device resolves the intent,
+         * this URL -- http/https only -- is what the tab loads instead.
+         */
+        private const val BROWSER_FALLBACK_URL_EXTRA = "browser_fallback_url"
 
         // The `SslError.SSL_*` code space the facade fixes for
         // PageErrorKind.CERTIFICATE, spelled out as numbers so that no file

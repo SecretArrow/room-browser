@@ -301,6 +301,36 @@ interface EngineSessionListener {
     ): Boolean = false
 
     /**
+     * The engine was asked to load a URI whose scheme it cannot render --
+     * `tel:`, `sms:`, `mailto:`, `geo:`, `market://`, `intent://` and every
+     * other non-document scheme. The engine has ALREADY abandoned the load by
+     * the time this fires (nothing is rendered, no error page is shown); the
+     * event is the handoff notice: the app may pass the URI to the operating
+     * system, which owns the apps behind those schemes.
+     *
+     * The scheme set is the engine's own [ExternalUrlPolicy.isHandoffTarget].
+     * http/https are NEVER reported here -- a web link is rendered in-app,
+     * and handing one off would offer it to whatever handler the OS picks --
+     * and neither are the other in-app schemes (about/blob/data/javascript/
+     * file) nor the app's own `oct://` circle scheme.
+     *
+     * FIRED FOR MAIN-FRAME NAVIGATIONS ONLY (of the session itself, or of the
+     * throwaway transport behind one of its popups): a hidden iframe must not
+     * be able to launch the dialer, so a sub-frame's external navigation is
+     * left to the engine's own silent failure, exactly as before this event
+     * existed.
+     *
+     * [session] is the tab that navigated. The host must not launch an
+     * external app on behalf of a tab the user is not looking at, and an
+     * `intent://` fallback URL belongs in [session]'s own web history --
+     * which is why the session travels with the URI.
+     *
+     * The default does nothing, which is the honest answer for a listener
+     * with no OS surface: the navigation simply stays abandoned.
+     */
+    fun onExternalSchemeRequested(session: EngineSession, uri: String) {}
+
+    /**
      * A main-frame load failed.
      *
      * Return true to have handled it; returning false lets the engine show its
