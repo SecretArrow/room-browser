@@ -114,6 +114,33 @@ pub fn dedupe_name(name: &str, existing: &[String]) -> String {
         .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0))
 }
 
+/// Best-effort display name for an engine download: the `filename=` item of
+/// a Content-Disposition header when present, otherwise the URL tail
+/// (query/fragment stripped). The result is still passed through
+/// `sanitize_name`/`dedupe_name` when the record is queued.
+pub fn suggested_name(url: &str, content_disposition: &str) -> String {
+    // to_ascii_lowercase never changes byte offsets, so slicing the
+    // original string at positions found in the lowercase copy is safe.
+    let lower = content_disposition.to_ascii_lowercase();
+    if let Some(pos) = lower.find("filename=") {
+        let mut raw = content_disposition[pos + "filename=".len()..].trim().to_string();
+        if raw.starts_with('"') {
+            raw = raw[1..].to_string();
+            if let Some(end) = raw.find('"') {
+                raw.truncate(end);
+            }
+        } else if let Some(end) = raw.find(';') {
+            raw.truncate(end);
+            raw = raw.trim().to_string();
+        }
+        if !raw.is_empty() {
+            return raw;
+        }
+    }
+    let tail = url.split(&['?', '#'][..]).next().unwrap_or(url);
+    tail.rsplit('/').next().unwrap_or("").trim().to_string()
+}
+
 /// `rb_downloads_format_bytes`: `0 B`, `512 B`, `1.4 MB`, `2.0 GB`.
 pub fn format_bytes(bytes: i64) -> String {
     if bytes < 0 {
@@ -355,6 +382,29 @@ mod tests {
         assert_eq!(format_bytes(1024), "1.0 KB");
         assert_eq!(format_bytes(1536 * 1024), "1.5 MB");
         assert_eq!(format_bytes(-1), "?");
+    }
+
+    #[test]
+    fn suggested_name_from_header_and_url() {
+        assert_eq!(
+            suggested_name("https://x/f.zip", "attachment; filename=\"report 2024.pdf\""),
+            "report 2024.pdf"
+        );
+        assert_eq!(
+            suggested_name("https://x/f.zip", "attachment; filename=raw.bin; size=10"),
+            "raw.bin"
+        );
+        assert_eq!(
+            suggested_name("https://x/dir/page.html?a=1#frag", ""),
+            "page.html"
+        );
+        assert_eq!(suggested_name("", ""), "");
+        // filename*= (RFC 5987) is not the plain filename= item; fall back
+        // to the URL tail.
+        assert_eq!(
+            suggested_name("https://x/f.zip", "attachment; filename*=UTF-8''na%C3%AFve.txt"),
+            "f.zip"
+        );
     }
 
     #[test]

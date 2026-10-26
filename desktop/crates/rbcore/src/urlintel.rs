@@ -19,7 +19,11 @@ fn ci_eq(a: &str, b: &str) -> bool {
 }
 
 fn ci_starts(s: &str, prefix: &str) -> bool {
-    s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix)
+    // Byte-slice comparison: indexing a `&[u8]` has no char-boundary
+    // requirement, so multibyte input can never panic here (M-8), and the
+    // ASCII-case-insensitive result is identical to the old str slice.
+    let (sb, pb) = (s.as_bytes(), prefix.as_bytes());
+    sb.len() >= pb.len() && sb[..pb.len()].eq_ignore_ascii_case(pb)
 }
 
 /// Length of a `scheme:` prefix (alpha first char, then alnum/+/-/. then ':'),
@@ -123,6 +127,9 @@ pub fn is_probably_url(input: &str) -> bool {
         return true;
     }
     if ci_starts(t, "localhost") {
+        // Safe: `ci_starts` just matched the 9 ASCII bytes "localhost" (and
+        // the `is_ascii` guard above already filtered non-ASCII input), so
+        // byte 9 is a char boundary.
         let next = t[9..].chars().next();
         return matches!(next, None | Some(':') | Some('/'));
     }
@@ -216,9 +223,16 @@ fn looks_like_ipv6(s: &str) -> bool {
 /// `^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(/.*)?$` case-insensitive.
 fn looks_like_localhost(s: &str) -> bool {
     for name in ["localhost", "127.0.0.1", "[::1]"] {
-        if !ci_eq(&s[..s.len().min(name.len())], name) {
+        // Byte-slice comparison: `[u8]` indexing cannot hit a char-boundary
+        // panic on multibyte input (M-8), and it keeps the offsets identical
+        // to the old str-based slice. A shorter `s` can never equal `name`,
+        // so `sb.len() < nb.len()` skipping matches the old min() semantics.
+        let (sb, nb) = (s.as_bytes(), name.as_bytes());
+        if sb.len() < nb.len() || !sb[..nb.len()].eq_ignore_ascii_case(nb) {
             continue;
         }
+        // The first name.len() bytes just matched an ASCII literal, so byte
+        // name.len() is a char boundary and this str slice cannot panic.
         let mut p = &s[name.len()..];
         if p.starts_with(':') {
             p = &p[1..];
@@ -333,11 +347,15 @@ pub fn decide(input: &str, engine_id: &str) -> String {
 }
 
 pub fn is_http(url: &str) -> bool {
-    url.len() >= 7 && url[..7].eq_ignore_ascii_case("http://")
+    // Byte-slice comparison: a multibyte URL whose 7th byte falls inside a
+    // multi-byte char must return false, not panic (M-8).
+    let b = url.as_bytes();
+    b.len() >= 7 && b[..7].eq_ignore_ascii_case(b"http://")
 }
 
 pub fn is_https(url: &str) -> bool {
-    url.len() >= 8 && url[..8].eq_ignore_ascii_case("https://")
+    let b = url.as_bytes();
+    b.len() >= 8 && b[..8].eq_ignore_ascii_case(b"https://")
 }
 
 /// Host of a `scheme://...` URL (userinfo dropped, brackets kept for IPv6,
@@ -370,6 +388,8 @@ pub fn host_of(url: &str) -> Option<String> {
 /// Display form for the omnibox: hide scheme (keep it when non-http(s)),
 /// hide userinfo, keep host+path+query.
 pub fn display_url(url: &str) -> String {
+    // The str slices below are safe: is_https/is_http just matched an ASCII
+    // literal prefix, so bytes 7/8 are guaranteed char boundaries (M-8).
     if is_https(url) {
         return url[8..].to_string();
     }
@@ -377,6 +397,48 @@ pub fn display_url(url: &str) -> String {
         return url[7..].to_string();
     }
     url.to_string()
+}
+
+/// Minimal percent-encoder over raw bytes: every byte outside the RFC 3986
+/// unreserved set (ALPHA / DIGIT / `-` / `.` / `_` / `~`) is emitted as
+/// `%XX` with uppercase hex. That covers `& = ? # + space " ' < > %` and all
+/// non-ASCII bytes, so a page URL encoded with this can never contribute
+/// query parameters of its own to a wrapper URL.
+fn pct_encode(s: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push('%');
+                out.push(HEX[(b >> 4) as usize] as char);
+                out.push(HEX[(b & 0xf) as usize] as char);
+            }
+        }
+    }
+    out
+}
+
+/// Builds the Google Translate wrapper URL for a page — the desktop port of
+/// Android `PageTranslate.urlFor`, keeping the wrapper shape the shells have
+/// always used (`https://translate.google.com/translate?sl=...&tl=...&u=...`).
+///
+/// Every component is percent-encoded as a whole query-parameter value: the
+/// page's own query string stays inside `u=` (a page containing `&tl=xx` or
+/// `&u=` can no longer rewrite the wrapper's parameters), and a hostile
+/// language code cannot inject parameters either. An empty `raw_url` keeps
+/// the legacy shape with an empty `u=` (the shells guard that case before
+/// calling).
+pub fn translate_url(raw_url: &str, source_lang: &str, target_lang: &str) -> String {
+    format!(
+        "https://translate.google.com/translate?sl={}&tl={}&u={}",
+        pct_encode(source_lang),
+        pct_encode(target_lang),
+        pct_encode(raw_url),
+    )
 }
 
 #[cfg(test)]
@@ -438,5 +500,109 @@ mod tests {
         assert_eq!(host_of("https://user:pass@Example.com:8443/x?q"), Some("Example.com".into()));
         assert_eq!(host_of("http://[::1]:99/x"), Some("[::1]".into()));
         assert_eq!(host_of("about:blank"), None);
+    }
+
+    // --- translate_url (M-9: the desktop PageTranslate port) ----------------
+
+    #[test]
+    fn translate_url_matches_old_wrapper_shape() {
+        // The shells used to build
+        // format!("https://translate.google.com/translate?sl=auto&tl={target}&u={url}")
+        // — same host, same path, same parameter order; only now every
+        // component is percent-encoded.
+        let out = translate_url("https://example.com/page", "auto", "id");
+        assert_eq!(
+            out,
+            format!(
+                "https://translate.google.com/translate?sl=auto&tl={}&u={}",
+                pct_encode("id"),
+                pct_encode("https://example.com/page")
+            )
+        );
+        assert_eq!(
+            out,
+            "https://translate.google.com/translate?sl=auto&tl=id&u=https%3A%2F%2Fexample.com%2Fpage"
+        );
+    }
+
+    #[test]
+    fn translate_url_query_stays_one_value() {
+        // The page's own ?/&/# must stay inside u= — no &tl= / &u= parameter
+        // injection from the wrapped URL.
+        assert_eq!(
+            translate_url("https://x.test/?a=1&b=2#f", "auto", "en"),
+            "https://translate.google.com/translate?sl=auto&tl=en&u=https%3A%2F%2Fx.test%2F%3Fa%3D1%26b%3D2%23f"
+        );
+    }
+
+    #[test]
+    fn translate_url_space_quotes_and_unicode() {
+        // space, quotes, ?, =, + and a literal %20 are all percent-encoded.
+        assert_eq!(
+            translate_url("https://x.test/a b\"c\"?d=e+f%20g", "auto", "ja"),
+            "https://translate.google.com/translate?sl=auto&tl=ja&u=https%3A%2F%2Fx.test%2Fa%20b%22c%22%3Fd%3De%2Bf%2520g"
+        );
+        // All non-ASCII bytes are encoded as UTF-8 with uppercase hex.
+        assert_eq!(pct_encode("日"), "%E6%97%A5");
+        assert_eq!(pct_encode("İ"), "%C4%B0");
+        assert_eq!(pct_encode("🎉"), "%F0%9F%8E%89");
+        assert_eq!(
+            translate_url("https://例え.jp/テスト", "auto", "ja"),
+            "https://translate.google.com/translate?sl=auto&tl=ja&u=https%3A%2F%2F%E4%BE%8B%E3%81%88.jp%2F%E3%83%86%E3%82%B9%E3%83%88"
+        );
+    }
+
+    #[test]
+    fn translate_url_empty_input_keeps_empty_u() {
+        // Legacy format! behaviour for empty input: wrapper with an empty u=.
+        assert_eq!(
+            translate_url("", "auto", "id"),
+            "https://translate.google.com/translate?sl=auto&tl=id&u="
+        );
+    }
+
+    #[test]
+    fn pct_encode_unreserved_passthrough() {
+        // RFC 3986 unreserved set passes through byte-identical.
+        assert_eq!(pct_encode("AZaz09-._~"), "AZaz09-._~");
+        // Every byte the audit named is encoded.
+        assert_eq!(pct_encode("&=?# +\"'<>%"), "%26%3D%3F%23%20%2B%22%27%3C%3E%25");
+        // Language codes go through the same encoder.
+        assert_eq!(
+            translate_url("https://x.test", "auto", "zh-CN&evil=1"),
+            "https://translate.google.com/translate?sl=auto&tl=zh-CN%26evil%3D1&u=https%3A%2F%2Fx.test"
+        );
+    }
+
+    // --- multibyte slicing regressions (M-8) --------------------------------
+
+    #[test]
+    fn classify_survives_multibyte_omnibox_input() {
+        // The first three panicked with `byte index N is not a char boundary`
+        // before the byte-slice fixes: byte 7 lands inside a 3-byte CJK char
+        // (ci_starts), byte 9 inside a CJK char / emoji (looks_like_localhost).
+        assert!(matches!(classify("abcde日://", "duckduckgo"), Input::Search(_, _)));
+        assert!(matches!(classify("localhos日", "duckduckgo"), Input::Search(_, _)));
+        assert!(matches!(classify("localhos🎉", "duckduckgo"), Input::Search(_, _)));
+        assert!(matches!(classify("İstanbul", "duckduckgo"), Input::Search(_, _)));
+        // Non-ASCII localhost-ish input stays out of the localhost branch.
+        assert!(!is_probably_url("localhost日"));
+        assert!(!is_probably_url("🎉🎉🎉"));
+    }
+
+    #[test]
+    fn scheme_predicates_survive_multibyte_urls() {
+        // "https" followed by a 3-byte CJK char: its 7th byte is a UTF-8
+        // continuation byte, so the old str slices panicked. Same for the
+        // Turkish İ run at byte 7 of "İİİİhttps".
+        assert!(!is_http("https日"));
+        assert!(!is_https("İİİİhttps"));
+        assert!(!is_http("http日://x"));
+        // display_url used to panic through is_http on the first input.
+        assert_eq!(display_url("https日://x"), "https日://x");
+        // Positive paths still match and slice on real boundaries.
+        assert!(is_https("https://日.example"));
+        assert_eq!(display_url("https://日.example/テスト"), "日.example/テスト");
+        assert_eq!(display_url("http://例え.jp"), "例え.jp");
     }
 }
