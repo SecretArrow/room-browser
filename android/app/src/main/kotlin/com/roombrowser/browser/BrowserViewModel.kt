@@ -917,6 +917,13 @@ class BrowserViewModel(
             // Content-Disposition nor the URL names one, so an empty string
             // lands on the same "download" fallback an absent type always did.
             val name = DownloadEngine.guessFileName(url, contentDisposition, mimeType ?: "")
+            if (DownloadEngine.isPageLocal(url)) {
+                // A blob:/data: URL names bytes that live inside this page, so
+                // an HTTP client has nothing to fetch. The engine reads them
+                // out of the document and hands back a stream instead.
+                savePageLocalDownload(session, url, name, mimeType ?: "")
+                return
+            }
             // The engine's own request UA, not a fresh one: the download must
             // present the same device identity as the page that linked to it.
             download(url, name, mimeType ?: "", userAgent)
@@ -2320,11 +2327,62 @@ class BrowserViewModel(
 
     /** Queues a download; false when this profile has no engine yet, so a caller does not report a file that was never queued. */
     fun download(url: String, suggestedName: String, mime: String, userAgent: String? = null): Boolean {
-        if (::downloadEngine.isInitialized) {
-            downloadEngine.enqueue(url, suggestedName, mime, userAgent)
+        if (!::downloadEngine.isInitialized) return false
+        if (DownloadEngine.isPageLocal(url)) {
+            // Callers that reach here with a blob:/data: URL (the automation
+            // surface is the one that can) have no page of their own to read
+            // from, so the active tab is the only document that could still
+            // hold those bytes. Wrong guess fails honestly -- the read refuses
+            // and the user is told -- rather than producing a row that dies on
+            // the URL scheme.
+            val session = activeSession ?: return false
+            savePageLocalDownload(session, url, suggestedName, mime)
             return true
         }
-        return false
+        downloadEngine.enqueue(url, suggestedName, mime, userAgent)
+        return true
+    }
+
+    /**
+     * Save a download whose bytes only the page can produce.
+     *
+     * WHY THIS IS NOT `enqueue`. The download engine issues an HTTP request for
+     * whatever it is given, which is right for every ordinary link and
+     * impossible for a `blob:` URL: that names an object in the renderer's
+     * memory, and the origin that made it is the only context in which it
+     * resolves. So the engine reads it out of the page and hands over a stream,
+     * which then travels the same save path a rendered PDF does
+     * ([DownloadEngine.saveStream]) — same Downloads storage, same row in the
+     * browser's own list, same cap.
+     *
+     * THE PAGE'S NAME WINS when it gave one: a `download` attribute is the only
+     * place a blob ever carries a filename, and the app's own guess from the
+     * URL can only be a UUID.
+     */
+    private fun savePageLocalDownload(
+        session: EngineSession,
+        url: String,
+        fallbackName: String,
+        mime: String
+    ) {
+        val engine = if (::downloadEngine.isInitialized) downloadEngine else null
+        if (engine == null) {
+            emitMessage("No profile is open, so the file could not be saved.")
+            return
+        }
+        session.openDownloadStream(url) { body ->
+            if (body == null) {
+                emitMessage(
+                    "This page's file could not be read, so nothing was saved. " +
+                        "Try the page's download button again."
+                )
+                return@openDownloadStream
+            }
+            val name = body.suggestedName.ifBlank { fallbackName }
+            engine.saveStream(name, mime, body.stream, DownloadEngine.MAX_INLINE_BYTES) { ok ->
+                if (!ok) emitMessage("The file could not be saved to Downloads.")
+            }
+        }
     }
 
     fun pauseDownload(id: Long) { if (::downloadEngine.isInitialized) downloadEngine.pause(id) }

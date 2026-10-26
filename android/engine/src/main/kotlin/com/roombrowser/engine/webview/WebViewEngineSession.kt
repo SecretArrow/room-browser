@@ -40,6 +40,7 @@ import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.engine.EngineCertificate
+import com.roombrowser.engine.EngineDownloadStream
 import com.roombrowser.engine.EngineErrorCode
 import com.roombrowser.engine.EnginePageScripts
 import com.roombrowser.engine.EngineSession
@@ -737,6 +738,31 @@ internal class WebViewEngineSession(
         webView.createPrintDocumentAdapter(jobName)
 
     /**
+     * Read a `blob:` / `data:` download out of this session's page.
+     *
+     * WebView's download listener reports those URLs like any other, but the
+     * URL names an object in the renderer's memory rather than a location a
+     * request can be sent to — see [WebViewBlobDownloads]. Only this WebView
+     * holds the document that can resolve it, so the read is delegated there
+     * and never attempted over HTTP.
+     *
+     * Main-thread only, both because `evaluateJavascript` is and because the
+     * callback is promised on the main thread; [runOnMain] supplies the
+     * dispatch either way.
+     */
+    override fun openDownloadStream(url: String, onResult: (EngineDownloadStream?) -> Unit) {
+        runOnMain {
+            if (closed) {
+                onResult(null)
+                return@runOnMain
+            }
+            blobDownloads.read(webView, url) { stream, name ->
+                onResult(stream?.let { EngineDownloadStream(it, name) })
+            }
+        }
+    }
+
+    /**
      * Capture the engine's back/forward state under an opaque token. Port of
      * `saveEngineStateBeforeDestroy` (BrowserViewModel.kt:1452-1456).
      *
@@ -890,6 +916,9 @@ internal class WebViewEngineSession(
     override fun close() {
         if (closed) return
         closed = true
+        // Before the WebView is destroyed: an in-flight blob read is waiting on
+        // this view's document, and its callback would otherwise never arrive.
+        blobDownloads.cancelAll()
         runOnMain {
             // The order is the app's (BrowserViewModel.destroyWebViewQuiet,
             // BrowserViewModel.kt:1398-1419): stop the load, take the view out
@@ -1655,6 +1684,19 @@ internal class WebViewEngineSession(
     }
 
     /**
+     * Reads `blob:` / `data:` downloads out of the page — the one place those
+     * URLs mean anything. Registered as `window.RoomBlob` in the `init` block
+     * below, for the same ordering reason the three bridges above are declared
+     * here: an interface handed to `addJavascriptInterface` before its field is
+     * assigned would be null, and the global would simply not exist.
+     *
+     * One instance per session rather than one per process, because a read is
+     * answered by the WebView that asked, and a session's WebView is the only
+     * one holding the document whose blob it is.
+     */
+    private val blobDownloads = WebViewBlobDownloads(webView.context)
+
+    /**
      * Wiring, deliberately LAST in the file.
      *
      * Kotlin runs property initialisers and `init` blocks in the order they
@@ -1680,6 +1722,9 @@ internal class WebViewEngineSession(
         webView.addJavascriptInterface(vaultPageBridge, WebViewPageChannels.VAULT_INTERFACE)
         webView.addJavascriptInterface(walletPageBridge, WebViewPageChannels.WALLET_INTERFACE)
         webView.addJavascriptInterface(consolePageBridge, WebViewPageChannels.CONSOLE_INTERFACE)
+        // Same reason as the three above: it has to be reachable before a page
+        // can ask for one of its own downloads to be read.
+        webView.addJavascriptInterface(blobDownloads.bridge, WebViewBlobDownloads.INTERFACE)
         // After the clients and the console bridge, so the patch's target global
         // exists by the time any document runs it.
         installConsolePatch()

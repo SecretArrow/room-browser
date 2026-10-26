@@ -19,6 +19,20 @@ import com.roombrowser.engine.devtools.EngineInspector
 interface EngineState
 
 /**
+ * Bytes for a download that has no address outside the page that made it, plus
+ * the name the page gave the file.
+ *
+ * [stream] is the caller's to read and close, off the main thread. [suggestedName]
+ * is empty when the page did not say — a `download` attribute is the only place
+ * a blob ever carries one, and a page that set none has left the app with a
+ * URL that names a UUID.
+ */
+class EngineDownloadStream(
+    val stream: java.io.InputStream,
+    val suggestedName: String
+)
+
+/**
  * The page-world scripts this session installs at document start.
  *
  * These are the app's own scripts -- the device shim, the password-manager
@@ -201,6 +215,34 @@ interface EngineSession {
      * sends the model round a loop it cannot leave.
      */
     fun pdfUnsupportedReason(): String? = null
+
+    /**
+     * Read the body of a download whose URL only means something INSIDE the
+     * page that produced it.
+     *
+     * A `blob:` URL names an object in the renderer's memory, scoped to the
+     * origin that created it; a `data:` URL carries its bytes inline. Neither
+     * can be fetched by an HTTP client, so a download engine that only knows
+     * how to issue requests fails on both — which is what happened: a page
+     * exporting a file to `blob:` produced a download row that failed instantly
+     * with a URL-scheme error, and the user was told nothing.
+     *
+     * So the engine reads it, because only the engine can: the page is its
+     * object, and the read happens in the page's own world. [onResult] receives
+     * the bytes, or null when the page refused, the read failed, or the engine
+     * has no route to it at all — the default here, for an engine whose
+     * downloads are ordinary HTTP and whose `onDownloadRequest` never sees a
+     * `blob:` in the first place.
+     *
+     * The callback is invoked on the main thread and the stream, when non-null,
+     * is the caller's to read and close off it. It is bounded by the caller's
+     * own limit, not by this member: the engine cannot know what the app is
+     * willing to store. The name travels with the bytes because the page is the
+     * only party that ever knew it.
+     */
+    fun openDownloadStream(url: String, onResult: (EngineDownloadStream?) -> Unit) {
+        onResult(null)
+    }
 
     /**
      * A print adapter for the current document, or null when this engine has

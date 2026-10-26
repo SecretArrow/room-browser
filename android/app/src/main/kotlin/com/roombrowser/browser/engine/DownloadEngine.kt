@@ -107,6 +107,23 @@ class DownloadEngine(
             runCatching { nm.cancel(NOTIF_TAG, id.toInt()) }
         }
 
+        /**
+         * Whether [url] names bytes that only the page that made them can
+         * produce.
+         *
+         * A `blob:` URL is an object in the renderer's memory, scoped to the
+         * origin that created it, and a `data:` URL carries its bytes inline.
+         * Neither has a location an HTTP request can be sent to, so enqueuing
+         * one produced a row that failed on the scheme alone — "Expected URL
+         * scheme 'http' or 'https' but was 'blob'" — and a file the page had
+         * already built in memory was never written. These are read out of the
+         * page by the engine instead; see `EngineSession.openDownloadStream`.
+         */
+        fun isPageLocal(url: String): Boolean {
+            val scheme = url.substringBefore(':').lowercase()
+            return scheme == "blob" || scheme == "data"
+        }
+
         /** RFC 6266-ish filename extraction used by WebView download events. */
         fun guessFileName(url: String, contentDisposition: String?, mimeType: String): String {
             val fromDisposition = contentDisposition?.let { disposition ->
@@ -114,8 +131,14 @@ class DownloadEngine(
                     .find(disposition)?.groupValues?.get(1)
             }?.let { java.net.URLDecoder.decode(it, "UTF-8") }
             if (!fromDisposition.isNullOrBlank()) return sanitize(fromDisposition)
-            val fromUrl = url.substringBefore('?').substringAfterLast('/').let {
-                java.net.URLDecoder.decode(it, "UTF-8")
+            // A page-local URL's last segment is a UUID or the bytes
+            // themselves -- never a filename -- so it is not a source of one.
+            val fromUrl = if (isPageLocal(url)) {
+                ""
+            } else {
+                url.substringBefore('?').substringAfterLast('/').let {
+                    java.net.URLDecoder.decode(it, "UTF-8")
+                }
             }
             if (fromUrl.isNotBlank() && fromUrl.contains('.')) return sanitize(fromUrl)
             val ext = when (mimeType.substringBefore(';').lowercase()) {
