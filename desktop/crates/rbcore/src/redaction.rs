@@ -290,7 +290,7 @@ fn mask_line(line: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(line.len() + REDACTED.len());
     let mut cursor = 0;
     for k in 0..marks.len() {
-        let (mstart, mend, secret) = marks[k];
+        let (_, mend, secret) = marks[k];
         let value_end = if k + 1 < marks.len() {
             marks[k + 1].0
         } else {
@@ -502,6 +502,15 @@ fn redact_jwt(bytes: &[u8]) -> Vec<u8> {
 
 /// Android `pemMasked`: the markers stay, the key material between them
 /// goes. `lines()` splits on LF (CR trimmed) as on the JVM.
+/// JVM `lines()` splits on LF and trims one trailing CR per line.
+fn trim_cr(l: &[u8]) -> &[u8] {
+    if l.last() == Some(&b'\r') {
+        &l[..l.len() - 1]
+    } else {
+        l
+    }
+}
+
 fn pem_masked(block: &[u8]) -> String {
     let mut lines: Vec<&[u8]> = Vec::new();
     let mut s = 0;
@@ -515,13 +524,6 @@ fn pem_masked(block: &[u8]) -> String {
     if lines.len() <= 2 {
         return REDACTED.to_string();
     }
-    let trim_cr = |l: &[u8]| -> &[u8] {
-        if l.last() == Some(&b'\r') {
-            &l[..l.len() - 1]
-        } else {
-            l
-        }
-    };
     let mut out = String::new();
     out.push_str(&String::from_utf8_lossy(trim_cr(lines[0])));
     out.push('\n');
