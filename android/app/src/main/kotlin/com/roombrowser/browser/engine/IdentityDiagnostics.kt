@@ -192,14 +192,14 @@ object IdentityDiagnostics {
                         "learns this app's package name from the header."
                 EmbeddedHeaderObservation.PRESENT ->
                     "Sent, naming this app to every site. The engine stamps this " +
-                        "header itself and this app cannot remove it: the only " +
-                        "control the platform offers is an allow-list of origins, " +
-                        "which this app sets to empty on every configure, and " +
-                        "which the installed WebView is not obliged to honour. " +
-                        "Whether it is sent at all depends on that WebView -- a " +
-                        "current one discontinued the header in 2022, and this one " +
-                        "still sends it. The row is here so the fact is visible " +
-                        "rather than assumed."
+                        "header itself and this app cannot remove it. The one control " +
+                        "the platform offers is an allow-list of origins: this app " +
+                        "sets it to empty on every configure where the installed " +
+                        "WebView even offers it, and that call does nothing on a " +
+                        "provider that does. Whether the header is sent at all is " +
+                        "the WebView's decision -- Chromium discontinued it in 2022, " +
+                        "and this provider still sends it. The row is here so the " +
+                        "fact is visible rather than assumed."
                 EmbeddedHeaderObservation.UNOBSERVED ->
                     "Not measured yet. The header is decided on each request, so " +
                         "open a page and read this row again -- a browser that has " +
