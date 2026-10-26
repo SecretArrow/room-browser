@@ -1304,52 +1304,32 @@ jobs:
           fi
           echo "release_id=$ID" >> "$GITHUB_OUTPUT"
 
-          for f in release-out/*; do
-            fname=$(basename "$f")
-            old=$(ASSET_NAME="$fname" gh api "repos/$GITHUB_REPOSITORY/releases/$ID/assets" \
-                    --jq '.[] | select(.name == env.ASSET_NAME) | .id' | head -1 || true)
-            if [ -n "$old" ]; then
-              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$old" > /dev/null
-              echo "replacing: $fname"
+          # Upload through `gh release upload --clobber`, NOT raw
+          # `gh api --method POST repos/:/:releases/$ID/assets`: the API host
+          # answers that POST with a 302 to uploads.github.com, and a
+          # redirected POST arrives there as a GET — a deterministic 404, not
+          # a race. That is exactly what burned v1.0.187 twice ("Created draft
+          # ... / HTTP 404" one second later, then five retries all 404), while
+          # every release before the rewrite (v1.0.181-186) shipped through
+          # `gh release upload` without ever seeing it. --clobber replaces
+          # same-named assets, so a resumed draft can be re-uploaded safely,
+          # and the retry keeps its stderr visible — a swallowed error is how
+          # the last fix flew blind.
+          uploaded=""
+          for attempt in 1 2 3 4 5 6 7 8; do
+            if err=$(gh release upload "$TAG" release-out/* --clobber 2>&1); then
+              uploaded=1
+              break
             fi
-            enc=$(jq -rn --arg n "$fname" '$n | @uri')
-            # api.github.com confirms the draft instantly, but the upload host
-            # (uploads.github.com) can lag a beat and answer 404 for the first
-            # asset upload — seen live on v1.0.187: "Created draft ... / gh: Not
-            # Found (HTTP 404)" one second later. Each retry is idempotent: an
-            # asset already present at the right size counts as done, a
-            # half-uploaded one is deleted before the next attempt, so
-            # duplicates can never accumulate.
-            uploaded=""
-            for attempt in 1 2 3 4 5; do
-              if gh api --method POST "repos/$GITHUB_REPOSITORY/releases/$ID/assets?name=$enc" \
-                   -H "Content-Type: application/octet-stream" --input "$f" > /dev/null 2>&1; then
-                uploaded=1
-                break
-              fi
-              right=$(ASSET_NAME="$fname" ASSET_SIZE="$(stat -c%s "$f")" \
-                        gh api "repos/$GITHUB_REPOSITORY/releases/$ID/assets" \
-                        --jq '.[] | select(.name == env.ASSET_NAME and (.size|tostring) == env.ASSET_SIZE) | .id' \
-                        | head -1 || true)
-              if [ -n "$right" ]; then
-                uploaded=1
-                break
-              fi
-              partial=$(ASSET_NAME="$fname" gh api "repos/$GITHUB_REPOSITORY/releases/$ID/assets" \
-                          --jq '.[] | select(.name == env.ASSET_NAME) | .id' | head -1 || true)
-              if [ -n "$partial" ]; then
-                gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$partial" > /dev/null || true
-                echo "removed the partial upload of $fname before retrying"
-              fi
-              echo "upload of $fname not accepted yet (attempt $attempt) — backing off"
-              sleep $((attempt * 2))
-            done
-            if [ -z "$uploaded" ]; then
-              echo "::error::asset upload kept failing for $fname — the draft stays open, re-run this job to resume it"
-              exit 1
-            fi
-            echo "uploaded: $fname"
+            echo "asset upload attempt $attempt failed: $err"
+            echo "backing off — whatever landed stays, --clobber replaces it on the next try"
+            sleep $((attempt * 5))
           done
+          if [ -z "$uploaded" ]; then
+            echo "::error::asset upload kept failing — the draft stays open, re-run this job to resume it"
+            exit 1
+          fi
+          for f in release-out/*; do echo "uploaded: $(basename "$f")"; done
 
       # -------------------------------------------------------------------
       # ATOMIC PUBLISH, STAGE 2 — VERIFY, THEN PUBLISH. The flip is the
