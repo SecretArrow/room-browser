@@ -12,11 +12,11 @@ import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.engine.BlockedResourceSink
+import com.roombrowser.engine.EmbeddedHeaderObservation
 import com.roombrowser.engine.EngineActivityDelegate
 import com.roombrowser.engine.EngineHost
 import com.roombrowser.engine.EngineOption
 import com.roombrowser.engine.EngineSession
-import com.roombrowser.engine.EmbeddedHeaderObservation
 import com.roombrowser.engine.ResourceFilter
 import java.io.File
 

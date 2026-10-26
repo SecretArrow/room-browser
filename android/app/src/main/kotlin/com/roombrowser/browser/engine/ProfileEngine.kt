@@ -13,13 +13,13 @@ import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.domain.model.WebRtcPolicy
 import com.roombrowser.domain.model.claimedScreen
 import com.roombrowser.engine.BlockedResourceSink
+import com.roombrowser.engine.EmbeddedHeaderObservation
 import com.roombrowser.engine.EngineActivityDelegate
 import com.roombrowser.engine.EngineHost
 import com.roombrowser.engine.EngineOption
 import com.roombrowser.engine.EnginePageScripts
 import com.roombrowser.engine.EngineRuntime
 import com.roombrowser.engine.EngineSession
-import com.roombrowser.engine.EmbeddedHeaderObservation
 import com.roombrowser.engine.ResourceFilter
 import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 
