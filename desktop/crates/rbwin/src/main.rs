@@ -25,10 +25,11 @@ use tao::event_loop::{ControlFlow, EventLoop, EventLoopProxy};
 use tao::platform::windows::WindowExtWindows;
 use tao::window::Window;
 use webview2_com::{
-    CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
+    BytesReceivedChangedEventHandler, CreateCoreWebView2ControllerCompletedHandler,
+    CreateCoreWebView2EnvironmentCompletedHandler, DownloadStartingEventHandler,
     ExecuteScriptCompletedHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler,
-    NewWindowRequestedEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler,
-    WebResourceRequestedEventHandler, DocumentTitleChangedEventHandler,
+    NewWindowRequestedEventHandler, SourceChangedEventHandler, StateChangedEventHandler,
+    WebMessageReceivedEventHandler, WebResourceRequestedEventHandler, DocumentTitleChangedEventHandler,
 };
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use windows::core::*;
@@ -272,24 +273,28 @@ fn main() {
     }
 
     // Session restore (open_tabs/active_tab from the profile settings).
-    {
-        let mut a = app.borrow_mut();
-        let a = a.as_mut().unwrap();
-        let open = a.prefs.open_tabs();
-        let active = a.prefs.active_tab();
-        let env2 = a.env.clone();
-        let hwnd = HWND(a.hwnd as *mut core::ffi::c_void);
-        let prefs2 = a.prefs.clone();
-        drop(a);
-        if open.is_empty() {
-            let home = if prefs2.homepage_enabled() { prefs2.homepage() } else { String::new() };
-            spawn_tab(&env2, hwnd, app.clone(), &home, &prefs2);
-        } else {
-            for url in &open {
-                spawn_tab(&env2, hwnd, app.clone(), url, &prefs2);
-            }
-            let _ = select_tab(app.clone(), active);
+    // The borrow ends with this scope; spawn_tab re-borrows the app.
+    let (open, active, env2, hwnd, prefs2) = {
+        let a = app.borrow();
+        let a = a.as_ref().unwrap();
+        (
+            a.prefs.open_tabs(),
+            a.prefs.active_tab(),
+            a.env.clone(),
+            HWND(a.hwnd as *mut core::ffi::c_void),
+            a.prefs.clone(),
+        )
+    };
+    if open.is_empty() {
+        let home = if prefs2.homepage_enabled() { prefs2.homepage() } else { String::new() };
+        spawn_tab(&env2, hwnd, app.clone(), &home, &prefs2);
+    } else {
+        for url in &open {
+            spawn_tab(&env2, hwnd, app.clone(), url, &prefs2);
         }
+        let _ = select_tab(app.clone(), active);
+    }
+    {
         let a = app.borrow();
         let a = a.as_ref().unwrap();
         a.layout();
@@ -747,6 +752,97 @@ fn install_tab_handlers(webview: &ICoreWebView2, app_ref: AppRef) {
         },
     ));
 
+    // Engine downloads: route them through the rbcore downloads store —
+    // point the engine at a sanitized destination inside the profile's
+    // download directory, queue the record and hook progress/completion on
+    // the download object (added on ICoreWebView2_4).
+    let app_ref8 = app_ref.clone();
+    let download_starting = DownloadStartingEventHandler::create(Box::new(
+        move |_sender: Option<ICoreWebView2>, args: Option<ICoreWebView2DownloadStartingEventArgs>| {
+            if let Some(args) = args {
+                let op = unsafe { args.DownloadOperation() }.ok();
+                if let Some(op) = op {
+                    let url = unsafe { take_pwstr(|p| op.Uri(p)) };
+                    let mime = unsafe { take_pwstr(|p| op.MimeType(p)) };
+                    let disp = unsafe { take_pwstr(|p| op.ContentDisposition(p)) };
+                    let (record_id, dest) = {
+                        let mut a = app_ref8.borrow_mut();
+                        match a.as_mut() {
+                            Some(a) => {
+                                let dir = rbcore::paths::profile_downloads(&a.data_dir, &a.profile_id);
+                                let _ = std::fs::create_dir_all(&dir);
+                                let hint = rbcore::downloads::suggested_name(&url, &disp);
+                                let id = a.downloads.queue(&a.profile_id, &url, &hint, &mime, now_ms());
+                                let name = a
+                                    .downloads
+                                    .items
+                                    .iter()
+                                    .find(|d| d.id == id)
+                                    .map(|d| d.file_name.clone())
+                                    .unwrap_or_else(|| "download".into());
+                                let dest = rbcore::paths::join(&dir, &name);
+                                let _ = a.downloads.set_running(id);
+                                let _ = a.downloads.save(&rbcore::paths::downloads_path(&a.data_dir));
+                                (id, dest)
+                            }
+                            None => return Ok(()),
+                        }
+                    };
+                    let dest_string = dest.to_string_lossy().to_string();
+                    let dest_w = wide(&dest_string);
+                    let _ = unsafe { args.SetResultFilePath(PCWSTR::from_raw(dest_w.as_ptr())) };
+                    // The app renders its own download list from the store.
+                    let _ = unsafe { args.SetHandled(true) };
+                    // Progress stays in memory; the store is written on the
+                    // state change (completed/interrupted), not per chunk.
+                    let app_progress = app_ref8.clone();
+                    let bytes = BytesReceivedChangedEventHandler::create(Box::new(
+                        move |sender: Option<ICoreWebView2DownloadOperation>,
+                              _args: Option<windows::core::IUnknown>| {
+                            if let Some(op) = sender {
+                                let mut received: i64 = 0;
+                                let mut total: i64 = -1;
+                                let _ = unsafe { op.BytesReceived(&mut received) };
+                                let _ = unsafe { op.TotalBytesToReceive(&mut total) };
+                                let mut a = app_progress.borrow_mut();
+                                if let Some(a) = a.as_mut() {
+                                    let _ = a.downloads.set_progress(record_id, received, total);
+                                }
+                            }
+                            Ok(())
+                        },
+                    ));
+                    let mut token_bytes: i64 = 0;
+                    let _ = unsafe { op.add_BytesReceivedChanged(&bytes, &mut token_bytes) };
+                    let app_state = app_ref8.clone();
+                    let dest_final = dest_string.clone();
+                    let state = StateChangedEventHandler::create(Box::new(
+                        move |sender: Option<ICoreWebView2DownloadOperation>,
+                              _args: Option<windows::core::IUnknown>| {
+                            if let Some(op) = sender {
+                                let mut st = COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;
+                                let _ = unsafe { op.State(&mut st) };
+                                let mut a = app_state.borrow_mut();
+                                if let Some(a) = a.as_mut() {
+                                    if st.0 == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED.0 {
+                                        let _ = a.downloads.complete(record_id, &dest_final, now_ms());
+                                    } else if st.0 == COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED.0 {
+                                        let _ = a.downloads.fail(record_id, "interrupted", now_ms());
+                                    }
+                                    let _ = a.downloads.save(&rbcore::paths::downloads_path(&a.data_dir));
+                                }
+                            }
+                            Ok(())
+                        },
+                    ));
+                    let mut token_state: i64 = 0;
+                    let _ = unsafe { op.add_StateChanged(&state, &mut token_state) };
+                }
+            }
+            Ok(())
+        },
+    ));
+
     // The vault/wallet page-side bridges message the host through tab
     // webviews too.
     let app_ref7 = app_ref.clone();
@@ -801,6 +897,10 @@ fn install_tab_handlers(webview: &ICoreWebView2, app_ref: AppRef) {
         let _ = webview.add_NewWindowRequested(&new_window, &mut token);
         let _ = webview.add_WebResourceRequested(&res_requested, &mut token);
         let _ = webview.add_WebMessageReceived(&tab_msg, &mut token);
+        // DownloadStarting lives on ICoreWebView2_4 (WebView2 1.0.1020+).
+        if let Ok(wv4) = webview.cast::<ICoreWebView2_4>() {
+            let _ = wv4.add_DownloadStarting(&download_starting, &mut token);
+        }
     }
 }
 
@@ -810,6 +910,21 @@ fn install_tab_handlers(webview: &ICoreWebView2, app_ref: AppRef) {
 fn handle_msg(app: AppRef, proxy: EventLoopProxy<Msg>, msg: Msg) {
     match msg {
         Msg::Rpc { id, method, params } => {
+            // Async RPCs own their single reply, sent from the script
+            // completion: the chrome keeps only the FIRST reply per id, so
+            // these must skip the generic reply below (a premature Null
+            // would mask the real result).
+            match method.as_str() {
+                "page.find" => {
+                    rpc_page_find(&app, id, &params);
+                    return;
+                }
+                "devtools.panel" => {
+                    rpc_devtools_panel(&app, id, &params);
+                    return;
+                }
+                _ => {}
+            }
             let result = dispatch_rpc(&app, &proxy, id, &method, &params);
             let a = app.borrow();
             if let Some(a) = a.as_ref() {
@@ -838,16 +953,9 @@ fn handle_msg(app: AppRef, proxy: EventLoopProxy<Msg>, msg: Msg) {
                 }
                 return;
             }
-            let a = app.borrow();
-            match a.as_ref() {
-                Some(a) => {
-                    let r = run_page_op(a, &app, &op);
-                    let _ = reply.send(r);
-                }
-                None => {
-                    let _ = reply.send(Err("app gone".into()));
-                }
-            }
+            // run_page_op borrows internally; nothing is held across it.
+            let r = run_page_op(&app, &op);
+            let _ = reply.send(r);
         }
         Msg::AgentDone => {
             let mut a = app.borrow_mut();
@@ -867,7 +975,9 @@ fn handle_msg(app: AppRef, proxy: EventLoopProxy<Msg>, msg: Msg) {
     }
 }
 
-fn run_page_op(a: &App, app_ref: &AppRef, op: &PageOp) -> CoreResult<String> {
+fn run_page_op(app_ref: &AppRef, op: &PageOp) -> CoreResult<String> {
+    let mut guard = app_ref.borrow_mut();
+    let a = guard.as_mut().ok_or("app gone")?;
     match op {
         // RunJs is intercepted in handle_msg (its result is asynchronous).
         PageOp::RunJs { .. } => Ok(String::new()),
@@ -899,38 +1009,129 @@ fn run_page_op(a: &App, app_ref: &AppRef, op: &PageOp) -> CoreResult<String> {
             let env = a.env.clone();
             let hwnd = HWND(a.hwnd as *mut core::ffi::c_void);
             let prefs = a.prefs.clone();
-            spawn_tab_async(&env, hwnd, app_ref.clone(), url, &prefs, Box::new(|_| {}));
+            let url = url.clone();
+            // spawn_tab_async only borrows inside its completion, which the
+            // event loop dispatches after this call has returned.
+            spawn_tab_async(&env, hwnd, app_ref.clone(), &url, &prefs, Box::new(|_| {}));
             Ok("new tab".into())
         }
         PageOp::ListTabs => Ok(serde_json::to_string(
             &a.tabs.iter().map(|t| (t.title.clone(), t.url.clone())).collect::<Vec<_>>(),
         ).map_err(|e| e.to_string())?),
         PageOp::SwitchTab { index } => {
-            drop(a);
-            select_tab(app_ref.clone(), *index).map(|_| "switched".into())
+            // Inline select (no re-borrow): run_page_op already holds the
+            // borrow, so select_tab's borrow_mut here would panic.
+            if *index >= a.tabs.len() {
+                return Err("no tab at that index".into());
+            }
+            a.active = *index as i64;
+            a.layout();
+            a.sync_tabs();
+            a.sync_page();
+            Ok("switched".into())
         }
         PageOp::CloseTab => {
-            let mut a2 = app_ref.borrow_mut();
-            if let Some(a2) = a2.as_mut() {
-                if !a2.tabs.is_empty() {
-                    a2.tabs.remove(a2.active as usize);
-                    a2.active = (a2.tabs.len() as i64 - 1).max(0);
-                    a2.layout();
-                    a2.sync_tabs();
-                    a2.sync_page();
-                }
+            if !a.tabs.is_empty() {
+                a.tabs.remove(a.active as usize);
+                a.active = (a.tabs.len() as i64 - 1).max(0);
+                a.layout();
+                a.sync_tabs();
+                a.sync_page();
             }
             Ok("closed".into())
         }
         PageOp::Download { url, name } => {
-            Ok(format!("download record queued: {url} {name}"))
+            // WebView2 has no explicit "start download" call: navigating to
+            // the URL is the engine API that begins a download when the
+            // response is an attachment; the DownloadStarting handler then
+            // creates the record and the destination.
+            let wv = a.active_webview().ok_or("no active tab")?;
+            let w = wide(url);
+            unsafe { wv.Navigate(PCWSTR::from_raw(w.as_ptr())) }.map_err(|e| e.to_string())?;
+            Ok(format!("download requested: {url} {name}"))
         }
     }
 }
 
+/// `page.find` — runs the find-count script asynchronously and replies once
+/// from the completion; the loop is never blocked.
+fn rpc_page_find(app: &AppRef, id: i64, params: &Value) {
+    let query = params.get("query").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let wv = {
+        let a = app.borrow();
+        a.as_ref().and_then(|a| a.active_webview().cloned())
+    };
+    let wv = match wv {
+        Some(wv) => wv,
+        None => {
+            let a = app.borrow();
+            if let Some(a) = a.as_ref() {
+                a.reply(id, false, Value::String("no tab".into()));
+            }
+            return;
+        }
+    };
+    let app2 = app.clone();
+    execute_script_then(&wv, &rbcore::bridge::find_count_js(&query), Box::new(move |r| {
+        let n: i64 = r.map(|c| c.trim_matches('"').parse().unwrap_or(0)).unwrap_or(0);
+        let a2 = app2.borrow();
+        if let Some(a2) = a2.as_ref() {
+            a2.reply(id, true, json!({"count": n}));
+        }
+    }));
+}
+
+/// `devtools.panel` — same async shape as rpc_page_find; the OVERVIEW panel
+/// is answered inline from the static edition notes.
+fn rpc_devtools_panel(app: &AppRef, id: i64, params: &Value) {
+    let panel = params.get("panel").and_then(|x| x.as_str()).unwrap_or("OVERVIEW").to_string();
+    if panel == "OVERVIEW" {
+        let a = app.borrow();
+        if let Some(a) = a.as_ref() {
+            a.reply(id, true, json!({"text": rbcore::devtools::edition_notes("webview2").join("\n")}));
+        }
+        return;
+    }
+    let js = match panel.as_str() {
+        "CONSOLE" => "(window.__roomConsole ? window.__roomConsole.read() : '[]')".to_string(),
+        "NETWORK" => rbcore::bridge::NETWORK_PROBE_JS.to_string(),
+        _ => rbcore::bridge::SECURITY_PROBE_JS.to_string(),
+    };
+    let wv = {
+        let a = app.borrow();
+        a.as_ref().and_then(|a| a.active_webview().cloned())
+    };
+    let wv = match wv {
+        Some(wv) => wv,
+        None => {
+            let a = app.borrow();
+            if let Some(a) = a.as_ref() {
+                a.reply(id, false, Value::String("no tab".into()));
+            }
+            return;
+        }
+    };
+    let app2 = app.clone();
+    execute_script_then(&wv, &js, Box::new(move |r| {
+        let text = r
+            .map(|raw| {
+                let unescaped: String = serde_json::from_str(raw.trim_matches('"')).unwrap_or(raw.clone());
+                rbcore::redaction::redact(&unescaped)
+            })
+            .unwrap_or_default();
+        let a2 = app2.borrow();
+        if let Some(a2) = a2.as_ref() {
+            a2.reply(id, true, json!({"text": text}));
+        }
+    }));
+}
+
 fn dispatch_rpc(app: &AppRef, proxy: &EventLoopProxy<Msg>, id: i64, method: &str, params: &Value) -> CoreResult<Value> {
-    let mut a = app.borrow_mut();
-    let a = a.as_mut().ok_or("app not ready")?;
+    // `guard` (the RefMut) is dropped by name wherever an arm needs to
+    // re-borrow the app — dropping the `a` reference alone would leave the
+    // borrow alive and panic.
+    let mut guard = app.borrow_mut();
+    let a = guard.as_mut().ok_or("app not ready")?;
     match method {
         "init" => Ok(json!({
             "tabs": a.tabs.iter().map(|t| json!({"title": t.title, "url": t.url})).collect::<Vec<_>>(),
@@ -952,7 +1153,8 @@ fn dispatch_rpc(app: &AppRef, proxy: &EventLoopProxy<Msg>, id: i64, method: &str
             let hwnd = HWND(a.hwnd as *mut core::ffi::c_void);
             let prefs = a.prefs.clone();
             let home = if prefs.homepage_enabled() { prefs.homepage() } else { String::new() };
-            drop(a);
+            // End the borrow for real; the completion re-borrows the app.
+            drop(guard);
             spawn_tab_async(&env, hwnd, app.clone(), &home, &prefs, Box::new(|app2| {
                 let a = app2.borrow();
                 if let Some(a) = a.as_ref() {
@@ -1025,30 +1227,14 @@ fn dispatch_rpc(app: &AppRef, proxy: &EventLoopProxy<Msg>, id: i64, method: &str
                 return Ok(Value::Null);
             }
             let target = a.prefs.translate_target_language();
-            let translated = format!("https://translate.google.com/translate?sl=auto&tl={target}&u={url}");
+            // Shared helper: percent-encodes the URL and the language codes
+            // (rbcore::urlintel — the desktop port of Android PageTranslate).
+            let translated = rbcore::urlintel::translate_url(&url, "auto", &target);
             let w = wide(&translated);
             if let Some(wv) = a.active_webview() {
                 unsafe { wv.Navigate(PCWSTR::from_raw(w.as_ptr())) }.map_err(|e| e.to_string())?;
             }
             Ok(Value::Null)
-        }
-        "page.find" => {
-            let query = params.get("query").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            drop(a);
-            let app2 = app.clone();
-            let wv = {
-                let a = app2.borrow();
-                let a = a.as_ref().ok_or("no tab")?;
-                a.active_webview().cloned().ok_or("no tab")?
-            };
-            execute_script_then(&wv, &rbcore::bridge::find_count_js(&query), Box::new(move |r| {
-                let n: i64 = r.map(|c| c.trim_matches('"').parse().unwrap_or(0)).unwrap_or(0);
-                let a = app2.borrow();
-                if let Some(a) = a.as_ref() {
-                    a.reply(id, true, json!({"count": n}));
-                }
-            }));
-            return Ok(Value::Null);
         }
         "bookmark.toggle" => {
             let url = a.tabs.get(a.active as usize).map(|t| t.url.clone()).unwrap_or_default();
@@ -1174,7 +1360,10 @@ fn dispatch_rpc(app: &AppRef, proxy: &EventLoopProxy<Msg>, id: i64, method: &str
             {
                 let urls: Vec<String> = a.tabs.iter().map(|t| t.url.clone()).collect();
                 let active = a.active.max(0) as usize;
-                if let Some(p) = a.registry.get_mut(&id) {
+                // Persist the OUTGOING profile's session into its OWN
+                // settings — never into the target's (the target's stored
+                // session is restored untouched by the relaunched process).
+                if let Some(p) = a.registry.get_mut(&a.profile_id) {
                     p.settings.set_session(&urls, active);
                     p.last_active_at = now_ms();
                 }
@@ -1184,7 +1373,8 @@ fn dispatch_rpc(app: &AppRef, proxy: &EventLoopProxy<Msg>, id: i64, method: &str
             let _ = a.downloads.save(&rbcore::paths::downloads_path(&a.data_dir));
             let exe = std::env::current_exe().map(|p| p.to_path_buf()).ok();
             let data_dir = a.data_dir.clone();
-            drop(a);
+            // End the borrow before touching the registry file on disk.
+            drop(guard);
             // Record the target profile, then relaunch.
             {
                 let mut reg = ProfileRegistry::load(&data_dir);
@@ -1334,17 +1524,15 @@ fn dispatch_rpc(app: &AppRef, proxy: &EventLoopProxy<Msg>, id: i64, method: &str
                         serde_json::to_string(&username).unwrap(),
                         serde_json::to_string(&password).unwrap()
                     );
-                    drop(a);
+                    let wv = a.active_webview().cloned().ok_or("no tab")?;
+                    // End the outer borrow before the async script run; the
+                    // completion re-borrows the app from the event loop.
+                    drop(guard);
                     let app2 = app.clone();
-                    let wv = {
-                        let a = app2.borrow();
-                        let a = a.as_ref().ok_or("no tab")?;
-                        a.active_webview().cloned().ok_or("no tab")?
-                    };
                     execute_script_then(&wv, &js, Box::new(move |r| {
-                        let a = app2.borrow();
-                        if let Some(a) = a.as_ref() {
-                            a.reply(id, r.is_ok(), Value::Null);
+                        let a2 = app2.borrow();
+                        if let Some(a2) = a2.as_ref() {
+                            a2.reply(id, r.is_ok(), Value::Null);
                         }
                     }));
                     return Ok(Value::Null);
@@ -1415,37 +1603,6 @@ fn dispatch_rpc(app: &AppRef, proxy: &EventLoopProxy<Msg>, id: i64, method: &str
             "note": "The Rust desktop edition of Room Browser.",
         })),
         "devtools.status" => Ok(json!({"notes": rbcore::devtools::edition_notes("webview2")})),
-        "devtools.panel" => {
-            let panel = params.get("panel").and_then(|x| x.as_str()).unwrap_or("OVERVIEW").to_string();
-            if panel == "OVERVIEW" {
-                return Ok(json!({"text": rbcore::devtools::edition_notes("webview2").join("\n")}));
-            }
-            let js = match panel.as_str() {
-                "CONSOLE" => "(window.__roomConsole ? window.__roomConsole.read() : '[]')".to_string(),
-                "NETWORK" => rbcore::bridge::NETWORK_PROBE_JS.to_string(),
-                _ => rbcore::bridge::SECURITY_PROBE_JS.to_string(),
-            };
-            drop(a);
-            let app2 = app.clone();
-            let wv = {
-                let a = app2.borrow();
-                let a = a.as_ref().ok_or("no tab")?;
-                a.active_webview().cloned().ok_or("no tab")?
-            };
-            execute_script_then(&wv, &js, Box::new(move |r| {
-                let text = r
-                    .map(|raw| {
-                        let unescaped: String = serde_json::from_str(raw.trim_matches('"')).unwrap_or(raw.clone());
-                        rbcore::redaction::redact(&unescaped)
-                    })
-                    .unwrap_or_default();
-                let a = app2.borrow();
-                if let Some(a) = a.as_ref() {
-                    a.reply(id, true, json!({"text": text}));
-                }
-            }));
-            Ok(Value::Null)
-        }
         "data.clear" => {
             if let Some(wv) = a.active_webview().cloned() {
                 execute_script_then(&wv, "(function(){try{localStorage.clear();sessionStorage.clear();}catch(e){}return 'cleared'})()", Box::new(|_| {}));
@@ -1484,7 +1641,9 @@ fn dispatch_rpc(app: &AppRef, proxy: &EventLoopProxy<Msg>, id: i64, method: &str
                 .iter()
                 .map(|m| ChatMessage::user(&m.content))
                 .collect();
-            drop(a);
+            // End the borrow before the worker thread starts pushing
+            // events into the loop.
+            drop(guard);
             let proxy_owned = proxy.clone();
             std::thread::spawn(move || {
                 agent_turn(data_dir, profile_id, session_id, text, mode, history, proxy_owned.clone());

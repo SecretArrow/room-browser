@@ -51,6 +51,10 @@ struct Tab {
     url: String,
     title: String,
     loading: bool,
+    /// Stable per-tab id. The GtkStack child name is `tab-{id}` and survives
+    /// close of other tabs, unlike positional names (`tab{index}`) that go
+    /// stale as soon as the Vec shifts.
+    id: u64,
 }
 
 struct App {
@@ -59,6 +63,7 @@ struct App {
     chrome: WebView,
     tabs: Vec<Tab>,
     active: i64,
+    next_tab_id: u64,
     data_dir: PathBuf,
     registry: ProfileRegistry,
     prefs: ProfilePrefs,
@@ -176,6 +181,7 @@ fn main() {
     let _ = std::fs::create_dir_all(&data_path);
     let _ = std::fs::create_dir_all(&cache_path);
     let context = per_profile_context(&data_path, &cache_path);
+    let context2 = context.clone();
 
     // ---- chrome webview (fixed height) ----
     let chrome_ucm = UserContentManager::new();
@@ -213,6 +219,7 @@ fn main() {
             chrome: chrome.clone(),
             tabs: Vec::new(),
             active: -1,
+            next_tab_id: 1,
             data_dir: data_dir.clone(),
             registry,
             prefs: prefs.clone(),
@@ -235,23 +242,22 @@ fn main() {
     }
 
     // ---- session restore ----
-    {
-        let mut a = app.borrow_mut();
-        let a = a.as_mut().unwrap();
-        let open = a.prefs.open_tabs();
-        let active = a.prefs.active_tab();
-        let ctx = a.context.clone();
-        let prefs2 = a.prefs.clone();
-        drop(a);
-        if open.is_empty() {
-            let home = if prefs2.homepage_enabled() { prefs2.homepage() } else { String::new() };
-            spawn_tab(&ctx, app.clone(), &home, &prefs2);
-        } else {
-            for url in &open {
-                spawn_tab(&ctx, app.clone(), url, &prefs2);
-            }
-            let _ = select_tab(app.clone(), active);
+    // The borrow ends with this scope; spawn_tab re-borrows the app.
+    let (open, active, ctx, prefs2) = {
+        let a = app.borrow();
+        let a = a.as_ref().unwrap();
+        (a.prefs.open_tabs(), a.prefs.active_tab(), a.context.clone(), a.prefs.clone())
+    };
+    if open.is_empty() {
+        let home = if prefs2.homepage_enabled() { prefs2.homepage() } else { String::new() };
+        spawn_tab(&ctx, app.clone(), &home, &prefs2);
+    } else {
+        for url in &open {
+            spawn_tab(&ctx, app.clone(), url, &prefs2);
         }
+        let _ = select_tab(app.clone(), active);
+    }
+    {
         let a = app.borrow();
         let a = a.as_ref().unwrap();
         a.sync_tabs();
@@ -268,9 +274,33 @@ fn main() {
         });
     }
 
-    window.connect_destroy(|_| {
-        gtk::main_quit();
-    });
+    // Closing the window persists the active profile's session (and agent
+    // sessions) so the next launch restores it — the counterpart of the
+    // Windows CloseRequested handler.
+    {
+        let app_close = app.clone();
+        window.connect_destroy(move |_| {
+            let mut a = app_close.borrow_mut();
+            if let Some(a) = a.as_mut() {
+                let urls: Vec<String> = a.tabs.iter().map(|t| t.url.clone()).collect();
+                if let Some(p) = a.registry.get_mut(&a.profile_id) {
+                    p.settings.set_session(&urls, a.active.max(0) as usize);
+                }
+                let _ = a.registry.save(&a.data_dir);
+                let _ = a.agent_sessions.save(&a.data_dir, &a.profile_id);
+            }
+            drop(a);
+            gtk::main_quit();
+        });
+    }
+
+    // ---- engine downloads → downloads.jsonl ----
+    {
+        let app_dl = app.clone();
+        context2.connect_download_started(move |_ctx, download| {
+            handle_download_started(&app_dl, download);
+        });
+    }
 
     gtk::main();
 }
@@ -382,9 +412,13 @@ fn spawn_tab(context: &WebContext, app_ref: AppRef, url: &str, prefs: &ProfilePr
     webview.show();
     let mut a = app_ref.borrow_mut();
     let a = a.as_mut().unwrap();
-    let name = format!("tab{}", a.tabs.len());
+    // Stable child name keyed by the model tab id: close of another tab
+    // shifts the Vec but never invalidates this name.
+    let id = a.next_tab_id;
+    a.next_tab_id += 1;
+    let name = format!("tab-{id}");
     a.stack.add_named(&webview, &name);
-    a.tabs.push(Tab { webview, url: url.to_string(), title: String::new(), loading: false });
+    a.tabs.push(Tab { webview, url: url.to_string(), title: String::new(), loading: false, id });
     a.active = (a.tabs.len() - 1) as i64;
     a.stack.set_visible_child_name(&name);
 }
@@ -407,11 +441,106 @@ fn select_tab(app_ref: AppRef, index: usize) -> CoreResult<()> {
         return Err("no tab at that index".into());
     }
     a.active = index as i64;
-    let name = format!("tab{index}");
+    let name = format!("tab-{}", a.tabs[index].id);
     a.stack.set_visible_child_name(&name);
     a.sync_tabs();
     a.sync_page();
     Ok(())
+}
+
+/// WebKitGTK `download-started`: assign a sanitized destination inside the
+/// profile's download directory, queue the rbcore record and hook progress
+/// and completion onto the WebKitDownload object. Runs on the GTK loop.
+fn handle_download_started(app_ref: &AppRef, download: &webkit2gtk::Download) {
+    let (profile_id, url, mime, hint) = {
+        let a = app_ref.borrow();
+        let a = match a.as_ref() {
+            Some(a) => a,
+            None => return,
+        };
+        let url = download
+            .request()
+            .and_then(|r| r.uri().map(|s| s.to_string()))
+            .unwrap_or_default();
+        let mime = download
+            .response()
+            .and_then(|r| r.mime_type().map(|s| s.to_string()))
+            .unwrap_or_default();
+        // WebKit knows the suggested name; fall back to the URL tail.
+        let hint = download
+            .response()
+            .and_then(|r| r.suggested_filename().map(|s| s.to_string()))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| rbcore::downloads::suggested_name(&url, ""));
+        (a.profile_id.clone(), url, mime, hint)
+    };
+    let (record_id, dest) = {
+        let mut a = app_ref.borrow_mut();
+        let a = match a.as_mut() {
+            Some(a) => a,
+            None => return,
+        };
+        let dir = rbcore::paths::profile_downloads(&a.data_dir, &a.profile_id);
+        let _ = std::fs::create_dir_all(&dir);
+        let id = a.downloads.queue(&profile_id, &url, &hint, &mime, now_ms());
+        let name = a
+            .downloads
+            .items
+            .iter()
+            .find(|d| d.id == id)
+            .map(|d| d.file_name.clone())
+            .unwrap_or_else(|| "download".into());
+        let dest = rbcore::paths::join(&dir, &name);
+        download.set_destination(&dest.to_string_lossy());
+        let _ = a.downloads.set_running(id);
+        let _ = a.downloads.save(&rbcore::paths::downloads_path(&a.data_dir));
+        (id, dest)
+    };
+    // Progress updates stay in memory; the store is written on completion.
+    let app_progress = app_ref.clone();
+    download.connect_received_data(move |dl, _| {
+        let received = dl.received_data_length() as i64;
+        let total = dl.response().map(|r| r.content_length()).unwrap_or(0);
+        let total = if total == 0 { -1 } else { total as i64 };
+        let mut a = app_progress.borrow_mut();
+        if let Some(a) = a.as_mut() {
+            let _ = a.downloads.set_progress(record_id, received, total);
+        }
+    });
+    let app_done = app_ref.clone();
+    let dest_string = dest.to_string_lossy().to_string();
+    download.connect_finished(move |dl| {
+        let final_dest = dl
+            .destination()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| dest_string.clone());
+        let mut a = app_done.borrow_mut();
+        if let Some(a) = a.as_mut() {
+            // Only complete a still-active record: some WebKit versions
+            // emit finished after a failure too.
+            let active = a.downloads.items.iter().any(|d| {
+                d.id == record_id
+                    && matches!(
+                        d.status,
+                        rbcore::downloads::Status::Queued
+                            | rbcore::downloads::Status::Running
+                            | rbcore::downloads::Status::Paused
+                    )
+            });
+            if active {
+                let _ = a.downloads.complete(record_id, &final_dest, now_ms());
+                let _ = a.downloads.save(&rbcore::paths::downloads_path(&a.data_dir));
+            }
+        }
+    });
+    let app_fail = app_ref.clone();
+    download.connect_failed(move |_dl, err| {
+        let mut a = app_fail.borrow_mut();
+        if let Some(a) = a.as_mut() {
+            let _ = a.downloads.fail(record_id, &format!("{err}"), now_ms());
+            let _ = a.downloads.save(&rbcore::paths::downloads_path(&a.data_dir));
+        }
+    });
 }
 
 fn install_tab_handlers(ucm: &UserContentManager, webview: &WebView, app_ref: AppRef) {
@@ -562,6 +691,21 @@ fn install_tab_handlers(ucm: &UserContentManager, webview: &WebView, app_ref: Ap
 fn handle_msg(app: AppRef, tx: glib::Sender<Msg>, msg: Msg) {
     match msg {
         Msg::Rpc { id, method, params } => {
+            // Async RPCs own their single reply, sent from the script
+            // completion: the chrome keeps only the FIRST reply per id, so
+            // these must skip the generic reply below (a premature Null
+            // would mask the real result).
+            match method.as_str() {
+                "page.find" => {
+                    rpc_page_find(&app, id, &params);
+                    return;
+                }
+                "devtools.panel" => {
+                    rpc_devtools_panel(&app, id, &params);
+                    return;
+                }
+                _ => {}
+            }
             let result = dispatch_rpc(&app, &tx, id, &method, &params);
             let a = app.borrow();
             if let Some(a) = a.as_ref() {
@@ -572,16 +716,32 @@ fn handle_msg(app: AppRef, tx: glib::Sender<Msg>, msg: Msg) {
             }
         }
         Msg::PageOp { reply, op } => {
-            let a = app.borrow();
-            match a.as_ref() {
-                Some(a) => {
-                    let r = run_page_op(a, &op);
-                    let _ = reply.send(r);
+            if let PageOp::RunJs { js } = &op {
+                // Script results arrive asynchronously; the reply rides the
+                // run_javascript completion so the GTK loop is never blocked
+                // (the same pattern rbwin uses with execute_script_then).
+                let a = app.borrow();
+                match a.as_ref().and_then(|a| a.active_webview().cloned()) {
+                    Some(wv) => {
+                        drop(a);
+                        let js = js.clone();
+                        wv.run_javascript(&js, None::<&gio::Cancellable>, move |result| {
+                            let r: CoreResult<String> = match result {
+                                Ok(v) => Ok(message_text(&v).unwrap_or_default()),
+                                Err(e) => Err(format!("script: {e}")),
+                            };
+                            let _ = reply.send(r);
+                        });
+                    }
+                    None => {
+                        let _ = reply.send(Err("no active tab".into()));
+                    }
                 }
-                None => {
-                    let _ = reply.send(Err("app gone".into()));
-                }
+                return;
             }
+            // run_page_op borrows internally; nothing is held across it.
+            let r = run_page_op(&app, &op);
+            let _ = reply.send(r);
         }
         Msg::Chrome { json } => {
             let a = app.borrow();
@@ -601,15 +761,12 @@ fn handle_msg(app: AppRef, tx: glib::Sender<Msg>, msg: Msg) {
     }
 }
 
-fn run_page_op(a: &App, op: &PageOp) -> CoreResult<String> {
+fn run_page_op(app_ref: &AppRef, op: &PageOp) -> CoreResult<String> {
+    let mut guard = app_ref.borrow_mut();
+    let a = guard.as_mut().ok_or("app gone")?;
     match op {
-        PageOp::RunJs { js } => {
-            // Agent script runs are marshalled through the GTK loop; the
-            // JS evaluation itself is async but the agent path uses
-            // evaluate_blocking below (never called from the main loop).
-            let wv = a.active_webview().ok_or("no active tab")?;
-            evaluate_blocking(wv, js)
-        }
+        // RunJs is intercepted in handle_msg (its result is asynchronous).
+        PageOp::RunJs { .. } => Ok(String::new()),
         PageOp::Navigate { url } => {
             let wv = a.active_webview().ok_or("no active tab")?;
             wv.load_uri(url);
@@ -636,8 +793,10 @@ fn run_page_op(a: &App, op: &PageOp) -> CoreResult<String> {
         PageOp::NewTab { url } => {
             let ctx = a.context.clone();
             let prefs = a.prefs.clone();
-            let app_ref = APP_REF.with(|c| c.borrow().clone().unwrap());
-            spawn_tab(&ctx, app_ref, url, &prefs);
+            let url = url.clone();
+            // End the borrow for real before spawn_tab re-borrows the app.
+            drop(guard);
+            spawn_tab(&ctx, app_ref.clone(), &url, &prefs);
             Ok("new tab".into())
         }
         PageOp::ListTabs => Ok(serde_json::to_string(
@@ -645,45 +804,109 @@ fn run_page_op(a: &App, op: &PageOp) -> CoreResult<String> {
         ).map_err(|e| e.to_string())?),
         PageOp::SwitchTab { index } => Ok("switched".into()),
         PageOp::CloseTab => Ok("closed".into()),
-        PageOp::Download { url, name } => Ok(format!("download record queued: {url} {name}")),
+        PageOp::Download { url, name } => {
+            // WebKit performs the transfer itself: download_uri starts the
+            // engine download and the context's download-started handler
+            // creates the record and the destination. download_uri emits
+            // download-started synchronously, so the borrow must end for
+            // real before the call (the handler re-borrows the app).
+            let wv = a.active_webview().cloned().ok_or("no active tab")?;
+            drop(guard);
+            match wv.download_uri(url) {
+                Some(_) => Ok(format!("download started: {url} {name}")),
+                None => Err(format!("download could not be started: {url}")),
+            }
+        }
     }
 }
 
-thread_local! {
-    static APP_REF: RefCell<Option<AppRef>> = RefCell::new(None);
-}
-
-/// Evaluates JS and waits for the result. Called from the AGENT worker
-/// thread via the channel (the GTK loop dispatches the op; the result
-/// arrives through the channel — so this helper is only ever invoked with
-/// the loop free to spin).
-fn evaluate_blocking(webview: &WebView, js: &str) -> CoreResult<String> {
-    // The op was marshalled to the main thread; run_javascript completes
-    // asynchronously under the same loop, so block on a channel here while
-    // the loop (a different thread) processes the completion.
-    let (tx, rx) = channel::<CoreResult<String>>();
-    let tx = std::sync::Mutex::new(Some(tx));
-    webview.run_javascript(js, None::<&gio::Cancellable>, move |result| {
-        let out = match result {
-            Ok(js_result) => message_text(&js_result).unwrap_or_default(),
-            Err(e) => {
-                if let Some(t) = tx.lock().unwrap().take() {
-                    let _ = t.send(Err(format!("script: {e}")));
-                }
-                return;
+/// `page.find` — runs the find-count script asynchronously and replies once
+/// from the completion; the GTK loop is never blocked (the port of the
+/// Windows execute_script_then pattern).
+fn rpc_page_find(app: &AppRef, id: i64, params: &Value) {
+    let query = params.get("query").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let wv = {
+        let a = app.borrow();
+        a.as_ref().and_then(|a| a.active_webview().cloned())
+    };
+    let wv = match wv {
+        Some(wv) => wv,
+        None => {
+            let a = app.borrow();
+            if let Some(a) = a.as_ref() {
+                a.reply(id, false, Value::String("no tab".into()));
             }
+            return;
+        }
+    };
+    let js = rbcore::bridge::find_count_js(&query);
+    let app2 = app.clone();
+    wv.run_javascript(&js, None::<&gio::Cancellable>, move |result| {
+        let n: i64 = match result {
+            Ok(v) => message_text(&v).unwrap_or_default().trim_matches('"').parse().unwrap_or(0),
+            Err(_) => 0,
         };
-        if let Some(t) = tx.lock().unwrap().take() {
-            let _ = t.send(Ok(out));
+        let a2 = app2.borrow();
+        if let Some(a2) = a2.as_ref() {
+            a2.reply(id, true, json!({"count": n}));
         }
     });
-    rx.recv_timeout(std::time::Duration::from_secs(60))
-        .map_err(|e| format!("script wait: {e}"))?
+}
+
+/// `devtools.panel` — same async shape as rpc_page_find; the OVERVIEW panel
+/// is answered inline from the static edition notes.
+fn rpc_devtools_panel(app: &AppRef, id: i64, params: &Value) {
+    let panel = params.get("panel").and_then(|x| x.as_str()).unwrap_or("OVERVIEW").to_string();
+    if panel == "OVERVIEW" {
+        let a = app.borrow();
+        if let Some(a) = a.as_ref() {
+            a.reply(id, true, json!({"text": rbcore::devtools::edition_notes("webkit").join("\n")}));
+        }
+        return;
+    }
+    let js = match panel.as_str() {
+        "CONSOLE" => "(window.__roomConsole ? window.__roomConsole.read() : '[]')".to_string(),
+        "NETWORK" => rbcore::bridge::NETWORK_PROBE_JS.to_string(),
+        _ => rbcore::bridge::SECURITY_PROBE_JS.to_string(),
+    };
+    let wv = {
+        let a = app.borrow();
+        a.as_ref().and_then(|a| a.active_webview().cloned())
+    };
+    let wv = match wv {
+        Some(wv) => wv,
+        None => {
+            let a = app.borrow();
+            if let Some(a) = a.as_ref() {
+                a.reply(id, false, Value::String("no tab".into()));
+            }
+            return;
+        }
+    };
+    let app2 = app.clone();
+    wv.run_javascript(&js, None::<&gio::Cancellable>, move |result| {
+        let text = match result {
+            Ok(v) => {
+                let raw = message_text(&v).unwrap_or_default();
+                let unescaped: String =
+                    serde_json::from_str(raw.trim_matches('"')).unwrap_or(raw.clone());
+                rbcore::redaction::redact(&unescaped)
+            }
+            Err(_) => String::new(),
+        };
+        let a2 = app2.borrow();
+        if let Some(a2) = a2.as_ref() {
+            a2.reply(id, true, json!({"text": text}));
+        }
+    });
 }
 
 fn dispatch_rpc(app: &AppRef, tx: &glib::Sender<Msg>, id: i64, method: &str, params: &Value) -> CoreResult<Value> {
-    let mut a = app.borrow_mut();
-    let a = a.as_mut().ok_or("app not ready")?;
+    // `guard` (the RefMut) is dropped by name wherever an arm needs to
+    // re-borrow the app — dropping the `a` reference alone would leave the
+    // borrow alive and panic.
+    let mut guard = app.borrow_mut();
+    let a = guard.as_mut().ok_or("app not ready")?;
     match method {
         "init" => Ok(json!({
             "tabs": a.tabs.iter().map(|t| json!({"title": t.title, "url": t.url})).collect::<Vec<_>>(),
@@ -703,27 +926,29 @@ fn dispatch_rpc(app: &AppRef, tx: &glib::Sender<Msg>, id: i64, method: &str, par
             let ctx = a.context.clone();
             let prefs = a.prefs.clone();
             let home = if prefs.homepage_enabled() { prefs.homepage() } else { String::new() };
-            drop(a);
-            let app2 = app.clone();
-            APP_REF.with(|c| *c.borrow_mut() = Some(app2.clone()));
-            spawn_tab(&ctx, app2.clone(), &home, &prefs);
-            let a = app2.borrow();
-            let a = a.as_ref().unwrap();
-            a.sync_tabs();
+            // End the borrow for real; spawn_tab re-borrows the app.
+            drop(guard);
+            spawn_tab(&ctx, app.clone(), &home, &prefs);
+            let a2 = app.borrow();
+            if let Some(a2) = a2.as_ref() {
+                a2.sync_tabs();
+            }
             Ok(Value::Null)
         }
         "tab.close" => {
             let index = params.get("index").and_then(|x| x.as_u64()).unwrap_or(a.active.max(0) as u64) as usize;
             if index < a.tabs.len() {
-                let name = format!("tab{index}");
-                let child = a.stack.child_by_name(&name);
-                if let Some(child) = child {
+                // The child name is keyed by the tab id, so removing a tab
+                // never invalidates the names of the survivors.
+                let name = format!("tab-{}", a.tabs[index].id);
+                if let Some(child) = a.stack.child_by_name(&name) {
                     a.stack.remove(&child);
                 }
                 a.tabs.remove(index);
                 a.active = (a.tabs.len() as i64 - 1).max(0);
-                let name = format!("tab{}", a.active);
-                a.stack.set_visible_child_name(&name);
+                if let Some(t) = a.tabs.get(a.active as usize) {
+                    a.stack.set_visible_child_name(&format!("tab-{}", t.id));
+                }
             }
             a.sync_tabs();
             a.sync_page();
@@ -732,8 +957,9 @@ fn dispatch_rpc(app: &AppRef, tx: &glib::Sender<Msg>, id: i64, method: &str, par
         "tab.select" => {
             let index = params.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
             a.active = index.min(a.tabs.len().saturating_sub(1)) as i64;
-            let name = format!("tab{}", a.active);
-            a.stack.set_visible_child_name(&name);
+            if let Some(t) = a.tabs.get(a.active as usize) {
+                a.stack.set_visible_child_name(&format!("tab-{}", t.id));
+            }
             a.sync_tabs();
             a.sync_page();
             Ok(Value::Null)
@@ -777,28 +1003,13 @@ fn dispatch_rpc(app: &AppRef, tx: &glib::Sender<Msg>, id: i64, method: &str, par
                 return Ok(Value::Null);
             }
             let target = a.prefs.translate_target_language();
-            let translated = format!("https://translate.google.com/translate?sl=auto&tl={target}&u={url}");
+            // Shared helper: percent-encodes the URL and the language codes
+            // (rbcore::urlintel — the desktop port of Android PageTranslate).
+            let translated = rbcore::urlintel::translate_url(&url, "auto", &target);
             if let Some(wv) = a.active_webview() {
                 wv.load_uri(&translated);
             }
             Ok(Value::Null)
-        }
-        "page.find" => {
-            let query = params.get("query").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            drop(a);
-            let app2 = app.clone();
-            let wv = {
-                let a = app2.borrow();
-                let a = a.as_ref().ok_or("no tab")?;
-                a.active_webview().cloned().ok_or("no tab")?
-            };
-            let r = evaluate_blocking(&wv, &rbcore::bridge::find_count_js(&query));
-            let n: i64 = r.map(|c| c.trim_matches('"').parse().unwrap_or(0)).unwrap_or(0);
-            let a = app2.borrow();
-            if let Some(a) = a.as_ref() {
-                a.reply(id, true, json!({"count": n}));
-            }
-            return Ok(Value::Null);
         }
         "bookmark.toggle" => {
             let url = a.tabs.get(a.active as usize).map(|t| t.url.clone()).unwrap_or_default();
@@ -909,7 +1120,10 @@ fn dispatch_rpc(app: &AppRef, tx: &glib::Sender<Msg>, id: i64, method: &str, par
             {
                 let urls: Vec<String> = a.tabs.iter().map(|t| t.url.clone()).collect();
                 let active = a.active.max(0) as usize;
-                if let Some(p) = a.registry.get_mut(&pid) {
+                // Persist the OUTGOING profile's session into its OWN
+                // settings — never into the target's (the target's stored
+                // session is restored untouched by the relaunched process).
+                if let Some(p) = a.registry.get_mut(&a.profile_id) {
                     p.settings.set_session(&urls, active);
                     p.last_active_at = now_ms();
                 }
@@ -919,7 +1133,7 @@ fn dispatch_rpc(app: &AppRef, tx: &glib::Sender<Msg>, id: i64, method: &str, par
             let _ = a.downloads.save(&rbcore::paths::downloads_path(&a.data_dir));
             let data_dir = a.data_dir.clone();
             let exe = std::env::current_exe().ok();
-            drop(a);
+            drop(guard);
             {
                 let mut reg = ProfileRegistry::load(&data_dir);
                 reg.active = Some(pid);
@@ -1139,36 +1353,6 @@ fn dispatch_rpc(app: &AppRef, tx: &glib::Sender<Msg>, id: i64, method: &str, par
             "note": "The Rust desktop edition of Room Browser.",
         })),
         "devtools.status" => Ok(json!({"notes": rbcore::devtools::edition_notes("webkit")})),
-        "devtools.panel" => {
-            let panel = params.get("panel").and_then(|x| x.as_str()).unwrap_or("OVERVIEW").to_string();
-            if panel == "OVERVIEW" {
-                return Ok(json!({"text": rbcore::devtools::edition_notes("webkit").join("\n")}));
-            }
-            let js = match panel.as_str() {
-                "CONSOLE" => "(window.__roomConsole ? window.__roomConsole.read() : '[]')".to_string(),
-                "NETWORK" => rbcore::bridge::NETWORK_PROBE_JS.to_string(),
-                _ => rbcore::bridge::SECURITY_PROBE_JS.to_string(),
-            };
-            drop(a);
-            let app2 = app.clone();
-            let wv = {
-                let a = app2.borrow();
-                let a = a.as_ref().ok_or("no tab")?;
-                a.active_webview().cloned().ok_or("no tab")?
-            };
-            let r = evaluate_blocking(&wv, &js);
-            let text = r
-                .map(|raw| {
-                    let unescaped: String = serde_json::from_str(raw.trim_matches('"')).unwrap_or(raw.clone());
-                    rbcore::redaction::redact(&unescaped)
-                })
-                .unwrap_or_default();
-            let a = app2.borrow();
-            if let Some(a) = a.as_ref() {
-                a.reply(id, true, json!({"text": text}));
-            }
-            Ok(Value::Null)
-        }
         "data.clear" => {
             if let Some(wv) = a.active_webview() {
                 wv.run_javascript("(function(){try{localStorage.clear();sessionStorage.clear();}catch(e){}return 'cleared'})()", None::<&gio::Cancellable>, |_| {});
@@ -1207,7 +1391,9 @@ fn dispatch_rpc(app: &AppRef, tx: &glib::Sender<Msg>, id: i64, method: &str, par
                 .iter()
                 .map(|m| ChatMessage::user(&m.content))
                 .collect();
-            drop(a);
+            // End the borrow before the worker thread starts pushing
+            // messages back into the loop.
+            drop(guard);
             let tx2 = tx.clone();
             std::thread::spawn(move || {
                 agent_turn(data_dir, profile_id, session_id, text, mode, history, tx2.clone());
