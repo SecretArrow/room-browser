@@ -8,7 +8,6 @@ import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.domain.model.Device
 import com.roombrowser.domain.model.Devices
 import com.roombrowser.domain.model.ProfileId
-import com.roombrowser.engine.EmbeddedHeaderObservation
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -41,12 +40,12 @@ import java.util.concurrent.ConcurrentHashMap
  * resolved string, so the string and the hints cannot disagree. The second is
  * only ever a REQUEST to the provider — `configure` empties the
  * `X-Requested-With` allow-list, and the provider decides whether to honour
- * it — so this file checks that the app's report of that header matches what
- * went out instead of asserting the header away (see
- * [assertHeaderReportIsHonest]). The unit tests cover the derivation in
- * isolation; THIS test is the one that proves the result reaches the wire,
- * because it asserts on the request the WebView actually made and on what the
- * page's own JavaScript read back — not on a mapper's return value.
+ * it — so this file does not assert the header away (see
+ * [assertHeaderNamesNothingButTheApp] for why that assertion was removed and
+ * what replaced it). The unit tests cover the derivation in isolation; THIS
+ * test is the one that proves the result reaches the wire, because it asserts
+ * on the request the WebView actually made and on what the page's own
+ * JavaScript read back — not on a mapper's return value.
  *
  * TWO PHASES ON ONE PROFILE, because the app ships two shapes of identity and
  * both must survive a Google round trip:
@@ -313,56 +312,47 @@ class GoogleIdentityE2eTest {
     }
 
     /**
-     * The `X-Requested-With` half, asserted on the bytes the server received.
+     * The `X-Requested-With` half: bounded, not asserted away.
      *
-     * THIS USED TO BE CONDITIONAL AND THAT WAS THE BUG. It tolerated the
-     * header whenever the provider's opt-out flag read false — but Chromium
+     * THIS USED TO BE CONDITIONAL AND THAT WAS A BUG. It tolerated the header
+     * whenever the provider's opt-out flag read false — but Chromium
      * discontinued the header and deprecated the opt-out with it, so a current
      * provider reports false for the opposite reason an ancient one does. The
      * test therefore excused the header on exactly the devices where it was
      * absent anyway, and proved nothing.
      *
-     * The wire is the authority: the server either received the header or it
-     * did not. It must not have. The engine's own observation is deliberately
-     * NOT cross-checked here — the engine runs in the ':browser' process while
-     * this test runs in the instrumentation process, so reading it here would
-     * report that process's state, not the one that made the request.
+     * IT THEN BECAME AN UNCONDITIONAL `assertNull`, AND THAT WAS A SECOND
+     * BUG, the opposite one. No build of this app can deliver it on every
+     * provider. `configure` empties the allow-list, but androidx's own contract
+     * is that an origin absent from it "may not receive the header, depending
+     * on the current installed WebView provider", and the emulator's WebView 83
+     * — which lists the feature — sent `com.roombrowser.debug` anyway. A test
+     * that asserts a fact no code can control is red for reasons no commit here
+     * can fix, and a permanently red test hides the regressions this file
+     * exists to catch.
+     *
+     * THE REPORT CANNOT BE CROSS-CHECKED FROM HERE EITHER, which is why this
+     * does not compare the wire against the app's own answer. `BrowserActivity`
+     * runs in ':browser' and this test runs in the default process, so
+     * `ProfileEngine.embeddedBrowserHeaderObservation()` called from here would
+     * build a fresh engine host in a process that has made no requests and
+     * answer from the feature flag — the very inference the row was changed to
+     * stop making. The reporting half is pinned by `IdentityDiagnosticsTest`
+     * and shown on the diagnostics screen, which lives in ':browser' for this
+     * reason.
+     *
+     * SO WHAT IS ASSERTED IS THE ONE THING A SENT HEADER MUST BE: this app's
+     * own package name and nothing else. A provider that starts stamping a
+     * profile id, a session token or a device identifier there would be a real
+     * regression, and this catches it without claiming the header away.
      */
-    /**
-     * The header, from both sides: what the server received, and what the app
-     * says it saw.
-     *
-     * THIS NO LONGER ASSERTS THE HEADER AWAY, because no version of this app
-     * can deliver that on every provider. `configure` empties the allow-list,
-     * but androidx's own contract is that an origin absent from it "may not
-     * receive the header, depending on the current installed WebView
-     * provider", and on the emulator's WebView 83 — which lists the feature —
-     * the request arrived carrying `com.roombrowser.debug` anyway. An
-     * unconditional `assertNull` here asserted something the app has no lever
-     * over, and a permanently red test hides the regressions this file exists
-     * to catch.
-     *
-     * WHAT THE APP DOES CONTROL IS THE REPORT. The identity screen answers
-     * this row from what the engine observed, and the one mistake that hurts
-     * is telling somebody their identity is clean while a site is being handed
-     * their package name. So a request that carried the header MUST be
-     * reported as sent.
-     *
-     * The other direction is deliberately not asserted. A provider can show
-     * the header to `shouldInterceptRequest` and drop it on the way out, so a
-     * report of "sent" beside a request that carried nothing is the cautious
-     * answer, not a lie — and failing the build for it would punish exactly
-     * the conservatism this row was changed to have.
-     */
-    private fun assertHeaderReportIsHonest(hit: RecordedRequest, where: String) {
-        val header = hit.getHeader("X-Requested-With")
-        if (header == null) return
+    private fun assertHeaderNamesNothingButTheApp(hit: RecordedRequest, where: String) {
+        val header = hit.getHeader("X-Requested-With") ?: return
         assertEquals(
-            "$where: the server received X-Requested-With '$header', so the app " +
-                "must report that header as sent rather than reassure the person " +
-                "it is clean",
-            EmbeddedHeaderObservation.PRESENT,
-            ProfileEngine.embeddedBrowserHeaderObservation()
+            "$where: a provider that sends X-Requested-With must name this app and " +
+                "nothing else (server received '$header')",
+            targetContext.packageName,
+            header
         )
     }
 
@@ -419,7 +409,7 @@ class GoogleIdentityE2eTest {
             (ua.substringAfter("Chrome/", "").substringBefore('.').toIntOrNull() ?: 0) >= 153
         )
         assertNoEmbeddedBrowserTell("request", ua)
-        assertHeaderReportIsHonest(hit, "handset profile")
+        assertHeaderNamesNothingButTheApp(hit, "handset profile")
         assertHintsAgreeWithUserAgent(hit, ua)
 
         val probe = await("/probe-a", "The page must report the identity it read")
@@ -437,7 +427,7 @@ class GoogleIdentityE2eTest {
             plainUa.contains("Chrome/")
         )
         assertNoEmbeddedBrowserTell("request", plainUa)
-        assertHeaderReportIsHonest(plain, "no-device profile")
+        assertHeaderNamesNothingButTheApp(plain, "no-device profile")
         assertHintsAgreeWithUserAgent(plain, plainUa)
 
         val plainProbe = await("/probe-b", "The page must report the identity it read")
