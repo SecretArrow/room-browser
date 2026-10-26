@@ -14,9 +14,9 @@ import okhttp3.mockwebserver.MockWebServer
 import org.json.JSONTokener
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -83,28 +83,37 @@ class BlobDownloadE2eTest {
     @Test
     fun a_blob_download_is_read_out_of_the_page_and_handed_back_whole() {
         val s = session
-        assertNotNull("the engine created no session in this process", s)
+        if (s == null) {
+            fail("the engine created no session in this process")
+            return
+        }
 
         val blobUrl = evalString("window.__blobUrl")
-        assertTrue(
-            "the page never produced a blob: URL (got '$blobUrl'), so the read could not be attempted",
-            blobUrl != null && blobUrl.startsWith("blob:")
-        )
+        if (blobUrl == null || !blobUrl.startsWith("blob:")) {
+            fail(
+                "the page never produced a blob: URL (got '$blobUrl'), " +
+                    "so the read could not be attempted"
+            )
+            return
+        }
 
         val latch = CountDownLatch(1)
         val body = AtomicReference<EngineDownloadStream?>(null)
-        s!!.openDownloadStream(blobUrl!!) {
+        s.openDownloadStream(blobUrl) {
             body.set(it)
             latch.countDown()
         }
         assertTrue("openDownloadStream never answered", latch.await(60, TimeUnit.SECONDS))
 
         val download = body.get()
-        assertNotNull(
-            "the engine could not read the page's blob: the bytes the page built were not handed back",
-            download
-        )
-        val bytes = download!!.stream.use { it.readBytes() }
+        if (download == null) {
+            fail(
+                "the engine could not read the page's blob: " +
+                    "the bytes the page built were not handed back"
+            )
+            return
+        }
+        val bytes = download.stream.use { it.readBytes() }
 
         assertEquals("the bytes handed back are not the bytes the page built", payloadBytes, bytes.size)
         assertEquals(
@@ -123,11 +132,14 @@ class BlobDownloadE2eTest {
     @Test
     fun a_blob_url_the_page_never_created_is_reported_as_unreadable() {
         val s = session
-        assertNotNull("the engine created no session in this process", s)
+        if (s == null) {
+            fail("the engine created no session in this process")
+            return
+        }
 
         val latch = CountDownLatch(1)
         val body = AtomicReference<EngineDownloadStream?>(null)
-        s!!.openDownloadStream("blob:${server.url("/")}missing-object") {
+        s.openDownloadStream("blob:${server.url("/")}missing-object") {
             body.set(it)
             latch.countDown()
         }
