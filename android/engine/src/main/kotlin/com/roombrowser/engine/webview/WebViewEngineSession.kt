@@ -50,6 +50,7 @@ import com.roombrowser.engine.EngineSessionListener
 import com.roombrowser.engine.EngineState
 import com.roombrowser.engine.ExternalUrlPolicy
 import com.roombrowser.engine.GoogleAuthNavigation
+import com.roombrowser.engine.GoogleSignInRecovery
 import com.roombrowser.engine.SiteCookieClearer
 import com.roombrowser.engine.HttpAuthResponder
 import com.roombrowser.engine.NavigationDecision
@@ -229,6 +230,29 @@ internal class WebViewEngineSession(
 
     private var lastReissuedAtMs: Long = 0L
 
+    /**
+     * The profile whose settings [configure] last applied. The sign-in
+     * recovery below runs from inside the WebViewClient, where no caller
+     * hands a profile in -- it needs the last one applied to restore the
+     * profile's own identity (and cookie policy) when the session leaves the
+     * sign-in hosts, exactly as [applyDesktopMode]'s caller supplies it.
+     */
+    private var configuredProfile: Profile? = null
+
+    /** The sign-in recovery ladder's memory. See [GoogleSignInRecovery]. */
+    private val signInRecovery = GoogleSignInRecovery.State()
+
+    /**
+     * Whether the sign-in recovery has installed the DESKTOP identity for the
+     * sign-in hosts, overriding whatever the profile chose. Deliberately
+     * `@Volatile`: written from the main thread's WebViewClient callbacks and
+     * read again inside [configure], which also runs on the main thread -- the
+     * annotation records the field crosses callbacks, it does not buy
+     * cross-thread safety this code needs.
+     */
+    @Volatile
+    private var signInDesktopOverride = false
+
     override val view: View get() = webView
 
     override val url: String? get() = currentUrl
@@ -267,6 +291,20 @@ internal class WebViewEngineSession(
             lastReissuedAtMs = System.currentTimeMillis()
         }
         runCatching { webView.loadUrl(uri, identityHeaders) }
+    }
+
+    /**
+     * The sign-in recovery's reload: the page a recovery rung lands the user
+     * back on. Goes through [loadUri] so the reload counts as app-issued --
+     * stamped into the re-issue memory with the identity headers attached --
+     * and so its own onPageStarted is never mistaken for an unclean redirect
+     * by the gap path above. NOT a public member: the rungs call it from
+     * inside `onPageStarted`, already on the main thread, and [loadUri]'s own
+     * `runOnMain` hop keeps it out of the callback's stack.
+     */
+    private fun reloadSignIn() {
+        if (closed) return
+        loadUri(GoogleSignInRecovery.SIGN_IN_HOME)
     }
 
     /**
@@ -366,6 +404,7 @@ internal class WebViewEngineSession(
             if (closed) return@runOnMain
             val s: WebSettings = webView.settings
             val settings = profile.settings
+            configuredProfile = profile
 
             // POLICY (user mandate): JavaScript is NEVER disabled by default.
             // The platform default is false -- this is always applied
@@ -457,7 +496,11 @@ internal class WebViewEngineSession(
             // settings change, including the one the app makes immediately
             // after a session is created, so a profile whose default is desktop
             // mode would otherwise be handed its mobile UA back by that pass.
-            if (settings.desktopModeDefault) {
+            // The sign-in recovery's desktop override is the LAST word here the
+            // way the profile default is: a configure() pass that runs while the
+            // override is live (the recovery reload itself can trigger one) must
+            // not hand the mobile identity back to the sign-in page.
+            if (settings.desktopModeDefault || signInDesktopOverride) {
                 val desktopUa =
                     UserAgents.engineTunedUserAgent(UserAgents.desktopModeUserAgent, stockUserAgent)
                 s.userAgentString = desktopUa
@@ -1338,6 +1381,89 @@ internal class WebViewEngineSession(
                 lastReissuedUrl = url
                 lastReissuedAtMs = System.currentTimeMillis()
                 view.post { runCatching { view.loadUrl(url, identityHeaders) } }
+            }
+            // GOOGLE SIGN-IN RECOVERY. When the refusal help article starts
+            // loading -- the destination the "This browser or app may not be
+            // secure" card sends the user to -- the ladder in
+            // [GoogleSignInRecovery] decides the next automatic move: the
+            // desktop identity (harmless, self-reversing), the sign-in hosts'
+            // cookies (the poisoned-challenge fix, second because it signs the
+            // profile out), or neither, because nothing automatic is left and
+            // the app should say so instead of reloading. The bookkeeping
+            // around it tracks where the session is: ON a sign-in host the
+            // attempt is live and Google's cross-host cookie handoff is
+            // protected by allowing third-party cookies there, and OFF them
+            // the profile's own identity and cookie policy are restored.
+            //
+            // The refusal check comes FIRST: the help page is not a sign-in
+            // host, so the leave-branch below would otherwise reset the very
+            // ladder state the refusal needs to climb.
+            if (GoogleSignInRecovery.isRefusalHelpPage(url)) {
+                when (
+                    val action = GoogleSignInRecovery.onRefusal(
+                        signInRecovery,
+                        System.currentTimeMillis()
+                    )
+                ) {
+                    GoogleSignInRecovery.Action.DESKTOP_RETRY -> {
+                        signInDesktopOverride = true
+                        configuredProfile?.let { applyDesktopMode(it, true) }
+                        listener?.onSignInRecovery(this@WebViewEngineSession, action)
+                        reloadSignIn()
+                    }
+                    GoogleSignInRecovery.Action.COOKIE_RETRY -> {
+                        // The per-site eraser the app's "clear cookies for this
+                        // site" drives, once per sign-in host. The re-issued
+                        // load below is stamped as app-issued by [loadUri] and
+                        // leaves the redirect-gap path alone.
+                        GoogleAuthNavigation.SIGN_IN_HOSTS.forEach {
+                            clearSiteData("https://$it/")
+                        }
+                        listener?.onSignInRecovery(this@WebViewEngineSession, action)
+                        reloadSignIn()
+                    }
+                    GoogleSignInRecovery.Action.ADVICE ->
+                        listener?.onSignInRecovery(this@WebViewEngineSession, action)
+                    GoogleSignInRecovery.Action.NONE -> {}
+                }
+            } else {
+                val pageHost = GoogleAuthNavigation.hostOf(url)
+                when {
+                    pageHost != null && pageHost in GoogleAuthNavigation.SIGN_IN_HOSTS -> {
+                        GoogleSignInRecovery.onSignInHostPage(
+                            signInRecovery,
+                            System.currentTimeMillis()
+                        )
+                        // The flow hands cookies between hosts -- the consent
+                        // screen, the property signing in, accounts itself --
+                        // and a profile that blocks third-party cookies fails
+                        // that handoff with the same refusal. On the sign-in
+                        // hosts the handoff is allowed regardless of the
+                        // profile; the profile's policy returns below.
+                        runCatching {
+                            CookieManager.getInstance()
+                                .setAcceptThirdPartyCookies(view, true)
+                        }
+                    }
+                    pageHost != null -> {
+                        GoogleSignInRecovery.onLeftSignInHosts(signInRecovery)
+                        if (signInDesktopOverride) {
+                            signInDesktopOverride = false
+                            configuredProfile?.let {
+                                applyDesktopMode(it, it.settings.desktopModeDefault)
+                            }
+                        }
+                        configuredProfile?.let {
+                            runCatching {
+                                CookieManager.getInstance().setAcceptThirdPartyCookies(
+                                    view,
+                                    !it.settings.blockThirdPartyCookies
+                                )
+                            }
+                        }
+                    }
+                    else -> {}
+                }
             }
             // Early history feedback: the back/forward buttons light up as soon
             // as a navigation begins; doUpdateVisitedHistory re-reports the

@@ -236,6 +236,25 @@ interface EngineSessionListener {
     /** A load finished. [success] is false when the engine gave up on it. */
     fun onPageFinished(session: EngineSession, url: String?, success: Boolean) {}
 
+    /**
+     * The session detected Google's sign-in refusal (the "This browser or app
+     * may not be secure" help redirect) and applied the automatic recovery
+     * step it decided on — see [GoogleSignInRecovery] for the ladder.
+     *
+     * [action] is the step the session TOOK or is taking:
+     * [GoogleSignInRecovery.Action.DESKTOP_RETRY] reloads the sign-in page
+     * under a Windows desktop identity, [GoogleSignInRecovery
+     * .Action.COOKIE_RETRY] erases the sign-in hosts' cookies first and then
+     * reloads, and [GoogleSignInRecovery.Action.ADVICE] means every automatic
+     * lever is spent and the user should be told what is outside the app's
+     * reach (network/account risk) rather than shown another reload.
+     *
+     * A notice, not a request: the session has already decided and acted.
+     * [GoogleSignInRecovery.Action.NONE] is never reported — the default
+     * does nothing, and a listener that does not care never has to.
+     */
+    fun onSignInRecovery(session: EngineSession, action: GoogleSignInRecovery.Action) {}
+
     /** Load progress, 0..100. */
     fun onProgress(session: EngineSession, progress: Int) {}
 

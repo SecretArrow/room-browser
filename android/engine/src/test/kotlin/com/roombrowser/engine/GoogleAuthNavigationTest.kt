@@ -261,4 +261,76 @@ class GoogleAuthNavigationTest {
             GoogleAuthNavigation.SIGN_IN_HOSTS
         )
     }
+
+    // ---- isSignInContext ---------------------------------------------------
+
+    @Test
+    fun `a resource belonging to a sign-in page is in the sign-in context`() {
+        assertTrue(
+            GoogleAuthNavigation.isSignInContext(
+                "https://accounts.google.com/v3/signin/identifier",
+                "https://www.gstatic.com/_/boq-signin/_/js/x.js"
+            )
+        )
+        assertTrue(
+            GoogleAuthNavigation.isSignInContext(
+                "https://accounts.youtube.com/",
+                "https://evil.example/track.js"
+            )
+        )
+    }
+
+    @Test
+    fun `a resource served by a sign-in host is in the context from any page`() {
+        // The OAuth iframe embedded in another site's page: blocking it
+        // breaks the flow even though the PAGE is not Google's.
+        assertTrue(
+            GoogleAuthNavigation.isSignInContext(
+                "https://example.com/login",
+                "https://accounts.google.com/o/oauth2/iframe"
+            )
+        )
+    }
+
+    @Test
+    fun `a request with neither side on a sign-in host is not in the context`() {
+        assertFalse(
+            GoogleAuthNavigation.isSignInContext(
+                "https://www.google.com/search?q=x",
+                "https://www.google.com/x.js"
+            )
+        )
+        assertFalse(
+            GoogleAuthNavigation.isSignInContext(
+                "https://example.com/",
+                "https://tracker.example/pixel"
+            )
+        )
+    }
+
+    @Test
+    fun `a null page url falls back to the resource host alone`() {
+        assertFalse(
+            GoogleAuthNavigation.isSignInContext(null, "https://tracker.example/pixel")
+        )
+        assertTrue(
+            GoogleAuthNavigation.isSignInContext(null, "https://accounts.google.com/o/oauth2/iframe")
+        )
+    }
+
+    @Test
+    fun `lookalike hosts are never the sign-in context`() {
+        assertFalse(
+            GoogleAuthNavigation.isSignInContext(
+                "https://accounts.google.com.evil.example/",
+                "https://cdn.evil.example/x.js"
+            )
+        )
+        assertFalse(
+            GoogleAuthNavigation.isSignInContext(
+                "https://example.com/",
+                "http://accounts.google.com/iframe"
+            )
+        )
+    }
 }

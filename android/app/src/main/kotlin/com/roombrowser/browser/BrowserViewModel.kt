@@ -66,6 +66,7 @@ import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.engine.BlockedResourceSink
 import com.roombrowser.engine.EngineCertificate
 import com.roombrowser.engine.EngineSession
+import com.roombrowser.engine.GoogleSignInRecovery
 import com.roombrowser.engine.PageErrorKind
 import com.roombrowser.engine.PermissionResponder
 import com.roombrowser.engine.ResourceFilter
@@ -633,6 +634,25 @@ class BrowserViewModel(
         }
         override fun onSuspiciousSite(url: String, signals: List<String>) {
             emitMessage("Caution: ${signals.joinToString()}")
+        }
+        override fun onSignInRecovery(
+            session: EngineSession,
+            action: GoogleSignInRecovery.Action
+        ) {
+            // Only the tab the user is looking at gets to speak: a background
+            // tab's sign-in retry must not flash a snackbar over its owner.
+            if (session !== activeSession) return
+            when (action) {
+                GoogleSignInRecovery.Action.DESKTOP_RETRY ->
+                    emitMessage("Google refused sign-in — retrying with a desktop identity")
+                GoogleSignInRecovery.Action.COOKIE_RETRY ->
+                    emitMessage("Still refused — clearing Google's cookies and retrying")
+                GoogleSignInRecovery.Action.ADVICE -> emitMessage(
+                    "Google keeps refusing sign-in here. Try another network " +
+                        "(Wi-Fi ↔ mobile data), or run Google Sign-in Check from the page menu"
+                )
+                GoogleSignInRecovery.Action.NONE -> {}
+            }
         }
         override fun onPageStarted(session: EngineSession, url: String) {
             // [session] is the engine that fired: everything below belongs to

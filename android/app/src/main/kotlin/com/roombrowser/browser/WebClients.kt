@@ -16,6 +16,8 @@ import com.roombrowser.domain.oct.OctNavigation
 import com.roombrowser.engine.EngineCertificate
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.EngineSessionListener
+import com.roombrowser.engine.GoogleAuthNavigation
+import com.roombrowser.engine.GoogleSignInRecovery
 import com.roombrowser.engine.HttpAuthResponder
 import com.roombrowser.engine.NavigationDecision
 import com.roombrowser.engine.PageErrorKind
@@ -89,6 +91,14 @@ class RoomSessionListener(
         fun onHttpsUpgrade(host: String)
         fun onPopupBlocked(session: EngineSession)
         fun onSuspiciousSite(url: String, signals: List<String>)
+
+        /**
+         * The session applied an automatic Google sign-in recovery step —
+         * desktop identity reload, cookie erase + reload, or the advice
+         * notice after every automatic lever is spent. [action] is the step;
+         * the wording is the app's.
+         */
+        fun onSignInRecovery(session: EngineSession, action: GoogleSignInRecovery.Action)
 
         fun onProgress(session: EngineSession, progress: Int)
         fun onTitleChanged(session: EngineSession, title: String)
@@ -336,6 +346,16 @@ class RoomSessionListener(
         isForMainFrame: Boolean
     ): Boolean {
         if (isForMainFrame) return false
+        // THE SIGN-IN CONTEXT STANDS DOWN. While the page (or the resource
+        // itself) is one of Google's sign-in surfaces, nothing here blocks:
+        // the flow's challenge scripts, cookie handoffs and consent hops are
+        // exactly the traffic a rules update can half-block, and a half-blocked
+        // sign-in is the refusal the engine's recovery ladder then has to spend
+        // its rungs on. Ads and trackers return for the session the moment the
+        // main frame leaves the sign-in hosts; the malicious-site rule is NOT
+        // excused here -- it lives in the navigation policy, which still judges
+        // every main frame the sign-in flow itself produces.
+        if (GoogleAuthNavigation.isSignInContext(session.url, url)) return false
         val host = UrlIntelligence.hostOf(url) ?: return false
         // The OWNING session's page host, resolved from the firing session —
         // never the active tab's (see [Callbacks.pageHostFor]). The resolver
@@ -372,6 +392,10 @@ class RoomSessionListener(
     override fun onPageFinished(session: EngineSession, url: String?, success: Boolean) {
         val shown = url.orEmpty()
         callbacks.onPageFinished(session, shown, session.title ?: shown, success)
+    }
+
+    override fun onSignInRecovery(session: EngineSession, action: GoogleSignInRecovery.Action) {
+        callbacks.onSignInRecovery(session, action)
     }
 
     override fun onTitleChanged(session: EngineSession, title: String?) {

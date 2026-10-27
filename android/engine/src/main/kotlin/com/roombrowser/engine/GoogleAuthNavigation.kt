@@ -73,6 +73,22 @@ object GoogleAuthNavigation {
         hostOf(url)?.let { it in SIGN_IN_HOSTS } == true
 
     /**
+     * Whether a sub-resource request belongs to a Google sign-in flow.
+     *
+     * True when EITHER side of the request is a sign-in host: the page being
+     * rendered is one (the resource is Google's own sign-in machinery), or
+     * the resource itself is (an OAuth iframe embedded in another site's
+     * page). Content blocking that touches either side can break the
+     * challenge scripts and cookie handoffs the flow depends on, so the
+     * blocker asks this first and stands down for the whole context.
+     *
+     * [pageUrl] may be null — a session mid-teardown has no committed URL —
+     * and null means only the resource's own host can answer.
+     */
+    fun isSignInContext(pageUrl: String?, resourceUrl: String): Boolean =
+        (pageUrl != null && isSignInTarget(pageUrl)) || isSignInTarget(resourceUrl)
+
+    /**
      * Whether the session should abandon this navigation and re-issue it
      * itself, with the identity headers attached.
      *
