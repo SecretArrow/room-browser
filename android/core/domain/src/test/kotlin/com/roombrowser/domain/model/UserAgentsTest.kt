@@ -296,4 +296,132 @@ class UserAgentsTest {
         assertThat(UserAgents.effectiveUserAgent(settings)).isNull()
         assertThat(UserAgents.webViewNeutralUserAgent(engineUa)).isNotNull()
     }
+
+    // ----------------------------------------------------- tuning to the engine
+
+    /**
+     * A stock WebView UA from a phone whose Android System WebView reports a
+     * DIFFERENT Chrome version than the catalogue's pinned 156.0.8078.48 -- the
+     * exact case the engine-tuner exists for. 131 is the CI emulator's real
+     * engine generation and the most likely mismatch a field device hits.
+     */
+    private val engineStockLegacy =
+        "Mozilla/5.0 (Linux; Android 14; SM-S918B Build/UP1A.231005.007; wv) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/131.0.6778.135 " +
+            "Mobile Safari/537.36"
+
+    @Test
+    fun `a full-form Chrome preset is tuned to the engine's full Chrome version`() {
+        val preset = UserAgents.byId("chrome_android")!!.value
+
+        val tuned = UserAgents.engineTunedUserAgent(preset, engineStockLegacy)
+
+        // The catalogue's pinned 156.0.8078.48 is replaced by the engine's
+        // 131.0.6778.135 -- the four-part form is preserved, only the version
+        // moves, because the engine's TLS fingerprint is 131 and the UA's claim
+        // must agree with it or Google's sign-in refusal reads the mismatch.
+        assertThat(tuned).contains("Chrome/131.0.6778.135")
+        assertThat(tuned).doesNotContain("Chrome/156")
+        // The non-version parts of the preset are the user's identity pick and
+        // stay as written: Chrome on Android, Mobile token present, no model
+        // slot (the preset never carried one).
+        assertThat(tuned).startsWith(
+            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) "
+        )
+        assertThat(tuned).contains(" Mobile Safari/537.36")
+    }
+
+    @Test
+    fun `a reduced-form Chrome preset is tuned to the engine's major in the same reduced form`() {
+        // Samsung ships `Chrome/156.0.0.0` on Android, never the full four-part
+        // token. Tuning it with the engine's full version (131.0.6778.135) would
+        // change the token's SHAPE, and a site that distinguishes browsers by
+        // the form of their Chrome token would see a Samsung-style UA suddenly
+        // carry the full token -- a fingerprint in itself.
+        val samsung = UserAgents.byId("samsung_android")!!.value
+
+        val tuned = UserAgents.engineTunedUserAgent(samsung, engineStockLegacy)
+
+        assertThat(tuned).contains("Chrome/131.0.0.0")
+        assertThat(tuned).doesNotContain("Chrome/156")
+        // The vendor's own token (SamsungBrowser/29.0) is a vendor claim, not
+        // an engine claim, and is left alone.
+        assertThat(tuned).contains("SamsungBrowser/29.0")
+    }
+
+    @Test
+    fun `the desktop mode UA is tuned to the engine's major in reduced form`() {
+        // desktopModeUserAgent ships `Chrome/156.0.0.0` (desktop Chrome's own
+        // reduced three-zero convention), so the tuner uses the engine's MAJOR
+        // followed by .0.0.0 -- not the full version.
+        val tuned = UserAgents.engineTunedUserAgent(
+            UserAgents.desktopModeUserAgent,
+            engineStockLegacy
+        )
+
+        assertThat(tuned).contains("Chrome/131.0.0.0")
+        assertThat(tuned).contains("Windows NT 10.0")
+        assertThat(tuned).doesNotContain("Chrome/156")
+    }
+
+    @Test
+    fun `an Edge preset tunes its Chrome token and leaves the EdgA token alone`() {
+        val edge = UserAgents.byId("edge_android")!!.value
+
+        val tuned = UserAgents.engineTunedUserAgent(edge, engineStockLegacy)
+
+        // The Chrome token is the engine's. The EdgA token is Edge's own
+        // release (the engine is not Edge), and is a vendor identity claim the
+        // user picked knowing the engine cannot honour it -- untouched.
+        assertThat(tuned).contains("Chrome/131.0.6778.135")
+        assertThat(tuned).contains("EdgA/156.0.4314.42")
+    }
+
+    @Test
+    fun `a Firefox preset is returned unchanged because it carries no Chrome token`() {
+        val firefox = UserAgents.byId("firefox_android")!!.value
+
+        val tuned = UserAgents.engineTunedUserAgent(firefox, engineStockLegacy)
+
+        // Firefox is an identity claim about Firefox, not a claim about the
+        // engine. There is no Chrome token to tune, so the string is returned
+        // verbatim -- the engine cannot honestly supply a Firefox version.
+        assertThat(tuned).isEqualTo(firefox)
+    }
+
+    @Test
+    fun `a target without a Chrome token is returned unchanged`() {
+        val target = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Mobile Safari/537.36"
+
+        assertThat(UserAgents.engineTunedUserAgent(target, engineStockLegacy)).isEqualTo(target)
+    }
+
+    @Test
+    fun `a null or Chrome-less engine UA leaves the target untouched rather than inventing a version`() {
+        val chromePreset = UserAgents.byId("chrome_android")!!.value
+
+        // No engine UA to read from: nothing to tune, the catalogue's pinned
+        // 156 is left in place rather than silently replaced with a guess.
+        assertThat(UserAgents.engineTunedUserAgent(chromePreset, null))
+            .isEqualTo(chromePreset)
+        assertThat(UserAgents.engineTunedUserAgent(chromePreset, ""))
+            .isEqualTo(chromePreset)
+        // An engine UA without a Chrome token (a Firefox-on-desktop engine, or
+        // anything unrecognisable) is the same case: no honest replacement.
+        val noChrome = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Mobile Safari/537.36"
+        assertThat(UserAgents.engineTunedUserAgent(chromePreset, noChrome))
+            .isEqualTo(chromePreset)
+    }
+
+    @Test
+    fun `tuning is idempotent -- the engine's own UA is left as the engine reported it`() {
+        // The DEFAULT path's neutralised string already carries the engine's
+        // real Chrome token; tuning it again is a no-op, which is what the
+        // engine layer needs to call site uniformly without a special case.
+        val neutral = UserAgents.webViewNeutralUserAgent(engineStockLegacy)!!
+        val tuned = UserAgents.engineTunedUserAgent(neutral, engineStockLegacy)
+
+        assertThat(tuned).isEqualTo(neutral)
+        assertThat(tuned).contains("Chrome/131.0.6778.135")
+    }
 }

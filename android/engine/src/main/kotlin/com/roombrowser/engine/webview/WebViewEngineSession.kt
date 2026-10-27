@@ -423,15 +423,33 @@ internal class WebViewEngineSession(
             // hints below must describe the same identity, and reading the UA
             // back out of the engine after assigning it would make the two a
             // copy of each other only by accident.
-            // The second elvis is a real case, not belt-and-braces: the
-            // neutralizer answers null for a null/blank engine string, and
-            // WebSettings can hand back "" before it has settled. Assigning
-            // null is not an option (the setter takes a String), and
-            // assigning "" would send an empty User-Agent, so the raw stock
-            // string is the honest last resort.
-            val resolvedUserAgent = UserAgents.effectiveUserAgent(settings)
-                ?: UserAgents.webViewNeutralUserAgent(WebViewStockUserAgent.of(s))
-                ?: WebViewStockUserAgent.of(s)
+            //
+            // A DEVICE the profile picked supplies the MODEL slot ONLY. The
+            // catalogue used to ship the device's whole UA, whose Chrome
+            // version goes stale within months and contradicts the installed
+            // engine (TLS, client-hints version) -- the contradiction Google's
+            // sign-in refusal reads without any JavaScript. The real engine
+            // version is kept, the WebView markers are stripped, and only the
+            // `(Linux; Android N; <model> Build/...)` slot is the profile's
+            // choice (UserAgents.deviceTunedUserAgent). A preset or custom UA
+            // is a deliberate identity pick and is honoured as-is -- BUT its
+            // Chrome token is then tuned to the engine's real Chrome version
+            // (UserAgents.engineTunedUserAgent), so the UA's claim and the
+            // TLS fingerprint the engine emits cannot disagree.
+            val stockUserAgent = WebViewStockUserAgent.of(s)
+            val claimedDevice = UserAgents.device(settings)
+            val baseUserAgent = when {
+                claimedDevice != null ->
+                    UserAgents.deviceTunedUserAgent(stockUserAgent, claimedDevice)
+                        ?: UserAgents.webViewNeutralUserAgent(stockUserAgent)
+                        ?: stockUserAgent
+                UserAgents.effectiveUserAgent(settings) != null ->
+                    UserAgents.effectiveUserAgent(settings)!!
+                else ->
+                    UserAgents.webViewNeutralUserAgent(stockUserAgent) ?: stockUserAgent
+            }
+            val resolvedUserAgent =
+                UserAgents.engineTunedUserAgent(baseUserAgent, stockUserAgent)
             s.userAgentString = resolvedUserAgent
             applyClientHints(s, settings, resolvedUserAgent)
             // Desktop mode is the LAST word on identity, and it belongs here as
@@ -440,8 +458,10 @@ internal class WebViewEngineSession(
             // after a session is created, so a profile whose default is desktop
             // mode would otherwise be handed its mobile UA back by that pass.
             if (settings.desktopModeDefault) {
-                s.userAgentString = UserAgents.desktopModeUserAgent
-                applyClientHints(s, settings, UserAgents.desktopModeUserAgent)
+                val desktopUa =
+                    UserAgents.engineTunedUserAgent(UserAgents.desktopModeUserAgent, stockUserAgent)
+                s.userAgentString = desktopUa
+                applyClientHints(s, settings, desktopUa)
                 // Overview mode is ON so the wide desktop layout scales down to
                 // fit the phone's screen -- the same combination Chrome, Brave
                 // and Firefox Android use for "request desktop site". An earlier
@@ -568,26 +588,53 @@ internal class WebViewEngineSession(
      * earlier draft turned overview mode off, which rendered the desktop page
      * at 1:1 scale and the user saw only its top-left corner -- the
      * combination that read as "desktop mode does not work".
+     *
+     * IDENTITY TUNING. Both branches resolve their UA the SAME way [configure]
+     * does -- device path goes through [UserAgents.deviceTunedUserAgent]
+     * (engine's UA + swapped model slot), preset/custom through
+     * [UserAgents.effectiveUserAgent], default through the neutralised stock
+     * string -- and BOTH are then passed through
+     * [UserAgents.engineTunedUserAgent] so the Chrome token in any UA the app
+     * installs matches the engine's real Chrome version. Toggling desktop OFF
+     * on a profile that picked a device used to revert to the device
+     * catalogue's hardcoded Chrome build, contradicting the engine's TLS
+     * fingerprint the very same toggle ON's neutralised UA had just stopped
+     * contradicting; this branch now agrees with [configure] instead.
      */
     internal fun applyDesktopMode(profile: Profile, desktop: Boolean) {
         runOnMain {
             if (closed) return@runOnMain
             val s = webView.settings
+            val stockUserAgent = WebViewStockUserAgent.of(s)
             if (desktop) {
-                s.userAgentString = UserAgents.desktopModeUserAgent
-                applyClientHints(s, profile.settings, UserAgents.desktopModeUserAgent)
+                val desktopUa =
+                    UserAgents.engineTunedUserAgent(UserAgents.desktopModeUserAgent, stockUserAgent)
+                s.userAgentString = desktopUa
+                applyClientHints(s, profile.settings, desktopUa)
                 s.useWideViewPort = true
                 s.loadWithOverviewMode = true
             } else {
                 s.useWideViewPort = true
                 s.loadWithOverviewMode = true
-                // The same two-step the mobile branch of [configure] uses: a
-                // null override means "the engine's own UA", which still
-                // announces a WebView, so the stock string is read back and its
-                // two WebView markers stripped before it is installed.
-                val resolvedUserAgent = UserAgents.effectiveUserAgent(profile.settings)
-                    ?: UserAgents.webViewNeutralUserAgent(WebViewStockUserAgent.of(s))
-                    ?: WebViewStockUserAgent.of(s)
+                // The SAME mobile resolution [configure] uses, so toggling
+                // desktop OFF lands on a UA that agrees with the one
+                // [configure] installed before the toggle -- the device path
+                // keeps the engine's real Android version and Build rather
+                // than the catalogue's hardcoded pair, and every Chrome token
+                // is tuned to the engine's real version.
+                val claimedDevice = UserAgents.device(profile.settings)
+                val baseUserAgent = when {
+                    claimedDevice != null ->
+                        UserAgents.deviceTunedUserAgent(stockUserAgent, claimedDevice)
+                            ?: UserAgents.webViewNeutralUserAgent(stockUserAgent)
+                            ?: stockUserAgent
+                    UserAgents.effectiveUserAgent(profile.settings) != null ->
+                        UserAgents.effectiveUserAgent(profile.settings)!!
+                    else ->
+                        UserAgents.webViewNeutralUserAgent(stockUserAgent) ?: stockUserAgent
+                }
+                val resolvedUserAgent =
+                    UserAgents.engineTunedUserAgent(baseUserAgent, stockUserAgent)
                 s.userAgentString = resolvedUserAgent
                 applyClientHints(s, profile.settings, resolvedUserAgent)
             }

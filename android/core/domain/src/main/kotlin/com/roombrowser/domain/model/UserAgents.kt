@@ -268,4 +268,106 @@ object UserAgents {
             .trim()
         return cleaned.ifBlank { raw }
     }
+
+    /**
+     * The engine's OWN user agent — WebView markers stripped, with only the
+     * device MODEL slot swapped for the one the profile chose.
+     *
+     * WHY THIS REPLACES `device.userAgent`. A device in the catalogue carries
+     * its own full UA, and that UA carries its own Chrome version — one that
+     * goes stale within months and that the installed WebView does not match.
+     * A profile claiming Chrome 156 over a device whose installed engine is
+     * 120 sends a UA saying 156 next to client hints and a TLS fingerprint
+     * that both say 120, and that contradiction is a far stronger
+     * automation/embedded-browser signal than the `wv` token ever was. The
+     * sign-in refusal reads it without any JavaScript at all.
+     *
+     * WHAT THIS KEEPS HONEST. The Chrome version is the engine's REAL one —
+     * whatever the installed Android System WebView actually reports — and
+     * the Android version and platform come straight off the same stock
+     * string. Only the MODEL segment inside `(Linux; Android N; <model>
+     * Build/...)` is the profile's choice, so per-profile device privacy lives
+     * on the one field that can vary without claiming a version the engine
+     * is not.
+     *
+     * A non-Android stock (a desktop claim, or anything the regex does not
+     * recognise) is returned with markers stripped and the model untouched,
+     * which is the only honest answer — there is no Android model slot to
+     * put a phone code into.
+     */
+    fun deviceTunedUserAgent(engineUserAgent: String?, device: Device?): String? {
+        val neutral = webViewNeutralUserAgent(engineUserAgent) ?: return engineUserAgent
+        if (device == null) return neutral
+        return MODEL_SEGMENT.replace(neutral) { mr ->
+            "${mr.groupValues[1]}${device.code}${mr.groupValues[2]}${mr.groupValues[3]}"
+        }
+    }
+
+    /**
+     * Replaces the `Chrome/<version>` token in [target] with the Chrome token
+     * the engine actually reports in [engineUserAgent], so a UA a profile picked
+     * (a preset, the desktop-mode UA, the device catalogue's full string) does
+     * not claim a Chrome version the installed Android System WebView cannot
+     * honour — the contradiction Google's "This browser or app may not be
+     * secure" refusal reads without any JavaScript at all.
+     *
+     * FORM IS PRESERVED. A preset that ships the reduced three-zero form
+     * (`Chrome/156.0.0.0`, as Samsung, Opera and Vivaldi actually emit, and as
+     * the desktop UA does) is rewritten with the engine's MAJOR followed by
+     * `.0.0.0`, not the engine's full version: a site that distinguishes a
+     * browser by the form of its Chrome token would otherwise see a reduced
+     * Samsung-style UA suddenly carry the full four-part token, and that shape
+     * change is itself a fingerprint. A preset that ships the full form
+     * (`Chrome/156.0.8078.48`) is rewritten with the engine's full version.
+     *
+     * NO-OP WHEN THERE IS NOTHING TO TUNE. A Firefox preset has no Chrome
+     * token (it is an identity claim about Firefox, not a claim about the
+     * engine) and is returned verbatim; so is any string the engine itself
+     * reports without a Chrome token (it would be invented, not tuned). The
+     * non-Chrome vendor tokens (EdgA, SamsungBrowser, OPR, Vivaldi,
+     * DuckDuckGo) are deliberately left alone: they describe a vendor the
+     * engine is not, and the user picked that identity knowing it.
+     *
+     * This is the network-side half of the contract
+     * [WebViewClientHints.forUserAgent] already keeps in client hints: both
+     * read the Chrome version from the same resolved UA, so the UA string and
+     * the `Sec-CH-UA*` headers cannot disagree once the engine's real version
+     * is installed.
+     */
+    fun engineTunedUserAgent(target: String, engineUserAgent: String?): String {
+        val engineMatch = CHROME_TOKEN.find(engineUserAgent ?: return target) ?: return target
+        val engineVersion = engineMatch.groupValues[1]
+        val engineMajor = engineVersion.substringBefore('.')
+        return CHROME_TOKEN.replace(target) { mr ->
+            val targetVersion = mr.groupValues[1]
+            val targetMajor = targetVersion.substringBefore('.')
+            // The reduced form (e.g. `120.0.0.0`) is what Samsung, Opera and
+            // Vivaldi ship on Android and what the desktop UA ships; rewriting
+            // it with the engine's full version would change the token's SHAPE
+            // and the form is itself a fingerprint.
+            if (targetVersion == "$targetMajor.0.0.0") {
+                "Chrome/$engineMajor.0.0.0"
+            } else {
+                "Chrome/$engineVersion"
+            }
+        }
+    }
+
+    /**
+     * A `Chrome/<four-part-version>` token, with the version captured so the
+     * tuner can read both the full form and the reduced three-zero form the
+     * same way. Anchored on `Chrome/` (not the whole product) so a vendor
+     * token such as `EdgA/156.0.4314.42` is not touched -- it is a vendor
+     * claim the engine is not making.
+     */
+    private val CHROME_TOKEN = Regex("""Chrome/(\d+\.\d+\.\d+\.\d+)""")
+
+    /**
+     * The `(Linux; Android N; <model> Build/...)` parenthetical — the slot a
+     * phone model lives in. Captures the `Android N; ` prefix, the model, an
+     * optional ` Build/...`, and the closing `)` so the whole parenthetical
+     * can be rebuilt with the model replaced.
+     */
+    private val MODEL_SEGMENT =
+        Regex("""(Android \d+(?:\.\d+)?; )[^);]+?( Build/[^)]*)?(\))""")
 }
