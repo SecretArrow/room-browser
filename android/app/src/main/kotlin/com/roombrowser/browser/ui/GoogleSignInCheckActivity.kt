@@ -220,10 +220,16 @@ private fun probeScript(): String {
 private suspend fun readReport(context: Context): SignInReport {
     val provider = runCatching { WebView.getCurrentWebViewPackage() }.getOrNull()
     val providerLabel = provider?.let { p ->
+        // `WebViewPackageInfo` exposes the provider's package name and
+        // version directly (API 26+); the label comes from PackageManager
+        // against that package, with the package name as the fallback the
+        // reader still recognises when the label lookup is refused.
         val label = runCatching {
-            p.packageInfo?.applicationInfo?.loadLabel(context.packageManager)?.toString()
-        }.getOrNull() ?: p.name
-        val version = p.packageInfo?.versionName ?: p.versionName
+            context.packageManager.getApplicationLabel(
+                context.packageManager.getApplicationInfo(p.packageName, 0)
+            ).toString()
+        }.getOrNull() ?: p.packageName
+        val version = p.versionName
         "$label ${version ?: ""}".trim()
     } ?: "Android System WebView (version not reported by this device)"
     val stockUa = runCatching { WebSettings.getDefaultUserAgent(context) }.getOrDefault("")
