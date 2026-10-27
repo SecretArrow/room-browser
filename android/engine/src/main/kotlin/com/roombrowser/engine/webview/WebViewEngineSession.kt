@@ -442,8 +442,14 @@ internal class WebViewEngineSession(
             if (settings.desktopModeDefault) {
                 s.userAgentString = UserAgents.desktopModeUserAgent
                 applyClientHints(s, settings, UserAgents.desktopModeUserAgent)
+                // Overview mode is ON so the wide desktop layout scales down to
+                // fit the phone's screen -- the same combination Chrome, Brave
+                // and Firefox Android use for "request desktop site". An earlier
+                // draft turned overview off, which rendered the 1024+px desktop
+                // page at 1:1 scale and the user saw only its top-left corner,
+                // which read as "desktop mode does not work".
                 s.useWideViewPort = true
-                s.loadWithOverviewMode = false
+                s.loadWithOverviewMode = true
             }
             // The profile's text scale normally travels as the shared
             // document-start shim, which a WebView too old for
@@ -555,6 +561,13 @@ internal class WebViewEngineSession(
      * they are re-applied exactly as the GeckoView edition does
      * (`GeckoEngineSession.applyDesktopMode`), and as the app did by calling
      * `applyDeviceShim` from both paths.
+     *
+     * VIEWPORT. `useWideViewPort` is on AND `loadWithOverviewMode` is on for
+     * the desktop branch: the wide desktop layout (typically 1024+ px) is
+     * scaled down to fit the phone screen, with pinch-zoom kept on. An
+     * earlier draft turned overview mode off, which rendered the desktop page
+     * at 1:1 scale and the user saw only its top-left corner -- the
+     * combination that read as "desktop mode does not work".
      */
     internal fun applyDesktopMode(profile: Profile, desktop: Boolean) {
         runOnMain {
@@ -564,7 +577,7 @@ internal class WebViewEngineSession(
                 s.userAgentString = UserAgents.desktopModeUserAgent
                 applyClientHints(s, profile.settings, UserAgents.desktopModeUserAgent)
                 s.useWideViewPort = true
-                s.loadWithOverviewMode = false
+                s.loadWithOverviewMode = true
             } else {
                 s.useWideViewPort = true
                 s.loadWithOverviewMode = true

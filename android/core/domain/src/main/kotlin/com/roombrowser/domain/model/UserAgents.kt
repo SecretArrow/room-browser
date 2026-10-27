@@ -13,9 +13,10 @@ package com.roombrowser.domain.model
  *
  * Desktop identities are deliberately NOT presets. Claiming a desktop browser
  * on a phone is a rendering-mode choice, not an identity: it goes with a wide
- * viewport and no overview zoom, and it is per site, not per profile. That is
- * what the per-site "Desktop mode" toggle is for, and the UA it applies lives
- * in [UserAgents.desktopModeUserAgent] rather than in [UserAgents.all].
+ * viewport scaled to fit the phone screen (overview mode on, pinch-zoom kept),
+ * and it is per site, not per profile. That is what the per-site "Desktop mode"
+ * toggle is for, and the UA it applies lives in [UserAgents.desktopModeUserAgent]
+ * rather than in [UserAgents.all].
  *
  * What this changes is the identity a site is told, not the machine. Screen
  * size, viewport size, devicePixelRatio and the layout that follows from them
@@ -198,7 +199,7 @@ object UserAgents {
      * The UA the per-site "Desktop mode" toggle applies.
      *
      * Not a preset and never part of [all]: desktop mode is a rendering-mode
-     * feature (wide viewport, no overview zoom) toggled per site, not a
+     * feature (wide viewport, overview zoom fit-to-screen) toggled per site, not a
      * profile identity to choose in settings. Chrome on Windows is the least
      * remarkable desktop UA a site sees, which is the point.
      */
