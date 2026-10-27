@@ -2636,22 +2636,31 @@ class BrowserViewModel(
     }
 
     fun clearSiteDataForCurrentSite() {
-        val host = UrlIntelligence.hostOf(pageState.url) ?: return
+        val url = pageState.url
+        val host = UrlIntelligence.hostOf(url) ?: return
         viewModelScope.launch {
-            if (activeSession == null) return@launch
-            // The session's OWN cookies and form data go first: this is the
-            // "clear data for this site" action, and the profile-wide wipe
-            // below is a different and much larger thing that the caller did
-            // not ask for. The HTTP cache is still not cleared here -- the
-            // facade has no cache-only member yet -- and that is an open gap,
-            // recorded rather than papered over.
-            activeSession?.clearSessionData()
-            withContext(Dispatchers.IO) {
-                // engine data for this profile dir is wiped; per-site granularity
-                // is the engine's business (documented in PROFILE_ISOLATION.md)
-                ProfileEngine.clearEngineStorage(getApplication(), profileId)
+            if (activeSession == null) {
+                emitMessage("No active page to clear data for")
+                return@launch
             }
-            emitMessage("Site data cleared for $host")
+            // TRULY PER-SITE NOW. This used to end in ProfileEngine
+            // .clearEngineStorage() — a whole-PROFILE wipe wearing a per-site
+            // label — because the engine had no per-origin erase. It does now
+            // (EngineSession.clearSiteData): this host's cookies, expired
+            // through CookieManager overwrite requests, plus this origin's
+            // web storage. Every other site in the profile keeps its
+            // sign-ins, which is what a button inside the per-site privacy
+            // sheet must mean.
+            val cleared = withContext(Dispatchers.IO) {
+                activeSession?.clearSiteData(url) == true
+            }
+            emitMessage(
+                if (cleared) {
+                    "Cleared $host's cookies and site data — other sites are untouched"
+                } else {
+                    "Could not clear site data for $host"
+                }
+            )
         }
     }
 

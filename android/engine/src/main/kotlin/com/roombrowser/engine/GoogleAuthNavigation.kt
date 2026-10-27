@@ -91,9 +91,59 @@ object GoogleAuthNavigation {
         if (!isForMainFrame) return false
         if (!method.equals("GET", ignoreCase = true)) return false
         if (!isSignInTarget(url)) return false
-        val echoed = lastReissuedUrl != null &&
-            url == lastReissuedUrl &&
-            nowMs - lastReissuedAtMs < GUARD_WINDOW_MS
-        return !echoed
+        return !echoesReissue(url, lastReissuedUrl, lastReissuedAtMs, nowMs)
     }
+
+    /**
+     * Whether a document that has STARTED loading on a sign-in host is one the
+     * session must re-issue itself, because it arrived on a path the app never
+     * issued: a SERVER-SIDE REDIRECT.
+     *
+     * THE GAP THIS CLOSES. `shouldReissueWithIdentityHeaders` covers only
+     * navigations that pass through `shouldOverrideUrlLoading` — and a 302
+     * chain the engine follows on its own never does. Open gmail.com signed
+     * out and Google's own server answers `accounts.google.com/ServiceLogin`:
+     * the WebView follows that redirect itself, the document request goes out
+     * carrying the provider's `X-Requested-With` stamp, and Google's refusal
+     * page is the response to the request nobody could clean. The click on a
+     * Sign in button was covered; the redirect that a hundred Google
+     * properties perform before any click was not — and that redirect is the
+     * everyday route into sign-in.
+     *
+     * The window fires from `onPageStarted`, which DOES observe redirected
+     * documents. Honesty about what that buys: by the time it fires the
+     * stamped request has already been sent, so this is a re-issue, not a
+     * prevention — the clean load replaces the stamped one before its REFUSAL
+     * can render, and Google evaluates the re-issued request on its own
+     * merits. One stamped request still reaches Google's logs; what stops is
+     * the user being shown the refusal page because of it.
+     *
+     * THE GUARD IS THE SAME MEMORY the shouldOverrideUrlLoading re-issue
+     * writes: [lastReissuedUrl] / [lastReissuedAtMs]. Three kinds of load must
+     * NOT re-issue again here — this session's own re-issued load (its
+     * onPageStarted fires for the same URL), an app-issued load that already
+     * went out with the identity headers (`loadUri` stamps the memory for
+     * sign-in targets for exactly this reason), and the echo of either. The
+     * window is [GUARD_WINDOW_MS] and per-URL, for the same reasons as above.
+     *
+     * MAIN FRAME ONLY is enforced by the caller: `onPageStarted` is a
+     * main-frame callback, so no extra flag is needed here — but the caller
+     * must not wire a sub-frame signal into this.
+     */
+    fun shouldReissueAfterRedirect(
+        url: String,
+        lastReissuedUrl: String?,
+        lastReissuedAtMs: Long,
+        nowMs: Long,
+    ): Boolean = isSignInTarget(url) && !echoesReissue(url, lastReissuedUrl, lastReissuedAtMs, nowMs)
+
+    /** Whether [url] is this session's own recent re-issue, by the guard window. */
+    private fun echoesReissue(
+        url: String,
+        lastReissuedUrl: String?,
+        lastReissuedAtMs: Long,
+        nowMs: Long,
+    ): Boolean = lastReissuedUrl != null &&
+        url == lastReissuedUrl &&
+        nowMs - lastReissuedAtMs < GUARD_WINDOW_MS
 }

@@ -376,6 +376,28 @@ interface EngineSession {
     fun clearSessionData()
 
     /**
+     * Erase the stored site data of ONE origin: its HTTP cookies and its web
+     * storage (local/session storage). Every OTHER origin in the profile is
+     * untouched, and no other site's sign-in is affected.
+     *
+     * THE PER-SITE PROMISE. [clearSessionData] is session-scoped and
+     * [EngineHost.clearBrowsingData] is profile-wide; this is the middle
+     * granularity the privacy shield's "clear site data" action names and the
+     * one that previously did not exist — the action had to be worded as a
+     * profile wipe to stay honest. [url] is the page the user is looking at;
+     * cookies are matched by the host chain the URL's own host can carry
+     * (see [SiteCookieClearer]).
+     *
+     * Returns true when the engine performed an erase, false when this engine
+     * cannot express per-origin erasure (the caller must then say so rather
+     * than claim a per-site wipe happened). Known remainders, recorded rather
+     * than papered over: IndexedDB and Service Workers have no per-origin
+     * deletion API on this engine; their data is already origin-scoped, so a
+     * site cleared here keeps only what only IT can read.
+     */
+    fun clearSiteData(url: String): Boolean = false
+
+    /**
      * The Developer Tools inspection handle for this session.
      *
      * Created on first call and reused, so a panel that reopens gets the same

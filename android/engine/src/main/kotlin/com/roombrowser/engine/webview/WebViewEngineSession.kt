@@ -29,6 +29,7 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
+import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.WebViewDatabase
@@ -49,6 +50,7 @@ import com.roombrowser.engine.EngineSessionListener
 import com.roombrowser.engine.EngineState
 import com.roombrowser.engine.ExternalUrlPolicy
 import com.roombrowser.engine.GoogleAuthNavigation
+import com.roombrowser.engine.SiteCookieClearer
 import com.roombrowser.engine.HttpAuthResponder
 import com.roombrowser.engine.NavigationDecision
 import com.roombrowser.engine.PageErrorKind
@@ -253,7 +255,18 @@ internal class WebViewEngineSession(
     }
 
     override fun loadUri(uri: String) = runOnMain {
-        if (!closed) runCatching { webView.loadUrl(uri, identityHeaders) }
+        if (closed) return@runOnMain
+        // A sign-in URL the APP issues (omnibox, restore, history) already
+        // goes out with the identity headers -- so its own onPageStarted must
+        // not read it as an unclean redirect and re-issue it a second time.
+        // Stamping the re-issue memory here is what keeps the redirect-gap
+        // path (onPageStarted) from double-loading every app-issued sign-in
+        // navigation. See [GoogleAuthNavigation.shouldReissueAfterRedirect].
+        if (GoogleAuthNavigation.isSignInTarget(uri)) {
+            lastReissuedUrl = uri
+            lastReissuedAtMs = System.currentTimeMillis()
+        }
+        runCatching { webView.loadUrl(uri, identityHeaders) }
     }
 
     /**
@@ -947,6 +960,34 @@ internal class WebViewEngineSession(
     }
 
     /**
+     * Per-ORIGIN erase: this one site's cookies and web storage, nothing
+     * else's.
+     *
+     * The overwrite plan comes from [SiteCookieClearer] — every name the jar
+     * would attach to a request here, expired against every host in the
+     * host's chain, both the host-only and the `Domain=` shape — because the
+     * platform offers no per-site deletion primitive. `WebStorage
+     * .deleteOrigin` carries the local/session-storage half. IndexedDB and
+     * Service Workers have no per-origin deletion API and are left, which the
+     * facade documents rather than hides.
+     *
+     * Returns false when the session is closed or the URL is not a web URL —
+     * the caller words the result, the engine does not fake a success.
+     */
+    override fun clearSiteData(url: String): Boolean {
+        if (closed) return false
+        if (GoogleAuthNavigation.hostOf(url) == null && !url.startsWith("http")) return false
+        return runCatching {
+            val cookies = CookieManager.getInstance()
+            val requests = SiteCookieClearer.expiryRequests(url, cookies.getCookie(url))
+            requests.forEach { cookies.setCookie(it.url, it.header) }
+            cookies.flush()
+            runCatching { WebStorage.getInstance().deleteOrigin(url) }
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
      * This session's inspection handle. Per session, because a console sink
      * belongs to the panel that opened it; the capability set it reads is the
      * one shared [WebViewDevTools.CAPABILITIES], so a session can never
@@ -1215,6 +1256,29 @@ internal class WebViewEngineSession(
             CookieManager.getInstance().flush()
             mainFrameUrl = url
             currentProgress = 0
+            // THE REDIRECT GAP. A 302 the engine followed on its own never
+            // passes through shouldOverrideUrlLoading, so the document request
+            // went out with the provider's X-Requested-With stamp -- the
+            // route EVERY signed-out Google property takes into sign-in
+            // (gmail.com -> accounts.google.com without a single click).
+            // Re-issued here with the identity headers; the stamped request
+            // already went out, but Google grades the re-issued one on its
+            // own merits and the refusal never renders.
+            // [GoogleAuthNavigation.shouldReissueAfterRedirect] carries the
+            // full reasoning and the guard: this session's own re-issues and
+            // app-issued sign-in loads are remembered and never re-fired.
+            if (
+                GoogleAuthNavigation.shouldReissueAfterRedirect(
+                    url,
+                    lastReissuedUrl,
+                    lastReissuedAtMs,
+                    System.currentTimeMillis()
+                )
+            ) {
+                lastReissuedUrl = url
+                lastReissuedAtMs = System.currentTimeMillis()
+                view.post { runCatching { view.loadUrl(url, identityHeaders) } }
+            }
             // Early history feedback: the back/forward buttons light up as soon
             // as a navigation begins; doUpdateVisitedHistory re-reports the
             // authoritative state when the entry lands.

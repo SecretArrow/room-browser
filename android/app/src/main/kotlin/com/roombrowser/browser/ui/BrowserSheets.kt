@@ -278,6 +278,7 @@ fun PageActionsSheet(
     onOpenSettings: () -> Unit,
     onOpenProfileSettings: () -> Unit,
     onOpenWhatsMyIp: () -> Unit,
+    onOpenGoogleSignInCheck: () -> Unit,
     onOpenAbout: () -> Unit,
     onOpenAgent: () -> Unit,
     onOpenAiTasks: () -> Unit,
@@ -383,6 +384,7 @@ fun PageActionsSheet(
             SheetAction(Icons.Filled.Person, "Profile settings") { onOpenProfileSettings() }
             SheetAction(Icons.Filled.SwapHoriz, "Switch profile") { onShowQuickSwitcher(); onDismiss() }
             SheetAction(Icons.Filled.Public, "What's My IP") { onOpenWhatsMyIp() }
+            SheetAction(Icons.Filled.Lock, "Google sign-in check") { onOpenGoogleSignInCheck() }
             SheetAction(Icons.Filled.Info, "About Room Browser") { onOpenAbout() }
             Spacer(Modifier.height(24.dp))
         }
@@ -671,21 +673,17 @@ fun ShieldsSheet(viewModel: BrowserViewModel, onDismiss: () -> Unit) {
             TextButton(onClick = { viewModel.toggleShieldsForSite(!shields.shieldsDisabled) }) {
                 Text(if (shields.shieldsDisabled) "Enable protection for this site" else "Disable protection for this site")
             }
-            // Sitting in a sheet titled with the current host, next to two
-            // rows that really are per-site, this row read as "clear THIS
-            // site's data". It never was: clearSiteDataForCurrentSite() ends
-            // in ProfileEngine.clearEngineStorage(), which wipes the whole
-            // profile — cookies, local storage, saved form data, stored HTTP
-            // credentials — and this app offers no per-origin equivalent (see
-            // PROFILE_ISOLATION.md). The label itself is load-bearing
-            // elsewhere so it stays; the line under it and the confirmation
-            // are where the real scope is now stated, and a wipe that signs
-            // the user out of every site must not fire on one tap.
+            // PER-SITE, FOR REAL NOW. This row used to end in a whole-PROFILE
+            // wipe and had to be worded as one; the engine's
+            // clearSiteData(origin) closes that gap, so the button in the
+            // per-site sheet finally does what its host and neighbours say.
             TextButton(onClick = { confirmClearSiteData = true }) {
                 Text("Clear site data")
             }
             Text(
-                "Clears cookies, local storage, saved form data and cached files for EVERY site in this profile — clearing one host at a time is not offered, so you are signed out everywhere.",
+                "Clears the cookies and local storage of ${shields.host.ifBlank { "this site" }} only. " +
+                    "Sign-ins on every other site in this profile stay. This site's IndexedDB and " +
+                    "service workers are not removable per-site (the platform offers no API for them).",
                 style = MaterialTheme.typography.bodySmall,
                 color = extras.textSecondary,
                 modifier = Modifier.padding(start = 12.dp, end = 8.dp, bottom = 4.dp)
@@ -707,15 +705,15 @@ fun ShieldsSheet(viewModel: BrowserViewModel, onDismiss: () -> Unit) {
     }
     if (confirmClearSiteData) {
         com.roombrowser.main.ui.ConfirmDialog(
-            title = "Clear data for every site?",
-            text = "This signs you out of all sites in this profile, not only " +
-                "${shields.host.ifBlank { "this one" }}: every cookie, local " +
-                "storage entry, saved form entry and stored HTTP credential " +
-                "goes. Bookmarks and history are untouched. It cannot be undone.",
+            title = "Clear data for this site?",
+            text = "Clears ${shields.host.ifBlank { "this site" }}'s cookies and local " +
+                "storage on this profile. You are signed out of THIS site only — every " +
+                "other site keeps its sign-ins. To wipe the whole profile, use Profile " +
+                "settings → Danger zone.",
             // NOT "Clear site data": that exact string is the sheet's own
             // button, and a distinct confirm label keeps the two separately
             // addressable for anything matching on text.
-            confirmLabel = "Clear all site data",
+            confirmLabel = "Clear this site's data",
             onDismiss = { confirmClearSiteData = false },
             onConfirm = {
                 viewModel.clearSiteDataForCurrentSite()

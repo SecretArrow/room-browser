@@ -493,9 +493,9 @@ class AgentAppTools(
                 vm.clearSiteDataForCurrentSite()
                 ToolResult(
                     true,
-                    "Cleared the stored site data for $host. Honest scope: the engine keeps ONE data " +
-                        "directory per profile, not one per host, so this cleared the profile's stored " +
-                        "site data as a whole — sign-ins on other sites in this profile are gone too."
+                    "Cleared $host's own stored data — its cookies and local storage, per-site. " +
+                        "Sign-ins on every other site in this profile are untouched. This host's " +
+                        "IndexedDB and service workers have no per-origin deletion API and remain."
                 )
             }
         }

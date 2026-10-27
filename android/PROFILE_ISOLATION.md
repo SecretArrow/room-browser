@@ -73,10 +73,14 @@ extra is present).
    limitation of the WebView engine (Chromium's true incognito profile is not
    exposed to apps). Users who need stronger guarantees should use a dedicated
    profile as a "private profile".
-3. **Per-site data clearing** for a single site is best-effort: WebView exposes
-   global (per-profile) clearing; Room Browser clears the profile engine state
-   and records the site setting, but cannot surgically delete one site's
-   IndexedDB rows inside the profile's tree.
+3. **Per-site data clearing** exists now, with edges: `EngineSession.clearSiteData(url)`
+   expires every cookie the jar would attach to that origin (against the host and its
+   two-label parent, both the host-only and the `Domain=` shape — see
+   `SiteCookieClearer`) and deletes the origin's web storage via `WebStorage
+   .deleteOrigin`. What still cannot be done surgically on WebView: a site's IndexedDB
+   rows and its service workers have no per-origin deletion API — that data is already
+   origin-scoped, so a cleared site keeps only what only IT can read. The whole-profile
+   wipe remains available in Profile settings → Danger zone.
 4. **Memory-resident engine state** (e.g. a decrypted value held by a live
    page) is beyond any app's control.
 

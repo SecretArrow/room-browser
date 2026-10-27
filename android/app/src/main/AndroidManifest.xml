@@ -313,6 +313,21 @@
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode" />
 
         <!--
+          Google sign-in check — a DEDICATED full-screen activity in the
+          ':browser' process, like "What's My IP": it creates a throwaway
+          WebView to reproduce Google's sign-in refusal on THIS device with
+          this app's identity, and reports every factor (provider version,
+          client-hints capability, device clock, Play services) that could be
+          the actual cause. It must run where a WebView provider is already
+          loaded and configured, for the same reason the IP screen must.
+        -->
+        <activity
+            android:name=".browser.ui.GoogleSignInCheckActivity"
+            android:process=":browser"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode" />
+
+        <!--
           Profile Network Warning — a DEDICATED full-screen activity in the
           ':browser' process (it must never be shown as a dismissible dialog):
           while the pending-decision flag stands, browsing is gated and this

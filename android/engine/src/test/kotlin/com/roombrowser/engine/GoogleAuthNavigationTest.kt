@@ -183,6 +183,73 @@ class GoogleAuthNavigationTest {
         )
     }
 
+    // ---- shouldReissueAfterRedirect ---------------------------------------
+
+    private fun redirect(
+        url: String,
+        lastReissuedUrl: String? = null,
+        lastReissuedAtMs: Long = 0L,
+        nowMs: Long = 10_000L,
+    ): Boolean = GoogleAuthNavigation.shouldReissueAfterRedirect(
+        url, lastReissuedUrl, lastReissuedAtMs, nowMs
+    )
+
+    @Test
+    fun `a server-side redirect landing on a sign-in host is re-issued`() {
+        // The gmail.com -> accounts.google.com route: the engine followed a
+        // 302 on its own, no shouldOverrideUrlLoading ever fired, and the
+        // document request went out stamped. This is the case the redirect
+        // path exists for.
+        assertTrue(
+            redirect("https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmail.google.com")
+        )
+    }
+
+    @Test
+    fun `a redirect to a non-sign-in host is never re-issued`() {
+        assertFalse(redirect("https://www.google.com/"))
+        assertFalse(redirect("https://mail.google.com/mail/u/0"))
+        assertFalse(redirect("http://accounts.google.com/ServiceLogin"))
+    }
+
+    @Test
+    fun `the redirect path recognises its own re-issue within the guard window`() {
+        val url = "https://accounts.google.com/ServiceLogin?continue=x"
+        assertFalse(
+            redirect(
+                url,
+                lastReissuedUrl = url,
+                lastReissuedAtMs = 10_000L - 1,
+                nowMs = 10_000L
+            )
+        )
+    }
+
+    @Test
+    fun `the redirect path re-issues again after the guard window expires`() {
+        val url = "https://accounts.google.com/ServiceLogin?continue=x"
+        assertTrue(
+            redirect(
+                url,
+                lastReissuedUrl = url,
+                lastReissuedAtMs = 10_000L - GoogleAuthNavigation.GUARD_WINDOW_MS,
+                nowMs = 10_000L
+            )
+        )
+    }
+
+    @Test
+    fun `a different sign-in url inside the window is not mistaken for the redirect echo`() {
+        assertTrue(
+            redirect(
+                "https://accounts.google.com/o/oauth2/auth?client_id=x",
+                lastReissuedUrl = "https://accounts.google.com/ServiceLogin",
+                lastReissuedAtMs = 10_000L - 1,
+                nowMs = 10_000L
+            )
+        )
+    }
+
     @Test
     fun `the sign-in host set is exactly the surfaces a user reaches by clicking`() {
         assertEquals(

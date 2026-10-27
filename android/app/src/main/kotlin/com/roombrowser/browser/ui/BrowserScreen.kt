@@ -280,6 +280,10 @@ fun BrowserScreen(
         WhatsMyIpActivity.launch(activity, viewModel.profileId.value)
     }
 
+    fun launchGoogleSignInCheck() {
+        GoogleSignInCheckActivity.launch(activity)
+    }
+
     fun launchTwoFactor() {
         TwoFactorActivity.launch(activity, viewModel.profileId.value, viewModel.profile.name)
     }
@@ -467,6 +471,7 @@ fun BrowserScreen(
             onOpenSettings = { route = BrowserRoute.Settings; showPageActions = false },
             onOpenProfileSettings = { route = BrowserRoute.ProfileSettings; showPageActions = false },
             onOpenWhatsMyIp = { launchWhatsMyIp(); showPageActions = false },
+            onOpenGoogleSignInCheck = { launchGoogleSignInCheck(); showPageActions = false },
             onOpenAbout = { route = BrowserRoute.About; showPageActions = false },
             onOpenAgent = { openAgent(); showPageActions = false },
             onOpenAiTasks = { launchAiTasks(); showPageActions = false },
