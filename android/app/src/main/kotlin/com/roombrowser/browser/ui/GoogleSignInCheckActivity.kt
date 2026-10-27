@@ -39,6 +39,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -60,10 +61,6 @@ import com.roombrowser.engine.EmbeddedHeaderObservation
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomCardShape
-import androidx.compose.material3.Surface
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -72,6 +69,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 /**
  * "Google sign-in check" — the refusal, reproduced on THIS device, with every
@@ -347,13 +347,15 @@ private suspend fun runProbe(context: Context): ProbeOutcome =
                                         "a tab, run the check again from that state."
                                 )
                             }
-                        }.getOrElse { ProbeOutcome(
+                        }.getOrElse {
+                            ProbeOutcome(
                             blocked = null,
                             marker = null,
                             formSeen = false,
                             finalUrl = url,
                             note = "The probe page finished but its answer could not be read."
-                        ) }
+                        )
+                        }
                         settle(cont, main, webView, outcome)
                     }
                 }
@@ -363,11 +365,13 @@ private suspend fun runProbe(context: Context): ProbeOutcome =
             // additional header overrides the provider's X-Requested-With
             // stamp on this navigation.
             runCatching { webView.loadUrl(PROBE_URL, mapOf("X-Requested-With" to "")) }
-                .onFailure { settle(cont, main, webView, ProbeOutcome(
+                .onFailure {
+                    settle(cont, main, webView, ProbeOutcome(
                     blocked = null, marker = null, formSeen = false,
                     finalUrl = PROBE_URL,
                     note = "The probe WebView could not start on this device."
-                )) }
+                ))
+                }
         }
     }
 
@@ -397,7 +401,7 @@ private fun GoogleSignInCheckScreen(
         Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout()))
+            .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout))
     ) {
         Row(
             Modifier.fillMaxWidth(),
