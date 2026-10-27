@@ -109,7 +109,7 @@ class IdentityDiagnosticsTest {
         // The UA is the app's own string and stays correct; the surfaces the
         // provider owns are the ones that fail.
         assertThat(checkNamed(checks, "User-Agent").ok).isTrue()
-        assertThat(checkNamed(checks, "X-Requested-With header").ok).isFalse()
+        assertThat(checkNamed(checks, "X-Requested-With header (page request)").ok).isFalse()
         assertThat(checkNamed(checks, "Sec-CH-UA client hints").ok).isFalse()
         assertThat(checkNamed(checks, "navigator.userAgentData").ok).isFalse()
 
@@ -118,13 +118,15 @@ class IdentityDiagnosticsTest {
         for (label in listOf("Sec-CH-UA client hints", "navigator.userAgentData")) {
             assertThat(checkNamed(checks, label).detail).contains("Android System WebView")
         }
-        // The header row names the provider too, but it must NOT promise an
-        // update as the fix: the header is the engine's own, and the only
-        // control the platform offers is an allow-list the provider may ignore
-        // -- measured on a provider that lists it and sends the header anyway.
-        val header = checkNamed(checks, "X-Requested-With header")
-        assertThat(header.detail).contains("cannot remove it")
-        assertThat(header.detail).doesNotContain("Updating")
+        // The header row names the provider too. With the session overriding
+        // X-Requested-With on every main-frame load and re-issuing the sign-in
+        // hosts' own navigations the same way, a stamped MAIN DOCUMENT can only
+        // mean the installed provider ignored the override or served the
+        // document on a cross-origin redirect hop it issues itself -- both the
+        // provider's doing, never the profile's.
+        val header = checkNamed(checks, "X-Requested-With header (page request)")
+        assertThat(header.detail).contains("stamped the header anyway")
+        assertThat(header.detail).contains("Updating")
         assertThat(header.detail).doesNotContain("or newer")
     }
 
@@ -134,11 +136,11 @@ class IdentityDiagnosticsTest {
      * names the release that offers its surface, so the Engine row above it can
      * be compared against a number instead of a feeling.
      *
-     * The header row is deliberately absent from this list: there is no
-     * release to name. The header is not a feature the provider turns on at a
-     * version -- it is one the provider stops adding, and the opt-out that used
-     * to control it has been discontinued, so naming a version there would be
-     * advice nobody could act on.
+     * The header row still names no version. The override it describes has
+     * been honoured by every provider since 71, so a stamped main document
+     * says something about THIS installed copy -- it ignored the engine's
+     * request, or the page arrived on a redirect hop no app header survives --
+     * and no release number would make that advice more actionable.
      */
     @Test
     fun a_provider_row_names_the_version_that_offers_its_surface() {
@@ -146,7 +148,7 @@ class IdentityDiagnosticsTest {
 
         assertThat(checkNamed(checks, "Sec-CH-UA client hints").detail).contains("77")
         assertThat(checkNamed(checks, "navigator.userAgentData").detail).contains("81")
-        assertThat(checkNamed(checks, "X-Requested-With header").detail).doesNotContain("71")
+        assertThat(checkNamed(checks, "X-Requested-With header (page request)").detail).doesNotContain("71")
     }
 
     /**
@@ -160,7 +162,7 @@ class IdentityDiagnosticsTest {
      */
     @Test
     fun a_current_provider_that_no_longer_sends_the_header_is_not_blamed() {
-        val row = checkNamed(modern(), "X-Requested-With header")
+        val row = checkNamed(modern(), "X-Requested-With header (page request)")
 
         assertThat(row.ok).isTrue()
         assertThat(row.detail).contains("Not sent")
@@ -182,7 +184,7 @@ class IdentityDiagnosticsTest {
             setsClientHints = true,
             installsDocumentStartScripts = true
         )
-        val row = checkNamed(checks, "X-Requested-With header")
+        val row = checkNamed(checks, "X-Requested-With header (page request)")
 
         assertThat(row.ok).isNull()
         assertThat(row.detail).contains("Not measured yet")
@@ -211,7 +213,7 @@ class IdentityDiagnosticsTest {
     fun the_rows_read_in_the_order_a_site_reads_them() {
         assertThat(modern().map { it.label }).containsExactly(
             "User-Agent",
-            "X-Requested-With header",
+            "X-Requested-With header (page request)",
             "Sec-CH-UA client hints",
             "navigator.userAgentData",
             "JavaScript"

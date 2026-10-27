@@ -14,8 +14,8 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -37,15 +37,22 @@ import java.util.concurrent.ConcurrentHashMap
  * The engine answers all three, but not with equal authority. The first and
  * third are the app's own: `WebViewEngineSession.configure` neutralises the
  * stock string and `WebViewClientHints` derives the hints from the same
- * resolved string, so the string and the hints cannot disagree. The second is
- * only ever a REQUEST to the provider — `configure` empties the
- * `X-Requested-With` allow-list, and the provider decides whether to honour
- * it — so this file does not assert the header away (see
- * [assertHeaderNamesNothingButTheApp] for why that assertion was removed and
- * what replaced it). The unit tests cover the derivation in isolation; THIS
- * test is the one that proves the result reaches the wire, because it asserts
- * on the request the WebView actually made and on what the page's own
- * JavaScript read back — not on a mapper's return value.
+ * resolved string, so the string and the hints cannot disagree. The second
+ * USED to be only a request to the provider — the `setRequestedWithHeader
+ * OriginAllowList` call, an empty method body since androidx 1.12.1 — and the
+ * server kept receiving `com.roombrowser.debug` on the CI emulator's
+ * WebView 83. The session now issues every MAIN-FRAME navigation through
+ * `loadUrl`'s additional-headers override (`X-Requested-With: ""`), the one
+ * lever the provider has honoured on every version since 71, and re-issues
+ * page-started navigations into the sign-in hosts through the same call. What
+ * reaches Google as the main document therefore carries the app's headers,
+ * and this file asserts that on the exact bytes that went out
+ * ([assertHeaderNeverNamesTheApp] — which is the tightened descendant of the
+ * old "if present, must name this app" excuse). The unit tests cover the
+ * derivation and the re-issue decision in isolation; THIS test is the one
+ * that proves the result reaches the wire, because it asserts on the request
+ * the WebView actually made and on what the page's own JavaScript read back —
+ * not on a mapper's return value.
  *
  * TWO PHASES ON ONE PROFILE, because the app ships two shapes of identity and
  * both must survive a Google round trip:
@@ -312,46 +319,36 @@ class GoogleIdentityE2eTest {
     }
 
     /**
-     * The `X-Requested-With` half: bounded, not asserted away.
+     * The `X-Requested-With` half: the main frame must never name the app.
      *
-     * THIS USED TO BE CONDITIONAL AND THAT WAS A BUG. It tolerated the header
-     * whenever the provider's opt-out flag read false — but Chromium
-     * discontinued the header and deprecated the opt-out with it, so a current
-     * provider reports false for the opposite reason an ancient one does. The
-     * test therefore excused the header on exactly the devices where it was
-     * absent anyway, and proved nothing.
+     * THE HISTORY OF THIS ASSERTION IS TWO RELAXATIONS AND THIS TIGHTENING.
+     * It began conditional on the provider's opt-out flag, which proved
+     * nothing (the flag reads false for opposite reasons on old and current
+     * providers). It then became an unconditional `assertNull`, which was
+     * red for a reason no commit could fix: with no lever at all, the
+     * emulator's WebView 83 stamped `com.roombrowser.debug` on every
+     * request, so it was weakened to "if present, must name this app" — an
+     * assertion that passed while the exact header Google's refusal reads
+     * went out with the app's name on it.
      *
-     * IT THEN BECAME AN UNCONDITIONAL `assertNull`, AND THAT WAS A SECOND
-     * BUG, the opposite one. No build of this app can deliver it on every
-     * provider. `configure` calls the opt-out where the provider lists it, but
-     * androidx 1.12.1's implementation of that call is an empty method body;
-     * and where the provider lists nothing there is no call to make at all —
-     * the emulator's WebView 83 reports the feature false and sent
-     * `com.roombrowser.debug` anyway (logcat tag `RoomIdentity`). A test that
-     * asserts a fact no code can control is red for reasons no commit here can
-     * fix, and a permanently red test hides the regressions this file exists
-     * to catch.
-     *
-     * THE REPORT CANNOT BE CROSS-CHECKED FROM HERE EITHER, which is why this
-     * does not compare the wire against the app's own answer. `BrowserActivity`
-     * runs in ':browser' and this test runs in the default process, so
-     * `ProfileEngine.embeddedBrowserHeaderObservation()` called from here would
-     * build a fresh engine host in a process that has made no requests and
-     * answer from the feature flag — the very inference the row was changed to
-     * stop making. The reporting half is pinned by `IdentityDiagnosticsTest`
-     * and shown on the diagnostics screen, which lives in ':browser' for this
-     * reason.
-     *
-     * SO WHAT IS ASSERTED IS THE ONE THING A SENT HEADER MUST BE: this app's
-     * own package name and nothing else. A provider that starts stamping a
-     * profile id, a session token or a device identifier there would be a real
-     * regression, and this catches it without claiming the header away.
+     * THE LEVER NOW EXISTS. `loadUri` issues every main-frame navigation
+     * with `X-Requested-With: ""` in the additional headers, and an
+     * app-supplied additional header wins over the engine's stamp on every
+     * provider since 71. The requests this test records ARE main-frame
+     * requests (the engine was launched at these URLs), so if the override
+     * reaches the wire the header is either gone or empty, and a provider
+     * that stamps the package name OVER an app-supplied header is exactly
+     * the regression this must catch. Subresource stamps — which a provider
+     * can still add and the app still cannot remove — belong to the probe
+     * and the diagnostics screen, not to this assertion.
      */
-    private fun assertHeaderNamesNothingButTheApp(hit: RecordedRequest, where: String) {
+    private fun assertHeaderNeverNamesTheApp(hit: RecordedRequest, where: String) {
         val header = hit.getHeader("X-Requested-With") ?: return
-        assertEquals(
-            "$where: a provider that sends X-Requested-With must name this app and " +
-                "nothing else (server received '$header')",
+        assertNotEquals(
+            "$where: the main-frame request must not carry X-Requested-With: " +
+                "<package> — loadUri issues every main-frame navigation with an " +
+                "empty override, and Google's sign-in refusal reads exactly this " +
+                "request (server received '$header')",
             targetContext.packageName,
             header
         )
@@ -410,7 +407,7 @@ class GoogleIdentityE2eTest {
             (ua.substringAfter("Chrome/", "").substringBefore('.').toIntOrNull() ?: 0) >= 153
         )
         assertNoEmbeddedBrowserTell("request", ua)
-        assertHeaderNamesNothingButTheApp(hit, "handset profile")
+        assertHeaderNeverNamesTheApp(hit, "handset profile")
         assertHintsAgreeWithUserAgent(hit, ua)
 
         val probe = await("/probe-a", "The page must report the identity it read")
@@ -428,7 +425,7 @@ class GoogleIdentityE2eTest {
             plainUa.contains("Chrome/")
         )
         assertNoEmbeddedBrowserTell("request", plainUa)
-        assertHeaderNamesNothingButTheApp(plain, "no-device profile")
+        assertHeaderNeverNamesTheApp(plain, "no-device profile")
         assertHintsAgreeWithUserAgent(plain, plainUa)
 
         val plainProbe = await("/probe-b", "The page must report the identity it read")

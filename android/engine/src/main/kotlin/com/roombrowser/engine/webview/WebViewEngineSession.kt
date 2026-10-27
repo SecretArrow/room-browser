@@ -48,6 +48,7 @@ import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.EngineSessionListener
 import com.roombrowser.engine.EngineState
 import com.roombrowser.engine.ExternalUrlPolicy
+import com.roombrowser.engine.GoogleAuthNavigation
 import com.roombrowser.engine.HttpAuthResponder
 import com.roombrowser.engine.NavigationDecision
 import com.roombrowser.engine.PageErrorKind
@@ -201,6 +202,31 @@ internal class WebViewEngineSession(
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
 
+    /**
+     * The headers every main-frame navigation this session issues carries:
+     * an EMPTY `X-Requested-With`, which the provider honours on every
+     * version since 71 (an app-supplied additional header wins over the
+     * engine's own `applicationId` stamp). This is the only X-Requested-With
+     * lever that works, and without it Google's sign-in answers the stamped
+     * main document with "This browser or app may not be secure".
+     *
+     * WHAT IT DOES NOT REACH, honestly: engine-internal navigations the app
+     * never issues. A same-origin redirect re-sends the additional headers,
+     * and back/forward/reload replay the headers of the navigation entry
+     * they restore -- but a CROSS-ORIGIN server redirect (an OAuth 302 chain
+     * hopping hosts) strips custom headers before it re-requests, so on a
+     * provider that still stamps, that one hop carries the package name.
+     * `GoogleAuthNavigation` narrows the remaining gap the only way left:
+     * page-started navigations into the sign-in hosts are re-issued through
+     * `loadUrl` in `shouldOverrideUrlLoading`, which is where those arrive.
+     */
+    private val identityHeaders: Map<String, String> = mapOf("X-Requested-With" to "")
+
+    /** The most recent URL this session re-issued for the sign-in hosts, and when. See [GoogleAuthNavigation]. */
+    private var lastReissuedUrl: String? = null
+
+    private var lastReissuedAtMs: Long = 0L
+
     override val view: View get() = webView
 
     override val url: String? get() = currentUrl
@@ -227,7 +253,7 @@ internal class WebViewEngineSession(
     }
 
     override fun loadUri(uri: String) = runOnMain {
-        if (!closed) runCatching { webView.loadUrl(uri) }
+        if (!closed) runCatching { webView.loadUrl(uri, identityHeaders) }
     }
 
     /**
@@ -448,12 +474,22 @@ internal class WebViewEngineSession(
             // absent from the list "may not receive the header, depending on
             // the current installed WebView provider".
             //
-            // THE CALL STAYS because it is the only control the platform
-            // offers and it costs one guarded line, and the screen does not
-            // trust it: `RequestedWithProbe` reports what actually went out
-            // rather than what this asked for. A comment here once claimed an
-            // empty list meant the header was "never sent", which was false
-            // and sent people to update a WebView that was already current.
+            // THE CALL STAYS because it is the only SETTINGS-level control the
+            // platform offers and it costs one guarded line, and the screen
+            // does not trust it: `RequestedWithProbe` reports what actually
+            // went out rather than what this asked for. A comment here once
+            // claimed an empty list meant the header was "never sent", which
+            // was false and sent people to update a WebView that was already
+            // current.
+            //
+            // THE LEVER THAT DOES WORK is not a setting at all: every
+            // main-frame navigation this session issues goes out through
+            // `loadUrl(uri, identityHeaders)` -- an app-supplied additional
+            // header wins over the engine's stamp on every provider since 71
+            // -- and page-started navigations into the sign-in hosts are
+            // re-issued the same way in `shouldOverrideUrlLoading` (see
+            // [GoogleAuthNavigation]). The probe records main-frame sightings
+            // separately, and the diagnostics screen answers from those.
             val optOutSupported =
                 WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)
             if (optOutSupported) {
@@ -1015,7 +1051,7 @@ internal class WebViewEngineSession(
             // inferring it from a provider feature flag that stopped meaning
             // what it used to (see RequestedWithProbe). Side-effect only and
             // allocation-light: this runs for every sub-resource of every tab.
-            RequestedWithProbe.record(request.requestHeaders)
+            RequestedWithProbe.record(request.requestHeaders, request.isForMainFrame)
             val blocked = listener?.onResourceRequest(
                 this@WebViewEngineSession,
                 url,
@@ -1101,6 +1137,37 @@ internal class WebViewEngineSession(
                 listener?.onExternalSchemeRequested(this@WebViewEngineSession, url)
                 return true
             }
+            // THE SIGN-IN RE-ISSUE. Everything above decided the app's POLICY;
+            // this decides the IDENTITY. A main-frame GET into one of
+            // Google's sign-in hosts arrives here with no app headers on it
+            // (the page started it), so on a provider that still stamps
+            // X-Requested-With the document announcing "an app is embedding a
+            // browser" would go out exactly here -- the click on Google's own
+            // Sign in button being the everyday case. Abandoning this
+            // navigation and re-issuing it through `loadUrl` with
+            // [identityHeaders] is the same mechanism the HTTPS upgrade's
+            // LoadDifferent answer already uses, one callback later in the
+            // engine's accounting and with the package name off the wire.
+            // [GoogleAuthNavigation] carries the full reasoning: main frame,
+            // GET, https, exact-host, and the guard that recognises this
+            // session's own re-issue when its callback fires again.
+            if (
+                decision == NavigationDecision.Allow &&
+                GoogleAuthNavigation.shouldReissueWithIdentityHeaders(
+                    url,
+                    request.isForMainFrame,
+                    request.method,
+                    lastReissuedUrl,
+                    lastReissuedAtMs,
+                    System.currentTimeMillis()
+                )
+            ) {
+                lastReissuedUrl = url
+                lastReissuedAtMs = System.currentTimeMillis()
+                mainFrameUrl = url
+                view.post { runCatching { view.loadUrl(url, identityHeaders) } }
+                return true
+            }
             return when (decision) {
                 NavigationDecision.Allow -> {
                     mainFrameUrl = url
@@ -1109,7 +1176,7 @@ internal class WebViewEngineSession(
                 NavigationDecision.Block -> true
                 is NavigationDecision.LoadDifferent -> {
                     mainFrameUrl = decision.url
-                    view.post { runCatching { view.loadUrl(decision.url) } }
+                    view.post { runCatching { view.loadUrl(decision.url, identityHeaders) } }
                     true
                 }
             }
@@ -1523,6 +1590,17 @@ internal class WebViewEngineSession(
             if (!accepted) return false
 
             val temp = WebView(view.context)
+            // THE TRANSPORT IS NOT ANONYMOUS. It is a stock WebView, whose own
+            // settings would present the engine's raw identity -- the `wv`
+            // marker in the User-Agent -- on whatever request it does make
+            // before the resolve callback stops it. One line gives it the
+            // SAME claimed identity as the session it popped out of, so a
+            // popup that briefly loads (a JS redirect, a preflight) cannot
+            // introduce itself as an embedded browser between two clean
+            // requests. Nothing else is configured: the transport exists to
+            // resolve a URL and die, and the session that takes over the
+            // target runs the full [configure].
+            runCatching { temp.settings.userAgentString = view.settings.userAgentString }
             // Single-shot destroy, shared by the navigation callback and the
             // timeout below. Main-thread only (onCreateWindow, the client
             // callback and postDelayed all run there), so a plain Boolean is

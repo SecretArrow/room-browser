@@ -26,6 +26,16 @@ package com.roombrowser.engine.webview
  * PRESENT sighting as conclusive and an ABSENT one as conclusive only when the
  * provider does not claim the opt-out either. This object holds the raw
  * sightings and nothing else.
+ *
+ * MAIN FRAME AND SUBRESOURCES ARE RECORDED SEPARATELY, because since the
+ * session began issuing every main-frame navigation with the
+ * `X-Requested-With: ""` override (`loadUrl`'s additional headers -- the one
+ * lever the provider has honoured on every version since 71), the header's
+ * presence on a SUBRESOURCE request no longer describes what Google's sign-in
+ * refusal actually reads, which is the MAIN DOCUMENT request. The screen's
+ * check is answered from the main-frame sightings ([sawMainFramePresent] /
+ * [sawMainFrameAbsent]); the aggregate sightings stay because a subresource
+ * stamp is still a package-name leak worth knowing about.
  */
 internal object RequestedWithProbe {
 
@@ -35,18 +45,26 @@ internal object RequestedWithProbe {
     @Volatile
     private var sawAbsent: Boolean = false
 
+    @Volatile
+    private var sawMainFramePresent: Boolean = false
+
+    @Volatile
+    private var sawMainFrameAbsent: Boolean = false
+
     /**
      * Record one request's headers. Called from `shouldInterceptRequest`, which
      * runs on a WebView background thread for every sub-resource of every
      * engine, so this must stay allocation-light and lock-free.
      */
-    fun record(headers: Map<String, String>?) {
+    fun record(headers: Map<String, String>?, isForMainFrame: Boolean) {
         if (headers == null) return
         val present = headers.keys.any { it.equals(HEADER, ignoreCase = true) }
         if (present) {
             sawPresent = true
+            if (isForMainFrame) sawMainFramePresent = true
         } else {
             sawAbsent = true
+            if (isForMainFrame) sawMainFrameAbsent = true
         }
     }
 
@@ -55,6 +73,20 @@ internal object RequestedWithProbe {
 
     /** True once a request was seen WITHOUT the header. Never clears. */
     fun sawAbsent(): Boolean = sawAbsent
+
+    /** True once a MAIN-FRAME request was seen carrying the header. */
+    fun sawMainFramePresent(): Boolean = sawMainFramePresent
+
+    /** True once a MAIN-FRAME request was seen without the header. */
+    fun sawMainFrameAbsent(): Boolean = sawMainFrameAbsent
+
+    /** Test seam: the sightings are process-wide by design, which a JVM test cannot otherwise sequence. */
+    fun resetForTest() {
+        sawPresent = false
+        sawAbsent = false
+        sawMainFramePresent = false
+        sawMainFrameAbsent = false
+    }
 
     private const val HEADER = "X-Requested-With"
 }

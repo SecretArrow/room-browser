@@ -302,6 +302,19 @@ object ProfileEngine {
             .getOrDefault(EmbeddedHeaderObservation.UNOBSERVED)
 
     /**
+     * The header's state on the MAIN DOCUMENT request — the request Google's
+     * sign-in refusal actually reads. Since the engine began issuing every
+     * main-frame navigation with the empty `X-Requested-With` override, this
+     * is the sighting the diagnostics screen must answer from: a provider
+     * that still stamps subresource requests can legitimately report PRESENT
+     * on the aggregate while the sign-in page itself goes out clean. Same
+     * never-throws contract as [embeddedBrowserHeaderObservation].
+     */
+    fun embeddedBrowserHeaderMainFrameObservation(): EmbeddedHeaderObservation =
+        runCatching { host.embeddedBrowserHeaderMainFrameObservation() }
+            .getOrDefault(EmbeddedHeaderObservation.UNOBSERVED)
+
+    /**
      * Whether this edition's engine can run a script before a page's own
      * JavaScript — the hook every in-page identity surface is installed
      * through.

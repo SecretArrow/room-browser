@@ -177,10 +177,16 @@ object IdentityDiagnostics {
      * ancient provider gives for the opposite reason. People were sent to
      * update a WebView that was already current, and the real state of the
      * request stayed unknown.
+     *
+     * THE OBSERVATION THIS ROW ANSWERS FROM IS THE MAIN-FRAME SIGHTING (the
+     * caller passes [EmbeddedHeaderObservation] from
+     * `embeddedBrowserHeaderMainFrameObservation`), because that is the
+     * request the refusal reads and the request the session's empty-header
+     * override targets.
      */
     private fun requestedWithCheck(observed: EmbeddedHeaderObservation): IdentityCheck =
         IdentityCheck(
-            label = "X-Requested-With header",
+            label = "X-Requested-With header (page request)",
             ok = when (observed) {
                 EmbeddedHeaderObservation.ABSENT -> true
                 EmbeddedHeaderObservation.PRESENT -> false
@@ -188,18 +194,24 @@ object IdentityDiagnostics {
             },
             detail = when (observed) {
                 EmbeddedHeaderObservation.ABSENT ->
-                    "Not sent. No request this app has made carried it, so no site " +
-                        "learns this app's package name from the header."
+                    "Not sent. No main-document request this app has made carried " +
+                        "it: every main-frame load is issued with an empty " +
+                        "X-Requested-With override (loadUrl's additional headers, " +
+                        "the lever the provider has honoured since WebView 71), and " +
+                        "no site learns this app's package name from the page " +
+                        "request. Google's sign-in refusal reads exactly this " +
+                        "request, so a clean row here is the sign-in half done."
                 EmbeddedHeaderObservation.PRESENT ->
-                    "Sent, naming this app to every site. The engine stamps this " +
-                        "header itself and this app cannot remove it. The one control " +
-                        "the platform offers is an allow-list of origins: this app " +
-                        "sets it to empty on every configure where the installed " +
-                        "WebView even offers it, and that call does nothing on a " +
-                        "provider that does. Whether the header is sent at all is " +
-                        "the WebView's decision -- Chromium discontinued it in 2022, " +
-                        "and this provider still sends it. The row is here so the " +
-                        "fact is visible rather than assumed."
+                    "Sent, naming this app, on the main-document request. Every " +
+                        "main-frame load is issued with an empty X-Requested-With " +
+                        "override and page-started navigations into Google's " +
+                        "sign-in hosts are re-issued the same way, so this row " +
+                        "means the provider stamped the header anyway -- it ignored " +
+                        "the override, or the document was reached on a " +
+                        "cross-origin redirect hop the engine issues itself, the " +
+                        "one navigation kind no app header survives. Updating the " +
+                        "WebView (Android System WebView in Play/system settings) " +
+                        "is the real remedy on the devices that show this row."
                 EmbeddedHeaderObservation.UNOBSERVED ->
                     "Not measured yet. The header is decided on each request, so " +
                         "open a page and read this row again -- a browser that has " +

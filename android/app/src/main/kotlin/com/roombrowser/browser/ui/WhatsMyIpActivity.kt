@@ -294,7 +294,9 @@ private fun identityChecks(
     // that never resolves would hide the one screen that could have explained
     // the problem.
     requestedWith = runCatching {
-        ProfileEngine.embeddedBrowserHeaderObservation()
+        // The MAIN-FRAME sighting: Google's refusal reads the main document,
+        // and the engine's empty-header override targets exactly that request.
+        ProfileEngine.embeddedBrowserHeaderMainFrameObservation()
     }.getOrDefault(EmbeddedHeaderObservation.UNOBSERVED),
     setsClientHints = runCatching {
         ProfileEngine.supportsUserAgentClientHints()

@@ -428,7 +428,10 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             IdentityDiagnostics.checks(
                 userAgent = userAgent,
                 javascriptEnabled = identitySettings.javascriptEnabled,
-                requestedWith = ProfileEngine.embeddedBrowserHeaderObservation(),
+                // The MAIN-FRAME sighting: the sign-in refusal reads the main
+                // document, and since the engine overrides X-Requested-With on
+                // every main-frame load this is the sighting that predicts it.
+                requestedWith = ProfileEngine.embeddedBrowserHeaderMainFrameObservation(),
                 setsClientHints = ProfileEngine.supportsUserAgentClientHints(),
                 installsDocumentStartScripts = ProfileEngine.supportsDocumentStartScripts()
             )

@@ -318,6 +318,27 @@ internal class WebViewEngineHost : EngineHost {
     }
 
     /**
+     * The main-document sighting, which is the one Google's refusal reads.
+     *
+     * Deliberately NOT derived from [embeddedBrowserHeaderObservation]: with
+     * the session now issuing every main-frame navigation with the empty
+     * `X-Requested-With` override, the two answers legitimately differ -- a
+     * provider that still stamps SUBRESOURCE requests reports PRESENT on the
+     * aggregate and ABSENT on the main frame, and the main-frame answer is
+     * the one the diagnostics screen must show, because "the sign-in page
+     * request carried the package name" is the sentence that predicts
+     * Google's refusal. Where the provider stamps the main frame anyway
+     * (override ignored, or an engine-internal redirect hop), both answers
+     * agree on PRESENT, which is the honest failure.
+     */
+    override fun embeddedBrowserHeaderMainFrameObservation(): EmbeddedHeaderObservation {
+        if (RequestedWithProbe.sawMainFramePresent()) return EmbeddedHeaderObservation.PRESENT
+        if (suppressesEmbeddedBrowserHeaders()) return EmbeddedHeaderObservation.ABSENT
+        if (RequestedWithProbe.sawMainFrameAbsent()) return EmbeddedHeaderObservation.ABSENT
+        return EmbeddedHeaderObservation.UNOBSERVED
+    }
+
+    /**
      * The same provider question for the document-start hook the identity
      * shim is installed through. The session already refuses to add a script
      * when this is unsupported, so asking here reports the same fact the page

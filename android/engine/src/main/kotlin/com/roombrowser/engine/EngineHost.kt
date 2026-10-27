@@ -224,6 +224,21 @@ interface EngineHost {
         }
 
     /**
+     * The same question narrowed to the request Google's sign-in refusal
+     * actually reads: the MAIN DOCUMENT request. Since the WebView edition
+     * began issuing every main-frame navigation with an empty
+     * `X-Requested-With` override and re-issuing the sign-in hosts' own
+     * navigations the same way, a subresource stamp says nothing about what
+     * the refusal will decide, so the diagnostics screen answers from this
+     * narrower sighting. The default answers exactly as
+     * [embeddedBrowserHeaderObservation] does -- an engine that never adds
+     * the header never adds it to the main document either -- and the
+     * WebView edition overrides it with its main-frame probe.
+     */
+    fun embeddedBrowserHeaderMainFrameObservation(): EmbeddedHeaderObservation =
+        embeddedBrowserHeaderObservation()
+
+    /**
      * Whether this engine can install a script that runs BEFORE a page's own
      * JavaScript.
      *

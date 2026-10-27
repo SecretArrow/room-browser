@@ -52,6 +52,12 @@ const USER_AGENTS_KT = path.join(
 const WEBVIEW_SESSION_KT = path.join(
     ANDROID,
     'engine/src/main/kotlin/com/roombrowser/engine/webview/WebViewEngineSession.kt');
+const GOOGLE_AUTH_NAVIGATION_KT = path.join(
+    ANDROID,
+    'engine/src/main/kotlin/com/roombrowser/engine/GoogleAuthNavigation.kt');
+const PROBE_KT = path.join(
+    ANDROID,
+    'engine/src/main/kotlin/com/roombrowser/engine/webview/RequestedWithProbe.kt');
 const GECKO_HOST_KT = path.join(
     ANDROID,
     'engine/src/main/kotlin/com/roombrowser/engine/gecko/GeckoEngineHost.kt');
@@ -200,6 +206,70 @@ if (IS_WEBVIEW) {
             session,
             /emptySet<String>\(\)/,
             'the allow-list is EMPTY (no origin may receive the header)');
+    });
+
+    // THE LEVER THAT WORKS. The allow-list call above is an empty method body
+    // on a current provider, so the main document Google's refusal reads is
+    // kept clean by the loadUrl additional-headers override instead -- the
+    // one mechanism the provider has honoured on every version since 71 --
+    // and page-started navigations into the sign-in hosts are re-issued the
+    // same way in shouldOverrideUrlLoading. These checks pin that mechanism
+    // at every load site: one missing override is one stamped main-frame
+    // request to accounts.google.com.
+    fixture('webview-identity-headers', function () {
+        const session = stripKotlinComments(read(WEBVIEW_SESSION_KT));
+        matches(
+            session,
+            /private val identityHeaders: Map<String, String> = mapOf\("X-Requested-With" to ""\)/,
+            'the identity headers carry an EMPTY X-Requested-With override');
+        matches(
+            session,
+            /webView\.loadUrl\(uri, identityHeaders\)/,
+            'loadUri issues every app-initiated load with the identity headers');
+        matches(
+            session,
+            /view\.loadUrl\(url, identityHeaders\)/,
+            'the sign-in re-issue loads with the identity headers');
+        matches(
+            session,
+            /view\.loadUrl\(decision\.url, identityHeaders\)/,
+            'the HTTPS-upgrade LoadDifferent answer loads with the identity headers');
+        matches(
+            session,
+            /RequestedWithProbe\.record\(request\.requestHeaders, request\.isForMainFrame\)/,
+            'the probe records main-frame sightings separately');
+        matches(
+            session,
+            /GoogleAuthNavigation\.shouldReissueWithIdentityHeaders\(/,
+            'page-started sign-in navigations ask the re-issue policy');
+        matches(
+            session,
+            /temp\.settings\.userAgentString = view\.settings\.userAgentString/,
+            'the popup transport presents the session identity, not the stock engine');
+
+        const nav = stripKotlinComments(read(GOOGLE_AUTH_NAVIGATION_KT));
+        matches(
+            nav,
+            /"accounts\.google\.com",\s*\n\s*"accounts\.youtube\.com",\s*\n\s*"myaccount\.google\.com",/,
+            'the sign-in host list is the three surfaces a user reaches by clicking');
+        matches(
+            nav,
+            /host\.lowercase\(\)\.takeIf \{ it\.isNotEmpty\(\) \}/,
+            'the host match is exact and lower-cased, never a suffix match');
+        matches(
+            nav,
+            /method\.equals\("GET", ignoreCase = true\)/,
+            'only GET navigations are re-issued (a POST re-issued as GET would lose its payload)');
+        matches(
+            nav,
+            /nowMs - lastReissuedAtMs < GUARD_WINDOW_MS/,
+            'the guard window recognises the re-issue echo so the navigation terminates');
+
+        const probe = stripKotlinComments(read(PROBE_KT));
+        matches(
+            probe,
+            /fun sawMainFramePresent\(\): Boolean/,
+            'the probe exposes the main-frame sighting the diagnostics screen answers from');
     });
 
     fixture('webview-window-policy', function () {
