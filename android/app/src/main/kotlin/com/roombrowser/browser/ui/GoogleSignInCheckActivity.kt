@@ -3,12 +3,6 @@ package com.roombrowser.browser.ui
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.webkit.CookieManager
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -58,17 +52,16 @@ import com.roombrowser.browser.engine.IdentityCheck
 import com.roombrowser.browser.engine.IdentityDiagnostics
 import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.engine.EmbeddedHeaderObservation
+import com.roombrowser.engine.SignInDiagnostics
+import com.roombrowser.engine.SignInDiagnostics.ProbeOutcome
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomCardShape
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import org.json.JSONArray
-import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -131,7 +124,7 @@ class GoogleSignInCheckActivity : ComponentActivity() {
                     report = runCatching { readReport(appContext) }.getOrNull()
                     reading = false
                     probing = true
-                    probe = runCatching { runProbe(appContext) }.getOrNull()
+                    probe = runCatching { SignInDiagnostics.runProbe(appContext) }.getOrNull()
                     probing = false
                 }
                 LaunchedEffect(Unit) { runAll() }
@@ -166,73 +159,14 @@ private data class SignInReport(
     val playServicesVersion: String?
 )
 
-/** What the live probe saw when Google answered. */
-private data class ProbeOutcome(
-    /** true = refusal served, false = sign-in form rendered, null = inconclusive. */
-    val blocked: Boolean?,
-    val marker: String?,
-    val formSeen: Boolean,
-    val finalUrl: String,
-    val note: String
-)
-
-/** The sign-in URL the probe loads. `hl=en` so the refusal text is the stable English one. */
-private const val PROBE_URL =
-    "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fwww.google.com%2F&hl=en"
-
-/** How long the probe waits for Google before reporting inconclusive. */
-private const val PROBE_TIMEOUT_MS = 25_000L
-
-/**
- * The refusal strings, matched lowercase against the rendered page text.
- * English first (the probe pins `hl=en`), then the Indonesian renderings —
- * the device locale can still win for interstitials Google localises before
- * the `hl` parameter is read.
- */
-private val BLOCK_MARKERS = listOf(
-    "this browser or app may not be secure",
-    "sign in with a supported browser",
-    "browser atau aplikasi ini mungkin tidak aman",
-    "masuk dengan browser yang didukung"
-)
-
-/** The page-side probe: marker scan, sign-in-form detection, landing URL. */
-private fun probeScript(): String {
-    val markersJson = JSONArray(BLOCK_MARKERS).toString()
-    return """
-        (function() {
-          var t = ((document.body && document.body.innerText) || '').toLowerCase();
-          var markers = $markersJson;
-          var hit = null;
-          for (var i = 0; i < markers.length; i++) {
-            if (t.indexOf(markers[i]) >= 0) { hit = markers[i]; break; }
-          }
-          return {
-            hit: hit,
-            form: !!document.querySelector('input[type=email]'),
-            url: location.href
-          };
-        })()
-    """.trimIndent()
-}
-
 /** Environment + identity reading, everything except the live probe. */
 private suspend fun readReport(context: Context): SignInReport {
-    val provider = runCatching { WebView.getCurrentWebViewPackage() }.getOrNull()
-    val providerLabel = provider?.let { p ->
-        // `WebViewPackageInfo` exposes the provider's package name and
-        // version directly (API 26+); the label comes from PackageManager
-        // against that package, with the package name as the fallback the
-        // reader still recognises when the label lookup is refused.
-        val label = runCatching {
-            context.packageManager.getApplicationLabel(
-                context.packageManager.getApplicationInfo(p.packageName, 0)
-            ).toString()
-        }.getOrNull() ?: p.packageName
-        val version = p.versionName
-        "$label ${version ?: ""}".trim()
-    } ?: "Android System WebView (version not reported by this device)"
-    val stockUa = runCatching { WebSettings.getDefaultUserAgent(context) }.getOrDefault("")
+    // The provider identity and the stock UA are engine reads -- the boundary
+    // test keeps android.webkit imports out of this module, so both cross the
+    // SignInDiagnostics facade.
+    val providerLabel = runCatching { SignInDiagnostics.webViewProviderIdentity(context) }
+        .getOrNull() ?: "Android System WebView (version not reported by this device)"
+    val stockUa = runCatching { SignInDiagnostics.stockUserAgent(context) }.getOrDefault("")
     val ua = runCatching { UserAgents.webViewNeutralUserAgent(stockUa) }.getOrNull() ?: stockUa
     val hintsOk = runCatching { WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA) }.getOrDefault(false)
     val docStartOk = runCatching { WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT) }.getOrDefault(false)
@@ -266,126 +200,6 @@ private suspend fun fetchGoogleDateMs(): Long? = withContext(Dispatchers.IO) {
             }.parse(header)?.time
         }
     }
-}
-
-/**
- * The live probe. Runs a bare WebView on the main thread with the engine's
- * default identity stack and reads what Google serves. Never submits, never
- * types, destroys the WebView before answering.
- */
-private suspend fun runProbe(context: Context): ProbeOutcome =
-    withContext(Dispatchers.Main) {
-        suspendCancellableCoroutine { cont ->
-            val main = Handler(Looper.getMainLooper())
-            val webView = WebView(context)
-            var done = false
-            val timeout = Runnable {
-                settle(cont, main, webView, ProbeOutcome(
-                    blocked = null,
-                    marker = null,
-                    formSeen = false,
-                    finalUrl = webView.url ?: PROBE_URL,
-                    note = "Timed out after ${PROBE_TIMEOUT_MS / 1000} s with no finished load — " +
-                        "the network never answered, or the page never stopped redirecting. " +
-                        "Check connectivity and run the check again."
-                ))
-            }
-            webView.settings.apply {
-                javaScriptEnabled = true
-                // The engine's defaults, reproduced: cookies on, third-party
-                // cookies on (a privacy profile that blocks them would test a
-                // different question than the one this screen asks).
-                domStorageEnabled = true
-            }
-            CookieManager.getInstance().apply {
-                setAcceptCookie(true)
-                setAcceptThirdPartyCookies(webView, true)
-            }
-            webView.webViewClient = object : WebViewClient() {
-                override fun onPageFinished(view: WebView, url: String) {
-                    view.evaluateJavascript(probeScript()) { result ->
-                        val outcome = runCatching {
-                            // An object result arrives as a JSON object literal;
-                            // a null arrives as the four characters "null".
-                            val json = JSONObject(result)
-                            val hit = json.optString("hit").takeIf { it.isNotEmpty() }
-                            val form = json.optBoolean("form", false)
-                            val landed = json.optString("url").ifBlank { url }
-                            when {
-                                hit != null -> ProbeOutcome(
-                                    blocked = true,
-                                    marker = hit,
-                                    formSeen = form,
-                                    finalUrl = landed,
-                                    note = "Google served the refusal page to this app's requests. " +
-                                        "First remedies, in order: update Android System WebView " +
-                                        "and Chrome from the Play Store (an old provider is the one " +
-                                        "cause no app code can work around), turn any VPN off, and " +
-                                        "check the device clock below. If Chrome itself signs in fine " +
-                                        "on this device while this probe keeps failing, the block is " +
-                                        "attached to this app's traffic — re-read the identity rows " +
-                                        "above, and report the marker and URL shown here."
-                                )
-                                form -> ProbeOutcome(
-                                    blocked = false,
-                                    marker = null,
-                                    formSeen = true,
-                                    finalUrl = landed,
-                                    note = "The real sign-in form rendered with no refusal text. " +
-                                        "Sign-in inside this browser should work here; if you still " +
-                                        "saw the refusal in a tab, it was likely Google's risk engine " +
-                                        "cooling down after earlier attempts — wait a while and try."
-                                )
-                                else -> ProbeOutcome(
-                                    blocked = false,
-                                    marker = null,
-                                    formSeen = false,
-                                    finalUrl = landed,
-                                    note = "No refusal text and no sign-in form on the landing page " +
-                                        "(Google may have signed the probe straight through, or served " +
-                                        "an interstitial it did not match). If sign-in still fails in " +
-                                        "a tab, run the check again from that state."
-                                )
-                            }
-                        }.getOrElse {
-                            ProbeOutcome(
-                            blocked = null,
-                            marker = null,
-                            formSeen = false,
-                            finalUrl = url,
-                            note = "The probe page finished but its answer could not be read."
-                        )
-                        }
-                        settle(cont, main, webView, outcome)
-                    }
-                }
-            }
-            main.postDelayed(timeout, PROBE_TIMEOUT_MS)
-            // The same lever the engine's own loads use: an app-supplied
-            // additional header overrides the provider's X-Requested-With
-            // stamp on this navigation.
-            runCatching { webView.loadUrl(PROBE_URL, mapOf("X-Requested-With" to "")) }
-                .onFailure {
-                    settle(cont, main, webView, ProbeOutcome(
-                    blocked = null, marker = null, formSeen = false,
-                    finalUrl = PROBE_URL,
-                    note = "The probe WebView could not start on this device."
-                ))
-                }
-        }
-    }
-
-private fun settle(
-    cont: kotlinx.coroutines.CancellableContinuation<ProbeOutcome>,
-    main: Handler,
-    webView: WebView,
-    outcome: ProbeOutcome
-) {
-    if (cont.isActive) {
-        cont.resume(outcome) { }
-    }
-    runCatching { webView.stopLoading() }
-    main.post { runCatching { webView.destroy() } }
 }
 
 @Composable
