@@ -10,11 +10,12 @@ import org.junit.Test
 /**
  * The client-hint identity must agree with the UA string it was derived from.
  *
- * This is the network-side half of the web-compatibility contract the device
- * shim already keeps in JavaScript: `navigator.userAgentData` reports
- * Chromium/Google Chrome brands, and the `Sec-CH-UA` header must say the same
- * thing, or a site sees one browser described two ways. Google's "This browser
- * or app may not be secure" refusal is the visible cost of that disagreement.
+ * This is the network-side half of the one-coherent-browser contract:
+ * `navigator.userAgentData` — served natively by the engine FROM these
+ * metadata — reports Chromium/Google Chrome brands, and the `Sec-CH-UA`
+ * header says the same thing, so no site sees one browser described two ways.
+ * Google's "This browser or app may not be secure" refusal is the visible
+ * cost of that disagreement.
  *
  * A JVM test can hold this because `UserAgentMetadata` is a plain value class
  * — the provider is what serializes it, not this code. What is asserted here
@@ -95,17 +96,17 @@ class WebViewClientHintsTest {
     }
 
     /**
-     * THE HIGH-ENTROPY PAIR, MATCHED TO THE PAGE.
+     * THE HIGH-ENTROPY PAIR, ONE AUTHORITY.
      *
      * `architecture` and `bitness` reach a site two ways once it sends
      * `Accept-CH`: as `Sec-CH-UA-Arch` / `Sec-CH-UA-Bitness` from these hints,
-     * and as `getHighEntropyValues()` from `DeviceShim`. The shim answers
-     * `arm` / `64` for a claimed handset, so the header must say the same or
-     * the site reads one browser described two ways — the contradiction this
-     * whole file exists to remove.
+     * and as `getHighEntropyValues()` answered by the engine FROM these same
+     * metadata. The header and the page therefore cannot disagree by
+     * construction — the pair below is what both name for a claimed handset
+     * (Chrome on Android answers `arm` / 64 whatever the SoC vendor is).
      */
     @Test
-    fun a_device_answers_architecture_and_bitness_the_way_its_shim_does() {
+    fun a_device_answers_architecture_and_bitness_the_way_the_engine_serves_it() {
         val ua = UserAgents.effectiveUserAgent(deviceSettings())!!
 
         val hints = WebViewClientHints.forUserAgent(deviceSettings(), ua)!!
@@ -129,8 +130,7 @@ class WebViewClientHintsTest {
     fun a_profile_with_no_device_leaves_the_architecture_to_the_engine() {
         // No device means the engine's REAL build is what is being presented,
         // and only the engine knows what it was compiled for. Claiming `arm`
-        // here would be inventing an answer, and the shim does not claim one
-        // either (it installs nothing without a device).
+        // here would be inventing an answer, so the mapping states nothing.
         val settings = ProfileSettings(uaMode = UaMode.PRESET, uaPresetId = "chrome_android")
         val ua = UserAgents.effectiveUserAgent(settings)!!
 

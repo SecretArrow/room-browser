@@ -5,7 +5,6 @@ import android.content.Intent
 import android.webkit.WebSettings
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.domain.model.Device
 import com.roombrowser.domain.model.Devices
 import com.roombrowser.domain.model.ProfileId
@@ -35,25 +34,18 @@ import java.util.concurrent.ConcurrentHashMap
  *   3. a `navigator.userAgentData` / `Sec-CH-UA` that contradicts the UA string
  *      it arrived with — one browser described two ways.
  *
- * The engine answers all three, but not with equal authority. The first and
- * third are the app's own: `WebViewEngineSession.configure` neutralises the
- * stock string and `WebViewClientHints` derives the hints from the same
- * resolved string, so the string and the hints cannot disagree. The second
- * USED to be only a request to the provider — the `setRequestedWithHeader
- * OriginAllowList` call, an empty method body since androidx 1.12.1 — and the
- * server kept receiving `com.roombrowser.debug` on the CI emulator's
- * WebView 83. The session now issues every MAIN-FRAME navigation through
- * `loadUrl`'s additional-headers override (`X-Requested-With: ""`), the one
- * lever the provider has honoured on every version since 71, and re-issues
- * page-started navigations into the sign-in hosts through the same call. What
- * reaches Google as the main document therefore carries the app's headers,
- * and this file asserts that on the exact bytes that went out
- * ([assertHeaderNeverNamesTheApp] — which is the tightened descendant of the
- * old "if present, must name this app" excuse). The unit tests cover the
- * derivation and the re-issue decision in isolation; THIS test is the one
- * that proves the result reaches the wire, because it asserts on the request
- * the WebView actually made and on what the page's own JavaScript read back —
- * not on a mapper's return value.
+ * The engine answers all three, and the app's part is deliberately ALL on the
+ * engine side. The first and third are the app's own:
+ * `WebViewEngineSession.configure` neutralises the stock string and
+ * `WebViewClientHints` derives the hints from the same resolved string, so the
+ * string and the hints cannot disagree — and because the metadata is what the
+ * ENGINE serves to `navigator.userAgentData`, the page half agrees with the
+ * header half by construction. The app installs NO identity JavaScript: the
+ * old device shim presented the identity with `Object.defineProperty`, and a
+ * page can catch that from inside (a spoofed accessor has a `.get` function
+ * where the platform ships a native one), which is itself an automation tell.
+ * Nothing in the page world is overridden any more, so nothing in the page
+ * world can contradict the wire.
  *
  * TWO PHASES ON ONE PROFILE, because the app ships two shapes of identity and
  * both must survive a Google round trip:
@@ -63,12 +55,12 @@ import java.util.concurrent.ConcurrentHashMap
  *      claim; the Chromium build on the wire is the ENGINE's real one, because
  *      configure() tunes every UA it installs through
  *      UserAgents.engineTunedUserAgent — a claimed 156 over an 83 engine is
- *      the split identity Google's refusal reads, and the shim, the client
+ *      the split identity Google's refusal reads, and the client
  *      hints and the request must all carry the engine's build instead.
  *   B. the same profile with its device taken away, where the honest identity
  *      is the engine's real build with the embedded-browser tokens removed and
  *      no model claimed at all — a string the WebView serves to
- *      navigator.userAgent itself, with no shim at all.
+ *      navigator.userAgent itself, with no identity override at all.
  *
  * The page reports what it sees back as a GET to the mock server rather than
  * through the UI: a modal sheet, a toast or an accessibility hiccup cannot
@@ -248,17 +240,20 @@ class GoogleIdentityE2eTest {
     }
 
     /**
-     * The page-side half, asserted against what the installed engine can
-     * actually install.
+     * The page-side half, asserted against what the ENGINE can natively
+     * serve.
      *
-     * `navigator.userAgentData` reaches a page in one of two ways: the engine's
-     * own User-Agent-Client-Hints implementation, or the app's device shim
-     * installed as a document-start script. On a provider that supports neither
-     * — the CI emulator ships WebView 83 — the page has no such object, and no
-     * app-side code can give it one. What the test must NOT do is quietly accept
-     * that on an engine that could have done better, so the branch is keyed on
-     * the engine's own capability report rather than on what the page happened
-     * to return.
+     * The app installs NO identity JavaScript, so `navigator.userAgentData`
+     * exists only where the engine's User-Agent-Client-Hints implementation
+     * does — on a provider that has it, it is built from the metadata this app
+     * set from the same resolved UA string, and the page cannot contradict the
+     * headers; on an older provider the object is absent, exactly as it is on
+     * engines that never had the API (Firefox and Safari ship without it too,
+     * and Google signs in there). What this asserts is the part that must
+     * hold EITHER way: the UA the page read is byte-for-byte the UA the
+     * request carried, and wherever a userAgentData IS visible, it agrees
+     * with that string — never "Android WebView", one Chromium version, the
+     * right mobile flag, the right platform.
      */
     private fun assertPageIdentityIsCoherent(hit: RecordedRequest, ua: String, mobile: Boolean) {
         val recorded = hit.requestUrl
@@ -272,23 +267,17 @@ class GoogleIdentityE2eTest {
         )
         assertNoEmbeddedBrowserTell("page", pageUa)
 
-        if (!ProfileEngine.supportsDocumentStartScripts()) {
-            // The engine said it cannot install the shim, so the absence is the
-            // engine's, not this app's — and saying which is the honest outcome.
+        if (url.queryParameter("hasUaData") != "1") {
+            // The engine's provider has no User-Agent-Client-Hints
+            // implementation, so the object is absent — the engine's own
+            // honest state, not something app-side code could or should fake.
             println(
-                "GoogleIdentityE2e: this engine's provider cannot install a " +
-                    "document-start script, so navigator.userAgentData is absent " +
-                    "(page reported hasUaData=${url.queryParameter("hasUaData")}). " +
-                    "The User-Agent and client-hint halves were still asserted."
+                "GoogleIdentityE2e: this provider exposes no navigator.userAgentData " +
+                    "(page reported hasUaData=0). The User-Agent half was still " +
+                    "asserted byte-for-byte against the wire."
             )
             return
         }
-        assertTrue(
-            "The engine supports document-start scripts, so the shim must install and " +
-                "the page must expose navigator.userAgentData — Google's sign-in page " +
-                "reads it, and its absence is itself an embedded-browser signal",
-            url.queryParameter("hasUaData") == "1"
-        )
         val brands = url.queryParameter("brands").orEmpty()
         assertTrue(
             "The brand list must name Chromium (saw '$brands')",

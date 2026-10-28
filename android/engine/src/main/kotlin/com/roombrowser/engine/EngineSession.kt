@@ -35,16 +35,18 @@ class EngineDownloadStream(
 /**
  * The page-world scripts this session installs at document start.
  *
- * These are the app's own scripts -- the device shim, the password-manager
+ * These are the app's own scripts -- the page adjustments (a claimed screen,
+ * a WebRTC policy, a text scale; NEVER an identity — the identity the page
+ * reads is the engine's own), the password-manager
  * bridge, the wallet dApp provider -- and they must run in the page's own
  * world before any page script, because they define globals the page calls
- * (`window.RoomWallet`, `window.RoomVault`) and, for the device shim, because
- * a claim installed after the page's first script is a claim that script
- * already measured. How that is achieved is engine business; this type only
+ * (`window.RoomWallet`, `window.RoomVault`) and, for the adjustments, because
+ * a policy installed after the page's first script is a policy that script
+ * already acted on. How that is achieved is engine business; this type only
  * carries the text.
  */
 data class EnginePageScripts(
-    val deviceShim: String?,
+    val adjustments: String?,
     val vaultBridge: String,
     val walletProvider: String
 )

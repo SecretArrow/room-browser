@@ -191,7 +191,7 @@ class ProfileManagerTest {
     fun `setDevice clears a preset so identity has one answer`() = runTest {
         val p = manager.create(
             "Work", "w", 0,
-            settings = ProfileSettings(uaMode = UaMode.PRESET, uaPresetId = "firefox_android"),
+            settings = ProfileSettings(uaMode = UaMode.PRESET, uaPresetId = "chrome_android"),
             randomizeDevice = false
         )
         assertThat(p.settings.deviceId).isNull()

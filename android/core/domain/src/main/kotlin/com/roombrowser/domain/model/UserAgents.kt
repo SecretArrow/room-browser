@@ -28,8 +28,7 @@ package com.roombrowser.domain.model
  * actually sends: a malformed UA is *more* fingerprintable than the WebView
  * default, which is the opposite of the point. So every token here is a real
  * one — the presets whose identity is Chrome carry a real 4-part
- * Chrome-for-Android build, the Firefox presets carry the single Gecko token
- * Firefox for Android sends, and no preset invents a vendor token no browser
+ * Chrome-for-Android build, and no preset invents a vendor token no browser
  * emits. The Chromium generation those Chrome-identity presets claim is the
  * one the device catalogue ships (see [Devices]), so a profile on a preset and
  * a profile on a device do not tell the same site two different stories about
@@ -37,7 +36,16 @@ package com.roombrowser.domain.model
  * token is kept real, while the Chromium build underneath it follows the
  * catalogue's current stable - the product requires that no preset claim a
  * Chromium generation below 153, refreshed with each catalogue refresh
- * (this one: Chrome 156.0.8078.48 / Firefox 158, October 2026).
+ * (this one: Chrome 156.0.8078.48, October 2026).
+ *
+ * CHROMIUM-BASED ONLY (the user mandate that removed the Firefox rows). Every
+ * preset in this catalogue is a Chromium identity: the engine IS Chromium, its
+ * TLS fingerprint and its client-hint metadata are a Chromium engine's, and a
+ * preset claiming anything else asks the UA string to disagree with the rest
+ * of the wire — the class of contradiction Google's sign-in refusal reads.
+ * A stored profile that still names a removed preset id resolves to null in
+ * [effectiveUserAgent] and lands on the neutralised engine UA, which is a
+ * Chrome identity.
  */
 data class UserAgentPreset(
     val id: String,
@@ -69,8 +77,8 @@ object UserAgents {
         label = "Chrome Android Tablet",
         isDesktop = false,
         // Chrome puts a real device MODEL CODE in the platform slot — the word
-        // "Tablet" there is Firefox's convention, not Chrome's (see
-        // FIREFOX_ANDROID_TABLET below). SM-X710 is a Galaxy Tab S9, a model
+        // "Tablet" there is another browser's convention, never Chrome's.
+        // SM-X710 is a Galaxy Tab S9, a model
         // Google Play really ships to. Form factor is expressed the way Chrome
         // expresses it: a tablet UA carries no " Mobile" token, the same rule
         // [Devices] records on every handset it lists.
@@ -89,25 +97,6 @@ object UserAgents {
         // same full 4-part form. Devices run stable, so this build is the one
         // preset token that is deliberately not in the catalogue.
         value = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.8103.14 Mobile Safari/537.36"
-    )
-    private val FIREFOX_ANDROID = UserAgentPreset(
-        id = "firefox_android",
-        label = "Firefox Android",
-        isDesktop = false,
-        // Firefox for Android sends exactly ONE Gecko token of the form
-        // Gecko/<version>. "Gecko/20100101" is the desktop build stamp and
-        // never appears on Android, so a preset carrying both tokens is a
-        // string no browser has ever sent. rv: must equal the Firefox version.
-        value = "Mozilla/5.0 (Android 14; Mobile; rv:158.0) Gecko/158.0 Firefox/158.0"
-    )
-    private val FIREFOX_ANDROID_TABLET = UserAgentPreset(
-        id = "firefox_android_tablet",
-        label = "Firefox Android Tablet",
-        isDesktop = false,
-        // Firefox is the one Android browser that DOES put "Tablet" in the
-        // platform slot, and its tablet UA drops "Mobile" — same single Gecko
-        // token as the phone preset.
-        value = "Mozilla/5.0 (Android 14; Tablet; rv:158.0) Gecko/158.0 Firefox/158.0"
     )
     private val EDGE_ANDROID = UserAgentPreset(
         id = "edge_android",
@@ -179,10 +168,10 @@ object UserAgents {
         value = ""
     )
 
-    /** The curated preset catalogue — Android/mobile identities only. */
+    /** The curated preset catalogue — Android Chromium identities only. */
     val all: List<UserAgentPreset> = listOf(
         CHROME_ANDROID, CHROME_ANDROID_TABLET, CHROME_BETA_ANDROID,
-        FIREFOX_ANDROID, FIREFOX_ANDROID_TABLET, EDGE_ANDROID,
+        EDGE_ANDROID,
         SAMSUNG_ANDROID, OPERA_ANDROID, BRAVE_ANDROID,
         DUCKDUCKGO_ANDROID, VIVALDI_ANDROID, WEBVIEW
     )
@@ -221,7 +210,8 @@ object UserAgents {
      * A device, when one is assigned, is the single control: it supplies the
      * UA, so the preset and custom fields are not consulted. In PRESET mode an
      * unknown preset id — e.g. a stored profile that once picked a preset that
-     * has since been removed from the catalogue — also resolves to null, so
+     * has since been removed from the catalogue (the desktop rows, then the
+     * Firefox rows under the Chromium-only mandate) — also resolves to null, so
      * the WebView default is used rather than a stale identity.
      */
     fun effectiveUserAgent(settings: ProfileSettings): String? {
@@ -320,11 +310,11 @@ object UserAgents {
      * change is itself a fingerprint. A preset that ships the full form
      * (`Chrome/156.0.8078.48`) is rewritten with the engine's full version.
      *
-     * NO-OP WHEN THERE IS NOTHING TO TUNE. A Firefox preset has no Chrome
-     * token (it is an identity claim about Firefox, not a claim about the
-     * engine) and is returned verbatim; so is any string the engine itself
-     * reports without a Chrome token (it would be invented, not tuned). The
-     * non-Chrome vendor tokens (EdgA, SamsungBrowser, OPR, Vivaldi,
+     * NO-OP WHEN THERE IS NOTHING TO TUNE. A target with no Chrome token — a
+     * Gecko string, or anything that is not a Chromium claim — has no engine
+     * version to install and is returned verbatim; so is any string the engine
+     * itself reports without a Chrome token (it would be invented, not tuned).
+     * The vendor tokens (EdgA, SamsungBrowser, OPR, Vivaldi,
      * DuckDuckGo) are deliberately left alone: they describe a vendor the
      * engine is not, and the user picked that identity knowing it.
      *

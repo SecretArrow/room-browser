@@ -19,10 +19,11 @@ import com.roombrowser.domain.model.UserAgents
  * `"Android WebView"`. A disagreement between two headers describing the same
  * client is a far stronger automation/embedded-browser signal than the `wv`
  * token ever was, and it is the one Google's "This browser or app may not be
- * secure" refusal can read without any JavaScript at all. The device shim
- * (`DeviceShim`) already answers `navigator.userAgentData` with
- * Chromium/Google Chrome brands; this is the network-side half of the same
- * claim, so the two cannot tell a site different stories.
+ * secure" refusal can read without any JavaScript at all. This object is the
+ * single authority for that identity: the page reads
+ * `navigator.userAgentData` back from the metadata sent here — served
+ * natively by the engine, with no JavaScript shim redefining it, which is the
+ * only presentation a page cannot catch from inside.
  *
  * WHAT IT DOES NOT DO. It never invents a brand the profile did not claim and
  * never touches the UA string. A Firefox identity has no Chromium client hints
@@ -35,13 +36,12 @@ import com.roombrowser.domain.model.UserAgents
  * that device rather than with the real phone.
  *
  * `architecture` and `bitness` are answered for the same reason, and they are
- * answered here because the PAGE already answers them: `DeviceShim` reports
- * `arm` / `64` to `navigator.userAgentData.getHighEntropyValues`, so a network
- * half that stayed empty would be the same contradiction in a different place
- * — one browser, two descriptions. A desktop claim gets the x86 answer its
- * Windows UA implies. A profile with NO device is the one case left alone: it
- * presents the engine's real build, that build's architecture is whatever the
- * device running it actually is, and this code cannot see it.
+ * answered here because these values are what the ENGINE serves to
+ * `navigator.userAgentData.getHighEntropyValues` — one authority, two
+ * surfaces. A desktop claim gets the x86 answer its Windows UA implies. A
+ * profile with NO device is the one case left alone: it presents the engine's
+ * real build, that build's architecture is whatever the device running it
+ * actually is, and this code cannot see it.
  */
 internal object WebViewClientHints {
 
@@ -138,8 +138,8 @@ internal object WebViewClientHints {
     }
 
     /**
-     * The brand list `DeviceShim.brands()` reports to `navigator.userAgentData`,
-     * in the same order — one identity, described twice.
+     * The brand list `navigator.userAgentData.brands` reports, in the same
+     * order — one identity, described twice, both halves the engine's own.
      *
      * The reduced form (major only) is what `Sec-CH-UA` carries; the full
      * version travels in `fullVersionList`, which is what the `BrandVersion`

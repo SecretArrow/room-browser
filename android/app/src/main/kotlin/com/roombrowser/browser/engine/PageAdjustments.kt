@@ -1,194 +1,58 @@
 package com.roombrowser.browser.engine
 
 import com.roombrowser.domain.model.ClaimedScreen
-import com.roombrowser.domain.model.Device
-import com.roombrowser.domain.model.FingerprintProfile
 import com.roombrowser.domain.model.WebRtcPolicy
 import kotlin.math.roundToInt
 
 /**
- * The JavaScript a profile runs before any page script, so the properties a
- * page reads agree with what the profile claims to be.
+ * The page adjustments a profile can ask for — a claimed screen size, a
+ * WebRTC policy, a text scale — as one document-start script. Each part is
+ * installed only when the profile has actually asked for it, and a profile
+ * that asked for none of them gets an empty string, which the engine reads as
+ * "install nothing".
  *
- * Five independent parts, and each is installed only when the profile has
- * actually asked for it:
+ * THE IDENTITY IS NOT HERE, ON PURPOSE. The object that used to live beside
+ * these parts (`DeviceShim`) also presented a device identity in JavaScript —
+ * `navigator.userAgent`, the brand list, `userAgentData`, memory, cores and
+ * the WebGL strings, all installed with `Object.defineProperty`. That is the
+ * one presentation a page can catch from inside: a spoofed accessor has a
+ * `.get` function where the platform ships a native one, `getHighEntropyValues`
+ * answers on a microtask where the engine answers from its own metadata, and
+ * every such wrinkle is a stronger automation signal than the identity it was
+ * trying to manage — the exact class of tell that reads as "This browser or
+ * app may not be secure". The identity work now happens where it cannot be
+ * caught from the page: the User-Agent string is set on the engine, the
+ * `Sec-CH-UA*` metadata is derived from that same string
+ * (`WebViewClientHints`), and the engine serves `navigator.userAgent` and
+ * `navigator.userAgentData` natively from those two. Nothing in the page world
+ * is overridden, so nothing in the page world can contradict the wire.
  *
- *  - the **identity** shim, for a profile presenting a device: the UA, the
- *    client hints, `deviceMemory`, `hardwareConcurrency` and the WebGL
- *    vendor/renderer strings. These are the things a handset determines
- *    and that the real hardware therefore cannot contradict.
+ * The three adjustments that remain are presentation and transport policy, not
+ * identity claims: a screen size the profile states by hand, the WebRTC
+ * behaviour the profile chose, and a text scale for the reader. None of them
+ * says who the browser is, and none of them can contradict a request header.
  *
- *  - the **derived** shim, for every profile with a fingerprint seed: the
- *    surfaces a device alone cannot keep apart, derived (never drawn per
- *    read). No seed means the old platform line and nothing more.
- *
- *  - the **screen** shim, for a profile whose screen size is set by hand:
- *    `screen.width/height/availWidth/availHeight` and `screen.orientation`.
- *
- *  - the **WebRTC** shim, for a profile whose [WebRtcPolicy] is not DEFAULT:
- *    either the peer connection is taken away altogether, or the host
- *    candidates that carry a literal IP address are kept out of what the page
- *    can read. Both are described at the scripts themselves.
- *
- *  - the **text-size** shim, for a profile whose text scale is not 1.0: it
- *    scales the text, and where the engine cannot scale text alone it scales
- *    the page. Both are described at the script itself.
- *
- * Screen geometry is left alone unless the profile asks for it. The default is
- * the phone's own screen, because the page really is laid out here. A profile
- * that sets a size by hand is making a choice the settings row states plainly,
- * and the cost is in what the layout viewport cannot do: it stays the display's
- * own, because `innerWidth` and `innerHeight` are the width and height the page
- * is really laid out at and moving them means re-laying the page out, which is
- * the breakage this file exists to avoid. `devicePixelRatio` follows a claimed
- * screen only for a profile with a seed, and is the one geometric value that
- * can move with the claim; a profile with no claim keeps the compositor's real
- * ratio. Either way a claimed screen that differs from the phone's is a
- * disagreement with the viewport a script can find.
- *
- * It is offered anyway because the alternative is worse. Without it, a profile
- * presenting a Galaxy S24 Ultra reports a screen that handset never had — the
- * same contradiction, except that nobody chose it and the settings screen said
- * nothing about it. This way the mismatch is explicit, bounded to the screen
- * family, and stated where the choice is made. See SECURITY.md.
- *
- * Honest limits: a page that inspects `Function.prototype.toString` on the
- * patched accessors, compares dozens of unrelated signals, or fingerprints
- * the GPU by timing a draw call can still tell. This raises the cost of the
- * cheap checks; it is not and does not claim to be undetectable. And a
- * document-start script runs in documents, not in workers: code that opens a
- * Web Worker — or any other realm this shim is not injected into — gets the
- * engine's own WebRTC, so the policy below is not enforced there.
+ * The policy is a parameter with a default rather than something read from a
+ * profile, because this object holds no profile state: callers pass what the
+ * profile asked for. The default is DEFAULT, which adds nothing, so a caller
+ * that passes nothing gets exactly nothing.
  */
-object DeviceShim {
+object PageAdjustments {
 
     /**
-     * The document-start script for a profile. Blank when the profile claims
-     * neither a device nor a screen size, derives no fingerprint surfaces, its
-     * WebRTC policy is [WebRtcPolicy.DEFAULT] and its text scale is 1.0 —
-     * nothing absent is installed, and nothing asked for is changed.
-     *
-     * The policy is a parameter with a default rather than something read
-     * from a profile the way [Device] is, because the shim has never held
-     * profile state: callers pass what the profile asked for. The default is
-     * DEFAULT, which adds nothing, so a caller that passes a device and
-     * nothing else gets exactly the script it got before this parameter
-     * existed. A real profile does not start there — the profile settings
-     * default the policy to RESTRICT_LOCAL_IP — so the engine passes the
-     * profile's own value at every call site and never leans on this default.
-     *
-     * [fingerprint] defaults to [FingerprintProfile.legacy]; the engine passes
-     * the profile's own [FingerprintProfile.from] result. [textScale] defaults
-     * to 1f, which contributes nothing, so a caller that omits it gets exactly
-     * the script it got before this parameter existed.
-     *
-     * [resolvedUserAgent] defaults to null and is the identity the NETWORK
-     * actually sends for this profile — the engine's own string with the
-     * profile's model slot swapped in (UserAgents.deviceTunedUserAgent). The
-     * identity shim presents THAT string, not the catalogue's: a page reading
-     * back a Chromium version the request never carried is the "one browser,
-     * two descriptions" contradiction Google's sign-in refusal reads in
-     * JavaScript, the same rule WebViewClientHints.forUserAgent already keeps
-     * for the Sec-CH-UA headers. Null falls back to the catalogue's own
-     * claims, which is the pre-tuning behaviour.
+     * The document-start script for the adjustments a profile asked for.
+     * Blank when there is no screen claim, the WebRTC policy is
+     * [WebRtcPolicy.DEFAULT] and the text scale is 1.0 — nothing asked for is
+     * changed, and nothing absent is installed.
      */
     fun scriptFor(
-        device: Device?,
         screen: ClaimedScreen? = null,
         webRtc: WebRtcPolicy = WebRtcPolicy.DEFAULT,
-        fingerprint: FingerprintProfile = FingerprintProfile.legacy(),
-        textScale: Float = 1f,
-        resolvedUserAgent: String? = null
+        textScale: Float = 1f
     ): String = buildString {
-        if (device != null) append(identityScript(device, resolvedUserAgent))
-        // A seed installs the derived surfaces even with no device.
-        if (device != null || fingerprint.isSeeded) {
-            append(fingerprintScript(fingerprint, screen))
-        }
         if (screen != null) append(screenScript(screen))
         append(webRtcScript(webRtc))
         append(textScaleScript(textScale))
-    }
-
-    /** The identity shim: what the profile presents itself as. */
-    private fun identityScript(device: Device, resolvedUserAgent: String?): String {
-        // WHAT THE PAGE MAY CLAIM. The wire carries the ENGINE's real Chromium
-        // build — configure() tunes every UA it installs through
-        // UserAgents.engineTunedUserAgent, and for a device profile the only
-        // catalogue input that survives is the model slot. The shim must read
-        // back that same string: navigator.userAgent, the brand list and the
-        // high-entropy version hints all come from here, and any one of them
-        // naming a build the request did not carry is a split identity.
-        // The catalogue's own values serve only when no resolved string was
-        // supplied (a caller that predates the tuning contract).
-        val ua = resolvedUserAgent?.takeIf { it.isNotBlank() } ?: device.userAgent
-        val chrome = CHROME_TOKEN.find(ua)?.groupValues[1] ?: device.chromeVersion
-        val android = ANDROID_TOKEN.find(ua)?.groupValues[1] ?: device.androidVersion
-        val mobile = device.formFactor != "tablet"
-        return IDENTITY
-            .replace("__UA__", jsString(ua))
-            .replace("__CHROME__", jsString(chrome))
-            .replace("__CHROME_MAJOR__", jsString(chrome.substringBefore('.')))
-            .replace("__ANDROID__", jsString(android))
-            .replace("__MODEL__", jsString(device.code))
-            .replace("__MOBILE__", mobile.toString())
-            .replace("__FORM__", jsString(if (mobile) "Mobile" else "Tablet"))
-            .replace("__MEMORY__", device.deviceMemoryGb.toString())
-            .replace("__CORES__", device.hardwareConcurrency.toString())
-            .replace("__GPU_VENDOR__", jsString(device.gpuVendor))
-            .replace("__GPU_RENDERER__", jsString(device.gpuRenderer))
-    }
-
-    /**
-     * `platform` always; the rest only when seeded. `devicePixelRatio` also
-     * needs a claimed screen, so the ratio never contradicts a display the
-     * profile did not describe.
-     */
-    private fun fingerprintScript(
-        fingerprint: FingerprintProfile,
-        screen: ClaimedScreen?
-    ): String {
-        val defines = StringBuilder()
-        defines.append("    define(Navigator.prototype, 'platform', ")
-            .append(jsString(fingerprint.platform))
-            .append(");\n")
-        if (fingerprint.isSeeded) {
-            fingerprint.colorDepth?.let {
-                defines.append("    define(Screen.prototype, 'colorDepth', $it);\n")
-            }
-            fingerprint.pixelDepth?.let {
-                defines.append("    define(Screen.prototype, 'pixelDepth', $it);\n")
-            }
-            fingerprint.maxTouchPoints?.let {
-                defines.append("    define(Navigator.prototype, 'maxTouchPoints', $it);\n")
-            }
-            if (screen != null) {
-                fingerprint.devicePixelRatio?.let {
-                    defines.append("    define(window, 'devicePixelRatio', $it);\n")
-                }
-            }
-            defines.append(pluginDefines(fingerprint))
-        }
-        return FINGERPRINT.replace("__DEFINES__", defines.toString())
-    }
-
-    /**
-     * `navigator.plugins` / `mimeTypes` as array-likes; only the count varies.
-     */
-    private fun pluginDefines(fingerprint: FingerprintProfile): String {
-        val plugins = fingerprint.plugins.joinToString(", ") { plugin ->
-            "{ name: ${jsString(plugin.name)}, " +
-                "description: ${jsString(plugin.description)}, " +
-                "filename: ${jsString(plugin.filename)}, " +
-                "length: ${plugin.mimeTypes.size} }"
-        }
-        val mimeTypes = fingerprint.mimeTypes.joinToString(", ") { mime ->
-            "{ type: ${jsString(mime.type)}, " +
-                "suffixes: ${jsString(mime.suffixes)}, " +
-                "description: ${jsString(mime.description)} }"
-        }
-        return "    define(Navigator.prototype, 'plugins', arrayLike([$plugins]));\n" +
-            "    define(Navigator.prototype, 'mimeTypes', arrayLike([$mimeTypes]));\n"
     }
 
     /** The screen shim: what a page is told the display is. */
@@ -252,18 +116,7 @@ object DeviceShim {
         WebRtcPolicy.RESTRICT_LOCAL_IP -> WEBRTC_RESTRICT
     }
 
-    /**
-     * The Chromium token of the string the shim is asked to present, and the
-     * Android version inside its platform segment. Tolerant of the reduced
-     * three-part form: a preset's `156.0.0.0` and a stock build's full
-     * four-part token are both claims the page must echo exactly.
-     */
-    private val CHROME_TOKEN = Regex("""Chrome/(\d+(?:\.\d+){1,3})""")
-
-    /** The Android major inside `(Linux; Android N; ...)` — the platform the wire claims. */
-    private val ANDROID_TOKEN = Regex("""Android (\d+)""")
-
-    /** A JS string literal, so a model code can never break out of the script. */
+    /** A JS string literal, so a claimed value can never break out of the script. */
     private fun jsString(value: String): String {
         val escaped = value
             .replace("\\", "\\\\")
@@ -274,160 +127,6 @@ object DeviceShim {
             .replace(" ", "\\u2029")
         return "'$escaped'"
     }
-
-    // No template literals and no "$" anywhere: the script is spliced into a
-    // Kotlin string, and a stray dollar would be read as interpolation.
-    private val IDENTITY = """
-(function () {
-  'use strict';
-  try {
-    var UA = __UA__;
-    var CHROME = __CHROME__;
-    var CHROME_MAJOR = __CHROME_MAJOR__;
-    var ANDROID = __ANDROID__;
-    var MODEL = __MODEL__;
-    var MOBILE = __MOBILE__;
-    var FORM = __FORM__;
-    var MEMORY = __MEMORY__;
-    var CORES = __CORES__;
-    var GPU_VENDOR = __GPU_VENDOR__;
-    var GPU_RENDERER = __GPU_RENDERER__;
-
-    function define(target, prop, value) {
-      try {
-        Object.defineProperty(target, prop, {
-          get: function () { return value; },
-          configurable: true,
-          enumerable: true
-        });
-      } catch (e) {}
-    }
-
-    define(Navigator.prototype, 'userAgent', UA);
-    // `platform` is deliberately not here: it belongs to the derived shim
-    // below, because a profile with no device still has a platform to report.
-    define(Navigator.prototype, 'deviceMemory', MEMORY);
-    define(Navigator.prototype, 'hardwareConcurrency', CORES);
-
-    // Client hints. These are the ones that name the handset outright, so a
-    // profile that shims the UA but not these is not presenting a device.
-    function brands(full) {
-      var chromium = full ? CHROME : CHROME_MAJOR;
-      return [
-        { brand: 'Chromium', version: chromium },
-        { brand: 'Google Chrome', version: chromium },
-        { brand: 'Not?A_Brand', version: '24' }
-      ];
-    }
-    var uaData = {
-      brands: brands(false),
-      mobile: MOBILE,
-      platform: 'Android',
-      getHighEntropyValues: function (hints) {
-        var wanted = hints || [];
-        var out = {};
-        for (var i = 0; i < wanted.length; i++) {
-          switch (wanted[i]) {
-            // Chrome on Android answers these two with the ABI it was built
-            // for, and an EMPTY string is not one of its answers: it is the
-            // shape of an object assembled by hand. The catalogue lists
-            // Android 12-and-newer handsets, which are 64-bit ARM in practice,
-            // so that is the pair the claimed identity reports — and
-            // `WebViewClientHints` sends the same pair in `Sec-CH-UA-Arch` /
-            // `Sec-CH-UA-Bitness`, so the header half and this one agree.
-            case 'architecture': out.architecture = 'arm'; break;
-            case 'bitness': out.bitness = '64'; break;
-            case 'formFactor': out.formFactor = FORM; break;
-            case 'model': out.model = MODEL; break;
-            case 'platform': out.platform = 'Android'; break;
-            case 'platformVersion': out.platformVersion = ANDROID + '.0.0'; break;
-            case 'uaFullVersion': out.uaFullVersion = CHROME; break;
-            case 'fullVersionList': out.fullVersionList = brands(true); break;
-            case 'wow64': out.wow64 = false; break;
-            default: break;
-          }
-        }
-        return Promise.resolve(out);
-      },
-      toJSON: function () {
-        return { brands: brands(false), mobile: MOBILE, platform: 'Android' };
-      }
-    };
-    try {
-      Object.defineProperty(Navigator.prototype, 'userAgentData', {
-        get: function () { return uaData; },
-        configurable: true,
-        enumerable: true
-      });
-    } catch (e) {}
-
-    // WebGL reports the SoC. An Adreno string on a handset that ships an
-    // Exynos is exactly the kind of contradiction this exists to avoid.
-    function patchGL(ctx) {
-      if (!ctx || !ctx.prototype || !ctx.prototype.getParameter) return;
-      var proto = ctx.prototype;
-      var original = proto.getParameter;
-      var patched = function (pname) {
-        if (pname === 37445) return GPU_VENDOR;
-        if (pname === 37446) return GPU_RENDERER;
-        return original.call(this, pname);
-      };
-      // Keep the patched accessor reporting as native to a casual toString().
-      try {
-        patched.toString = function () { return original.toString(); };
-      } catch (e) {}
-      try {
-        Object.defineProperty(proto, 'getParameter', {
-          value: patched,
-          configurable: true,
-          writable: true
-        });
-      } catch (e) {}
-    }
-    if (typeof WebGLRenderingContext !== 'undefined') patchGL(WebGLRenderingContext);
-    if (typeof WebGL2RenderingContext !== 'undefined') patchGL(WebGL2RenderingContext);
-  } catch (e) {
-    // A page must still load even if the platform refuses one of these.
-  }
-})();
-"""
-
-    // Installed when the profile presents a device or carries a seed; for an
-    // unseeded one __DEFINES__ is the single platform line it always got.
-    private val FINGERPRINT = """
-(function () {
-  'use strict';
-  try {
-    function define(target, prop, value) {
-      try {
-        Object.defineProperty(target, prop, {
-          get: function () { return value; },
-          configurable: true,
-          enumerable: true
-        });
-      } catch (e) {}
-    }
-
-    // Array-like shape plugins/mimeTypes expose: length, entries, item, namedItem.
-    function arrayLike(items) {
-      var out = [];
-      for (var i = 0; i < items.length; i++) out[i] = items[i];
-      out.item = function (i) { return this[i] === undefined ? null : this[i]; };
-      out.namedItem = function (name) {
-        for (var i = 0; i < this.length; i++) {
-          if (this[i].name === name || this[i].type === name) return this[i];
-        }
-        return null;
-      };
-      return out;
-    }
-
-__DEFINES__
-  } catch (e) {
-    // A page must still load even if the platform refuses one of these.
-  }
-})();
-"""
 
     // Installed only for a profile that set a screen size by hand, so the
     // numbers below are always the claimed ones and never a "real" default.
@@ -950,4 +649,5 @@ __DEFINES__
   }
 })();
 """
+
 }

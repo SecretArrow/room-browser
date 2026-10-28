@@ -3,14 +3,9 @@ package com.roombrowser.browser.engine
 import android.content.Context
 import com.roombrowser.browser.RoomVaultScript
 import com.roombrowser.browser.wallet.dapp.RoomWalletScript
-import com.roombrowser.domain.model.ClaimedScreen
-import com.roombrowser.domain.model.Device
-import com.roombrowser.domain.model.FingerprintProfile
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
-import com.roombrowser.domain.model.UserAgents
-import com.roombrowser.domain.model.WebRtcPolicy
 import com.roombrowser.domain.model.claimedScreen
 import com.roombrowser.engine.BlockedResourceSink
 import com.roombrowser.engine.EmbeddedHeaderObservation
@@ -31,9 +26,22 @@ import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
  * concrete engine, how its settings are spelled, what a per-profile data
  * directory is called — is the engine adapter's business now. What is left
  * here is the part that is PRODUCT POLICY: which scripts this app installs
- * into every page, how desktop mode interacts with the device shim, and the
+ * into every page, and the
  * once-per-process binding contract the rest of the app calls. That policy is
  * written once, against the facade, and both editions get it.
+ *
+ * IDENTITY POLICY (the user mandate that removed the device shim): NO page-
+ * world script presents an identity. The User-Agent is the engine's own string
+ * (WebView markers stripped, Chrome token tuned, model slot optionally the
+ * profile's), the `Sec-CH-UA*` metadata is derived from that same string by
+ * `WebViewClientHints`, and the engine serves `navigator.userAgent` /
+ * `navigator.userAgentData` natively from those two. What the app still
+ * installs is presentation and transport policy only — a claimed screen, a
+ * WebRTC restriction, a text scale (`PageAdjustments`) — none of which says
+ * who the browser is, and none of which a page can catch contradicting the
+ * request: a spoofed accessor has a `.get` function where the platform ships a
+ * native one, and that wrinkle is a stronger automation signal than the
+ * identity it was managing.
  *
  * ISOLATION MODEL (see PROFILE_ISOLATION.md for the full write-up):
  *  - [bindProcessToProfile] is called ONCE, before the first session is
@@ -177,8 +185,9 @@ object ProfileEngine {
      * Apply the profile's settings to a live session.
      *
      * WHAT IS APPLIED HERE VERSUS BELOW THE FACADE. The page-world scripts are
-     * this app's own text and this app's own policy — which shim, under which
-     * identity, plus the two bridges — so they are composed here and handed
+     * this app's own text and this app's own policy — the page adjustments (a
+     * claimed screen, a WebRTC policy, a text scale; never an identity) plus
+     * the two bridges — so they are composed here and handed
      * down through [EngineSession.setPageScripts]. Everything else (user
      * agent, JavaScript, cookies, mixed content, zoom, autoplay) is a profile
      * field the facade takes wholesale in `EngineHost.configure`, so no engine
@@ -194,7 +203,7 @@ object ProfileEngine {
         val settings: ProfileSettings = profile.settings
         session.setPageScripts(
             EnginePageScripts(
-                deviceShim = deviceShimScript(settings),
+                adjustments = pageAdjustmentsScript(settings),
                 vaultBridge = RoomVaultScript.SCRIPT,
                 walletProvider = RoomWalletScript.SCRIPT
             )
@@ -206,35 +215,17 @@ object ProfileEngine {
      * Desktop-site toggle for a specific session (per-tab / per-site).
      *
      * The user agent and the viewport flags are the profile's business and go
-     * down through the facade. What stays here is the shim rule, which is a
-     * product decision: a desktop UA with an Android client-hint set
-     * underneath it is a contradiction, so the device half of the shim comes
-     * off while desktop mode is on and goes back when it is turned off. The
-     * screen claim is not an Android client hint and stays — a desktop browser
-     * window on a screen of a stated size is an ordinary thing — and the WebRTC
-     * policy has nothing to do with which identity is being presented, so it
-     * stays too, as does the text scale, which is about the reader rather than
-     * the identity.
+     * down through the facade. The page scripts are re-sent unchanged: the
+     * adjustments carry no identity — that is the whole point of the device
+     * shim's removal — so there is no Android half to strip when the UA goes
+     * desktop, and re-sending is what keeps this method a pure identity
+     * operation. (It also keeps the contract that every settings change
+     * re-applies the whole script set.)
      */
     fun applyDesktopMode(session: EngineSession, profile: Profile, desktop: Boolean) {
-        val settings = profile.settings
-        val screen = settings.claimedScreen()
-        val shim = if (desktop) {
-            // The derived surfaces go with the Android identity: a Windows UA
-            // must not carry Android touch points.
-            deviceShimOrNull(
-                device = null,
-                screen = screen,
-                webRtc = settings.webRtcPolicy,
-                fingerprint = FingerprintProfile.legacy(),
-                textScale = settings.fontScale
-            )
-        } else {
-            deviceShimScript(settings)
-        }
         session.setPageScripts(
             EnginePageScripts(
-                deviceShim = shim,
+                adjustments = pageAdjustmentsScript(profile.settings),
                 vaultBridge = RoomVaultScript.SCRIPT,
                 walletProvider = RoomWalletScript.SCRIPT
             )
@@ -243,56 +234,18 @@ object ProfileEngine {
     }
 
     /**
-     * The shim for one profile, or null when there is nothing to install. The
-     * test covers all five parts: a screen claim, a non-default WebRTC policy
-     * or a text scale other than 1.0 installs something even with no device and
-     * no seed.
+     * The adjustments for one profile — a claimed screen, a WebRTC policy, a
+     * text scale — or null when the profile asked for none of them, which the
+     * engine reads as "install nothing". THE IDENTITY IS NOT A PART, on
+     * purpose: it is the engine's own (see the class policy note above), and
+     * nothing here may grow a navigator override back.
      */
-    private fun deviceShimScript(settings: ProfileSettings): String? {
-        val device = UserAgents.device(settings)
-        // THE SHIM MUST PRESENT WHAT THE WIRE CARRIES. configure() sends the
-        // engine's own string with only the model slot swapped in
-        // (UserAgents.deviceTunedUserAgent), so that same resolution feeds the
-        // identity shim — navigator.userAgent and the brand list then echo the
-        // request byte for byte, and the page cannot contradict its own
-        // headers. The host's answer is the neutralised stock string, which is
-        // idempotent under the neutraliser inside deviceTunedUserAgent, so
-        // this is byte-identical to the session's own computation and free of
-        // ordering assumptions about when configure() has run. Null (no
-        // device, or the host could not answer) changes nothing: the shim's
-        // identity half is device-only anyway and falls back per contract.
-        val resolved = device?.let { claimed ->
-            appContext?.let { ctx ->
-                runCatching { host.defaultUserAgent(ctx) }.getOrNull()
-            }?.let { stock -> UserAgents.deviceTunedUserAgent(stock, claimed) }
-        }
-        return deviceShimOrNull(
-            device = device,
+    private fun pageAdjustmentsScript(settings: ProfileSettings): String? =
+        PageAdjustments.scriptFor(
             screen = settings.claimedScreen(),
             webRtc = settings.webRtcPolicy,
-            fingerprint = FingerprintProfile.from(settings.fingerprintSeed, device),
-            textScale = settings.fontScale,
-            resolvedUserAgent = resolved
-        )
-    }
-
-    private fun deviceShimOrNull(
-        device: Device?,
-        screen: ClaimedScreen?,
-        webRtc: WebRtcPolicy,
-        fingerprint: FingerprintProfile,
-        textScale: Float,
-        resolvedUserAgent: String? = null
-    ): String? {
-        if (device == null && !fingerprint.isSeeded && screen == null &&
-            webRtc == WebRtcPolicy.DEFAULT && textScale == 1f
-        ) {
-            return null
-        }
-        return DeviceShim.scriptFor(
-            device, screen, webRtc, fingerprint, textScale, resolvedUserAgent
-        )
-    }
+            textScale = settings.fontScale
+        ).ifEmpty { null }
 
     /**
      * Whether this edition's engine CLAIMS it can keep the embedded-browser

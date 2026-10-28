@@ -79,14 +79,14 @@ class ProfileModelTest {
         val both = ProfileSettings(
             deviceId = device.id,
             uaMode = UaMode.PRESET,
-            uaPresetId = "firefox_android"
+            uaPresetId = "samsung_android"
         )
         assertThat(UserAgents.effectiveUserAgent(both)).isEqualTo(device.userAgent)
 
         // Choosing a UA hands the answer back to the preset.
-        val preset = both.withUserAgentPreset("firefox_android")
+        val preset = both.withUserAgentPreset("samsung_android")
         assertThat(preset.deviceId).isNull()
-        assertThat(UserAgents.effectiveUserAgent(preset)).contains("Firefox")
+        assertThat(UserAgents.effectiveUserAgent(preset)).contains("SamsungBrowser")
 
         val custom = both.withCustomUserAgent("MyUA/1.0")
         assertThat(custom.deviceId).isNull()

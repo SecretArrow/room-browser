@@ -61,21 +61,37 @@ the device.
 ### What a profile's device presents, exactly
 
 A profile may be assigned one of the bundled real Android devices. That
-assignment is a *claim*, not an emulation, and the difference is the whole
-point of this section. What changes:
+assignment is a *claim*, and on Android every part of it lives on the engine
+side, where a page cannot catch it from inside. What changes:
 
-- the `User-Agent` header and `navigator.userAgent`
-- `navigator.userAgentData` — `brands`, `mobile`, `platform`, and the
-  high-entropy values `model`, `platformVersion`, `uaFullVersion`,
-  `fullVersionList` and `formFactor`, which are the client hints that would
-  otherwise name the real handset
-- `navigator.platform` (derived from the profile's seed — see *The
-  per-profile fingerprint seed* below), `navigator.deviceMemory`,
-  `navigator.hardwareConcurrency`
-- the WebGL `UNMASKED_VENDOR_WEBGL` / `UNMASKED_RENDERER_WEBGL` strings
+- the `User-Agent` header and `navigator.userAgent` — the engine's own
+  string with the WebView markers stripped, the Chrome token tuned to the
+  build the engine really is, and only the model slot taken from the assigned
+  device
+- the `Sec-CH-UA*` headers and `navigator.userAgentData` — derived from that
+  same resolved string (`WebViewClientHints`) and served natively by the
+  engine from its User-Agent-Client-Hints metadata, so `brands`, `mobile`,
+  `platform` and the high-entropy values (`model`, `platformVersion`,
+  `uaFullVersion`, `fullVersionList`, `architecture`, `bitness`) agree with
+  the string by construction
 
-What changes only when the profile asks for it, through the **Screen size** row
-in its own settings:
+What deliberately does **not** change, because the app installs no identity
+JavaScript at all (the page-world device shim was removed — a spoofed
+accessor has a `.get` function where the platform ships a native one, and
+that wrinkle is a stronger automation signal than the identity it was
+managing, which is exactly the class of tell that reads as "This browser or
+app may not be secure"):
+
+- `navigator.platform`, `navigator.deviceMemory`,
+  `navigator.hardwareConcurrency`, and the WebGL
+  `UNMASKED_VENDOR_WEBGL` / `UNMASKED_RENDERER_WEBGL` strings are the
+  hardware's own. A page that reads them gets what the real device reports,
+  which no request header contradicts.
+- `navigator.plugins` / `navigator.mimeTypes` are the engine's own, as on any
+  real Chromium browser.
+
+The one exception a profile can ask for, through the **Screen size** row in
+its own settings:
 
 - **The reported screen.** Off by default, and off means nothing here changes:
   a profile reports this phone's own `screen.width`, `screen.height`,
@@ -84,85 +100,60 @@ in its own settings:
   claim a size — see *Claiming a screen size* below, which is the one place in
   this document where the app deliberately introduces a disagreement.
 
-What deliberately does **not** change, because it would be both a lie and a
-detectable one:
+What else deliberately does **not** change, because it would be both a lie and
+a detectable one:
 
 - **The layout viewport.** `innerWidth` and `innerHeight` are the page's real
   width and height on this display. No script can move them without re-laying
-  the page out at a size the screen does not have. `devicePixelRatio` stays the
-  compositor's real ratio for a profile that claims no screen size; for a
-  profile that *does* claim one, the seed derives it along with the claim — see
-  below.
+  the page out at a size the screen does not have, and `devicePixelRatio`
+  stays the compositor's real ratio.
 - **Real capabilities.** Camera, microphone, sensors, codecs, battery, and
   every permission stay the hardware's own.
 
-This raises the cost of the cheap, scripted checks that compare a UA against
-a handful of obvious properties. It does **not** make a profile
-undetectable, and the app does not claim it does: a page that inspects
-`Function.prototype.toString` on the patched accessors, times a WebGL draw
-call, or correlates dozens of unrelated signals can still tell. Profiles are
-for keeping separate identities separate, not for evading a determined
-fingerprinter.
+The engine-side-only identity is the point of the design: the UA string, the
+client hints and the TLS fingerprint are all one engine's, and the page reads
+its identity from the same engine it sent the request with. It does **not**
+make a profile undetectable, and the app does not claim it does — the model
+slot is a claim, and a page that correlates it against the real GPU or the
+real screen can still tell. Profiles are for keeping separate identities
+separate, not for evading a determined fingerprinter.
 
 #### The per-profile fingerprint seed
 
-Every profile the app creates carries a random seed. It is not shown and not
-editable: it is part of the profile's identity. It exists because a device
-assignment alone does not always keep two profiles apart — the imported
-profile can have no device at all, and once the device catalogue is exhausted
-two profiles are handed the same row — and two profiles that present the same
-handset byte for byte defeat the reason for having separate profiles. The seed
-varies independently of the device, so those profiles stay distinct. Exporting
-a profile carries the seed in its settings, so a restore keeps the identity
-rather than minting a new one; a profile stored before this field existed has
-no seed and looks exactly as it did.
+Every profile the app creates carries a random seed in its settings. It is
+not shown and not editable. It is carried through exports and restores so a
+stored profile keeps the identity it had.
 
-The seed derives a stable value for each surface below, through
-HMAC-SHA-256 with one label per surface. *Stable* is the point: each value is
-computed once and installed, never drawn per read, because a value that changed
-between reads would be a much louder signal than an unusual but constant one.
-The same seed yields the same values on every launch and in both editions, so
-the derivation itself is not a way to tell the editions apart. Every value is
-drawn from a pool a real Android Chrome could report:
-
-- `navigator.platform` — one of the arm spellings Chrome for Android sends.
-- `screen.colorDepth` / `screen.pixelDepth` — 16 or 24.
-- `navigator.maxTouchPoints` — 5 or 10.
-- `devicePixelRatio` — a ratio a real phone ships, and **only** when the
-  profile claims a screen size; a profile that claims none keeps the
-  compositor's real ratio.
-- the shape of `navigator.plugins` and `navigator.mimeTypes` — a subset of
-  Chromium's bundled PDF viewers and the matching PDF mime types. The viewer
-  *names* are Chromium's; only how many are reported varies.
-
-What the seed deliberately does **not** do: it adds no canvas or audio noise,
-no font, timezone or language manipulation, and no per-read jitter. Random
-per-read noise is itself a fingerprint signal — a value that cannot be read the
-same way twice is not a value a real device produced — and it breaks pages.
-Timezone and language overrides stay off unless the user asks for them.
+On Android the seed currently derives **no page-visible surface**: the seed
+used to install `navigator.platform`, touch points, colour depth and the
+plugin shapes in JavaScript, and that page-world shim went away with the
+identity-shim removal above — those properties are the engine's own now. The
+field stays in settings so existing profiles and their exports keep working,
+and a future identity design may derive from it again. The desktop editions
+keep their own page-side shims and their own catalogues.
 
 #### What this still does not cover
 
 - **Worker realms.** A document-start script runs in the document. Code a page
   runs in a Web Worker, Shared Worker, Service Worker or any other realm sees
-  the engine's own values, both for the WebRTC policy and for every surface
-  above.
+  the engine's own values, for the WebRTC policy and for the screen claim
+  alike.
 - **Anything that has to be patched before `document_start`.** A surface the
   engine reads before the first page script runs, or one a page reads from a
   realm this script is not injected into, cannot be reached from here.
-- **Surfaces the shim does not touch.** Canvas and audio rendering, font
+- **Surfaces no script touches.** Canvas and audio rendering, font
   metrics, TLS and HTTP/2 fingerprints, battery, sensors, codecs, WebGPU and
   `navigator.connection` are the hardware's own, and a page that correlates
-  dozens of unrelated signals can still single a profile out. The shim raises
-  the cost of the cheap checks; it is not and does not claim to be
-  undetectable.
+  dozens of unrelated signals can still single a profile out. The
+  engine-side identity and the remaining adjustments raise the cost of the
+  cheap checks; they are not, and do not claim to be, undetectable.
 
 #### Claiming a screen size
 
 The Screen size row is per profile and off by default. Turning it on replaces
 `screen.*` and derives `screen.orientation` from the shape claimed, so a profile
 claiming a landscape screen does not also answer `portrait-primary` — that
-pairing is the contradiction the shim exists to remove.
+pairing is the contradiction the adjustment exists to remove.
 
 It cannot move the viewport, for the reason above. A claimed size that differs
 from this display's screen therefore leaves `screen.width` and `innerWidth`

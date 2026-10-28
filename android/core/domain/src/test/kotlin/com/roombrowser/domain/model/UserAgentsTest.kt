@@ -17,10 +17,14 @@ import org.junit.Test
  */
 class UserAgentsTest {
 
-    private val removedDesktopIds = listOf(
+    private val removedPresetIds = listOf(
         "chrome_windows", "chrome_macos", "chrome_linux",
         "firefox_windows", "firefox_macos", "firefox_linux",
-        "edge_windows", "safari_macos"
+        "edge_windows", "safari_macos",
+        // The Android Firefox rows, removed under the Chromium-only mandate:
+        // the engine is Chromium, and a preset claiming Gecko asks the UA
+        // string to disagree with the TLS fingerprint and client hints.
+        "firefox_android", "firefox_android_tablet"
     )
 
     private val chromeToken = Regex("Chrome/(\\d+)\\.(\\d+)\\.(\\d+)\\.(\\d+)")
@@ -31,7 +35,7 @@ class UserAgentsTest {
         "brave_android", "duckduckgo_android", "edge_android"
     )
 
-    private val tabletIds = listOf("chrome_android_tablet", "firefox_android_tablet")
+    private val tabletIds = listOf("chrome_android_tablet")
 
     private val phoneIds = listOf(
         "chrome_android", "chrome_beta_android", "edge_android", "samsung_android",
@@ -68,8 +72,6 @@ class UserAgentsTest {
             "chrome_android",
             "chrome_android_tablet",
             "chrome_beta_android",
-            "firefox_android",
-            "firefox_android_tablet",
             "edge_android",
             "samsung_android",
             "opera_android",
@@ -83,11 +85,9 @@ class UserAgentsTest {
     @Test
     fun `vendor tokens identify the new presets`() {
         // Chrome's tablet form factor is a real device model code, never the
-        // word "Tablet" — that token is Firefox's convention (asserted below,
-        // where it does belong).
+        // word "Tablet" — that token is other browsers' convention.
         assertThat(ua("chrome_android_tablet")).contains("Android 14; SM-X710)")
         assertThat(ua("chrome_android_tablet")).doesNotContain("Tablet")
-        assertThat(ua("firefox_android_tablet")).contains("Tablet")
         assertThat(ua("opera_android")).contains("OPR/99")
         // Brave's mobile browser is Chromium-based and ships the plain Chrome
         // mobile UA on purpose, so the two values are identical.
@@ -142,17 +142,12 @@ class UserAgentsTest {
     @Test
     fun `every chromium token claims a current generation and never a stale one`() {
         // The product floor: no User-Agent this app sends may claim a Chromium
-        // generation below 153, and the Firefox presets must carry the current
-        // Firefox release. A preset that goes stale is caught here, at unit
-        // time, instead of shipping an identity years behind the web.
+        // generation below 153. A preset that goes stale is caught here, at
+        // unit time, instead of shipping an identity years behind the web.
         for (p in UserAgents.all) {
             val major = chromeToken.find(p.value)?.groupValues?.get(1)?.toIntOrNull()
                 ?: continue // the webview preset carries no Chromium token
             assertThat(major).isAtLeast(153)
-        }
-        for (id in listOf("firefox_android", "firefox_android_tablet")) {
-            val major = Regex("rv:([0-9]+)").find(ua(id))!!.groupValues[1].toInt()
-            assertThat(major).isAtLeast(158)
         }
     }
 
@@ -173,21 +168,6 @@ class UserAgentsTest {
     }
 
     @Test
-    fun `firefox presets carry the Android Gecko form`() {
-        for (id in listOf("firefox_android", "firefox_android_tablet")) {
-            val value = ua(id)
-            // Firefox for Android sends ONE Gecko token of the form
-            // Gecko/<version>; Gecko/20100101 is the desktop build stamp and
-            // has never appeared on Android.
-            assertThat(Regex("Gecko/").findAll(value).count()).isEqualTo(1)
-            assertThat(value).doesNotContain("20100101")
-            // rv: and Firefox/ must agree, or the string is internally wrong.
-            val rv = Regex("rv:([0-9.]+)").find(value)!!.groupValues[1]
-            assertThat(Regex("Firefox/([0-9.]+)").find(value)!!.groupValues[1]).isEqualTo(rv)
-        }
-    }
-
-    @Test
     fun `duckduckgo splices its token before Safari`() {
         // DuckDuckGo's UA builder emits its application component right after
         // " Mobile", before the Safari component. A token appended after
@@ -198,8 +178,8 @@ class UserAgentsTest {
     }
 
     @Test
-    fun `removed desktop preset ids resolve to null`() {
-        for (id in removedDesktopIds) {
+    fun `removed preset ids resolve to null`() {
+        for (id in removedPresetIds) {
             assertThat(UserAgents.byId(id)).isNull()
         }
         assertThat(UserAgents.byId("no-such-preset")).isNull()
@@ -378,19 +358,7 @@ class UserAgentsTest {
     }
 
     @Test
-    fun `a Firefox preset is returned unchanged because it carries no Chrome token`() {
-        val firefox = UserAgents.byId("firefox_android")!!.value
-
-        val tuned = UserAgents.engineTunedUserAgent(firefox, engineStockLegacy)
-
-        // Firefox is an identity claim about Firefox, not a claim about the
-        // engine. There is no Chrome token to tune, so the string is returned
-        // verbatim -- the engine cannot honestly supply a Firefox version.
-        assertThat(tuned).isEqualTo(firefox)
-    }
-
-    @Test
-    fun `a target without a Chrome token is returned unchanged`() {
+    fun `a target with no Chrome token is returned unchanged`() {
         val target = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Mobile Safari/537.36"
 
         assertThat(UserAgents.engineTunedUserAgent(target, engineStockLegacy)).isEqualTo(target)

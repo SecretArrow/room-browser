@@ -176,7 +176,8 @@ internal class WebViewEngineSession(
     // document-start listener. Port of ProfileEngine's three WeakHashMaps
     // (ProfileEngine.kt:79-95), collapsed to three fields because a session
     // owns exactly one engine and the map's only job was the WebView key.
-    private var deviceShimHandler: ScriptHandler? = null
+    /** The page-adjustments script handler, replaced on every [setPageScripts]. */
+    private var adjustmentsHandler: ScriptHandler? = null
     private var vaultHandler: ScriptHandler? = null
     private var walletHandler: ScriptHandler? = null
 
@@ -380,9 +381,9 @@ internal class WebViewEngineSession(
      *
      * THE PAGE SCRIPTS ARE NOT INSTALLED HERE. They arrive through
      * [setPageScripts], because the script TEXT comes from above the facade
-     * (the device shim is built from the app's device catalogue, the other two
+     * (the adjustments are built from the profile's settings, the other two
      * are app constants). What this does do is re-apply whichever set is
-     * stored, matching the GeckoView edition's `configure`, which re-sends the
+     * stored, matching the facade contract, which re-sends the
      * scripts it holds.
      *
      * `@SuppressLint("RestrictedApi")`: the X-Requested-With opt-out below
@@ -515,10 +516,10 @@ internal class WebViewEngineSession(
                 s.loadWithOverviewMode = true
             }
             // The profile's text scale normally travels as the shared
-            // document-start shim, which a WebView too old for
+            // document-start adjustments, which a WebView too old for
             // DOCUMENT_START_SCRIPT never receives -- so the engine's own text
             // scaler carries it there instead, and is reset to 100 where the
-            // shim owns the property, so the two paths cannot drift.
+            // adjustments own the property, so the two paths cannot drift.
             s.textZoom = if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
                 100
             } else {
@@ -615,15 +616,13 @@ internal class WebViewEngineSession(
 
     /**
      * Desktop-site toggle for this session. Port of
-     * `ProfileEngine.applyDesktopMode` (ProfileEngine.kt:400-427).
+     * `ProfileEngine.applyDesktopMode`.
      *
-     * The device shim half of the original is not repeated here: the shim is
-     * an [EnginePageScripts] value the app owns, so the app supplies the
-     * desktop-mode variant through [setPageScripts]. What IS reproduced is the
+     * The script half of the original is not repeated here: the adjustments
+     * are an [EnginePageScripts] value the app owns, so the app re-sends them
+     * through [setPageScripts]. What IS reproduced is the
      * coupling -- a desktop-mode change makes the installed scripts stale, so
-     * they are re-applied exactly as the GeckoView edition does
-     * (`GeckoEngineSession.applyDesktopMode`), and as the app did by calling
-     * `applyDeviceShim` from both paths.
+     * they are re-applied exactly as the app re-sends them.
      *
      * VIEWPORT. `useWideViewPort` is on AND `loadWithOverviewMode` is on for
      * the desktop branch: the wide desktop layout (typically 1024+ px) is
@@ -688,17 +687,16 @@ internal class WebViewEngineSession(
     // ---- page scripts -----------------------------------------------------
 
     /**
-     * Install the page-world scripts. Port of `ProfileEngine.applyDeviceShim`
-     * + `applyVaultScript` + `applyWalletScript`
-     * (ProfileEngine.kt:338-398), including the ORDER and the replace-don't-
-     * stack rule.
+     * Install the page-world scripts. Port of the app's page-script
+     * composition + `applyVaultScript` + `applyWalletScript`, including the
+     * ORDER and the replace-don't-stack rule.
      *
      * WHY DOCUMENT_START AND NOT SOMETHING ELSE: these scripts define globals
-     * the page calls and a device shim whose entire purpose is to be installed
-     * before the page measures anything. A shim injected after the page's first
-     * script is a claim that script already read. `WebViewCompat
-     * .addDocumentStartJavaScript` is the only API that gives that, which is
-     * why this module depends on `androidx.webkit` at all.
+     * the page calls and an adjustment whose whole point is to be in force
+     * before the page measures anything. An adjustment injected after the
+     * page's first script is a policy that script already acted on.
+     * `WebViewCompat.addDocumentStartJavaScript` is the only API that gives
+     * that, which is why this module depends on `androidx.webkit` at all.
      *
      * HONEST LIMIT, carried over from the app: on a WebView too old to support
      * the feature, the scripts are silently absent -- the native entry points
@@ -716,22 +714,23 @@ internal class WebViewEngineSession(
         runOnMain {
             if (closed) return@runOnMain
 
-            // The DEVICE SHIM goes first, so that anything the later scripts
-            // read from the environment is already the claimed one -- the same
-            // ordering requirement the GeckoView edition's page-world bridge
-            // records.
-            deviceShimHandler?.let { previous -> runCatching { previous.remove() } }
-            deviceShimHandler = null
-            // A null shim is NOT "an empty script": it is the app's own answer
-            // for a profile with no device, no screen claim and the default
-            // WebRTC policy. The removal above has already happened, so a
-            // profile that switches back to no-device LOSES its shim rather
-            // than keeping the stale one.
-            scripts.deviceShim?.let { shim ->
+            // The ADJUSTMENTS go first, so that anything the later scripts
+            // read from the environment is already the adjusted one -- the
+            // same ordering requirement the GeckoView edition's page-world
+            // bridge records.
+            adjustmentsHandler?.let { previous -> runCatching { previous.remove() } }
+            adjustmentsHandler = null
+            // A null script is NOT "an empty script": it is the app's own
+            // answer for a profile with no screen claim, the default WebRTC
+            // policy and a 1.0 text scale. The removal above has already
+            // happened, so a
+            // profile that switches back to no adjustments LOSES its script
+            // rather than keeping the stale one.
+            scripts.adjustments?.let { script ->
                 if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
                     runCatching {
-                        deviceShimHandler =
-                            WebViewCompat.addDocumentStartJavaScript(webView, shim, setOf("*"))
+                        adjustmentsHandler =
+                            WebViewCompat.addDocumentStartJavaScript(webView, script, setOf("*"))
                     }
                 }
             }
@@ -1155,7 +1154,7 @@ internal class WebViewEngineSession(
         // dropped rather than `remove()`d because the WebView is already gone
         // and a document-start handle for a destroyed view has nothing to
         // unregister from.
-        deviceShimHandler = null
+        adjustmentsHandler = null
         vaultHandler = null
         walletHandler = null
         consoleHandler = null
