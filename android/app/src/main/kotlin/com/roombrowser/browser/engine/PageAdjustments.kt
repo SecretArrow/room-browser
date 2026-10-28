@@ -649,5 +649,4 @@ object PageAdjustments {
   }
 })();
 """
-
 }
