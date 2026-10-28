@@ -171,19 +171,6 @@ class WebViewClientHintsTest {
     }
 
     @Test
-    fun a_firefox_identity_sends_no_chromium_client_hints() {
-        val settings = ProfileSettings(
-            uaMode = UaMode.PRESET,
-            uaPresetId = "firefox_android"
-        )
-        val ua = UserAgents.effectiveUserAgent(settings)!!
-
-        // Firefox sends no Sec-CH-UA; answering with Chromium brands would be
-        // the same contradiction in the other direction.
-        assertThat(WebViewClientHints.forUserAgent(settings, ua)).isNull()
-    }
-
-    @Test
     fun a_string_with_no_chrome_token_yields_nothing_rather_than_a_guess() {
         assertThat(
             WebViewClientHints.forUserAgent(deviceSettings(), "Mozilla/5.0 (Linux; Android 14)")

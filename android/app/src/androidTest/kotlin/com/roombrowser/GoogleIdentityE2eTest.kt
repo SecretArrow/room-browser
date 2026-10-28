@@ -2,9 +2,9 @@ package com.roombrowser
 
 import android.content.Context
 import android.content.Intent
-import android.webkit.WebSettings
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.domain.model.Device
 import com.roombrowser.domain.model.Devices
 import com.roombrowser.domain.model.ProfileId
@@ -394,10 +394,14 @@ class GoogleIdentityE2eTest {
 
         val hit = await("/phase-a", "The handset profile must load the page")
         val ua = hit.getHeader("User-Agent").orEmpty()
-        // The engine's own stock string, read the way WebViewStockUserAgent
-        // captures it before any override lands: this is what configure()
-        // tuned, so it is what the request must carry.
-        val stockUa = WebSettings.getDefaultUserAgent(targetContext)
+        // The engine's own string through the facade: ProfileEngine delegates
+        // to EngineHost.defaultUserAgent, the neutralised stock UA that keeps
+        // the engine's real Chromium build. This is what configure() tuned
+        // against, so it is what the request must carry. The android.webkit
+        // type stays behind the engine boundary — EngineBoundaryTest scans
+        // this source root too, so test code goes through the facade like
+        // production code does.
+        val stockUa = ProfileEngine.defaultUserAgent(targetContext) ?: ""
         val engineVersion = Regex("""Chrome/(\d+(?:\.\d+){1,3})""").find(stockUa)?.groupValues[1]
         assertNotNull(
             "The engine's stock UA must carry a Chromium token to tune against " +
