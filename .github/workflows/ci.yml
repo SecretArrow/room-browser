@@ -42,14 +42,25 @@ on:
       # one 40-minute cycle per attempt.
       #
       # It cannot weaken the release gate. On a push and on a pull_request
-      # `inputs` is empty, so the script's test renders false and the full
-      # suite runs exactly as before; a filter only ever exists on a
-      # hand-dispatched run, and the release job below refuses one outright.
+      # `inputs` is empty, so the script's test renders false and the smoke
+      # subset runs (a hand-dispatch with an empty filter gets the FULL
+      # suite); a filter only ever exists on a hand-dispatched run, and the
+      # release job below refuses one outright.
       e2e_filter:
-        description: 'Instrumented test classes to run, e.g. com.roombrowser.TwoFactorE2eTest (comma-separate for several). Empty runs the whole suite.'
+        description: 'Instrumented test classes to run, e.g. com.roombrowser.TwoFactorE2eTest (comma-separate for several). Empty runs the FULL suite (a plain push runs the smoke subset).'
         required: false
         type: string
         default: ''
+  schedule:
+    # NIGHTLY FULL-SUITE GUARD. A push to main runs the smoke subset (see the
+    # e2e job); the complete 108-test suite must still run somewhere, or a
+    # regression in an unsmoked class ships unnoticed for weeks. 02:00 UTC
+    # (09:00 WIB) sits after the day's pushes have settled. Only the e2e job
+    # runs on this trigger — every other job carries
+    # `github.event_name != 'schedule'` — and the release job refuses a
+    # scheduled run outright, so the nightly guard VERIFIES and never
+    # publishes.
+    - cron: '0 2 * * *'
 
 permissions:
   contents: write
@@ -113,6 +124,9 @@ jobs:
   autofix:
     name: Auto-fix (lintFix)
     runs-on: ubuntu-latest
+    # The nightly schedule trigger exists for the e2e full suite only; an
+    # autofix over an unchanged tree is a no-op worth no runner.
+    if: github.event_name != 'schedule'
     # lintFix is minutes of work; the explicit ceiling stops a hung gradle
     # from holding a runner for the 360-minute default.
     timeout-minutes: 30
@@ -253,6 +267,9 @@ jobs:
   quality:
     name: Lint + unit tests + debug build
     runs-on: ubuntu-latest
+    # Same reason as autofix: the nightly schedule exists for the e2e full
+    # suite only, and lint/unit over an unchanged tree verified nothing new.
+    if: github.event_name != 'schedule'
     timeout-minutes: 60
     steps:
       - name: Checkout
@@ -512,6 +529,20 @@ jobs:
     # plus ~8 for the boot and the pre-boot APK build is the honest range, and
     # the old ceiling sat inside it.
     #
+    # SMOKE ON PUSH, FULL AT NIGHT. A plain push runs the smoke subset
+    # (E2E_SMOKE, 26 tests: the Google identity pair, navigation, tabs,
+    # browse flow, download, profile + TOTP isolation, desktop mode, text
+    # scale, IP/WebRTC policy) — the classes whose failure blocks a release
+    # Google would refuse or a feature users touch daily. The complete
+    # 108-test suite runs on the nightly `schedule` trigger (09:00 WIB) and
+    # on a workflow_dispatch with an empty filter; the e2e_filter input keeps
+    # its old meaning (a dispatch naming classes runs only those and can
+    # never release). Smoke drops the push pipeline's emulator tail from
+    # ~95 to ~35 minutes; the nightly guard keeps the other ~82 classes
+    # honest. The known GL flake lives in DevToolsSearchE2eTest, which is
+    # NOT in the smoke list — and the flake-retry net below still wraps the
+    # smoke run too, since it wraps whatever the selector produced.
+    #
     # This is a CEILING, not a budget: a run that finishes in 85 minutes still
     # finishes in 85. The only thing it changes is how long a genuinely hung
     # emulator is allowed to hold a runner, and 30 extra minutes is a cheaper
@@ -601,16 +632,27 @@ jobs:
         working-directory: android
         run: ./gradlew assembleDebug assembleDebugAndroidTest --console=plain
 
-      - name: Run instrumented tests on emulator (API 30, x86_64)${{ inputs.e2e_filter != '' && ' — FILTERED, NOT A RELEASE GATE' || '' }}
+      - name: Run instrumented tests on emulator (API 30, x86_64)${{ inputs.e2e_filter != '' && ' — FILTERED, NOT A RELEASE GATE' || (env.E2E_MODE == 'smoke' && ' — SMOKE SUITE (release gate)' || ' — FULL SUITE') }}
         uses: reactivecircus/android-emulator-runner@v2
-        # The filter reaches the script through the environment rather than
-        # through `${{ }}` interpolation into the command text, so a value
-        # that is not a clean class name cannot become shell source. If this
-        # variable ever fails to arrive, the test below is false and the
-        # FULL suite runs — the failure direction that costs minutes instead
-        # of one that costs correctness.
+        # The filter and the smoke list reach the script through the
+        # environment rather than through `${{ }}` interpolation into the
+        # command text, so a value that is not a clean class name cannot
+        # become shell source. If a variable ever fails to arrive, the
+        # selector degrades to the FULL suite (the empty argument vanishes
+        # before gradle sees it) — the failure direction that costs minutes
+        # instead of one that costs correctness.
         env:
           E2E_FILTER: ${{ inputs.e2e_filter }}
+          # SMOKE on a push/pull_request; FULL on the nightly schedule or on
+          # a dispatch whose filter is empty (the old whole-suite behaviour,
+          # still able to release). The parentheses matter: written bare as
+          # `a || b && 'full' || 'smoke'` the expression would bind as
+          # `a || (b && 'full') || 'smoke'` and render the literal "true".
+          E2E_MODE: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.e2e_filter == '')) && 'full' || 'smoke' }}
+          # The smoke subset: full class names, comma-separated, NO spaces —
+          # the instrumentation runner splits this argument on the comma
+          # only, and the selector below expands to exactly one word.
+          E2E_SMOKE: com.roombrowser.A00WarmupTest,com.roombrowser.GoogleIdentityE2eTest,com.roombrowser.GoogleSignInProbeE2eTest,com.roombrowser.BrowserNavigationE2eTest,com.roombrowser.TabsE2eTest,com.roombrowser.E2EBrowseFlowTest,com.roombrowser.BlobDownloadE2eTest,com.roombrowser.ProfileIsolationTest,com.roombrowser.DesktopModeE2eTest,com.roombrowser.TextScaleE2eTest,com.roombrowser.WhatsMyIpE2eTest,com.roombrowser.TotpIsolationTest
         with:
           api-level: 30
           arch: x86_64
@@ -629,7 +671,7 @@ jobs:
             # e2e-reports artifact answers WHY from any point of the run —
             # a 2000-line tail missed the actual failure window once — then
             # exit non-zero.
-            cd android && if [ -n "$E2E_FILTER" ]; then ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class="$E2E_FILTER" --console=plain; else ./gradlew connectedDebugAndroidTest --console=plain || { failed=$(find app/build/outputs/androidTest-results -name 'TEST-*.xml' 2>/dev/null | xargs -r -d '\n' awk '/<testcase / { if (match($0, /classname="[^"]*"/)) cls=substr($0, RSTART+11, RLENGTH-12) } /<failure/ && cls != "" { print cls; cls="" }' | sort -u | paste -sd, -); [ -n "$failed" ] && echo "::warning::pass 1 left failures — one retry, restricted to the classes that failed (emulator-infra flake net): $failed" && ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class="$failed" --console=plain || { echo "::error::e2e still failing after the flake retry (classes: ${failed:-none parsed})"; false; }; }; fi || (adb exec-out logcat -d -b crash > /home/runner/work/room-browser/e2e-logcat-crash.txt; adb exec-out logcat -d > /home/runner/work/room-browser/e2e-logcat-full.txt; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml /home/runner/work/room-browser/ >/dev/null 2>&1; adb pull /sdcard/e2e-shots /home/runner/work/room-browser/ >/dev/null 2>&1; exit 1)
+            cd android && ./gradlew connectedDebugAndroidTest $([ -n "$E2E_FILTER" ] && printf '%s' "-Pandroid.testInstrumentationRunnerArguments.class=$E2E_FILTER" || { [ "$E2E_MODE" = "smoke" ] && printf '%s' "-Pandroid.testInstrumentationRunnerArguments.class=$E2E_SMOKE" || printf '%s' ""; }) --console=plain || { failed=$(find app/build/outputs/androidTest-results -name 'TEST-*.xml' 2>/dev/null | xargs -r -d '\n' awk '/<testcase / { if (match($0, /classname="[^"]*"/)) cls=substr($0, RSTART+11, RLENGTH-12) } /<failure/ && cls != "" { print cls; cls="" }' | sort -u | paste -sd, -); [ -n "$failed" ] && echo "::warning::pass 1 left failures — one retry, restricted to the classes that failed (emulator-infra flake net): $failed" && ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class="$failed" --console=plain || { echo "::error::e2e still failing after the flake retry (classes: ${failed:-none parsed})"; false; }; } || (adb exec-out logcat -d -b crash > /home/runner/work/room-browser/e2e-logcat-crash.txt; adb exec-out logcat -d > /home/runner/work/room-browser/e2e-logcat-full.txt; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml /home/runner/work/room-browser/ >/dev/null 2>&1; adb pull /sdcard/e2e-shots /home/runner/work/room-browser/ >/dev/null 2>&1; exit 1)
 
       # No probe step here, unlike the sibling: this edition runs ONE gradle
       # invocation, so the per-test logcat in the artifact below already
@@ -658,11 +700,12 @@ jobs:
     name: Desktop build (Windows x64, Rust + WebView2)
     runs-on: windows-latest
     timeout-minutes: 40
-    # Runs on every main-branch pipeline (skipped only on pull_request):
-    # desktop artifacts ride the same releases the Android APKs do, so the
-    # desktop tree is verified exactly as often as the app. See the release
-    # job's note for why a desktop failure never blocks the APK.
-    if: github.event_name != 'pull_request'
+    # Runs on every main-branch pipeline (skipped on pull_request and on the
+    # nightly schedule, which exists for the e2e full suite only): desktop
+    # artifacts ride the same releases the Android APKs do, so the desktop
+    # tree is verified exactly as often as the app. See the release job's
+    # note for why a desktop failure never blocks the APK.
+    if: github.event_name != 'pull_request' && github.event_name != 'schedule'
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -745,7 +788,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     # Same gate as desktop-windows: see the note there.
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.event_name != 'schedule'
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -839,9 +882,13 @@ jobs:
     # push, a tag and a pull_request `inputs` is empty, so this term is
     # always true there and the gate is unchanged. Do not remove it because
     # "dispatch never releases" — it does, on main, and that is the whole
-    # hazard: one green class would otherwise ship an APK.
+    # hazard: one green class would otherwise ship an APK. The nightly
+    # schedule runs the FULL suite with every other gate skipped, so the
+    # explicit `!= 'schedule'` term keeps the guard VERIFYING nightly
+    # without ever PUBLISHING nightly.
     if: >-
       !cancelled() &&
+      github.event_name != 'schedule' &&
       !inputs.e2e_filter &&
       needs.quality.result == 'success' &&
       needs.e2e.result == 'success' &&
