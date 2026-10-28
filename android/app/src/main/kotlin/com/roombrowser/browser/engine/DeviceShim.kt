@@ -81,15 +81,26 @@ object DeviceShim {
      * the profile's own [FingerprintProfile.from] result. [textScale] defaults
      * to 1f, which contributes nothing, so a caller that omits it gets exactly
      * the script it got before this parameter existed.
+     *
+     * [resolvedUserAgent] defaults to null and is the identity the NETWORK
+     * actually sends for this profile — the engine's own string with the
+     * profile's model slot swapped in (UserAgents.deviceTunedUserAgent). The
+     * identity shim presents THAT string, not the catalogue's: a page reading
+     * back a Chromium version the request never carried is the "one browser,
+     * two descriptions" contradiction Google's sign-in refusal reads in
+     * JavaScript, the same rule WebViewClientHints.forUserAgent already keeps
+     * for the Sec-CH-UA headers. Null falls back to the catalogue's own
+     * claims, which is the pre-tuning behaviour.
      */
     fun scriptFor(
         device: Device?,
         screen: ClaimedScreen? = null,
         webRtc: WebRtcPolicy = WebRtcPolicy.DEFAULT,
         fingerprint: FingerprintProfile = FingerprintProfile.legacy(),
-        textScale: Float = 1f
+        textScale: Float = 1f,
+        resolvedUserAgent: String? = null
     ): String = buildString {
-        if (device != null) append(identityScript(device))
+        if (device != null) append(identityScript(device, resolvedUserAgent))
         // A seed installs the derived surfaces even with no device.
         if (device != null || fingerprint.isSeeded) {
             append(fingerprintScript(fingerprint, screen))
@@ -100,14 +111,25 @@ object DeviceShim {
     }
 
     /** The identity shim: what the profile presents itself as. */
-    private fun identityScript(device: Device): String {
-        val chromeMajor = device.chromeVersion.substringBefore('.')
+    private fun identityScript(device: Device, resolvedUserAgent: String?): String {
+        // WHAT THE PAGE MAY CLAIM. The wire carries the ENGINE's real Chromium
+        // build — configure() tunes every UA it installs through
+        // UserAgents.engineTunedUserAgent, and for a device profile the only
+        // catalogue input that survives is the model slot. The shim must read
+        // back that same string: navigator.userAgent, the brand list and the
+        // high-entropy version hints all come from here, and any one of them
+        // naming a build the request did not carry is a split identity.
+        // The catalogue's own values serve only when no resolved string was
+        // supplied (a caller that predates the tuning contract).
+        val ua = resolvedUserAgent?.takeIf { it.isNotBlank() } ?: device.userAgent
+        val chrome = CHROME_TOKEN.find(ua)?.groupValues[1] ?: device.chromeVersion
+        val android = ANDROID_TOKEN.find(ua)?.groupValues[1] ?: device.androidVersion
         val mobile = device.formFactor != "tablet"
         return IDENTITY
-            .replace("__UA__", jsString(device.userAgent))
-            .replace("__CHROME__", jsString(device.chromeVersion))
-            .replace("__CHROME_MAJOR__", jsString(chromeMajor))
-            .replace("__ANDROID__", jsString(device.androidVersion))
+            .replace("__UA__", jsString(ua))
+            .replace("__CHROME__", jsString(chrome))
+            .replace("__CHROME_MAJOR__", jsString(chrome.substringBefore('.')))
+            .replace("__ANDROID__", jsString(android))
             .replace("__MODEL__", jsString(device.code))
             .replace("__MOBILE__", mobile.toString())
             .replace("__FORM__", jsString(if (mobile) "Mobile" else "Tablet"))
@@ -229,6 +251,17 @@ object DeviceShim {
         WebRtcPolicy.DISABLED -> WEBRTC_DISABLED
         WebRtcPolicy.RESTRICT_LOCAL_IP -> WEBRTC_RESTRICT
     }
+
+    /**
+     * The Chromium token of the string the shim is asked to present, and the
+     * Android version inside its platform segment. Tolerant of the reduced
+     * three-part form: a preset's `156.0.0.0` and a stock build's full
+     * four-part token are both claims the page must echo exactly.
+     */
+    private val CHROME_TOKEN = Regex("""Chrome/(\d+(?:\.\d+){1,3})""")
+
+    /** The Android major inside `(Linux; Android N; ...)` — the platform the wire claims. */
+    private val ANDROID_TOKEN = Regex("""Android (\d+)""")
 
     /** A JS string literal, so a model code can never break out of the script. */
     private fun jsString(value: String): String {

@@ -455,4 +455,49 @@ class DeviceShimTest {
         assertThat(js).doesNotContain("out.architecture = ''")
         assertThat(js).doesNotContain("out.bitness = ''")
     }
+
+    @Test
+    fun `a resolved user agent replaces the catalogue's identity on every surface`() {
+        // THE ONE-COHERENT-BROWSER CONTRACT, page half. The engine sends its
+        // own Chromium build (UserAgents.engineTunedUserAgent), so the shim
+        // handed that same string must present IT — the catalogue's 156 next
+        // to a wire that carried 83 is the split identity Google's refusal
+        // reads in JavaScript. UA, brand list and the high-entropy versions
+        // all come off the resolved string; only the model slot stays the
+        // profile's choice.
+        val engine = "Mozilla/5.0 (Linux; Android 11; SM-S918B Build/TP1A) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.135 Mobile Safari/537.36"
+        val resolved = engine.replace("SM-S918B", device.code)
+        val js = DeviceShim.scriptFor(device, resolvedUserAgent = resolved)
+
+        assertThat(js).contains(resolved)
+        assertThat(js).doesNotContain(device.userAgent)
+        assertThat(js).contains("var CHROME = '131.0.6778.135';")
+        assertThat(js).contains("var CHROME_MAJOR = '131';")
+        assertThat(js).contains("var ANDROID = '11';")
+        assertThat(js).contains("var MODEL = '${device.code}';")
+        assertThat(js).doesNotContain(device.chromeVersion)
+        assertThat(js).doesNotContain("__")
+    }
+
+    @Test
+    fun `a resolved user agent survives the hostile-string rules`() {
+        // The resolved string is page input too: it reaches the script through
+        // the same jsString escaping as the catalogue fields, so a provider
+        // that ever reports a quote or a newline cannot break the literal.
+        val hostile = "Mozilla/5.0 (Linux; Android 11) Chrome/131.0.0.0 '; alert('pwned'); //"
+        val js = DeviceShim.scriptFor(device, resolvedUserAgent = hostile)
+        assertThat(js).contains("\\'")
+        assertThat(js).doesNotContain("alert('pwned')")
+        assertThat(js).doesNotContain("__")
+    }
+
+    @Test
+    fun `a blank resolved user agent falls back to the catalogue`() {
+        // Null means "the caller could not know" — the pre-tuning behaviour,
+        // asserted so the fallback cannot quietly become the primary path.
+        val js = DeviceShim.scriptFor(device, resolvedUserAgent = "   ")
+        assertThat(js).contains(device.userAgent)
+        assertThat(js).contains("var CHROME = '${device.chromeVersion}';")
+    }
 }

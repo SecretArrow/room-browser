@@ -2,6 +2,7 @@ package com.roombrowser
 
 import android.content.Context
 import android.content.Intent
+import android.webkit.WebSettings
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.roombrowser.browser.engine.ProfileEngine
@@ -58,11 +59,16 @@ import java.util.concurrent.ConcurrentHashMap
  * both must survive a Google round trip:
  *
  *   A. the profile pointed at a handset from the catalogue — the shape the app
- *      gives every profile it creates, and the one whose claimed Chromium
- *      version is the 156 the catalogue promises;
+ *      gives every profile it creates. The catalogue contributes the MODEL
+ *      claim; the Chromium build on the wire is the ENGINE's real one, because
+ *      configure() tunes every UA it installs through
+ *      UserAgents.engineTunedUserAgent — a claimed 156 over an 83 engine is
+ *      the split identity Google's refusal reads, and the shim, the client
+ *      hints and the request must all carry the engine's build instead.
  *   B. the same profile with its device taken away, where the honest identity
  *      is the engine's real build with the embedded-browser tokens removed and
- *      no model claimed at all.
+ *      no model claimed at all — a string the WebView serves to
+ *      navigator.userAgent itself, with no shim at all.
  *
  * The page reports what it sees back as a GET to the mock server rather than
  * through the UI: a modal sheet, a toast or an accessibility hiccup cannot
@@ -375,9 +381,10 @@ class GoogleIdentityE2eTest {
     fun the_identity_sent_to_google_is_one_coherent_browser() {
         val base = server.url("/").toString().trimEnd('/')
 
-        // The newest handset the catalogue ships. Asserting on the catalogue's
-        // own best answer (rather than a hard-coded id) means a preset added
-        // later cannot quietly fall below the 153 floor.
+        // The newest handset the catalogue ships. The catalogue's own version
+        // floor stays a CATALOGUE assertion — the wire carries the engine's
+        // build — but keeping the floor high means a preset added later cannot
+        // quietly shrink the model catalogue below a modern handset.
         val chromeMajor: (Device) -> Int = {
             it.chromeVersion.substringBefore('.').toIntOrNull() ?: 0
         }
@@ -398,13 +405,27 @@ class GoogleIdentityE2eTest {
 
         val hit = await("/phase-a", "The handset profile must load the page")
         val ua = hit.getHeader("User-Agent").orEmpty()
-        assertTrue(
-            "The request must carry the device's claimed identity (saw '$ua')",
-            ua.contains("Chrome/${device.chromeVersion}")
+        // The engine's own stock string, read the way WebViewStockUserAgent
+        // captures it before any override lands: this is what configure()
+        // tuned, so it is what the request must carry.
+        val stockUa = WebSettings.getDefaultUserAgent(targetContext)
+        val engineVersion = Regex("""Chrome/(\d+(?:\.\d+){1,3})""").find(stockUa)?.groupValues[1]
+        assertNotNull(
+            "The engine's stock UA must carry a Chromium token to tune against " +
+                "(saw '$stockUa')",
+            engineVersion
         )
         assertTrue(
-            "The claimed Chromium version must be 153 or newer (saw '$ua')",
-            (ua.substringAfter("Chrome/", "").substringBefore('.').toIntOrNull() ?: 0) >= 153
+            "The request must carry the claimed handset's model slot — the one " +
+                "catalogue field the tuning contract lets a profile choose (saw '$ua')",
+            ua.contains(device.code)
+        )
+        assertTrue(
+            "The request must carry the ENGINE's real Chromium build " +
+                "(engine token 'Chrome/$engineVersion', saw '$ua') — a claimed " +
+                "${device.chromeVersion} over a $engineVersion engine is the " +
+                "split identity Google's refusal reads",
+            ua.contains("Chrome/$engineVersion")
         )
         assertNoEmbeddedBrowserTell("request", ua)
         assertHeaderNeverNamesTheApp(hit, "handset profile")

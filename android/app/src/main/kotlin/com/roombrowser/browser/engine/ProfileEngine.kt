@@ -250,12 +250,29 @@ object ProfileEngine {
      */
     private fun deviceShimScript(settings: ProfileSettings): String? {
         val device = UserAgents.device(settings)
+        // THE SHIM MUST PRESENT WHAT THE WIRE CARRIES. configure() sends the
+        // engine's own string with only the model slot swapped in
+        // (UserAgents.deviceTunedUserAgent), so that same resolution feeds the
+        // identity shim — navigator.userAgent and the brand list then echo the
+        // request byte for byte, and the page cannot contradict its own
+        // headers. The host's answer is the neutralised stock string, which is
+        // idempotent under the neutraliser inside deviceTunedUserAgent, so
+        // this is byte-identical to the session's own computation and free of
+        // ordering assumptions about when configure() has run. Null (no
+        // device, or the host could not answer) changes nothing: the shim's
+        // identity half is device-only anyway and falls back per contract.
+        val resolved = device?.let { claimed ->
+            appContext?.let { ctx ->
+                runCatching { host.defaultUserAgent(ctx) }.getOrNull()
+            }?.let { stock -> UserAgents.deviceTunedUserAgent(stock, claimed) }
+        }
         return deviceShimOrNull(
             device = device,
             screen = settings.claimedScreen(),
             webRtc = settings.webRtcPolicy,
             fingerprint = FingerprintProfile.from(settings.fingerprintSeed, device),
-            textScale = settings.fontScale
+            textScale = settings.fontScale,
+            resolvedUserAgent = resolved
         )
     }
 
@@ -264,14 +281,17 @@ object ProfileEngine {
         screen: ClaimedScreen?,
         webRtc: WebRtcPolicy,
         fingerprint: FingerprintProfile,
-        textScale: Float
+        textScale: Float,
+        resolvedUserAgent: String? = null
     ): String? {
         if (device == null && !fingerprint.isSeeded && screen == null &&
             webRtc == WebRtcPolicy.DEFAULT && textScale == 1f
         ) {
             return null
         }
-        return DeviceShim.scriptFor(device, screen, webRtc, fingerprint, textScale)
+        return DeviceShim.scriptFor(
+            device, screen, webRtc, fingerprint, textScale, resolvedUserAgent
+        )
     }
 
     /**
