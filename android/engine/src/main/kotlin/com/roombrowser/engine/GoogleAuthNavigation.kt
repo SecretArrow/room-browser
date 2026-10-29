@@ -49,6 +49,41 @@ object GoogleAuthNavigation {
         "myaccount.google.com",
     )
 
+    /**
+     * The domains this edition keeps PAGE-WORLD bare: no app-installed
+     * document-start script of any kind runs on a page whose host is one of
+     * these domains or any subdomain of them. The user mandate behind the
+     * scope: everything that can carry a Google account surface -- not just
+     * the three sign-in hosts -- must read to Google exactly like a bare
+     * WebView wrapper, because every page-world fingerprint this app installs
+     * somewhere Google can grade is a tell the wrapper never has.
+     *
+     * Deliberately distinct from [SIGN_IN_HOSTS]: that list drives the WIRE
+     * levers (which requests are re-issued, which stamped requests are
+     * cleaned) and stays exactly as small as the observed refusal surface;
+     * this list drives the SCRIPT guard and is as wide as the account
+     * surfaces. A host can be bare without being re-issued, and widening
+     * bareness costs nothing -- the scripts were already self-contained
+     * IIFEs, so "install nothing" is their correct behaviour on any host
+     * this app has no business touching.
+     */
+    val GOOGLE_OWNED_DOMAINS: Set<String> = setOf(
+        "google.com",
+        "youtube.com",
+    )
+
+    /**
+     * Whether [url] lives on a Google-owned domain: the host IS one of
+     * [GOOGLE_OWNED_DOMAINS] or a subdomain of one. Suffix-with-boundary, so
+     * `notgoogle.com` and `google.com.evil.example` are both somebody else's
+     * page -- the same equality discipline [SIGN_IN_HOSTS] applies, one level
+     * up. https-only through [hostOf], which answers null for anything else.
+     */
+    fun isGoogleOwnedHost(url: String): Boolean {
+        val host = hostOf(url) ?: return false
+        return GOOGLE_OWNED_DOMAINS.any { host == it || host.endsWith(".$it") }
+    }
+
     /** How long a re-issued URL remembers it was re-issued. See the KDoc above. */
     const val GUARD_WINDOW_MS = 5_000L
 

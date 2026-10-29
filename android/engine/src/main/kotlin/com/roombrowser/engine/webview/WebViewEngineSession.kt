@@ -181,6 +181,9 @@ internal class WebViewEngineSession(
     private var vaultHandler: ScriptHandler? = null
     private var walletHandler: ScriptHandler? = null
 
+    /** The device-identity shim's handle, replaced on every [setPageScripts]. */
+    private var identityHandler: ScriptHandler? = null
+
     /**
      * The DevTools console patch's document-start handle. Installed once from
      * [init] and NEVER touched by [applyPageScripts], which replaces only the
@@ -760,6 +763,25 @@ internal class WebViewEngineSession(
                         SignInHostGuard.wrap(scripts.walletProvider),
                         setOf("*")
                     )
+                }
+            }
+
+            // The device-identity shim replaces like its siblings, and a null
+            // is a REMOVAL, not a keep: a profile that drops its device (or
+            // switches the tab to desktop identity) must lose the claimed
+            // RAM/cores/GPU the next configure pass, exactly as an adjustments
+            // profile that drops its screen claim does.
+            identityHandler?.let { previous -> runCatching { previous.remove() } }
+            identityHandler = null
+            scripts.deviceIdentity?.let { script ->
+                if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                    runCatching {
+                        identityHandler = WebViewCompat.addDocumentStartJavaScript(
+                            webView,
+                            SignInHostGuard.wrap(script),
+                            setOf("*")
+                        )
+                    }
                 }
             }
         }

@@ -48,7 +48,15 @@ class EngineDownloadStream(
 data class EnginePageScripts(
     val adjustments: String?,
     val vaultBridge: String,
-    val walletProvider: String
+    val walletProvider: String,
+    /**
+     * The device profile's page-world identity claims (RAM, cores, GPU
+     * strings), or null for a profile that makes none. Composed ABOVE the
+     * facade from the SAME catalogue device the wire UA is tuned from, and
+     * registered through [com.roombrowser.engine.webview.SignInHostGuard]
+     * `wrap` like every sibling, so a Google-owned host never runs it.
+     */
+    val deviceIdentity: String? = null,
 )
 
 /**

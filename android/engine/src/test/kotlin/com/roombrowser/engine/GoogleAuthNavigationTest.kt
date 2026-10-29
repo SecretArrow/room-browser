@@ -98,6 +98,44 @@ class GoogleAuthNavigationTest {
         )
     }
 
+    // ---- isGoogleOwnedHost -----------------------------------------------
+
+    @Test
+    fun `every google-owned bare domain and subdomain is owned`() {
+        for (domain in GoogleAuthNavigation.GOOGLE_OWNED_DOMAINS) {
+            assertTrue("bare domain", GoogleAuthNavigation.isGoogleOwnedHost("https://$domain/"))
+            assertTrue(
+                "one subdomain",
+                GoogleAuthNavigation.isGoogleOwnedHost("https://accounts.$domain/signin")
+            )
+            assertTrue(
+                "deep subdomain",
+                GoogleAuthNavigation.isGoogleOwnedHost("https://storage.cloud.$domain/x")
+            )
+        }
+    }
+
+    @Test
+    fun `the surfaces the user signs in on are owned`() {
+        // The guard widened FROM these hosts; they must remain inside it.
+        for (host in GoogleAuthNavigation.SIGN_IN_HOSTS) {
+            assertTrue(
+                "sign-in host left the bare scope: $host",
+                GoogleAuthNavigation.isGoogleOwnedHost("https://$host/")
+            )
+        }
+    }
+
+    @Test
+    fun `a lookalike or foreign host is never google-owned`() {
+        assertFalse(GoogleAuthNavigation.isGoogleOwnedHost("https://notgoogle.com/"))
+        assertFalse(GoogleAuthNavigation.isGoogleOwnedHost("https://google.com.evil.example/"))
+        assertFalse(GoogleAuthNavigation.isGoogleOwnedHost("https://evil.google.com.attacker.io/"))
+        assertFalse(GoogleAuthNavigation.isGoogleOwnedHost("https://example.com/"))
+        assertFalse(GoogleAuthNavigation.isGoogleOwnedHost("http://accounts.google.com/"))
+        assertFalse(GoogleAuthNavigation.isGoogleOwnedHost("about:home"))
+    }
+
     // ---- shouldReissueWithIdentityHeaders --------------------------------
 
     private fun reissue(

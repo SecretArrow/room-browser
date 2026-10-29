@@ -6,6 +6,7 @@ import com.roombrowser.browser.wallet.dapp.RoomWalletScript
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
+import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.domain.model.claimedScreen
 import com.roombrowser.engine.BlockedResourceSink
 import com.roombrowser.engine.EmbeddedHeaderObservation
@@ -17,6 +18,7 @@ import com.roombrowser.engine.EngineRuntime
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.ResourceFilter
 import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
+import com.roombrowser.engine.webview.DeviceIdentityScript
 
 /**
  * Profile engine — configures engine sessions for exactly ONE profile per
@@ -205,29 +207,58 @@ object ProfileEngine {
             EnginePageScripts(
                 adjustments = pageAdjustmentsScript(settings),
                 vaultBridge = RoomVaultScript.SCRIPT,
-                walletProvider = RoomWalletScript.SCRIPT
+                walletProvider = RoomWalletScript.SCRIPT,
+                deviceIdentity = deviceIdentityScript(settings, desktop = settings.desktopModeDefault)
             )
         )
         host.configure(session, profile)
     }
 
     /**
+     * The device-identity shim for one profile, or null for every profile
+     * that makes no page-world claims: no device selected, or a tab that is
+     * presenting the DESKTOP identity (a Windows desktop UA with an Android
+     * handset's RAM and SoC strings alongside it is a split identity, the
+     * one contradiction this subsystem exists to keep dead).
+     *
+     * The values come from [UserAgents.device] -- the SAME catalogue lookup
+     * the facade's UA tuning uses -- so the wire and the page world present
+     * one device. The registration wraps the result through the sign-in
+     * host guard, so a Google-owned host never runs it whatever this
+     * returns.
+     */
+    private fun deviceIdentityScript(settings: ProfileSettings, desktop: Boolean): String? {
+        if (desktop) return null
+        val device = UserAgents.device(settings) ?: return null
+        return DeviceIdentityScript.scriptFor(
+            deviceMemoryGb = device.deviceMemoryGb,
+            hardwareConcurrency = device.hardwareConcurrency,
+            gpuVendor = device.gpuVendor,
+            gpuRenderer = device.gpuRenderer
+        )
+    }
+
+    /**
      * Desktop-site toggle for a specific session (per-tab / per-site).
      *
      * The user agent and the viewport flags are the profile's business and go
-     * down through the facade. The page scripts are re-sent unchanged: the
-     * adjustments carry no identity — that is the whole point of the device
-     * shim's removal — so there is no Android half to strip when the UA goes
-     * desktop, and re-sending is what keeps this method a pure identity
-     * operation. (It also keeps the contract that every settings change
-     * re-applies the whole script set.)
+     * down through the facade. The page scripts are RE-SENT with the identity
+     * slot recomputed: the adjustments still carry no identity, but the
+     * device-identity shim does, and a desktop tab must not keep an Android
+     * handset's RAM and SoC strings under a Windows desktop UA. `desktop =
+     * true` answers null there, so the shim is removed rather than kept
+     * stale; re-sending keeps this method a pure identity operation. (It
+     * also keeps the contract that every settings change re-applies the
+     * whole script set.)
      */
     fun applyDesktopMode(session: EngineSession, profile: Profile, desktop: Boolean) {
+        val settings = profile.settings
         session.setPageScripts(
             EnginePageScripts(
-                adjustments = pageAdjustmentsScript(profile.settings),
+                adjustments = pageAdjustmentsScript(settings),
                 vaultBridge = RoomVaultScript.SCRIPT,
-                walletProvider = RoomWalletScript.SCRIPT
+                walletProvider = RoomWalletScript.SCRIPT,
+                deviceIdentity = deviceIdentityScript(settings, desktop = desktop)
             )
         )
         host.applyDesktopMode(session, profile, desktop)
