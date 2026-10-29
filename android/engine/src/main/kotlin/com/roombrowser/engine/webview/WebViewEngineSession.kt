@@ -730,7 +730,11 @@ internal class WebViewEngineSession(
                 if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
                     runCatching {
                         adjustmentsHandler =
-                            WebViewCompat.addDocumentStartJavaScript(webView, script, setOf("*"))
+                            WebViewCompat.addDocumentStartJavaScript(
+                                webView,
+                                SignInHostGuard.wrap(script),
+                                setOf("*")
+                            )
                     }
                 }
             }
@@ -741,7 +745,7 @@ internal class WebViewEngineSession(
                 runCatching {
                     vaultHandler = WebViewCompat.addDocumentStartJavaScript(
                         webView,
-                        scripts.vaultBridge,
+                        SignInHostGuard.wrap(scripts.vaultBridge),
                         setOf("*")
                     )
                 }
@@ -753,7 +757,7 @@ internal class WebViewEngineSession(
                 runCatching {
                     walletHandler = WebViewCompat.addDocumentStartJavaScript(
                         webView,
-                        scripts.walletProvider,
+                        SignInHostGuard.wrap(scripts.walletProvider),
                         setOf("*")
                     )
                 }
@@ -780,7 +784,7 @@ internal class WebViewEngineSession(
         runCatching {
             consoleHandler = WebViewCompat.addDocumentStartJavaScript(
                 webView,
-                WebViewDevTools.consolePatch(consoleArmed),
+                SignInHostGuard.wrap(WebViewDevTools.consolePatch(consoleArmed)),
                 setOf("*")
             )
         }
@@ -1222,6 +1226,24 @@ internal class WebViewEngineSession(
                         timestampMs = System.currentTimeMillis()
                     )
                 )
+            }
+            // THE PRE-EMPTIVE XRW CLEANER. Everything above observed the
+            // request; this one REPLACES it when the request is one of the
+            // sign-in surfaces and still carries the provider's stamp -- the
+            // cross-origin redirect hop and the sign-in hosts' own iframes and
+            // XHR, which no `loadUrl` lever can reach. See [RequestedWithCleaner]
+            // for the narrowness rules. A null (declined request, or any
+            // execution failure) falls through to the native request below --
+            // the behaviour this object was added on top of.
+            if (!blocked) {
+                val cleaned = runCatching {
+                    if (RequestedWithCleaner.shouldClean(request)) {
+                        RequestedWithCleaner.execute(url, request.requestHeaders)
+                    } else {
+                        null
+                    }
+                }.getOrNull()
+                if (cleaned != null) return cleaned
             }
             return if (blocked) blockedResponse() else null
         }
