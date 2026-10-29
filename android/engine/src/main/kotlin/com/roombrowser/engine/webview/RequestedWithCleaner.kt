@@ -1,9 +1,9 @@
 package com.roombrowser.engine.webview
 
 import android.webkit.CookieManager
+import android.webkit.MimeTypeMap
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
-import android.webkit.MimeTypeMap
 import com.roombrowser.engine.GoogleAuthNavigation
 import java.net.HttpURLConnection
 import java.net.URL
@@ -42,7 +42,7 @@ import java.net.URL
  *  * Main frame, or a resource whose OWN host is a sign-in host. Sub-resources
  *    on other hosts (the gstatic fonts, the googleapis scripts) are left to
  *    the engine untouched -- the fast path this design buys back.
- *  * Only when the request actually carries a non-empty stamp. A main frame
+ *  * Only when the request actually carries a non-blank stamp. A main frame
  *    that went out through `loadUrl`'s empty override is already clean.
  *
  * THE EXECUTION. A plain `HttpURLConnection` re-issues the GET with the
@@ -103,10 +103,10 @@ object RequestedWithCleaner {
         return stamped(requestHeaders)
     }
 
-    /** Whether the request carries a non-empty stamp under any spelling. */
+    /** Whether the request carries a non-blank stamp under any spelling. */
     fun stamped(requestHeaders: Map<String, String?>): Boolean =
         requestHeaders.any { (name, value) ->
-            name.equals(HEADER, ignoreCase = true) && !value.isNullOrEmpty()
+            name.equals(HEADER, ignoreCase = true) && !value.isNullOrBlank()
         }
 
     /**
