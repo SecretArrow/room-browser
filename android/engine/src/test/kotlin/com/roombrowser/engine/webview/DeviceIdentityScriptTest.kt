@@ -57,7 +57,10 @@ class DeviceIdentityScriptTest {
     fun `the script is one self-contained iife`() {
         val script = DeviceIdentityScript.scriptFor(8, 8, "Qualcomm", "Adreno (TM) 830")
         assertThat(script.trim()).startsWith("(function () {")
-        assertThat(script.trim()).endsWith("})()")
+        // The codebase's IIFE convention: the invocation statement is closed
+        // with a semicolon, exactly like every sibling script (wallet,
+        // adjustments, console patch) the session registers beside this one.
+        assertThat(script.trim()).endsWith("})();")
         // Balanced braces: the wrapper composes on the OUTSIDE, so a broken
         // frame here would silently break every other script on the page.
         val opening = script.count { it == '{' }
