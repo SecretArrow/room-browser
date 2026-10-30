@@ -87,12 +87,20 @@ import java.util.concurrent.TimeUnit
  *     far from the server's, measured here against an HTTPS `Date` header;
  *  4. GOOGLE PLAY SERVICES — a device without it is often a device Google's
  *     risk engine distrusts, which is a factor no browser header touches;
- *  5. THE LIVE PROBE — a throwaway WebView, configured with the same
+ *  5. THE GOOGLE COOKIE JAR — the bytes and names this profile would hand
+ *     Google on every request, because the OTHER refusal (the 400 "malformed
+ *     request" page) is the front end rejecting the request itself, and the
+ *     one thing a WebView app's requests carry that Chrome's do not is this
+ *     jar; a corrupted or oversized one is answered 400 no matter what the
+ *     headers say, and clearing it is the standard remedy. The screen shows
+ *     its size and offers the erase;
+ *  6. THE LIVE PROBE — a throwaway WebView, configured with the same
  *     default identity this app's engine uses (WebView markers stripped from
- *     the UA, an empty `X-Requested-With` override on the load, JavaScript
- *     and cookies on), loads the real sign-in page and reports whether the
- *     refusal text is in what Google served, whether a real sign-in form
- *     rendered, and where the navigation finally landed.
+ *     the UA, the identity header the shared policy resolves for a Google
+ *     host — the Chrome stamp — on the load, JavaScript and cookies on),
+ *     loads the real sign-in page and reports whether the refusal text is in
+ *     what Google served, whether a real sign-in form rendered, and where
+ *     the navigation finally landed.
  *
  * WHAT THE PROBE SETTLES. A blocked probe on a device where Chrome signs in
  * fine means the remaining block is attached to THIS app's requests and the
@@ -137,6 +145,14 @@ class GoogleSignInCheckActivity : ComponentActivity() {
                             scope.launch { runAll() }
                         }
                     },
+                    onClearGoogleCookies = {
+                        if (!reading && !probing) {
+                            scope.launch {
+                                runCatching { SignInDiagnostics.clearGoogleCookies() }
+                                runAll()
+                            }
+                        }
+                    },
                     onClose = { finish() }
                 )
             }
@@ -156,8 +172,16 @@ private data class SignInReport(
     val userAgent: String,
     val checks: List<IdentityCheck>,
     val clockSkewSeconds: Long?,
-    val playServicesVersion: String?
+    val playServicesVersion: String?,
+    val cookieFootprint: SignInDiagnostics.GoogleCookieFootprint?,
 )
+
+/**
+ * The jar size a reading still calls healthy. A fresh profile hands Google
+ * a couple of hundred bytes; the 400-malformed complaints start well above
+ * this line, so anything under it is green no matter how it got there.
+ */
+private const val GOOGLE_COOKIE_BYTES_OK = 4_096
 
 /** Environment + identity reading, everything except the live probe. */
 private suspend fun readReport(context: Context): SignInReport {
@@ -183,7 +207,8 @@ private suspend fun readReport(context: Context): SignInReport {
     val gms = runCatching {
         context.packageManager.getPackageInfo("com.google.android.gms", 0).versionName
     }.getOrNull()
-    return SignInReport(providerLabel, ua, checks, skew, gms)
+    val cookieFootprint = runCatching { SignInDiagnostics.googleCookieFootprint() }.getOrNull()
+    return SignInReport(providerLabel, ua, checks, skew, gms, cookieFootprint)
 }
 
 /**
@@ -208,6 +233,7 @@ private fun GoogleSignInCheckScreen(
     probe: ProbeOutcome?,
     reading: Boolean,
     onRerun: () -> Unit,
+    onClearGoogleCookies: () -> Unit,
     onClose: () -> Unit
 ) {
     val extras = LocalRoomExtras.current
@@ -290,6 +316,26 @@ private fun GoogleSignInCheckScreen(
                                     "engine distrusts uncertified devices — expect harder checks."
                             }
                         )
+                        CheckRow(
+                            "Google cookies",
+                            rep.cookieFootprint?.let { it.totalBytes < GOOGLE_COOKIE_BYTES_OK },
+                            when (val footprint = rep.cookieFootprint) {
+                                null -> "Not measured — the cookie jar could not be read on this device."
+                                else -> {
+                                    val bytes = footprint.totalBytes
+                                    val size = if (bytes >= 1024) "${(bytes + 512) / 1024} KB" else "$bytes bytes"
+                                    if (bytes < GOOGLE_COOKIE_BYTES_OK) {
+                                        "${footprint.names} cookies, $size attached to Google hosts — the size a " +
+                                            "clean profile carries."
+                                    } else {
+                                        "${footprint.names} cookies, $size attached to Google hosts. Google's front " +
+                                            "end answers an oversized or corrupted cookie header with the 400 " +
+                                            "\"malformed request\" page — clearing them is the standard remedy " +
+                                            "(button below)."
+                                    }
+                                }
+                            }
+                        )
                     }
                 }
                 Spacer(Modifier.height(12.dp))
@@ -347,6 +393,22 @@ private fun GoogleSignInCheckScreen(
                     }
                 }
             }
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = onClearGoogleCookies,
+                enabled = !reading,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Clear Google cookies")
+            }
+            Text(
+                "Erases every Google-owned host's cookies in THIS profile only — " +
+                    "the remedy for the 400 \"malformed request\" page. You will be " +
+                    "signed out of Google properties here.",
+                style = MaterialTheme.typography.bodySmall,
+                color = extras.textSecondary,
+                modifier = Modifier.padding(top = 6.dp)
+            )
             Spacer(Modifier.height(16.dp))
             Button(onClick = onRerun, enabled = !reading, modifier = Modifier.fillMaxWidth()) {
                 Text("Run the check again")

@@ -1124,6 +1124,23 @@ internal class WebViewEngineSession(
     }
 
     /**
+     * The Google-owned jar view, erased host by host with the same per-site
+     * eraser — the MALFORMED-400 answer's data half.
+     *
+     * The set is [GoogleSignInRecovery.GOOGLE_COOKIE_CLEAR_HOSTS], which is
+     * wider than the sign-in-host set the refusal ladder's cookie rung uses:
+     * the debris a 400-malformed reports can sit on `.google.com` cookies any
+     * Google property set, and a partial erase leaves the poison in. This
+     * signs the profile out of Google properties broadly, which is exactly
+     * the cost the rung's documentation accepts.
+     */
+    private fun clearGoogleOwnedCookieJar() {
+        GoogleSignInRecovery.GOOGLE_COOKIE_CLEAR_HOSTS.forEach {
+            clearSiteData("https://$it/")
+        }
+    }
+
+    /**
      * This session's inspection handle. Per session, because a console sink
      * belongs to the panel that opened it; the capability set it reads is the
      * one shared [WebViewDevTools.CAPABILITIES], so a session can never
@@ -1660,6 +1677,43 @@ internal class WebViewEngineSession(
                 errorCode,
                 description
             )
+        }
+
+        /**
+         * An HTTP status error on any frame. Deliberately absent for the
+         * session's whole life so far — the app used it for its trace only —
+         * and wired NOW, because the main-frame 400 on a Google-owned host is
+         * the one HTTP status this engine must react to: Google's
+         * "400. That's an error ... malformed. It should not be retried."
+         * page is the front end rejecting the REQUEST, and the one in-process
+         * lever that maps onto it is erasing the Google-owned cookie jar and
+         * giving sign-in one clean reload ([GoogleSignInRecovery
+         * .onMalformed400] decides; one shot per attempt, stand-down rules
+         * shared with the refusal ladder).
+         *
+         * The page itself still renders — this callback does not consume the
+         * response — so a 400 the recovery declines (no live sign-in attempt,
+         * already spent, cycles exhausted) is simply the page the user sees,
+         * exactly as before. Sub-resource 400s are ignored: only a main-frame
+         * rejection is the story Google is telling about THIS app's request.
+         */
+        override fun onReceivedHttpError(
+            view: WebView,
+            request: WebResourceRequest,
+            errorResponse: WebResourceResponse
+        ) {
+            if (!request.isForMainFrame) return
+            if (errorResponse.statusCode != 400) return
+            val url = request.url.toString()
+            if (!GoogleAuthNavigation.googleContext(url)) return
+            val action = GoogleSignInRecovery.onMalformed400(
+                signInRecovery,
+                System.currentTimeMillis()
+            )
+            if (action != GoogleSignInRecovery.Action.COOKIE_RETRY) return
+            clearGoogleOwnedCookieJar()
+            listener?.onSignInRecovery(this@WebViewEngineSession, action)
+            reloadSignIn()
         }
 
         /**

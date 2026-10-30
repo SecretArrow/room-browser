@@ -235,4 +235,72 @@ class RequestedWithCleanerTest {
             )
         ).isFalse()
     }
+
+    @Test
+    fun a_date_comma_split_set_cookie_is_rejoined_not_planted_as_debris() {
+        // What Java's headerFields hands back for ONE legitimate Set-Cookie
+        // whose Expires carries the standard "Wed, 21 Oct" comma: two
+        // fragments, the second starting with the date tail. Feeding them
+        // verbatim manufactured a junk cookie -- the jar poisoning behind the
+        // 400-malformed page.
+        val merged = RequestedWithCleaner.mergeSetCookieFragments(
+            listOf(
+                "NID=204=abc123; expires=Wed",
+                "21-Oct-2026 07:28:00 GMT; path=/; domain=.google.com; Secure; HttpOnly"
+            )
+        )
+        assertThat(merged).hasSize(1)
+        assertThat(merged[0]).isEqualTo(
+            "NID=204=abc123; expires=Wed, 21-Oct-2026 07:28:00 GMT; path=/; " +
+                "domain=.google.com; Secure; HttpOnly"
+        )
+    }
+
+    @Test
+    fun two_real_cookies_are_never_merged_into_one() {
+        // Every Set-Cookie starts with a name, and a name needs the '=': two
+        // fragments that both carry one are two cookies.
+        val merged = RequestedWithCleaner.mergeSetCookieFragments(
+            listOf(
+                "NID=204=abc; path=/; domain=.google.com",
+                "SOCS=CAI; path=/; domain=.google.com"
+            )
+        )
+        assertThat(merged).hasSize(2)
+    }
+
+    @Test
+    fun several_cookies_with_several_date_splits_all_survive() {
+        val merged = RequestedWithCleaner.mergeSetCookieFragments(
+            listOf(
+                "A=1; expires=Thu",
+                "01 Jan 1970 00:00:00 GMT; path=/",
+                "B=2; expires=Fri",
+                "02 Jan 1970 00:00:00 GMT; path=/",
+                "C=3"
+            )
+        )
+        assertThat(merged).containsExactly(
+            "A=1; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/",
+            "B=2; expires=Fri, 02 Jan 1970 00:00:00 GMT; path=/",
+            "C=3"
+        ).inOrder()
+    }
+
+    @Test
+    fun a_leading_fragment_with_no_equals_is_junk_and_dropped() {
+        // A tail with nothing to join cannot become a cookie either.
+        val merged = RequestedWithCleaner.mergeSetCookieFragments(
+            listOf(
+                "01 Jan 1970 00:00:00 GMT; path=/",
+                "NID=204=abc"
+            )
+        )
+        assertThat(merged).containsExactly("NID=204=abc")
+    }
+
+    @Test
+    fun an_empty_set_cookie_list_stays_empty() {
+        assertThat(RequestedWithCleaner.mergeSetCookieFragments(emptyList())).isEmpty()
+    }
 }

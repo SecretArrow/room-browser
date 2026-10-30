@@ -44,12 +44,26 @@ object SignInDiagnostics {
      * English first (the probe pins `hl=en`), then the Indonesian renderings —
      * the device locale can still win for interstitials Google localises before
      * the `hl` parameter is read.
+     *
+     * The `400.` entries are the OTHER refusal — the front end's
+     * "400. That's an error. The server cannot process the request because it
+     * is malformed. It should not be retried." page, which is not a browser
+     * grading at all: it is the REQUEST being rejected, almost always because
+     * the cookie jar Google is being handed is corrupted or oversized. They
+     * are matched by their stable numeric prefix (the one part Google does
+     * not localise), followed by the first words of each major rendering.
      */
     private val BLOCK_MARKERS = listOf(
         "this browser or app may not be secure",
         "sign in with a supported browser",
         "browser atau aplikasi ini mungkin tidak aman",
         "masuk dengan browser yang didukung",
+        "400. that's an error",
+        "400. terjadi error",
+        "400. se ha producido un error",
+        "400. ocorreu um erro",
+        "400. une erreur s'est produite",
+        "400. es ist ein fehler",
     )
 
     /** What the live probe saw when Google answered. */
@@ -61,6 +75,60 @@ object SignInDiagnostics {
         val finalUrl: String,
         val note: String,
     )
+
+    /** How big the Google side of this profile's jar is, in one read. */
+    data class GoogleCookieFootprint(
+        /** UTF-8 bytes of every cookie Google would be handed, combined. */
+        val totalBytes: Int,
+        /** Distinct cookie names across the Google hosts read. */
+        val names: Int,
+    )
+
+    /**
+     * The Google side of this profile's cookie jar, as one number the check
+     * screen can judge: every cookie a request to the accounts host or the
+     * search host would carry (the `.google.com` domain cookies included in
+     * both), counted in bytes and distinct names. Null when the platform
+     * refused the read.
+     *
+     * WHY IT IS A NUMBER. Google's front end answers a request whose cookie
+     * header is oversized or corrupted with the 400-malformed page — the
+     * failure that outlived every identity fix because it lives in the jar,
+     * not the headers. A fresh profile sits around two hundred bytes; a jar
+     * deep in debris measures in the tens of kilobytes.
+     */
+    fun googleCookieFootprint(): GoogleCookieFootprint? = runCatching {
+        val cookieManager = CookieManager.getInstance()
+        val jars = listOf(
+            "https://accounts.google.com/",
+            "https://www.google.com/",
+        ).mapNotNull { cookieManager.getCookie(it) }
+        val pairs = jars
+            .flatMap { it.split(';') }
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        GoogleCookieFootprint(
+            totalBytes = pairs.sumOf { it.toByteArray(Charsets.UTF_8).size },
+            names = pairs.map { it.substringBefore('=').trim() }.distinct().size,
+        )
+    }.getOrNull()
+
+    /**
+     * Erase the Google-owned side of this profile's cookie jar — every host
+     * in [GoogleSignInRecovery.GOOGLE_COOKIE_CLEAR_HOSTS], with the same
+     * per-site expiry plan the session's 400 recovery drives. True when the
+     * platform accepted the writes.
+     */
+    fun clearGoogleCookies(): Boolean = runCatching {
+        val cookieManager = CookieManager.getInstance()
+        GoogleSignInRecovery.GOOGLE_COOKIE_CLEAR_HOSTS.forEach { host ->
+            val url = "https://$host/"
+            SiteCookieClearer.expiryRequests(url, cookieManager.getCookie(url))
+                .forEach { cookieManager.setCookie(it.url, it.header) }
+        }
+        cookieManager.flush()
+        true
+    }.getOrDefault(false)
 
     /**
      * The installed provider, as "label version" — what the diagnostics row
@@ -155,10 +223,37 @@ object SignInDiagnostics {
                                 // An object result arrives as a JSON object literal;
                                 // a null arrives as the four characters "null".
                                 val json = JSONObject(result)
-                                val hit = json.optString("hit").takeIf { it.isNotEmpty() }
+                                // org.json's optString answers the STRING "null"
+                                // for a JSON-null value (the sentinel's toString),
+                                // so an absent marker must be read with isNull
+                                // FIRST — the string "null" as a marker once turned
+                                // a clean page into a false "BLOCKED" verdict.
+                                val hit = if (json.isNull("hit")) {
+                                    null
+                                } else {
+                                    json.optString("hit").takeIf { it.isNotEmpty() }
+                                }
                                 val form = json.optBoolean("form", false)
-                                val landed = json.optString("url").ifBlank { url }
+                                val landed = if (json.isNull("url")) {
+                                    url
+                                } else {
+                                    json.optString("url").ifBlank { url }
+                                }
                                 when {
+                                    hit != null && hit.startsWith("400.") -> ProbeOutcome(
+                                        blocked = true,
+                                        marker = hit,
+                                        formSeen = form,
+                                        finalUrl = landed,
+                                        note = "Google answered the request itself with the 400 " +
+                                            "'malformed' page — this is not the browser-refusal " +
+                                            "grading, it is the request being rejected, and it " +
+                                            "almost always means the Google cookies this profile " +
+                                            "hands over are corrupted or oversized. Use 'Clear " +
+                                            "Google cookies' below, then run the check again; the " +
+                                            "app also does this automatically when a sign-in load " +
+                                            "is answered 400.",
+                                    )
                                     hit != null -> ProbeOutcome(
                                         blocked = true,
                                         marker = hit,
@@ -208,11 +303,17 @@ object SignInDiagnostics {
                     }
                 }
                 main.postDelayed(timeout, PROBE_TIMEOUT_MS)
-                // The same lever the engine's own loads use: an app-supplied
-                // additional header overrides the provider's X-Requested-With
-                // stamp on this navigation.
-                runCatching { webView.loadUrl(PROBE_URL, mapOf("X-Requested-With" to "")) }
-                    .onFailure {
+                // The same lever the engine's own loads use: the identity header
+                // resolved by the shared policy — which for a Google host is the
+                // Chrome stamp v1.0.195 ships. The probe must read the same
+                // wire story the engine sends, or its verdict grades a request
+                // the engine never makes.
+                runCatching {
+                    webView.loadUrl(
+                        PROBE_URL,
+                        mapOf("X-Requested-With" to GoogleAuthNavigation.identityHeaderValueFor(PROBE_URL))
+                    )
+                }.onFailure {
                         settle(
                             cont, main, webView, ProbeOutcome(
                                 blocked = null, marker = null, formSeen = false,

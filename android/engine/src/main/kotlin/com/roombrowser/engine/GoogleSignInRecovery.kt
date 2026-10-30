@@ -92,6 +92,22 @@ object GoogleSignInRecovery {
     const val SIGN_IN_HOME = "https://accounts.google.com/"
 
     /**
+     * The Google hosts whose cookies are erased when the MALFORMED-400 rung
+     * fires -- the whole Google-owned jar view, not only the sign-in hosts,
+     * because the debris that makes Google's front end read the request as
+     * malformed can sit on `.google.com` set by any Google property. Wider
+     * than [SIGN_IN_HOSTS] on purpose: a 400-malformed is a corrupted jar,
+     * and a partial erase leaves the corruption in it.
+     */
+    val GOOGLE_COOKIE_CLEAR_HOSTS: Set<String> = setOf(
+        "accounts.google.com",
+        "myaccount.google.com",
+        "accounts.youtube.com",
+        "www.google.com",
+        "www.youtube.com",
+    )
+
+    /**
      * One engine session's recovery memory. Plain mutable counters, no clock
      * and no threads inside: the WebView session reports from the main thread
      * only, and the engine session owns the synchronisation story like it
@@ -112,6 +128,14 @@ object GoogleSignInRecovery {
 
         /** Completed ladders this session has spent, capped by [MAX_CYCLES]. */
         var cycles: Int = 0
+            internal set
+
+        /**
+         * Whether the malformed-400 rung already fired inside this attempt.
+         * One clear-and-retry per attempt: a jar that stays poisoned through
+         * one full erase is not going to answer a second one minutes later.
+         */
+        var malformedRecovered: Boolean = false
             internal set
     }
 
@@ -155,7 +179,49 @@ object GoogleSignInRecovery {
         }
         if (nowMs - state.lastRefusalAtMs > STALE_MS) {
             state.cycles = 0
+            state.malformedRecovered = false
         }
+    }
+
+    /**
+     * The main frame was answered with HTTP 400 on a Google-owned host --
+     * Google's "400. That's an error. The server cannot process the request
+     * because it is malformed. It should not be retried." page.
+     *
+     * WHY THIS IS ITS OWN RUNG, not a refusal. The 400 page is not the
+     * "browser not secure" grading -- no browser identity change can answer
+     * it, because Google's front end is saying the REQUEST itself is bad. On
+     * a device where Chrome signs in fine, the one thing this app's requests
+     * carry that Chrome's do not is the cookie jar this profile has built:
+     * debris cookies seeded by weeks of failed attempts (and, until the
+     * Set-Cookie merge fix, by the cleaner feeding Java's comma-split
+     * fragments into the jar). The standard remedy for this exact page is
+     * "clear your cookies", and it is the one lever that maps 1:1 onto the
+     * failure.
+     *
+     * THE ANSWER. [Action.COOKIE_RETRY] -- the same vocabulary the refusal
+     * ladder uses, so the session and the app's message need no new branch:
+     * the caller erases the Google-owned jar ([GOOGLE_COOKIE_CLEAR_HOSTS],
+     * the per-site eraser) and reloads sign-in. ONE shot per attempt
+     * ([State.malformedRecovered]); a second 400 after a full erase is
+     * reported as [Action.NONE] -- the page Google served stands, and the
+     * user drives.
+     *
+     * The same liveness rules as [onRefusal]: a 400 nobody is live for (no
+     * sign-in page this session, or the last activity outside the refusal
+     * window) is not this feature's business -- Google's front end serves
+     * genuine malformed-request 400s to hand-typed URLs, and reloading a
+     * user's navigation would be the worse bug. A session that has spent
+     * [MAX_CYCLES] ladders stands down entirely.
+     */
+    fun onMalformed400(state: State, nowMs: Long): Action {
+        val lastActivity = maxOf(state.lastSignInPageAtMs, state.lastRefusalAtMs)
+        if (lastActivity == 0L || nowMs - lastActivity > REFUSAL_WINDOW_MS) return Action.NONE
+        if (state.cycles >= MAX_CYCLES) return Action.NONE
+        if (state.malformedRecovered) return Action.NONE
+        state.lastRefusalAtMs = nowMs
+        state.malformedRecovered = true
+        return Action.COOKIE_RETRY
     }
 
     /**
@@ -200,5 +266,6 @@ object GoogleSignInRecovery {
         state.refusalsInCycle = 0
         state.lastSignInPageAtMs = 0L
         state.lastRefusalAtMs = 0L
+        state.malformedRecovered = false
     }
 }

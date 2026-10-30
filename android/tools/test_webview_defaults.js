@@ -55,6 +55,9 @@ const WEBVIEW_SESSION_KT = path.join(
 const GOOGLE_AUTH_NAVIGATION_KT = path.join(
     ANDROID,
     'engine/src/main/kotlin/com/roombrowser/engine/GoogleAuthNavigation.kt');
+const GOOGLE_SIGN_IN_RECOVERY_KT = path.join(
+    ANDROID,
+    'engine/src/main/kotlin/com/roombrowser/engine/GoogleSignInRecovery.kt');
 const PROBE_KT = path.join(
     ANDROID,
     'engine/src/main/kotlin/com/roombrowser/engine/webview/RequestedWithProbe.kt');
@@ -307,6 +310,57 @@ if (IS_WEBVIEW) {
             probe,
             /fun sawMainFramePresent\(\): Boolean/,
             'the probe exposes the main-frame sighting the diagnostics screen answers from');
+    });
+
+    // THE MALFORMED-400 ANSWER. Google's "400. That's an error ... malformed.
+    // It should not be retried." page is the front end rejecting the REQUEST
+    // -- not a browser grading -- and on a device where Chrome signs in fine
+    // the request-specific thing this app carries is its cookie jar. The
+    // session watches for the main-frame 400 on Google-owned hosts, the shared
+    // policy decides (one shot per attempt), the session erases the
+    // Google-owned jar and reloads sign-in. The cleaner's Set-Cookie feedback
+    // re-joins Java's comma-split fragments first, because feeding fragments
+    // verbatim was itself the jar-poisoning mechanism.
+    fixture('webview-malformed-400-recovery', function () {
+        const session = stripKotlinComments(read(WEBVIEW_SESSION_KT));
+        matches(
+            session,
+            /override\s+fun\s+onReceivedHttpError\(/,
+            'the session observes HTTP status errors');
+        matches(
+            session,
+            /errorResponse\.statusCode != 400/,
+            'only the malformed-400 status reaches the recovery');
+        matches(
+            session,
+            /GoogleAuthNavigation\.googleContext\(url\)/,
+            'the 400 answer fires only inside a Google context');
+        matches(
+            session,
+            /GoogleSignInRecovery\.onMalformed400\(/,
+            'the 400 answer is decided by the shared policy, not a local rule');
+        matches(
+            session,
+            /clearGoogleOwnedCookieJar\(\)/,
+            'the 400 answer erases the Google-owned jar before reloading');
+        const recovery = stripKotlinComments(read(GOOGLE_SIGN_IN_RECOVERY_KT));
+        matches(
+            recovery,
+            /fun onMalformed400\(state: State, nowMs: Long\): Action/,
+            'the malformed-400 rung lives in the shared recovery policy');
+        matches(
+            recovery,
+            /val GOOGLE_COOKIE_CLEAR_HOSTS: Set<String>/,
+            'the erase set is the shared Google-owned host list');
+        matches(
+            recovery,
+            /state\.malformedRecovered/,
+            'the 400 answer is one shot per attempt');
+        const cleaner = stripKotlinComments(read(REQUESTED_WITH_CLEANER_KT));
+        matches(
+            cleaner,
+            /mergeSetCookieFragments\(/,
+            'Set-Cookie fragments are re-joined before they reach the jar');
     });
 
     fixture('webview-window-policy', function () {

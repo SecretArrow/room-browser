@@ -54,12 +54,27 @@ import java.net.URL
  * with the stamp REWRITTEN to [GoogleAuthNavigation.CHROME_STAMP] instead of
  * dropped -- absence was the v1.0.193/194 answer and the refusal outlived
  * it, while the bare wrapper that signs in sends a KNOWN browser package
- * everywhere. The request's `Cookie` header is copied verbatim -- it IS the
- * engine's jar view -- and every response `Set-Cookie` is fed back into
- * [CookieManager], so the session's cookie state stays exactly what the
- * engine would have built. Redirects are followed by the connection itself,
- * which is a quiet bonus: a hop the ENGINE would have re-stamped is
- * re-issued by code that stamps Chrome.
+ * everywhere. The re-issued request carries the jar's own `Cookie` header
+ * (read for the target URL, so the re-issued GET sees exactly the session
+ * state the engine's native request would have seen) and every response
+ * `Set-Cookie` is fed back into [CookieManager], so the session's cookie
+ * state stays exactly what the engine would have built. Redirects are
+ * followed by the connection itself, which is a quiet bonus: a hop the
+ * ENGINE would have re-stamped is re-issued by code that stamps Chrome.
+ *
+ * THE SET-COOKIE MERGE, and the jar poisoning it closes. Java's
+ * `headerFields` splits every header value on commas -- including the comma
+ * inside a cookie's own `Expires=Wed, 21 Oct ...` date -- so one legitimate
+ * `Set-Cookie` arrives as TWO fragments, and feeding the fragments to
+ * `setCookie` verbatim manufactures a junk cookie (a name that is a date
+ * fragment, no value, the real cookie stripped of its expiry). v1.0.193
+ * through v1.0.195 shipped exactly that: weeks of sign-in attempts slowly
+ * seeded Google's jar with debris until requests native to the session (the
+ * form POSTs this object never touches) carried a Cookie header Google's
+ * front end answers with the 400 "malformed request" page. The fragments
+ * are now re-joined before they reach the jar ([mergeSetCookieFragments],
+ * the rule: a fragment carrying no `=` at all is the date/attribute tail of
+ * the previous `Set-Cookie`, never a cookie of its own).
  *
  * EVERY failure mode answers `null`, which returns the request to the
  * engine untouched -- the behaviour this object was added on top of. The
@@ -142,6 +157,36 @@ object RequestedWithCleaner {
      * caller and must never reach the connection with headers this function
      * did not produce.
      */
+    internal fun mergeSetCookieFragments(values: List<String>): List<String> {
+        val merged = mutableListOf<String>()
+        for (raw in values) {
+            val piece = raw.trim()
+            if (piece.isEmpty()) continue
+            // A fragment that does not OPEN like a Set-Cookie is the tail of
+            // the previous one (Java split `Expires=Wed, 21 Oct 2026 ...` at
+            // the comma inside the date). It is never a cookie of its own:
+            // every Set-Cookie opens with a bare token before the first `=`,
+            // while a date tail opens with text full of spaces -- and may
+            // still carry `=` further in (`...; domain=.google.com`), which
+            // is why a bare contains('=') test would misjoin nothing and
+            // plant the tail as debris instead.
+            if (!opensLikeSetCookie(piece) && merged.isNotEmpty()) {
+                merged[merged.size - 1] = merged.last() + ", " + piece
+                continue
+            }
+            merged.add(piece)
+        }
+        // The very first fragment was a tail with nothing to join: junk.
+        return merged.filter { opensLikeSetCookie(it) }
+    }
+
+    /** Whether [piece] opens like a Set-Cookie: a token, then `=`. */
+    private fun opensLikeSetCookie(piece: String): Boolean {
+        val eq = piece.indexOf('=')
+        if (eq <= 0) return false
+        return piece.substring(0, eq).none { it.isWhitespace() || it == ';' }
+    }
+
     internal fun reissueHeaders(requestHeaders: Map<String, String?>): Map<String, String?> {
         val rebuilt = LinkedHashMap<String, String?>()
         for ((name, value) in requestHeaders) {
@@ -173,6 +218,19 @@ object RequestedWithCleaner {
                 runCatching { connection.setRequestProperty(name, value) }
             }
 
+            // The re-issued request carries the jar's own view of the target
+            // URL, exactly as the native request would have. The request
+            // headers the WebView hands to shouldInterceptRequest do not
+            // include `Cookie`, so this is the only way the claim above is
+            // true. A jar that has nothing for the URL adds no header.
+            if (requestHeaders.keys.none { it.equals("Cookie", ignoreCase = true) }) {
+                runCatching {
+                    CookieManager.getInstance().getCookie(url)
+                        ?.takeIf { it.isNotEmpty() }
+                        ?.let { connection.setRequestProperty("Cookie", it) }
+                }
+            }
+
             val status = connection.responseCode
             if (status < 200 || status > 299) {
                 runCatching { connection.disconnect() }
@@ -188,7 +246,10 @@ object RequestedWithCleaner {
             val cookieManager = CookieManager.getInstance()
             for ((name, values) in headerFields) {
                 if (!name.equals("Set-Cookie", ignoreCase = true)) continue
-                for (cookie in values.orEmpty()) {
+                // Java already split on the commas INSIDE the dates; re-join
+                // before feeding the jar, or every Google response plants
+                // debris cookies that grow into the 400-malformed jar.
+                for (cookie in mergeSetCookieFragments(values.orEmpty())) {
                     runCatching { cookieManager.setCookie(finalUrl, cookie) }
                 }
             }

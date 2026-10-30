@@ -285,4 +285,103 @@ class GoogleSignInRecoveryTest {
         )
         assertEquals(1, state.cycles)
     }
+
+    // ---- the malformed-400 rung --------------------------------------------
+
+    @Test
+    fun `a live malformed 400 answers the cookie retry`() {
+        GoogleSignInRecovery.onSignInHostPage(state, nowMs = 10_000L)
+        assertEquals(
+            GoogleSignInRecovery.Action.COOKIE_RETRY,
+            GoogleSignInRecovery.onMalformed400(state, nowMs = 11_000L)
+        )
+    }
+
+    @Test
+    fun `a malformed 400 is one shot per attempt`() {
+        GoogleSignInRecovery.onSignInHostPage(state, nowMs = 10_000L)
+        assertEquals(
+            GoogleSignInRecovery.Action.COOKIE_RETRY,
+            GoogleSignInRecovery.onMalformed400(state, nowMs = 11_000L)
+        )
+        // The retry's reload lands on the sign-in home; the jar did not get
+        // better; Google answers 400 again -- the page stands, nothing auto.
+        GoogleSignInRecovery.onSignInHostPage(state, nowMs = 12_000L)
+        assertEquals(
+            GoogleSignInRecovery.Action.NONE,
+            GoogleSignInRecovery.onMalformed400(state, nowMs = 13_000L)
+        )
+    }
+
+    @Test
+    fun `a malformed 400 with no live attempt is ignored`() {
+        // Google serves genuine malformed-request 400s to hand-typed URLs;
+        // reloading a user's navigation would be the worse bug.
+        assertEquals(
+            GoogleSignInRecovery.Action.NONE,
+            GoogleSignInRecovery.onMalformed400(state, nowMs = 10_000L)
+        )
+        GoogleSignInRecovery.onSignInHostPage(state, nowMs = 10_000L)
+        assertEquals(
+            GoogleSignInRecovery.Action.NONE,
+            GoogleSignInRecovery.onMalformed400(
+                state,
+                nowMs = 10_000L + GoogleSignInRecovery.REFUSAL_WINDOW_MS + 1
+            )
+        )
+    }
+
+    @Test
+    fun `leaving the sign-in hosts mints a fresh malformed rung`() {
+        GoogleSignInRecovery.onSignInHostPage(state, nowMs = 10_000L)
+        assertEquals(
+            GoogleSignInRecovery.Action.COOKIE_RETRY,
+            GoogleSignInRecovery.onMalformed400(state, nowMs = 11_000L)
+        )
+        GoogleSignInRecovery.onLeftSignInHosts(state)
+        GoogleSignInRecovery.onSignInHostPage(state, nowMs = 60_000L)
+        assertEquals(
+            GoogleSignInRecovery.Action.COOKIE_RETRY,
+            GoogleSignInRecovery.onMalformed400(state, nowMs = 61_000L)
+        )
+    }
+
+    @Test
+    fun `a malformed 400 stands down with the cycle cap`() {
+        // Three full refusal ladders spent: the session has stood down.
+        var now = 0L
+        repeat(3) {
+            now += 10_000L
+            GoogleSignInRecovery.onSignInHostPage(state, nowMs = now)
+            now += GoogleSignInRecovery.REFUSAL_WINDOW_MS + 10_000L
+            GoogleSignInRecovery.onSignInHostPage(state, nowMs = now)
+            GoogleSignInRecovery.onRefusal(state, nowMs = now + 1_000)
+            GoogleSignInRecovery.onRefusal(state, nowMs = now + 2_000)
+            GoogleSignInRecovery.onRefusal(state, nowMs = now + 3_000)
+        }
+        assertEquals(GoogleSignInRecovery.MAX_CYCLES, state.cycles)
+        GoogleSignInRecovery.onSignInHostPage(state, nowMs = now + 10_000L)
+        assertEquals(
+            GoogleSignInRecovery.Action.NONE,
+            GoogleSignInRecovery.onMalformed400(state, nowMs = now + 11_000L)
+        )
+    }
+
+    @Test
+    fun `the malformed rung and the refusal ladder do not burn each other`() {
+        // The 400 answer and the refusal ladder share the vocabulary but not
+        // the budget: a cookie retry the 400 spent does not advance the
+        // refusal ladder, and vice versa.
+        GoogleSignInRecovery.onSignInHostPage(state, nowMs = 10_000L)
+        assertEquals(
+            GoogleSignInRecovery.Action.COOKIE_RETRY,
+            GoogleSignInRecovery.onMalformed400(state, nowMs = 11_000L)
+        )
+        GoogleSignInRecovery.onSignInHostPage(state, nowMs = 12_000L)
+        assertEquals(0, state.refusalsInCycle)
+        assertEquals(
+            GoogleSignInRecovery.Action.DESKTOP_RETRY,
+            GoogleSignInRecovery.onRefusal(state, nowMs = 13_000L)
+        )
+    }
 }
