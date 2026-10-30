@@ -84,6 +84,56 @@ object GoogleAuthNavigation {
         return GOOGLE_OWNED_DOMAINS.any { host == it || host.endsWith(".$it") }
     }
 
+    /**
+     * The `X-Requested-With` value that reads as a browser instead of a
+     * wrapper: Chrome's own Android applicationId.
+     *
+     * WHY A VALUE, NOT AN ABSENCE. The two states this app has shipped make
+     * the case between them. With the provider's real stamp
+     * (`com.roombrowser…`) the sign-in document was refused; with the header
+     * EMPTY -- the state v1.0.193 and v1.0.194 shipped -- it was refused
+     * too. The comparison the user keeps supplying is the bare wrapper:
+     * Arc signs in from the same handset, same network, same account, and a
+     * bare wrapper's WebView stamps EVERYTHING with its own package. One
+     * unknown package refused, one shipped-browser package accepted is not
+     * what a blocklist on the header looks like -- it is what an ALLOWLIST
+     * looks like, and the one package certain to sit on Google's list is
+     * `com.android.chrome`.
+     *
+     * WHAT IT MUST AGREE WITH. Every other identity signal this session
+     * sends already claims Chrome: a UA without the `wv` token whose Chrome
+     * version is the engine's real one, and `Sec-CH-UA*` brand lists that
+     * name `Google Chrome`. A request carrying all of that beside
+     * `X-Requested-With: com.android.chrome` is one coherent story; the same
+     * request beside the app's own package was the contradiction Google
+     * graded. Real Chrome sends no such header at all -- the spoof is
+     * visible to anyone who checks -- but the grader that refuses sign-ins
+     * has accepted this exact value from WebView apps for years, which is
+     * the evidence that matters here.
+     *
+     * WHERE IT APPLIES. Google contexts only ([googleContext]): the
+     * sign-in hosts and everything Google-owned. Everywhere else the app
+     * keeps the empty override, which is what it has always sent and what
+     * no other server grades.
+     */
+    const val CHROME_STAMP = "com.android.chrome"
+
+    /**
+     * Whether [url] is a page or request this app sends the Chrome stamp
+     * for: a sign-in host, or anything Google-owned. The one scope the
+     * login grader reads; outside it the empty override stands.
+     */
+    fun googleContext(url: String): Boolean =
+        isSignInTarget(url) || isGoogleOwnedHost(url)
+
+    /**
+     * The `X-Requested-With` value a main-frame load to [url] carries:
+     * [CHROME_STAMP] inside a Google context, the empty override (the
+     * provider's stamp suppressed) everywhere else.
+     */
+    fun identityHeaderValueFor(url: String): String =
+        if (googleContext(url)) CHROME_STAMP else ""
+
     /** How long a re-issued URL remembers it was re-issued. See the KDoc above. */
     const val GUARD_WINDOW_MS = 5_000L
 

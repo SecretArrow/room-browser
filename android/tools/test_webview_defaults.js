@@ -58,6 +58,9 @@ const GOOGLE_AUTH_NAVIGATION_KT = path.join(
 const PROBE_KT = path.join(
     ANDROID,
     'engine/src/main/kotlin/com/roombrowser/engine/webview/RequestedWithProbe.kt');
+const REQUESTED_WITH_CLEANER_KT = path.join(
+    ANDROID,
+    'engine/src/main/kotlin/com/roombrowser/engine/webview/RequestedWithCleaner.kt');
 const GECKO_HOST_KT = path.join(
     ANDROID,
     'engine/src/main/kotlin/com/roombrowser/engine/gecko/GeckoEngineHost.kt');
@@ -210,30 +213,42 @@ if (IS_WEBVIEW) {
 
     // THE LEVER THAT WORKS. The allow-list call above is an empty method body
     // on a current provider, so the main document Google's refusal reads is
-    // kept clean by the loadUrl additional-headers override instead -- the
-    // one mechanism the provider has honoured on every version since 71 --
-    // and page-started navigations into the sign-in hosts are re-issued the
-    // same way in shouldOverrideUrlLoading. These checks pin that mechanism
+    // kept by the loadUrl additional-headers override instead -- the one
+    // mechanism the provider has honoured on every version since 71 -- and
+    // page-started navigations into the sign-in hosts are re-issued the same
+    // way in shouldOverrideUrlLoading. The VALUE is per-URL now: the empty
+    // override was refused like the raw stamp was, while the bare wrapper
+    // that signs in stamps everything with a shipped browser's package -- so
+    // inside a Google context the value is Chrome's applicationId, and
+    // outside it the empty override stands. These checks pin that mechanism
     // at every load site: one missing override is one stamped main-frame
     // request to accounts.google.com.
     fixture('webview-identity-headers', function () {
         const session = stripKotlinComments(read(WEBVIEW_SESSION_KT));
         matches(
             session,
-            /private val identityHeaders: Map<String, String> = mapOf\("X-Requested-With" to ""\)/,
-            'the identity headers carry an EMPTY X-Requested-With override');
+            /private fun identityHeadersFor\(url: String\): Map<String, String> =/,
+            'the identity headers are resolved per navigation url');
         matches(
             session,
-            /webView\.loadUrl\(uri, identityHeaders\)/,
-            'loadUri issues every app-initiated load with the identity headers');
+            /mapOf\("X-Requested-With" to GoogleAuthNavigation\.identityHeaderValueFor\(url\)\)/,
+            'the identity header value comes from the shared Google policy, never a local literal');
         matches(
             session,
-            /view\.loadUrl\(url, identityHeaders\)/,
-            'the sign-in re-issue loads with the identity headers');
+            /webView\.loadUrl\(uri, identityHeadersFor\(uri\)\)/,
+            'loadUri issues every app-initiated load with the per-url identity headers');
         matches(
             session,
-            /view\.loadUrl\(decision\.url, identityHeaders\)/,
-            'the HTTPS-upgrade LoadDifferent answer loads with the identity headers');
+            /view\.loadUrl\(url, identityHeadersFor\(url\)\)/,
+            'the sign-in re-issue loads with the per-url identity headers');
+        matches(
+            session,
+            /view\.loadUrl\(decision\.url, identityHeadersFor\(decision\.url\)\)/,
+            'the HTTPS-upgrade LoadDifferent answer loads with the per-url identity headers');
+        matches(
+            session,
+            /RequestedWithCleaner\.shouldClean\(request, mainFrameUrl\)/,
+            'the pre-emptive cleaner widens sub-resource scope by the live page url');
         matches(
             session,
             /RequestedWithProbe\.record\(request\.requestHeaders, request\.isForMainFrame\)/,
@@ -250,6 +265,18 @@ if (IS_WEBVIEW) {
         const nav = stripKotlinComments(read(GOOGLE_AUTH_NAVIGATION_KT));
         matches(
             nav,
+            /const val CHROME_STAMP = "com\.android\.chrome"/,
+            'the Google-context stamp is Chrome\'s real Android applicationId');
+        matches(
+            nav,
+            /fun identityHeaderValueFor\(url: String\): String =\s*\n\s*if \(googleContext\(url\)\) CHROME_STAMP else ""/,
+            'Google contexts stamp Chrome; everywhere else the empty override stands');
+        matches(
+            nav,
+            /fun googleContext\(url: String\): Boolean =\s*\n\s*isSignInTarget\(url\) \|\| isGoogleOwnedHost\(url\)/,
+            'the Chrome-stamp scope is the sign-in hosts plus everything Google-owned');
+        matches(
+            nav,
             /"accounts\.google\.com",\s*\n\s*"accounts\.youtube\.com",\s*\n\s*"myaccount\.google\.com",/,
             'the sign-in host list is the three surfaces a user reaches by clicking');
         matches(
@@ -264,6 +291,16 @@ if (IS_WEBVIEW) {
             nav,
             /nowMs - lastReissuedAtMs < GUARD_WINDOW_MS/,
             'the guard window recognises the re-issue echo so the navigation terminates');
+
+        const cleaner = stripKotlinComments(read(REQUESTED_WITH_CLEANER_KT));
+        matches(
+            cleaner,
+            /rebuilt\[name\] = GoogleAuthNavigation\.CHROME_STAMP/,
+            'the re-issued request REWRITES the stamp to Chrome, it does not drop it');
+        matches(
+            cleaner,
+            /return pageUrl != null && GoogleAuthNavigation\.isGoogleOwnedHost\(pageUrl\)/,
+            'the cleaner\'s widened sub-resource scope is bounded by Google-owned pages');
 
         const probe = stripKotlinComments(read(PROBE_KT));
         matches(

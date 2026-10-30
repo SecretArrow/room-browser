@@ -210,12 +210,17 @@ internal class WebViewEngineSession(
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
 
     /**
-     * The headers every main-frame navigation this session issues carries:
-     * an EMPTY `X-Requested-With`, which the provider honours on every
-     * version since 71 (an app-supplied additional header wins over the
-     * engine's own `applicationId` stamp). This is the only X-Requested-With
-     * lever that works, and without it Google's sign-in answers the stamped
-     * main document with "This browser or app may not be secure".
+     * The headers every main-frame navigation this session issues carries.
+     * The VALUE is per-URL now ([GoogleAuthNavigation.identityHeaderValueFor]):
+     * an `X-Requested-With` the app supplies wins over the engine's own
+     * `applicationId` stamp on every provider since 71, and what it wins AS
+     * changed with the evidence. The empty override -- the v1.0.193/194
+     * answer -- left the header absent, and the refusal outlived it; the bare
+     * wrapper that signs in from the same handset stamps EVERYTHING with a
+     * shipped browser's package. So inside a Google context the value is
+     * Chrome's applicationId ([GoogleAuthNavigation.CHROME_STAMP]), one
+     * coherent story beside a UA without the `wv` token and client hints that
+     * name `Google Chrome`; everywhere else the empty override stands.
      *
      * WHAT IT DOES NOT REACH, honestly: engine-internal navigations the app
      * never issues. A same-origin redirect re-sends the additional headers,
@@ -225,9 +230,11 @@ internal class WebViewEngineSession(
      * provider that still stamps, that one hop carries the package name.
      * `GoogleAuthNavigation` narrows the remaining gap the only way left:
      * page-started navigations into the sign-in hosts are re-issued through
-     * `loadUrl` in `shouldOverrideUrlLoading`, which is where those arrive.
+     * `loadUrl` in `shouldOverrideUrlLoading`, which is where those arrive,
+     * and the pre-emptive cleaner rewrites what still slips past.
      */
-    private val identityHeaders: Map<String, String> = mapOf("X-Requested-With" to "")
+    private fun identityHeadersFor(url: String): Map<String, String> =
+        mapOf("X-Requested-With" to GoogleAuthNavigation.identityHeaderValueFor(url))
 
     /** The most recent URL this session re-issued for the sign-in hosts, and when. See [GoogleAuthNavigation]. */
     private var lastReissuedUrl: String? = null
@@ -294,7 +301,7 @@ internal class WebViewEngineSession(
             lastReissuedUrl = uri
             lastReissuedAtMs = System.currentTimeMillis()
         }
-        runCatching { webView.loadUrl(uri, identityHeaders) }
+        runCatching { webView.loadUrl(uri, identityHeadersFor(uri)) }
     }
 
     /**
@@ -570,8 +577,9 @@ internal class WebViewEngineSession(
             //
             // THE LEVER THAT DOES WORK is not a setting at all: every
             // main-frame navigation this session issues goes out through
-            // `loadUrl(uri, identityHeaders)` -- an app-supplied additional
-            // header wins over the engine's stamp on every provider since 71
+            // `loadUrl(uri, identityHeadersFor(uri))` -- an app-supplied
+            // additional header wins over the engine's stamp on every provider
+            // since 71
             // -- and page-started navigations into the sign-in hosts are
             // re-issued the same way in `shouldOverrideUrlLoading` (see
             // [GoogleAuthNavigation]). The probe records main-frame sightings
@@ -1259,7 +1267,14 @@ internal class WebViewEngineSession(
             // the behaviour this object was added on top of.
             if (!blocked) {
                 val cleaned = runCatching {
-                    if (RequestedWithCleaner.shouldClean(request)) {
+                    // A sub-frame's scope is widened by the PAGE it loads on:
+                    // every asset a Google-owned page pulls (the gstatic fonts,
+                    // the googleapis scripts of the login document) rides the
+                    // same rewritten stamp. The volatile anchor is safe to read
+                    // here -- this callback already runs on the WebView's
+                    // background thread, and the anchor exists for exactly
+                    // this cross-thread read.
+                    if (RequestedWithCleaner.shouldClean(request, mainFrameUrl)) {
                         RequestedWithCleaner.execute(url, request.requestHeaders)
                     } else {
                         null
@@ -1332,7 +1347,7 @@ internal class WebViewEngineSession(
             // browser" would go out exactly here -- the click on Google's own
             // Sign in button being the everyday case. Abandoning this
             // navigation and re-issuing it through `loadUrl` with
-            // [identityHeaders] is the same mechanism the HTTPS upgrade's
+            // [identityHeadersFor] is the same mechanism the HTTPS upgrade's
             // LoadDifferent answer already uses, one callback later in the
             // engine's accounting and with the package name off the wire.
             // [GoogleAuthNavigation] carries the full reasoning: main frame,
@@ -1352,7 +1367,7 @@ internal class WebViewEngineSession(
                 lastReissuedUrl = url
                 lastReissuedAtMs = System.currentTimeMillis()
                 mainFrameUrl = url
-                view.post { runCatching { view.loadUrl(url, identityHeaders) } }
+                view.post { runCatching { view.loadUrl(url, identityHeadersFor(url)) } }
                 return true
             }
             return when (decision) {
@@ -1363,7 +1378,7 @@ internal class WebViewEngineSession(
                 NavigationDecision.Block -> true
                 is NavigationDecision.LoadDifferent -> {
                     mainFrameUrl = decision.url
-                    view.post { runCatching { view.loadUrl(decision.url, identityHeaders) } }
+                    view.post { runCatching { view.loadUrl(decision.url, identityHeadersFor(decision.url)) } }
                     true
                 }
             }
@@ -1423,7 +1438,7 @@ internal class WebViewEngineSession(
             ) {
                 lastReissuedUrl = url
                 lastReissuedAtMs = System.currentTimeMillis()
-                view.post { runCatching { view.loadUrl(url, identityHeaders) } }
+                view.post { runCatching { view.loadUrl(url, identityHeadersFor(url)) } }
             }
             // GOOGLE SIGN-IN RECOVERY. When the refusal help article starts
             // loading -- the destination the "This browser or app may not be

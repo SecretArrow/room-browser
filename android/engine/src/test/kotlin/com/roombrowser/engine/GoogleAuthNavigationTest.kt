@@ -136,6 +136,63 @@ class GoogleAuthNavigationTest {
         assertFalse(GoogleAuthNavigation.isGoogleOwnedHost("about:home"))
     }
 
+    // ---- identityHeaderValueFor -------------------------------------------
+
+    @Test
+    fun `a google context carries chrome's applicationId as the stamp`() {
+        // The value a bare wrapper cannot send and Google's allowlist accepts:
+        // the evidence-backed answer to the empty override that was refused.
+        assertEquals(
+            GoogleAuthNavigation.CHROME_STAMP,
+            GoogleAuthNavigation.identityHeaderValueFor("https://accounts.google.com/ServiceLogin")
+        )
+        assertEquals(
+            GoogleAuthNavigation.CHROME_STAMP,
+            GoogleAuthNavigation.identityHeaderValueFor("https://www.google.com/search?q=x")
+        )
+        assertEquals(
+            GoogleAuthNavigation.CHROME_STAMP,
+            GoogleAuthNavigation.identityHeaderValueFor("https://mail.google.com/mail/u/0")
+        )
+        assertEquals(
+            GoogleAuthNavigation.CHROME_STAMP,
+            GoogleAuthNavigation.identityHeaderValueFor("https://www.youtube.com/watch?v=x")
+        )
+        assertEquals(
+            GoogleAuthNavigation.CHROME_STAMP,
+            GoogleAuthNavigation.identityHeaderValueFor("https://accounts.youtube.com/")
+        )
+    }
+
+    @Test
+    fun `outside google the identity header stays the empty override`() {
+        assertEquals(
+            "",
+            GoogleAuthNavigation.identityHeaderValueFor("https://example.com/login")
+        )
+        assertEquals(
+            "",
+            GoogleAuthNavigation.identityHeaderValueFor("https://notgoogle.com/")
+        )
+        // The lookalike discipline every host list here applies.
+        assertEquals(
+            "",
+            GoogleAuthNavigation.identityHeaderValueFor("https://google.com.evil.example/")
+        )
+        assertEquals(
+            "",
+            GoogleAuthNavigation.identityHeaderValueFor("about:home")
+        )
+    }
+
+    @Test
+    fun `the chrome stamp is chrome's real android applicationId`() {
+        // Not a made-up value: the exact applicationId Chrome on Android ships
+        // with. A typo here would leave the wire claiming a package nobody
+        // allowlists.
+        assertEquals("com.android.chrome", GoogleAuthNavigation.CHROME_STAMP)
+    }
+
     // ---- shouldReissueWithIdentityHeaders --------------------------------
 
     private fun reissue(
