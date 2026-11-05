@@ -46,9 +46,10 @@ the device.
   in-app DoH/DoT configuration protects the app's own connections. Users who
   need DNS privacy for page loads should also enable Android's system-wide
   Private DNS (DoT) — the DNS settings screen explains this.
-- WebRTC local-IP exposure is limited by a page script, per profile, and the
-  limits are stated rather than implied. "Restrict local IP exposure" (the
-  default) drops ICE candidates whose address is a real IPv4/IPv6 literal;
+- WebRTC runs with the engine's own behavior out of the box (the DEFAULT
+  policy, 2026-11 revision); a per-profile page script can tighten it, and
+  the limits are stated rather than implied. "Restrict local IP exposure"
+  (opt-in) drops ICE candidates whose address is a real IPv4/IPv6 literal;
   mDNS host candidates — which carry no address — and STUN/TURN candidates
   are kept so calls still connect. "Disabled" removes the peer-connection
   API from the page. It is not total: document-start scripts run in the

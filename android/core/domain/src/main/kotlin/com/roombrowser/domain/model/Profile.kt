@@ -196,7 +196,13 @@ data class ProfileSettings(
     val blockThirdPartyCookies: Boolean = false,
     val blockMixedContent: Boolean = false,
     val javascriptEnabled: Boolean = true,
-    val webRtcPolicy: WebRtcPolicy = WebRtcPolicy.RESTRICT_LOCAL_IP,
+    // WebRTC joins the compatibility-first defaults (2026-11 revision): the
+    // engine's own behavior out of the box, no restriction shim. The previous
+    // default (RESTRICT_LOCAL_IP) rewrote ICE candidates on every call site
+    // for every profile, including the ones that never asked for it; the
+    // option stays available per profile in Settings, and profiles that
+    // already stored an explicit value keep it.
+    val webRtcPolicy: WebRtcPolicy = WebRtcPolicy.DEFAULT,
     val searchSuggestions: Boolean = false,
     // Desktop mode default
     val desktopModeDefault: Boolean = false,
