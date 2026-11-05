@@ -3,6 +3,7 @@ package com.roombrowser.domain.model
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.domain.agent.AgentPermissions
 import com.roombrowser.domain.agent.AgentTools
+import kotlinx.serialization.json.Json
 import org.junit.Test
 
 class ProfileModelTest {
@@ -149,6 +150,26 @@ class ProfileModelTest {
         // portals and plain-http LAN endpoints), search defaults to Google.
         assertThat(s.httpsUpgrade).isFalse()
         assertThat(s.searchEngineId).isEqualTo("google")
+        // 2026-11: WebRTC joins the compatibility-first defaults — the
+        // engine's own behavior out of the box, no ICE-rewriting shim for
+        // profiles that never asked for one. The stricter policies stay
+        // opt-in per profile in Settings.
+        assertThat(s.webRtcPolicy).isEqualTo(WebRtcPolicy.DEFAULT)
+    }
+
+    @Test
+    fun `an explicit stored webrtc policy survives the settings round trip`() {
+        // ProfileRepositoryImpl stores settings_json with encodeDefaults=true,
+        // so a profile that lived under the old default keeps the value it
+        // carries verbatim, and a fresh profile decodes back to the new one.
+        val json = Json { encodeDefaults = true; ignoreUnknownKeys = true }
+        val fresh = json.encodeToString(ProfileSettings.serializer(), ProfileSettings())
+        assertThat(json.decodeFromString(ProfileSettings.serializer(), fresh).webRtcPolicy)
+            .isEqualTo(WebRtcPolicy.DEFAULT)
+        val restrict = ProfileSettings(webRtcPolicy = WebRtcPolicy.RESTRICT_LOCAL_IP)
+        val stored = json.encodeToString(ProfileSettings.serializer(), restrict)
+        assertThat(json.decodeFromString(ProfileSettings.serializer(), stored).webRtcPolicy)
+            .isEqualTo(WebRtcPolicy.RESTRICT_LOCAL_IP)
     }
 
     @Test
