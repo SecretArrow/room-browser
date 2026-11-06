@@ -1,5 +1,6 @@
 package com.roombrowser.engine.webview
 
+import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.MimeTypeMap
 import android.webkit.WebResourceRequest
@@ -258,6 +259,7 @@ object RequestedWithCleaner {
                 // made invisible, and the non-2xx finals too (flow state
                 // sometimes rides an error page's headers).
                 val cookieManager = CookieManager.getInstance()
+                var captured = 0
                 for ((name, values) in headerFields) {
                     if (!name.equals("Set-Cookie", ignoreCase = true)) continue
                     // Java already split on the commas INSIDE the dates;
@@ -265,9 +267,17 @@ object RequestedWithCleaner {
                     // response plants debris cookies that grow into the
                     // 400-malformed jar.
                     for (cookie in mergeSetCookieFragments(values.orEmpty())) {
-                        runCatching { cookieManager.setCookie(hopUrl, cookie) }
+                        if (runCatching { cookieManager.setCookie(hopUrl, cookie) }
+                                .getOrDefault(false)
+                        ) captured++
                     }
                 }
+                Log.i(
+                    "RoomGoogleTrace",
+                    "hop status=" + status +
+                        " setCookieCaptured=" + captured +
+                        " url=" + hopUrl
+                )
 
                 if (status in 300..399) {
                     val location = connection.getHeaderField("Location")

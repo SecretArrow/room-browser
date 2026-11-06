@@ -1292,8 +1292,35 @@ internal class WebViewEngineSession(
                     // background thread, and the anchor exists for exactly
                     // this cross-thread read.
                     if (RequestedWithCleaner.shouldClean(request, mainFrameUrl)) {
-                        RequestedWithCleaner.execute(url, request.requestHeaders)
+                        RequestedWithCleaner.execute(url, request.requestHeaders).also {
+                            // THE WIRE TRACE for the live sign-in E2E: every
+                            // Google-context request states its method, its
+                            // main-frame-ness, and whether the cleaner served
+                            // it or the engine took it natively (the cleaner
+                            // declines every POST -- no body to re-issue -- and
+                            // every non-2xx it could not present). The failed
+                            // test's logcat lands in the e2e artifact, so the
+                            // sequence around the "Something went wrong" page
+                            // is readable without another harness.
+                            Log.i(
+                                "RoomGoogleTrace",
+                                "served=" + (it != null) +
+                                    " method=" + request.method +
+                                    " mainFrame=" + request.isForMainFrame +
+                                    " url=" + url
+                            )
+                        }
                     } else {
+                        if (GoogleAuthNavigation.googleContext(url) ||
+                            GoogleAuthNavigation.isGoogleOwnedHost(mainFrameUrl ?: "")
+                        ) {
+                            Log.i(
+                                "RoomGoogleTrace",
+                                "served=native method=" + request.method +
+                                    " mainFrame=" + request.isForMainFrame +
+                                    " url=" + url
+                            )
+                        }
                         null
                     }
                 }.getOrNull()
