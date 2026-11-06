@@ -319,8 +319,14 @@ object RequestedWithCleaner {
      * them. Null for anything unusable -- the caller falls back to the engine
      * rather than follow a location it cannot form a URL from.
      */
-    internal fun resolveRedirect(baseUrl: String, location: String): String? =
-        runCatching { URL(URL(baseUrl), location.trim()).toString() }.getOrNull()
+    internal fun resolveRedirect(baseUrl: String, location: String): String? {
+        val trimmed = location.trim()
+        // A blank location is not "stay here": URL(context, "") would answer
+        // the base URL itself and the caller would re-request the hop it
+        // just followed. Blank declines.
+        if (trimmed.isEmpty()) return null
+        return runCatching { URL(URL(baseUrl), trimmed).toString() }.getOrNull()
+    }
 
     /** A content type the server did not say, guessed from the URL's extension. */
     private fun guessMime(url: String): String {
