@@ -199,14 +199,21 @@ class GoogleSignInLiveE2eTest {
      * ("Sign in - Google Accounts", which exact-match ignores) are excluded
      * by the geometry, not by guessing at node classes -- WebView exposes
      * them all as plain views.
+     *
+     * ALL labels are gathered BEFORE the geometry filter, never chained
+     * with ifEmpty: the run-671 dump caught that trap. The page serves the
+     * button as "Next" once the form state settles, while a "Sign in"
+     * HEADING is always present above the field; an ifEmpty chain finds the
+     * heading, deems the label found, filters the heading out by geometry
+     * and returns null with the real button sitting on screen.
      */
     private fun findSubmitButton(): UiObject2? {
         val typedBottom = device.findObjects(By.textContains(account))
             .mapNotNull { runCatching { it.visibleBounds.bottom }.getOrNull() }
             .maxOrNull()
-        return device.findObjects(By.text("Sign in"))
-            .ifEmpty { device.findObjects(By.text("Berikutnya")) }
-            .ifEmpty { device.findObjects(By.text("Next")) }
+        return (device.findObjects(By.text("Sign in")) +
+            device.findObjects(By.text("Berikutnya")) +
+            device.findObjects(By.text("Next")))
             .filter { node ->
                 runCatching { node.visibleBounds }.isSuccess &&
                     (typedBottom == null || node.visibleBounds.top > typedBottom)
@@ -289,7 +296,7 @@ class GoogleSignInLiveE2eTest {
         }
         assertTrue(
             "The submit button (Sign in / Berikutnya / Next) was not found after " +
-                "typing the address and ${swipes} scroll swipes. Screen was:\n" +
+                "typing the address and $swipes scroll swipes. Screen was:\n" +
                 textsOnScreen().joinToString(" | "),
             next != null
         )
