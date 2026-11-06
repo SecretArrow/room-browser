@@ -55,12 +55,25 @@ import java.net.URL
  * dropped -- absence was the v1.0.193/194 answer and the refusal outlived
  * it, while the bare wrapper that signs in sends a KNOWN browser package
  * everywhere. The re-issued request carries the jar's own `Cookie` header
- * (read for the target URL, so the re-issued GET sees exactly the session
- * state the engine's native request would have seen) and every response
- * `Set-Cookie` is fed back into [CookieManager], so the session's cookie
- * state stays exactly what the engine would have built. Redirects are
- * followed by the connection itself, which is a quiet bonus: a hop the
- * ENGINE would have re-stamped is re-issued by code that stamps Chrome.
+ * (read fresh PER HOP, so the re-issued GET sees exactly the session state
+ * the engine's native request would have seen) and every hop's `Set-Cookie`
+ * is fed back into [CookieManager], so the session's cookie state stays
+ * exactly what the engine would have built.
+ *
+ * REDIRECTS ARE FOLLOWED BY HAND, one hop per pass. Java's transparent
+ * following never surfaces the intermediate responses, and their Set-Cookie
+ * headers are exactly the sign-in flow's own state -- `__Host-GAPS`,
+ * `__Secure-ENID` and friends, set on the 302 chain into the identifier
+ * page. The transparent version dropped every one of them: the identifier
+ * form still rendered (its own hop's cookies made it), but the form POST
+ * the cleaner must never touch -- a `WebResourceRequest` carries no body,
+ * so there is nothing to re-issue it WITH -- rode a session missing its
+ * flow state, and Google's front end answers that with the generic
+ * "Something went wrong" page instead of the password step. Run 673's live
+ * screen dump pinned it end to end: form rendered, address typed, submit
+ * clicked, error page back. Per-hop capture is the browser behavior the
+ * jar always needed. (The quiet bonus survives: a hop the ENGINE would
+ * have re-stamped is followed by code that stamps Chrome.)
  *
  * THE SET-COOKIE MERGE, and the jar poisoning it closes. Java's
  * `headerFields` splits every header value on commas -- including the comma
@@ -208,75 +221,106 @@ object RequestedWithCleaner {
      * should present -- always falling back to the native request.
      */
     fun execute(url: String, requestHeaders: Map<String, String?>): WebResourceResponse? {
-        val connection = URL(url).openConnection() as HttpURLConnection
-        try {
-            connection.connectTimeout = 10_000
-            connection.readTimeout = 15_000
-            connection.instanceFollowRedirects = true
-            connection.requestMethod = "GET"
-            for ((name, value) in reissueHeaders(requestHeaders)) {
-                runCatching { connection.setRequestProperty(name, value) }
-            }
-
-            // The re-issued request carries the jar's own view of the target
-            // URL, exactly as the native request would have. The request
-            // headers the WebView hands to shouldInterceptRequest do not
-            // include `Cookie`, so this is the only way the claim above is
-            // true. A jar that has nothing for the URL adds no header.
-            if (requestHeaders.keys.none { it.equals("Cookie", ignoreCase = true) }) {
-                runCatching {
-                    CookieManager.getInstance().getCookie(url)
-                        ?.takeIf { it.isNotEmpty() }
-                        ?.let { connection.setRequestProperty("Cookie", it) }
+        var hopUrl = url
+        repeat(MAX_REDIRECT_HOPS) {
+            val connection = URL(hopUrl).openConnection() as HttpURLConnection
+            try {
+                connection.connectTimeout = 10_000
+                connection.readTimeout = 15_000
+                // One hop per pass -- see the class KDoc: the transparent
+                // following was where the sign-in flow's state cookies died.
+                connection.instanceFollowRedirects = false
+                connection.requestMethod = "GET"
+                for ((name, value) in reissueHeaders(requestHeaders)) {
+                    runCatching { connection.setRequestProperty(name, value) }
                 }
-            }
 
-            val status = connection.responseCode
-            if (status < 200 || status > 299) {
+                // The re-issued request carries the jar's own view of THIS
+                // hop's URL, freshly read per hop -- a cookie an earlier hop
+                // set reaches the next one exactly as a browser's would. The
+                // request headers the WebView hands to shouldInterceptRequest
+                // do not include `Cookie`, so this is the only way the claim
+                // above is true. A jar that has nothing for the URL adds no
+                // header.
+                if (requestHeaders.keys.none { it.equals("Cookie", ignoreCase = true) }) {
+                    runCatching {
+                        CookieManager.getInstance().getCookie(hopUrl)
+                            ?.takeIf { it.isNotEmpty() }
+                            ?.let { connection.setRequestProperty("Cookie", it) }
+                    }
+                }
+
+                val status = connection.responseCode
+                val headerFields = connection.headerFields.orEmpty()
+
+                // EVERY hop's Set-Cookie enters the jar under the URL that
+                // answered it -- the redirect hops the transparent following
+                // made invisible, and the non-2xx finals too (flow state
+                // sometimes rides an error page's headers).
+                val cookieManager = CookieManager.getInstance()
+                for ((name, values) in headerFields) {
+                    if (!name.equals("Set-Cookie", ignoreCase = true)) continue
+                    // Java already split on the commas INSIDE the dates;
+                    // re-join before feeding the jar, or every Google
+                    // response plants debris cookies that grow into the
+                    // 400-malformed jar.
+                    for (cookie in mergeSetCookieFragments(values.orEmpty())) {
+                        runCatching { cookieManager.setCookie(hopUrl, cookie) }
+                    }
+                }
+
+                if (status in 300..399) {
+                    val location = connection.getHeaderField("Location")
+                    runCatching { connection.inputStream?.close() }
+                    connection.disconnect()
+                    if (location.isNullOrBlank()) return null
+                    hopUrl = resolveRedirect(hopUrl, location) ?: return null
+                    return@repeat
+                }
+                if (status < 200 || status > 299) {
+                    runCatching { connection.disconnect() }
+                    return null
+                }
+
+                val contentType = connection.contentType
+                val mime = contentType?.substringBefore(';')?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: guessMime(hopUrl)
+                val encoding = contentType
+                    ?.substringAfter("charset=", "")
+                    ?.substringBefore(';')
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+
+                val responseHeaders = headerFields
+                    .filterKeys { it != null && it.lowercase() !in DROPPED_RESPONSE_HEADERS }
+                    .mapKeys { it.key.orEmpty() }
+                    .mapValues { it.value?.joinToString(", ").orEmpty() }
+
+                val response = WebResourceResponse(mime, encoding, connection.inputStream)
+                response.responseHeaders = responseHeaders
+                return response
+            } catch (_: Throwable) {
                 runCatching { connection.disconnect() }
                 return null
             }
-
-            // The FINAL url after the connection's own redirects -- cookies the
-            // redirect responses set belong to the hosts that set them, and the
-            // response headers describe the last hop.
-            val finalUrl = connection.url.toString()
-            val headerFields = connection.headerFields.orEmpty()
-
-            val cookieManager = CookieManager.getInstance()
-            for ((name, values) in headerFields) {
-                if (!name.equals("Set-Cookie", ignoreCase = true)) continue
-                // Java already split on the commas INSIDE the dates; re-join
-                // before feeding the jar, or every Google response plants
-                // debris cookies that grow into the 400-malformed jar.
-                for (cookie in mergeSetCookieFragments(values.orEmpty())) {
-                    runCatching { cookieManager.setCookie(finalUrl, cookie) }
-                }
-            }
-
-            val contentType = connection.contentType
-            val mime = contentType?.substringBefore(';')?.trim()
-                ?.takeIf { it.isNotEmpty() }
-                ?: guessMime(url)
-            val encoding = contentType
-                ?.substringAfter("charset=", "")
-                ?.substringBefore(';')
-                ?.trim()
-                ?.takeIf { it.isNotEmpty() }
-
-            val responseHeaders = headerFields
-                .filterKeys { it != null && it.lowercase() !in DROPPED_RESPONSE_HEADERS }
-                .mapKeys { it.key.orEmpty() }
-                .mapValues { it.value?.joinToString(", ").orEmpty() }
-
-            val response = WebResourceResponse(mime, encoding, connection.inputStream)
-            response.responseHeaders = responseHeaders
-            return response
-        } catch (_: Throwable) {
-            runCatching { connection.disconnect() }
-            return null
         }
+        // A chain longer than MAX_REDIRECT_HOPS is a loop; fall back to the
+        // engine rather than spin.
+        return null
     }
+
+    /** The cap on redirect hops one re-issued GET may follow. */
+    internal const val MAX_REDIRECT_HOPS = 10
+
+    /**
+     * [location] resolved against [baseUrl]: absolute locations pass through,
+     * protocol-relative and relative ones resolve against the hop that named
+     * them. Null for anything unusable -- the caller falls back to the engine
+     * rather than follow a location it cannot form a URL from.
+     */
+    internal fun resolveRedirect(baseUrl: String, location: String): String? =
+        runCatching { URL(URL(baseUrl), location.trim()).toString() }.getOrNull()
 
     /** A content type the server did not say, guessed from the URL's extension. */
     private fun guessMime(url: String): String {

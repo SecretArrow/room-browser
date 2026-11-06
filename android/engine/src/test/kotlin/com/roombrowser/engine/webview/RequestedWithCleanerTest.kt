@@ -303,4 +303,43 @@ class RequestedWithCleanerTest {
     fun an_empty_set_cookie_list_stays_empty() {
         assertThat(RequestedWithCleaner.mergeSetCookieFragments(emptyList())).isEmpty()
     }
+
+    @Test
+    fun a_relative_location_resolves_against_the_hop_that_named_it() {
+        // The ServiceLogin 302 chain: every hop names its successor with a
+        // path-only Location. Manual redirect following is what gets each
+        // hop's Set-Cookie into the jar (the flow state the form POST
+        // needs), so the resolution rule is pinned here.
+        assertThat(
+            RequestedWithCleaner.resolveRedirect(
+                "https://accounts.google.com/ServiceLogin?hl=en",
+                "/v3/signin/identifier?flowName=GlifWebSignIn"
+            )
+        ).isEqualTo("https://accounts.google.com/v3/signin/identifier?flowName=GlifWebSignIn")
+    }
+
+    @Test
+    fun absolute_and_protocol_relative_locations_resolve_to_their_own_host() {
+        assertThat(
+            RequestedWithCleaner.resolveRedirect(
+                "https://accounts.google.com/a",
+                "https://www.google.com/?continue=x"
+            )
+        ).isEqualTo("https://www.google.com/?continue=x")
+        assertThat(
+            RequestedWithCleaner.resolveRedirect(
+                "https://accounts.google.com/a",
+                "//www.google.com/b"
+            )
+        ).isEqualTo("https://www.google.com/b")
+    }
+
+    @Test
+    fun an_unusable_location_declines_instead_of_throwing() {
+        // Null sends the caller back to the engine's native path -- never a
+        // crash, never a follow of a location no URL can be formed from.
+        assertThat(RequestedWithCleaner.resolveRedirect("https://accounts.google.com/a", " "))
+            .isNull()
+        assertThat(RequestedWithCleaner.resolveRedirect("not a url", "/b")).isNull()
+    }
 }
