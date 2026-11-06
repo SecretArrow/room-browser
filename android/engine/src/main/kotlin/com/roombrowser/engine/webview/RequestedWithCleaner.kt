@@ -61,20 +61,31 @@ import java.net.URL
  * is fed back into [CookieManager], so the session's cookie state stays
  * exactly what the engine would have built.
  *
- * REDIRECTS ARE FOLLOWED BY HAND, one hop per pass. Java's transparent
- * following never surfaces the intermediate responses, and their Set-Cookie
- * headers are exactly the sign-in flow's own state -- `__Host-GAPS`,
- * `__Secure-ENID` and friends, set on the 302 chain into the identifier
- * page. The transparent version dropped every one of them: the identifier
- * form still rendered (its own hop's cookies made it), but the form POST
- * the cleaner must never touch -- a `WebResourceRequest` carries no body,
- * so there is nothing to re-issue it WITH -- rode a session missing its
- * flow state, and Google's front end answers that with the generic
- * "Something went wrong" page instead of the password step. Run 673's live
- * screen dump pinned it end to end: form rendered, address typed, submit
- * clicked, error page back. Per-hop capture is the browser behavior the
- * jar always needed. (The quiet bonus survives: a hop the ENGINE would
- * have re-stamped is followed by code that stamps Chrome.)
+ * REDIRECTS SPLIT BY FRAME. Java's transparent following never surfaces
+ * the intermediate responses, and their Set-Cookie headers are exactly
+ * the sign-in flow's own state -- `__Host-GAPS`, `__Secure-ENID` and
+ * friends, set on the 302 chain into the identifier page. Run 673's live
+ * screen dump pinned that loss, and run 680's wire trace pinned the
+ * opposite extreme: per-hop capture fixed the jar, but a redirect
+ * followed INSIDE execute() serves the destination document under the
+ * REQUEST'S url -- the WebView's window.location stays on
+ * /ServiceLogin while the document is the /v3/signin/identifier page,
+ * and Google's own page telemetry proved it (the page's batchexecute
+ * XHR reported source-path=/ServiceLogin). The dsh flow state that
+ * binds the form to the session lives in the redirect TARGET's query
+ * string; a page that cannot see its own redirect answers every submit
+ * with "Something went wrong".
+ *
+ * So a MAIN FRAME's redirect is not followed here at all: a 302 on a
+ * main-frame re-issue returns null, and the WEBVIEW re-requests and
+ * follows the Location itself -- window.location, the omnibox and the
+ * page's own view of its flow state become the true target URL, cookies
+ * ride the engine's native storage, and the one re-request carries the
+ * app's honest package stamp (the bare wrapper that signs in sends
+ * nothing else). The next hop re-enters shouldInterceptRequest as its
+ * own request and is cleaned like any main-frame load. Sub-resources
+ * have no location to protect and their 302s are still followed BY
+ * HAND, one hop per pass, each hop's Set-Cookie merged into the jar.
  *
  * THE SET-COOKIE MERGE, and the jar poisoning it closes. Java's
  * `headerFields` splits every header value on commas -- including the comma
@@ -219,9 +230,16 @@ object RequestedWithCleaner {
      * Re-issue [url] with the stamp rewritten (per [reissueHeaders]) and build
      * the response the engine would have delivered. `null` on ANY failure --
      * connection refused, timeout, a non-2xx that the engine's own machinery
-     * should present -- always falling back to the native request.
+     * should present, and a MAIN FRAME's 3xx, which the WebView must follow
+     * itself so window.location lands on the redirect's true target (the
+     * sign-in flow's dsh state lives there) -- always falling back to the
+     * native request.
      */
-    fun execute(url: String, requestHeaders: Map<String, String?>): WebResourceResponse? {
+    fun execute(
+        url: String,
+        requestHeaders: Map<String, String?>,
+        isForMainFrame: Boolean,
+    ): WebResourceResponse? {
         var hopUrl = url
         repeat(MAX_REDIRECT_HOPS) {
             val connection = URL(hopUrl).openConnection() as HttpURLConnection
@@ -290,6 +308,23 @@ object RequestedWithCleaner {
                     runCatching { connection.inputStream?.close() }
                     connection.disconnect()
                     if (location.isNullOrBlank()) return null
+                    if (isForMainFrame) {
+                        // A main frame's redirect is the WEBVIEW's to follow:
+                        // serving the destination under the requested URL
+                        // strands window.location one hop behind, and the
+                        // sign-in flow's state (dsh) lives in the redirect
+                        // target's query string -- the page that cannot see
+                        // its own redirect cannot sign in. Null hands the hop
+                        // back; the engine re-requests and follows natively,
+                        // and the next hop re-enters shouldInterceptRequest
+                        // as its own cleaned request.
+                        Log.i(
+                            "RoomGoogleTrace",
+                            "mainFrame redirect handed to the engine" +
+                                " status=" + status + " url=" + hopUrl
+                        )
+                        return null
+                    }
                     hopUrl = resolveRedirect(hopUrl, location) ?: return null
                     return@repeat
                 }

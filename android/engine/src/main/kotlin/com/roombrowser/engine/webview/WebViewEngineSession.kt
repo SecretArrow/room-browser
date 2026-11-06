@@ -1292,7 +1292,11 @@ internal class WebViewEngineSession(
                     // background thread, and the anchor exists for exactly
                     // this cross-thread read.
                     if (RequestedWithCleaner.shouldClean(request, mainFrameUrl)) {
-                        RequestedWithCleaner.execute(url, request.requestHeaders).also {
+                        RequestedWithCleaner.execute(
+                            url,
+                            request.requestHeaders,
+                            request.isForMainFrame
+                        ).also {
                             // THE WIRE TRACE for the live sign-in E2E: every
                             // Google-context request states its method, its
                             // main-frame-ness, and whether the cleaner served
