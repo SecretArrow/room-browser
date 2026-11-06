@@ -186,6 +186,34 @@ class GoogleSignInLiveE2eTest {
         false
     }
 
+    private fun hideImeIfNeeded() {
+        if (imeShown()) {
+            device.pressBack()
+            device.waitForIdle(600)
+        }
+    }
+
+    /**
+     * The form's action row: a "Sign in" / "Berikutnya" / "Next" node BELOW
+     * the typed address. The heading above the field and the tab title
+     * ("Sign in - Google Accounts", which exact-match ignores) are excluded
+     * by the geometry, not by guessing at node classes -- WebView exposes
+     * them all as plain views.
+     */
+    private fun findSubmitButton(): UiObject2? {
+        val typedBottom = device.findObjects(By.textContains(account))
+            .mapNotNull { runCatching { it.visibleBounds.bottom }.getOrNull() }
+            .maxOrNull()
+        return device.findObjects(By.text("Sign in"))
+            .ifEmpty { device.findObjects(By.text("Berikutnya")) }
+            .ifEmpty { device.findObjects(By.text("Next")) }
+            .filter { node ->
+                runCatching { node.visibleBounds }.isSuccess &&
+                    (typedBottom == null || node.visibleBounds.top > typedBottom)
+            }
+            .maxByOrNull { it.visibleBounds.top }
+    }
+
     @Test
     fun email_step_accepts_the_address_and_password_page_renders() {
         val profileId = createProfile()
@@ -236,27 +264,33 @@ class GoogleSignInLiveE2eTest {
             typeInto(formField!!)
         )
 
-        // --- Step 4: submit via the page's own button. The CI screen dump
-        // settled the label question: the ServiceLogin page under hl=en
-        // serves "Sign in" for the email step (a "Next" hunt failed at
-        // 02:45Z on run 667 with the button in plain sight); Indonesian
-        // pages serve "Berikutnya". "Sign in" is also the page TITLE, so
-        // the candidates are filtered to buttons/links BELOW the typed
-        // address — the form's action row, not the document header.
-        val typedBottom = device.findObjects(By.textContains(account))
-            .mapNotNull { runCatching { it.visibleBounds.bottom }.getOrNull() }
-            .maxOrNull()
-        val next = device.findObjects(By.text("Sign in"))
-            .ifEmpty { device.findObjects(By.text("Berikutnya")) }
-            .ifEmpty { device.findObjects(By.text("Next")) }
-            .filter { node ->
-                runCatching { node.visibleBounds }.isSuccess &&
-                    (typedBottom == null || node.visibleBounds.top > typedBottom)
-            }
-            .maxByOrNull { it.visibleBounds.top }
+        // --- Step 4: submit via the page's own button. Two run-667/669
+        // dump facts settled the shape: the ServiceLogin page under hl=en
+        // serves "Sign in" (not "Next") for the email step, and on the
+        // emulator's short screen the button sits BELOW the fold -- the
+        // dump literally carries the page's own "Scroll down" hint, and
+        // the only "Sign in" in the tree was the heading above the typed
+        // address. So: hide the IME (it eats half the screen), then swipe
+        // up until a "Sign in" node appears BELOW the typed address --
+        // the form's action row, never the document header or the tab
+        // title ("Sign in - Google Accounts", which exact-match ignores).
+        hideImeIfNeeded()
+        var next = findSubmitButton()
+        var swipes = 0
+        while (next == null && swipes < 4) {
+            device.swipe(
+                device.displayWidth / 2, device.displayHeight * 3 / 4,
+                device.displayWidth / 2, device.displayHeight / 4,
+                40
+            )
+            device.waitForIdle(600)
+            swipes++
+            next = findSubmitButton()
+        }
         assertTrue(
             "The submit button (Sign in / Berikutnya / Next) was not found after " +
-                "typing the address. Screen was:\n" + textsOnScreen().joinToString(" | "),
+                "typing the address and ${swipes} scroll swipes. Screen was:\n" +
+                textsOnScreen().joinToString(" | "),
             next != null
         )
         clickCenter(next!!)
