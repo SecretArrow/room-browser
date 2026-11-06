@@ -267,9 +267,15 @@ object RequestedWithCleaner {
                     // response plants debris cookies that grow into the
                     // 400-malformed jar.
                     for (cookie in mergeSetCookieFragments(values.orEmpty())) {
-                        if (runCatching { cookieManager.setCookie(hopUrl, cookie) }
-                                .getOrDefault(false)
-                        ) captured++
+                        // setCookie's own return is not part of the contract
+                        // here (older API levels declare it void): the lambda
+                        // answers true itself, so the Result is always
+                        // Boolean whether or not the platform said anything.
+                        val stored = runCatching {
+                            cookieManager.setCookie(hopUrl, cookie)
+                            true
+                        }.getOrDefault(false)
+                        if (stored) captured++
                     }
                 }
                 Log.i(
