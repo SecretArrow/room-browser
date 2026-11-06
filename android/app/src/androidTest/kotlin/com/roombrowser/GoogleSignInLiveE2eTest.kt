@@ -236,15 +236,27 @@ class GoogleSignInLiveE2eTest {
             typeInto(formField!!)
         )
 
-        // --- Step 4: submit via the page's own button. Google's sign-in
-        // buttons are role=button nodes with text "Next" / "Berikutnya".
-        val next = device.findObjects(By.textContains("Next"))
-            .ifEmpty { device.findObjects(By.textContains("Berikutnya")) }
-            .ifEmpty { device.findObjects(By.textContains("lanjut")) }
+        // --- Step 4: submit via the page's own button. The CI screen dump
+        // settled the label question: the ServiceLogin page under hl=en
+        // serves "Sign in" for the email step (a "Next" hunt failed at
+        // 02:45Z on run 667 with the button in plain sight); Indonesian
+        // pages serve "Berikutnya". "Sign in" is also the page TITLE, so
+        // the candidates are filtered to buttons/links BELOW the typed
+        // address — the form's action row, not the document header.
+        val typedBottom = device.findObjects(By.textContains(account))
+            .mapNotNull { runCatching { it.visibleBounds.bottom }.getOrNull() }
+            .maxOrNull()
+        val next = device.findObjects(By.text("Sign in"))
+            .ifEmpty { device.findObjects(By.text("Berikutnya")) }
+            .ifEmpty { device.findObjects(By.text("Next")) }
+            .filter { node ->
+                runCatching { node.visibleBounds }.isSuccess &&
+                    (typedBottom == null || node.visibleBounds.top > typedBottom)
+            }
             .maxByOrNull { it.visibleBounds.top }
         assertTrue(
-            "The Next button was not found after typing the address. Screen was:\n" +
-                textsOnScreen().joinToString(" | "),
+            "The submit button (Sign in / Berikutnya / Next) was not found after " +
+                "typing the address. Screen was:\n" + textsOnScreen().joinToString(" | "),
             next != null
         )
         clickCenter(next!!)
