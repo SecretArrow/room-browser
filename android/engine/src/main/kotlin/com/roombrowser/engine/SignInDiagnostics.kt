@@ -4,9 +4,16 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.webkit.CookieManager
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
+import com.roombrowser.domain.model.ProfileSettings
+import com.roombrowser.domain.model.UserAgents
+import com.roombrowser.engine.webview.WebViewClientHints
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -74,6 +81,15 @@ object SignInDiagnostics {
         val formSeen: Boolean,
         val finalUrl: String,
         val note: String,
+        /**
+         * The headers the probe's MAIN-FRAME request actually carried on the
+         * wire — User-Agent, X-Requested-With, the Sec-CH-UA family — recorded
+         * by a `shouldInterceptRequest` pass on the probe WebView itself. This
+         * is the differential the screen exists for: what THIS device's
+         * provider puts on the wire next to the identity the app installed,
+         * seen as the engine assembles it, not as anyone promises it.
+         */
+        val wireHeaders: Map<String, String> = emptyMap(),
     )
 
     /** How big the Google side of this profile's jar is, in one read. */
@@ -183,15 +199,100 @@ object SignInDiagnostics {
     }
 
     /**
-     * The live probe. Runs a bare WebView on the main thread with the engine's
-     * default identity stack and reads what Google serves. Never submits,
-     * never types, destroys the WebView before answering.
+     * The user agent the engine's `configure` would install for [settings] on
+     * a process whose stock engine UA is [engineStockUserAgent] — the SAME
+     * resolution, in the same order, so a caller can show or probe the
+     * identity the wire actually carries rather than a re-derivation that
+     * could drift from it: a claimed device supplies the MODEL slot only
+     * (engine's real platform and Chrome version kept, WebView markers
+     * stripped), a preset or custom UA is honoured with its Chrome token
+     * tuned to the engine's real version, the default is the neutralised
+     * stock string, and a desktop-mode default takes the desktop UA the
+     * session would. Pure, so a JVM test pins the contract.
      */
-    suspend fun runProbe(context: Context): ProbeOutcome =
+    fun resolvedEngineUserAgent(
+        settings: ProfileSettings,
+        engineStockUserAgent: String?
+    ): String {
+        val baseUserAgent = when {
+            settings.desktopModeDefault -> UserAgents.desktopModeUserAgent
+            else -> {
+                val claimedDevice = UserAgents.device(settings)
+                when {
+                    claimedDevice != null ->
+                        UserAgents.deviceTunedUserAgent(engineStockUserAgent, claimedDevice)
+                            ?: UserAgents.webViewNeutralUserAgent(engineStockUserAgent)
+                            ?: engineStockUserAgent.orEmpty()
+                    UserAgents.effectiveUserAgent(settings) != null ->
+                        UserAgents.effectiveUserAgent(settings)!!
+                    else ->
+                        UserAgents.webViewNeutralUserAgent(engineStockUserAgent)
+                            ?: engineStockUserAgent.orEmpty()
+                }
+            }
+        }
+        return UserAgents.engineTunedUserAgent(baseUserAgent, engineStockUserAgent)
+    }
+
+    /**
+     * The main-frame headers worth reporting, looked up case-insensitively in
+     * what the engine assembled for the request.
+     */
+    private val WIRE_HEADER_NAMES = listOf(
+        "User-Agent",
+        "X-Requested-With",
+        "Sec-CH-UA",
+        "Sec-CH-UA-Mobile",
+        "Sec-CH-UA-Platform",
+        "Sec-CH-UA-Platform-Version",
+        "Sec-CH-UA-Model",
+        "Accept-Language"
+    )
+
+    private fun recordWireHeaders(
+        into: java.util.concurrent.ConcurrentHashMap<String, String>,
+        request: WebResourceRequest
+    ) {
+        if (!request.isForMainFrame) return
+        val headers = request.requestHeaders ?: return
+        for (name in WIRE_HEADER_NAMES) {
+            val value = headers.entries
+                .firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
+            if (!value.isNullOrEmpty()) into[name] = value
+        }
+    }
+
+    /**
+     * The live probe. Runs a throwaway WebView configured with THE ENGINE'S
+     * OWN identity for [settings] — the resolved user agent, the client-hint
+     * metadata the session would install, the identity header the shared
+     * policy resolves for a Google host — and reads what Google serves. Never
+     * submits, never types, destroys the WebView before answering.
+     *
+     * THE PROBE MUST GRADE THE ENGINE'S REQUEST, NOT A STRANGER'S. Until this
+     * comment was true the probe set no `userAgentString`, so it asked Google
+     * with the STOCK `; wv` UA — a request the engine never makes — and its
+     * verdict said nothing about the identity this app actually sends: a
+     * blocked probe was expected on a device whose real wire was clean, and
+     * the refusal notes then pointed at the wrong cause.
+     *
+     * The main-frame request's outgoing headers are recorded on the way out
+     * (see [ProbeOutcome.wireHeaders]) so the screen can show the wire story
+     * this device actually produced.
+     */
+    suspend fun runProbe(
+        context: Context,
+        settings: ProfileSettings = ProfileSettings()
+    ): ProbeOutcome =
         withContext(Dispatchers.Main) {
             suspendCancellableCoroutine { cont ->
                 val main = Handler(Looper.getMainLooper())
                 val webView = WebView(context)
+                val wireHeaders = java.util.concurrent.ConcurrentHashMap<String, String>()
+                val stock = runCatching {
+                    WebSettings.getDefaultUserAgent(context)
+                }.getOrNull()
+                val resolvedUserAgent = resolvedEngineUserAgent(settings, stock)
                 val timeout = Runnable {
                     settle(
                         cont, main, webView, ProbeOutcome(
@@ -202,6 +303,7 @@ object SignInDiagnostics {
                             note = "Timed out after ${PROBE_TIMEOUT_MS / 1000} s with no finished " +
                                 "load — the network never answered, or the page never stopped " +
                                 "redirecting. Check connectivity and run the check again.",
+                            wireHeaders = LinkedHashMap(wireHeaders.toMap()),
                         )
                     )
                 }
@@ -211,12 +313,33 @@ object SignInDiagnostics {
                     // cookies on (a privacy profile that blocks them would test a
                     // different question than the one this screen asks).
                     domStorageEnabled = true
+                    // The identity the engine's configure() would install for this
+                    // profile — the whole point of the probe.
+                    userAgentString = resolvedUserAgent
+                }
+                // The client hints the session would install for the same string:
+                // brands, platform, platformVersion, model — one identity, both
+                // halves, on the provider that supports the metadata API.
+                runCatching {
+                    if (WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) {
+                        WebViewClientHints.forUserAgent(settings, resolvedUserAgent)?.let {
+                            WebSettingsCompat.setUserAgentMetadata(webView.settings, it)
+                        }
+                    }
                 }
                 CookieManager.getInstance().apply {
                     setAcceptCookie(true)
                     setAcceptThirdPartyCookies(webView, true)
                 }
                 webView.webViewClient = object : WebViewClient() {
+                    override fun shouldInterceptRequest(
+                        view: WebView,
+                        request: WebResourceRequest
+                    ): WebResourceResponse? {
+                        recordWireHeaders(wireHeaders, request)
+                        return null
+                    }
+
                     override fun onPageFinished(view: WebView, url: String) {
                         view.evaluateJavascript(probeScript()) { result ->
                             val outcome = runCatching {
@@ -253,20 +376,24 @@ object SignInDiagnostics {
                                             "Google cookies' below, then run the check again; the " +
                                             "app also does this automatically when a sign-in load " +
                                             "is answered 400.",
+                                        wireHeaders = LinkedHashMap(wireHeaders.toMap()),
                                     )
                                     hit != null -> ProbeOutcome(
                                         blocked = true,
                                         marker = hit,
                                         formSeen = form,
                                         finalUrl = landed,
-                                        note = "Google served the refusal page to this app's requests. " +
+                                        note = "Google served the refusal page to this app's requests — " +
+                                            "the wire headers below are the exact identity this " +
+                                            "device put on that request. " +
                                             "First remedies, in order: update Android System WebView " +
                                             "and Chrome from the Play Store (an old provider is the one " +
                                             "cause no app code can work around), turn any VPN off, and " +
                                             "check the device clock below. If Chrome itself signs in fine " +
                                             "on this device while this probe keeps failing, the block is " +
                                             "attached to this app's traffic — re-read the identity rows " +
-                                            "above, and report the marker and URL shown here.",
+                                            "above, and report the marker, URL and wire headers shown here.",
+                                        wireHeaders = LinkedHashMap(wireHeaders.toMap()),
                                     )
                                     form -> ProbeOutcome(
                                         blocked = false,
@@ -277,6 +404,7 @@ object SignInDiagnostics {
                                             "Sign-in inside this browser should work here; if you still " +
                                             "saw the refusal in a tab, it was likely Google's risk engine " +
                                             "cooling down after earlier attempts — wait a while and try.",
+                                        wireHeaders = LinkedHashMap(wireHeaders.toMap()),
                                     )
                                     else -> ProbeOutcome(
                                         blocked = false,
@@ -287,6 +415,7 @@ object SignInDiagnostics {
                                             "(Google may have signed the probe straight through, or served " +
                                             "an interstitial it did not match). If sign-in still fails in " +
                                             "a tab, run the check again from that state.",
+                                        wireHeaders = LinkedHashMap(wireHeaders.toMap()),
                                     )
                                 }
                             }.getOrElse {
@@ -296,6 +425,7 @@ object SignInDiagnostics {
                                     formSeen = false,
                                     finalUrl = url,
                                     note = "The probe page finished but its answer could not be read.",
+                                    wireHeaders = LinkedHashMap(wireHeaders.toMap()),
                                 )
                             }
                             settle(cont, main, webView, outcome)
@@ -319,6 +449,7 @@ object SignInDiagnostics {
                                 blocked = null, marker = null, formSeen = false,
                                 finalUrl = PROBE_URL,
                                 note = "The probe WebView could not start on this device.",
+                                wireHeaders = LinkedHashMap(wireHeaders.toMap()),
                             )
                         )
                     }

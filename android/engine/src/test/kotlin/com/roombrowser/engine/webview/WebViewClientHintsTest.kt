@@ -42,6 +42,43 @@ class WebViewClientHintsTest {
         assertThat(hints.isMobile).isEqualTo(device.formFactor != "tablet")
     }
 
+    /**
+     * THE PLATFORM VERSION FOLLOWS THE STRING, NOT THE CLAIMED HANDSET.
+     *
+     * The session installs `deviceTunedUserAgent`: the ENGINE's stock string
+     * with only the model slot swapped, so the Android version in the UA is
+     * the phone's real one — while the claimed handset's `androidVersion` is
+     * the OS that handset launched with. The catalogue's own string happens to
+     * carry the same number as its device table entry (the test above reads
+     * them through one string), but the wire never does: a random catalogue
+     * handset on a phone it is not. Until this test existed the hint answered
+     * from the device table and `Sec-CH-UA-Platform-Version` contradicted the
+     * User-Agent it travelled with — on EVERY device-mode profile on a modern
+     * provider, which the CI emulator's WebView 83 could never see because it
+     * predates client hints entirely.
+     */
+    @Test
+    fun the_tuned_engine_string_decides_the_platform_version_not_the_claimed_handset() {
+        val device = UserAgents.device(deviceSettings())!!
+        val engineStock =
+            "Mozilla/5.0 (Linux; Android 15; Pixel 8 Build/AP3A.241105.007; wv) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/156.0.8078.48 " +
+                "Mobile Safari/537.36"
+        val tuned = UserAgents.deviceTunedUserAgent(engineStock, device)!!
+
+        // The premise: the tuned string carries the REAL platform, the claimed
+        // model — and the claimed handset is from a different OS generation.
+        assertThat(tuned).contains("Android 15")
+        assertThat(tuned).contains(device.code)
+        assertThat(device.androidVersion).isNotEqualTo("15")
+
+        val hints = WebViewClientHints.forUserAgent(deviceSettings(), tuned)!!
+
+        // The hint must agree with the STRING, not the handset table entry.
+        assertThat(hints.platformVersion).isEqualTo("15.0.0")
+        assertThat(hints.model).isEqualTo(device.code)
+    }
+
     @Test
     fun the_brand_list_names_chromium_and_google_chrome_never_android_webview() {
         val ua = UserAgents.effectiveUserAgent(deviceSettings())!!

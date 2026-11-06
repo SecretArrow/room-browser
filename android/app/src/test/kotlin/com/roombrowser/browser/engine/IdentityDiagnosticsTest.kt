@@ -136,6 +136,12 @@ class IdentityDiagnosticsTest {
      * names the release that offers its surface, so the Engine row above it can
      * be compared against a number instead of a feeling.
      *
+     * 116 is the release the Android Developers Blog names for User-Agent
+     * Client Hints in WebView — the same support both hint-surface rows ride,
+     * since the metadata API serves the headers and `navigator.userAgentData`
+     * from one value. The floors this file once printed ("77", "81") were
+     * numbers from a feature table that predated client hints entirely.
+     *
      * The header row still names no version. The override it describes has
      * been honoured by every provider since 71, so a stamped main document
      * says something about THIS installed copy -- it ignored the engine's
@@ -146,8 +152,8 @@ class IdentityDiagnosticsTest {
     fun a_provider_row_names_the_version_that_offers_its_surface() {
         val checks = legacy()
 
-        assertThat(checkNamed(checks, "Sec-CH-UA client hints").detail).contains("77")
-        assertThat(checkNamed(checks, "navigator.userAgentData").detail).contains("81")
+        assertThat(checkNamed(checks, "Sec-CH-UA client hints").detail).contains("116")
+        assertThat(checkNamed(checks, "navigator.userAgentData").detail).contains("116")
         assertThat(checkNamed(checks, "X-Requested-With header (page request)").detail).doesNotContain("71")
     }
 

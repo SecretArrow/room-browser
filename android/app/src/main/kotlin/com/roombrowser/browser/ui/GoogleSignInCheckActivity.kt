@@ -48,9 +48,12 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.webkit.WebViewFeature
+import com.roombrowser.RoomBrowserApp
 import com.roombrowser.browser.engine.IdentityCheck
 import com.roombrowser.browser.engine.IdentityDiagnostics
-import com.roombrowser.domain.model.UserAgents
+import com.roombrowser.browser.engine.ProfileEngine
+import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.engine.EmbeddedHeaderObservation
 import com.roombrowser.engine.SignInDiagnostics
 import com.roombrowser.engine.SignInDiagnostics.ProbeOutcome
@@ -94,13 +97,15 @@ import java.util.concurrent.TimeUnit
  *     jar; a corrupted or oversized one is answered 400 no matter what the
  *     headers say, and clearing it is the standard remedy. The screen shows
  *     its size and offers the erase;
- *  6. THE LIVE PROBE — a throwaway WebView, configured with the same
- *     default identity this app's engine uses (WebView markers stripped from
- *     the UA, the identity header the shared policy resolves for a Google
- *     host — the Chrome stamp — on the load, JavaScript and cookies on),
- *     loads the real sign-in page and reports whether the refusal text is in
- *     what Google served, whether a real sign-in form rendered, and where
- *     the navigation finally landed.
+ *  6. THE LIVE PROBE — a throwaway WebView, configured with the ENGINE'S OWN
+ *     identity for the profile the check was opened on (the resolved user
+ *     agent, the client-hint metadata the session would install, the
+ *     identity header the shared policy resolves for a Google host), loads
+ *     the real sign-in page and reports whether the refusal text is in what
+ *     Google served, whether a real sign-in form rendered, where the
+ *     navigation finally landed — and the outgoing headers of the main-frame
+ *     request itself, recorded on the wire, so the exact UA / X-Requested-With
+ *     / Sec-CH-UA story THIS device produced is on screen next to the verdict.
  *
  * WHAT THE PROBE SETTLES. A blocked probe on a device where Chrome signs in
  * fine means the remaining block is attached to THIS app's requests and the
@@ -119,6 +124,7 @@ class GoogleSignInCheckActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val appContext = applicationContext
+        val profileId = intent.getStringExtra(EXTRA_PROFILE_ID)?.let { ProfileId(it) }
         setContent {
             RoomBrowserTheme {
                 var report by remember { mutableStateOf<SignInReport?>(null) }
@@ -129,10 +135,21 @@ class GoogleSignInCheckActivity : ComponentActivity() {
                 suspend fun runAll() {
                     reading = true
                     probe = null
-                    report = runCatching { readReport(appContext) }.getOrNull()
+                    // THE PROFILE'S OWN SETTINGS drive both halves: the identity
+                    // rows grade the UA this profile's engine would install, and
+                    // the probe asks Google with exactly that identity. A check
+                    // divorced from the profile would grade a stranger's request.
+                    val settings = withContext(Dispatchers.IO) {
+                        profileId?.let { id ->
+                            runCatching {
+                                (appContext as RoomBrowserApp).graph.profileRepo.getProfile(id)
+                            }.getOrNull()?.settings
+                        } ?: ProfileSettings()
+                    }
+                    report = runCatching { readReport(appContext, settings) }.getOrNull()
                     reading = false
                     probing = true
-                    probe = runCatching { SignInDiagnostics.runProbe(appContext) }.getOrNull()
+                    probe = runCatching { SignInDiagnostics.runProbe(appContext, settings) }.getOrNull()
                     probing = false
                 }
                 LaunchedEffect(Unit) { runAll() }
@@ -160,8 +177,14 @@ class GoogleSignInCheckActivity : ComponentActivity() {
     }
 
     companion object {
-        fun launch(context: Context) {
-            context.startActivity(Intent(context, GoogleSignInCheckActivity::class.java))
+        private const val EXTRA_PROFILE_ID = "profile_id"
+
+        /** [profileId] is the profile whose identity the check grades; empty grades the default identity. */
+        fun launch(context: Context, profileId: String? = null) {
+            context.startActivity(
+                Intent(context, GoogleSignInCheckActivity::class.java)
+                    .putExtra(EXTRA_PROFILE_ID, profileId.orEmpty())
+            )
         }
     }
 }
@@ -184,20 +207,31 @@ private data class SignInReport(
 private const val GOOGLE_COOKIE_BYTES_OK = 4_096
 
 /** Environment + identity reading, everything except the live probe. */
-private suspend fun readReport(context: Context): SignInReport {
+private suspend fun readReport(context: Context, settings: ProfileSettings): SignInReport {
     // The provider identity and the stock UA are engine reads -- the boundary
     // test keeps android.webkit imports out of this module, so both cross the
     // SignInDiagnostics facade.
     val providerLabel = runCatching { SignInDiagnostics.webViewProviderIdentity(context) }
         .getOrNull() ?: "Android System WebView (version not reported by this device)"
     val stockUa = runCatching { SignInDiagnostics.stockUserAgent(context) }.getOrDefault("")
-    val ua = runCatching { UserAgents.webViewNeutralUserAgent(stockUa) }.getOrNull() ?: stockUa
+    // The identity THIS profile's engine would install, resolved by the same
+    // rule the session's configure() applies — not a generic neutralisation of
+    // the stock string, which is a different answer for every device-mode
+    // profile and was the row's old, wrong question.
+    val ua = runCatching { SignInDiagnostics.resolvedEngineUserAgent(settings, stockUa) }
+        .getOrNull() ?: stockUa
     val hintsOk = runCatching { WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA) }.getOrDefault(false)
     val docStartOk = runCatching { WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT) }.getOrDefault(false)
     val checks = IdentityDiagnostics.checks(
         userAgent = ua,
-        javascriptEnabled = true,
-        requestedWith = EmbeddedHeaderObservation.UNOBSERVED,
+        javascriptEnabled = settings.javascriptEnabled,
+        // THE MEASURED MAIN-FRAME SIGHTING, not a hardcoded "unknown": the
+        // engine process records whether its own requests actually carried the
+        // embedded-browser header, and this row used to throw that answer away
+        // (always "not measured yet" on a screen whose purpose is measuring).
+        requestedWith = runCatching {
+            ProfileEngine.embeddedBrowserHeaderMainFrameObservation()
+        }.getOrDefault(EmbeddedHeaderObservation.UNOBSERVED),
         setsClientHints = hintsOk,
         installsDocumentStartScripts = docStartOk
     )
@@ -387,6 +421,20 @@ private fun GoogleSignInCheckScreen(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = extras.textSecondary
                             )
+                            if (probe.wireHeaders.isNotEmpty()) {
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    "Wire headers of the page request:",
+                                    style = MaterialTheme.typography.titleSmall
+                                )
+                                probe.wireHeaders.forEach { (name, value) ->
+                                    Text(
+                                        "$name: $value",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = extras.textSecondary
+                                    )
+                                }
+                            }
                             Spacer(Modifier.height(6.dp))
                             Text(probe.note, style = MaterialTheme.typography.bodyMedium)
                         }

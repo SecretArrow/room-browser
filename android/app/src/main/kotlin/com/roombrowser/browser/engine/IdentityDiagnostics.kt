@@ -97,16 +97,25 @@ object IdentityDiagnostics {
 
     /**
      * The first Android System WebView release that offers each provider-owned
-     * surface, from androidx.webkit's own version table.
+     * surface.
      *
      * NAMED IN THE ROWS ON PURPOSE. "Updating Android System WebView is the
      * only fix" is true and useless: it gives the person no way to tell a
      * WebView that is merely behind from one that is current and still
      * refusing, and no target to check their Play Store version against. The
      * number is the target.
+     *
+     * 116 is the version the Android Developers Blog names for User-Agent
+     * Client Hints in WebView ("Android WebView has supported User-Agent
+     * Client Hints since version 116, but only for applications that send the
+     * default User-Agent string", December 2024) — and the metadata override
+     * this app uses to serve both the headers and `navigator.userAgentData`
+     * coherently under a CUSTOM UA rides that same support. The floors this
+     * file used to print ("77", "81") predated client hints entirely and sent
+     * people to update a WebView that was already far newer than the numbers
+     * claimed.
      */
-    private const val CLIENT_HINTS_VERSION = "77"
-    private const val DOCUMENT_START_VERSION = "81"
+    private const val CLIENT_HINTS_VERSION = "116"
 
     /**
      * Every check, in the order Google reads them: the string first, then the
@@ -132,22 +141,27 @@ object IdentityDiagnostics {
                 "Sent, and derived from the same string as the User-Agent, so the " +
                     "two cannot describe different browsers."
             } else {
-                "Not under this app's control. Replacing the provider's own brand " +
-                    "list needs Android System WebView $CLIENT_HINTS_VERSION or " +
-                    "newer; below that it still names Android WebView, and no " +
-                    "app-side code can replace a header the engine builds itself."
+                "Not under this app's control. Serving a coherent brand list under " +
+                    "a CUSTOM user agent needs Android System WebView " +
+                    "$CLIENT_HINTS_VERSION or newer; below that the provider drops " +
+                    "the client hints when the UA is replaced (Android Developers " +
+                    "Blog, December 2024) — the UA string travels alone, and no " +
+                    "app-side code can add a header the engine will not build."
             }
         ),
         IdentityCheck(
             label = "navigator.userAgentData",
-            ok = installsDocumentStartScripts,
-            detail = if (installsDocumentStartScripts) {
-                "Present, installed by the page-side identity script."
+            ok = setsClientHints,
+            detail = if (setsClientHints) {
+                "Present, served natively by the engine from the same metadata " +
+                    "the client-hint headers come from — one identity, both " +
+                    "surfaces, with no page-world JavaScript to catch."
             } else {
-                "Absent. Installing it needs Android System WebView " +
-                    "$DOCUMENT_START_VERSION or newer; below that there is no " +
-                    "document-start hook, so the page-side half of the identity " +
-                    "cannot be installed at all."
+                "Not under this app's control. The metadata that serves both " +
+                    "this surface and the Sec-CH-UA headers needs Android System " +
+                    "WebView $CLIENT_HINTS_VERSION or newer — and on older " +
+                    "providers a CUSTOM user agent suppresses the hints entirely, " +
+                    "so the page sees the UA string alone."
             }
         ),
         IdentityCheck(

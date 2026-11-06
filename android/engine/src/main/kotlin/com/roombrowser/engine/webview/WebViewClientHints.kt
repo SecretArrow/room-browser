@@ -78,9 +78,20 @@ internal object WebViewClientHints {
         val desktop = isDesktopUserAgent(resolvedUserAgent)
 
         val platform = if (desktop) "Windows" else "Android"
+        // THE PLATFORM VERSION FOLLOWS THE STRING, NOT THE CLAIMED HANDSET.
+        // The session installs `deviceTunedUserAgent`: the ENGINE's stock
+        // string with only the model slot swapped, so the Android version it
+        // carries is the phone's REAL one — while the claimed device's
+        // `androidVersion` is the OS that handset launched with, a different
+        // number for nearly every fresh profile (a random catalogue handset
+        // on a phone it is not). Deriving the hint from the device table put
+        // `Sec-CH-UA-Platform-Version: 12.0.0` next to a UA saying
+        // `Android 15` — the one-browser-described-two-ways contradiction
+        // this whole file exists to prevent, on EVERY device-mode profile on
+        // a modern provider. The string is the single authority; the hint is
+        // parsed out of it, exactly like the `else` branch always did.
         val platformVersion = when {
             desktop -> WINDOWS_PLATFORM_VERSION
-            device != null -> "${device.androidVersion}.0.0"
             else -> ANDROID.find(resolvedUserAgent)?.let { "${it.groupValues[1]}.0.0" }.orEmpty()
         }
         // A desktop claim must not carry a handset model, and a profile with no

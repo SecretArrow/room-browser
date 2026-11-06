@@ -281,7 +281,7 @@ fun BrowserScreen(
     }
 
     fun launchGoogleSignInCheck() {
-        GoogleSignInCheckActivity.launch(activity)
+        GoogleSignInCheckActivity.launch(activity, viewModel.profileId.value)
     }
 
     fun launchTwoFactor() {
