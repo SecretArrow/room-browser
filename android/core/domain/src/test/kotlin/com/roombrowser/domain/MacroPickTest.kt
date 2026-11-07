@@ -2,6 +2,7 @@ package com.roombrowser.domain
 
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.domain.macro.MacroPick
+import com.roombrowser.domain.macro.MacroStep
 import org.junit.Test
 
 /**
