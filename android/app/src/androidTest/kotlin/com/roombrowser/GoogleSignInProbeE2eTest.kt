@@ -132,6 +132,12 @@ class GoogleSignInProbeE2eTest {
             else -> "UNKNOWN"
         }
 
+        // WebView.getCurrentWebViewPackage initializes the provider; bind the
+        // process first so the later suites are not poisoned (see
+        // GoogleIdentityE2eTest for the full reason).
+        if (ProfileEngine.boundProfile() == null) {
+            ProfileEngine.bindProcessToProfile(ProfileId.new())
+        }
         println(
             "GoogleSignInProbe: verdict=$verdict marker='${refusal ?: form}' " +
                 "engine='${runCatching { ProfileEngine.engineName(targetContext) }.getOrNull()}'"

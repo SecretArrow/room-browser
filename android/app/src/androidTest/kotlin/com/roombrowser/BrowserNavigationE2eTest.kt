@@ -600,21 +600,21 @@ class BrowserNavigationE2eTest {
         )
         assertTrue("App must still be in the foreground after Back", device.currentPackageName == targetContext.packageName)
 
-        // ---- 8. Cancel: the dialog closes, the page stays -----------------
-        assertTrue("'Cancel' must be clickable", clickText("Cancel", 5_000))
-        assertTrue("Dialog must close after Cancel", waitGone("Exit Room Browser?", 8_000))
+        // ---- 8. Stay Here: the dialog closes, the page stays --------------
+        assertTrue("'Stay Here' must be clickable", clickText("Stay Here", 5_000))
+        assertTrue("Dialog must close after 'Stay Here'", waitGone("Exit Room Browser?", 8_000))
         assertTrue(
-            "Page ONE must still be visible after Cancel\n${uiTree()}",
+            "Page ONE must still be visible after 'Stay Here'\n${uiTree()}",
             hasText("ROOM-E2E-PAGE-ONE", 10_000)
         )
 
-        // ---- 9. Back to start page via the confirmation -------------------
+        // ---- 9. Go to start page via the confirmation ---------------------
         device.pressBack()
         device.waitForIdle(1_000)
         assertTrue("Exit confirmation must appear again", hasText("Exit Room Browser?", 8_000))
         assertTrue(
-            "'Back to start page' must be clickable\n${uiTree()}",
-            clickText("Back to start page", 5_000)
+            "'Go to Start Page' must be clickable\n${uiTree()}",
+            clickText("Go to Start Page", 5_000)
         )
         // Homepage marker — the SAME hedge the older E2EBrowseFlowTest uses
         // (engineUiUp): on the Compose a11y bridge the omnibox placeholder
@@ -623,7 +623,7 @@ class BrowserNavigationE2eTest {
         // texts first (CI dump-proven: Privacy Dashboard / Quick Access /
         // Good morning were all visible while "Search or type URL" wasn't).
         assertTrue(
-            "The start page must be visible after 'Back to start page'\n${uiTree()}",
+            "The start page must be visible after 'Go to Start Page'\n${uiTree()}",
             waitUntil(15_000) {
                 device.findObjects(By.text("Privacy Dashboard")).isNotEmpty() ||
                     device.findObjects(By.text("Quick Access")).isNotEmpty() ||
@@ -632,11 +632,19 @@ class BrowserNavigationE2eTest {
             }
         )
 
-        // ---- 10. Homepage Back: instant background (existing contract) ----
+        // ---- 10. Homepage Back: the dialog too, then Exit App -------------
+        // The three-way dialog is the ONE exit contract now, homepage
+        // included: Back never backgrounds silently, so the engine can never
+        // be killed from the back gesture the user cannot undo.
         device.pressBack()
         device.waitForIdle(1_000)
         assertTrue(
-            "Back on the homepage must background the app (engine stays alive)\n${uiTree()}",
+            "Back on the homepage must show the exit dialog too\n${uiTree()}",
+            hasText("Exit Room Browser?", 8_000)
+        )
+        assertTrue("'Exit App' must be clickable", clickText("Exit App", 5_000))
+        assertTrue(
+            "'Exit App' must background the app (engine stays alive)\n${uiTree()}",
             waitUntil(6_000) { device.currentPackageName != targetContext.packageName }
         )
     }

@@ -2,6 +2,7 @@ package com.roombrowser.engine.webview
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.WebSettings
 import android.webkit.WebStorage
@@ -167,7 +168,16 @@ internal class WebViewEngineHost : EngineHost {
         require(suffix.length in 1..32 && suffix.all { it.isLetterOrDigit() }) {
             "Invalid WebView data directory suffix"
         }
-        WebView.setDataDirectorySuffix(suffix)
+        // The platform throws if Chromium is already up in this process (any
+        // WebView, CookieManager or getDefaultUserAgent call initializes it).
+        // That is a process-lifecycle bug, not a caller bug: answer false so
+        // the caller takes its documented restart path instead of crashing.
+        try {
+            WebView.setDataDirectorySuffix(suffix)
+        } catch (e: IllegalStateException) {
+            Log.e("WebViewEngineHost", "bind: WebView already initialized in this process", e)
+            return false
+        }
         bound = profileId
         return true
     }

@@ -220,6 +220,11 @@ class BlobDownloadE2eTest {
         ProfileEngine.boundProfile()?.let { return@runCatching it }
         val id = ProfileId.new()
         if (ProfileEngine.bindProcessToProfile(id)) id else ProfileEngine.boundProfile()
+    }.onFailure { e ->
+        // A swallowed failure here surfaces later as a generic "no session",
+        // which hides the root cause (usually: the provider was already up
+        // before the first bind — see GoogleIdentityE2eTest's early bind).
+        println("BlobDownload: ensureBoundProfile failed: $e")
     }.getOrNull()
 
     /** Evaluate [expression] until it yields a non-null string, or give up. */

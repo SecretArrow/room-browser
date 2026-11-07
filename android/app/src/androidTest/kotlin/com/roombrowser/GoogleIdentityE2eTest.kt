@@ -401,6 +401,13 @@ class GoogleIdentityE2eTest {
         // type stays behind the engine boundary — EngineBoundaryTest scans
         // this source root too, so test code goes through the facade like
         // production code does.
+        // Reading the UA initializes the WebView provider in THIS process,
+        // and a provider that is up cannot later be bound to a profile
+        // (setDataDirectorySuffix throws). Bind first — the once-per-process
+        // binding every other suite adopts or performs.
+        if (ProfileEngine.boundProfile() == null) {
+            ProfileEngine.bindProcessToProfile(ProfileId.new())
+        }
         val stockUa = ProfileEngine.defaultUserAgent(targetContext) ?: ""
         val engineVersion = Regex("""Chrome/(\d+(?:\.\d+){1,3})""").find(stockUa)?.groupValues[1]
         assertNotNull(
