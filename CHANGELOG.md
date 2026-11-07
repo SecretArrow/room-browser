@@ -198,6 +198,10 @@ Layar probe identitas kini menilai request yang benar-benar dikirim engine (dise
 - test(headless): classify the macro tools — a new MACRO_TOOLS side with one honest refusal
 - test(e2e): align the smoke suite with the new exit-dialog contract and the once-per-process bind
 
+## v1.0.206 — 7 November 2026
+
+- feat(localai): +12 registry-verified presets, and record the android/skills adoption
+
 ## Catatan: tag di luar garis sejarah edisi ini
 
 97 tag (v1.0.85 s.d. v1.0.181)
