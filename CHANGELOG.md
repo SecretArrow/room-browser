@@ -202,6 +202,13 @@ Layar probe identitas kini menilai request yang benar-benar dikirim engine (dise
 
 - feat(localai): +12 registry-verified presets, and record the android/skills adoption
 
+## v1.0.207 — 7 November 2026
+
+- docs(changelog): regenerate through v1.0.206 [skip ci]
+- feat(macro): tap-to-pick point capture and friendlier hand-authored steps
+- fix(macro): import the systemBars/displayCutout/union extensions the macro list uses
+- style(macro): kotlinx stays in the main import block; java imports go last
+
 ## Catatan: tag di luar garis sejarah edisi ini
 
 97 tag (v1.0.85 s.d. v1.0.181)
