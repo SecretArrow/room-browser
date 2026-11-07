@@ -108,7 +108,9 @@ class MacroPickE2eTest {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
                 .putExtra("com.roombrowser.extra.INITIAL_URL", url)
         )
-        return waitUntil(30_000) { device.hasObject(By.text("PICK-TARGET-ZONE")) }
+        val loaded = waitUntil(30_000) { device.hasObject(By.text("PICK-TARGET-ZONE")) }
+        if (loaded) device.waitForIdle(800)
+        return loaded
     }
 
     /** The editor's handoff: a second launch of the RUNNING singleTask engine. */
@@ -157,7 +159,7 @@ class MacroPickE2eTest {
         assertTrue("Answer must echo the request token", pick.token == token)
         assertTrue("Answer kind must be POINT", pick.kind == MacroPick.KIND_POINT)
         assertTrue(
-            "The probe must name the element under the finger: selector=${pick.selector} tag=${pick.tagName}",
+            "The probe must name the element under the finger: pick=$pick",
             pick.selector == "#target" && pick.selectorKind == "ID" && pick.tagName == "div"
         )
         assertTrue(
@@ -181,7 +183,7 @@ class MacroPickE2eTest {
         start!!
         assertTrue("START kind", start.kind == MacroPick.KIND_DRAG_START)
         assertTrue(
-            "START must land on the target zone (selector=${start.selector})",
+            "START must land on the target zone (pick=$start)",
             start.selector == "#target"
         )
         assertTrue("The banner must be gone between the two phases", bannerGone())
@@ -195,7 +197,7 @@ class MacroPickE2eTest {
         end!!
         assertTrue("END kind", end.kind == MacroPick.KIND_DRAG_END)
         assertTrue(
-            "END must land on the target zone (selector=${end.selector})",
+            "END must land on the target zone (pick=$end)",
             end.selector == "#target"
         )
         assertTrue(

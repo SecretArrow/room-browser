@@ -399,7 +399,13 @@ class BrowserViewModel(
         val view = bridge.macroEngineView() ?: run { cancelMacroPick(); return }
         bridge.macroEval(com.roombrowser.browser.macro.MacroPickProbe.viewportWidthJs()) { widthRaw ->
             val viewWidth = view.width.toFloat().coerceAtLeast(1f)
-            val vw = widthRaw?.toFloatOrNull()?.takeIf { it > 0f } ?: viewWidth
+            // evaluateJs answers with the JSON-ENCODED form of the script's
+            // value — a bare number arrives quoted ("393"). unescapeJson
+            // strips that one layer; skipping it made every width read fall
+            // back to the view width, i.e. a scale of 1 that wrote VIEW
+            // pixels instead of CSS pixels on any density != 1 device.
+            val vw = unescapeJson(widthRaw.orEmpty())
+                ?.toFloatOrNull()?.takeIf { it > 0f } ?: viewWidth
             val cssX = (viewX * vw / viewWidth).toInt().coerceIn(0, vw.toInt().coerceAtLeast(1) - 1)
             val cssY = (viewY * vw / viewWidth).toInt()
             bridge.macroEval(com.roombrowser.browser.macro.MacroPickProbe.probeJs(cssX, cssY)) { raw ->
@@ -407,9 +413,10 @@ class BrowserViewModel(
                 var pickedKind = "NONE"
                 var tag: String? = null
                 var text: String? = null
-                if (!raw.isNullOrBlank()) {
+                val decoded = unescapeJson(raw.orEmpty())
+                if (!decoded.isNullOrBlank()) {
                     runCatching {
-                        val obj = JSONObject(raw)
+                        val obj = JSONObject(decoded)
                         if (obj.optBoolean("ok", false)) {
                             selector = obj.optString("selector", "").ifBlank { null }
                             pickedKind = obj.optString("selectorKind", "NONE")
