@@ -35,6 +35,11 @@ class HeadlessToolCatalogTest {
             HeadlessToolExecutor.PDF_TOOLS +
             HeadlessToolExecutor.APP_TOOLS +
             HeadlessToolExecutor.DEVELOPER_TOOLS +
+            // The macro tools are RECOGNISED here so the refusal names the
+            // real reason (a playback happens on the tab the user is looking
+            // at) instead of "unknown tool" — see HeadlessToolExecutor
+            // .MACRO_TOOLS.
+            HeadlessToolExecutor.MACRO_TOOLS +
             AgentTools.WALLET_TOOLS +
             // The skills tools are RECOGNISED here so the refusal says what
             // they are (see skillsUnattendedRefusal) instead of "unknown":
@@ -55,6 +60,7 @@ class HeadlessToolCatalogTest {
             HeadlessToolExecutor.PDF_TOOLS,
             HeadlessToolExecutor.APP_TOOLS,
             HeadlessToolExecutor.DEVELOPER_TOOLS,
+            HeadlessToolExecutor.MACRO_TOOLS,
             AgentTools.WALLET_TOOLS,
             AgentTools.SKILLS_TOOLS
         )
@@ -97,6 +103,7 @@ class HeadlessToolCatalogTest {
             HeadlessToolExecutor.PDF_TOOLS +
             HeadlessToolExecutor.APP_TOOLS +
             HeadlessToolExecutor.DEVELOPER_TOOLS +
+            HeadlessToolExecutor.MACRO_TOOLS +
             AgentTools.WALLET_TOOLS +
             AgentTools.SKILLS_TOOLS
         assertThat(classified).containsAtLeastElementsIn(AgentTools.INTERACTIVE_TOOLS)

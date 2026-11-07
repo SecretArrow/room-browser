@@ -889,7 +889,7 @@ class HeadlessToolExecutor(
          * The tools a headless run performs, declared rather than inferred so
          * [HeadlessToolCatalogTest] can hold the WHOLE catalogue to
          * [SUPPORTED_TOOLS] ∪ [TAB_TOOLS] ∪ [DOWNLOAD_TOOLS] ∪ [PDF_TOOLS] ∪ [APP_TOOLS] ∪
-         * [DEVELOPER_TOOLS] ∪ [AgentTools.WALLET_TOOLS]: a tool added to the
+         * [DEVELOPER_TOOLS] ∪ [MACRO_TOOLS] ∪ [AgentTools.WALLET_TOOLS]: a tool added to the
          * catalogue later must be classified deliberately, because the wrong
          * answer is either a tool the model is offered and refused, or one
          * refused silently.
@@ -933,6 +933,21 @@ class HeadlessToolExecutor(
             AgentTools.LIST_TABS,
             AgentTools.SWITCH_TAB,
             AgentTools.CLOSE_TAB
+        )
+
+        /**
+         * The macro tools, all refused in a run — and all recognised here so
+         * the refusal says what they are instead of "unknown tool". Listing
+         * and creating could technically reach the library, but a playback
+         * never could: it happens on the tab the user is looking at, which a
+         * run does not have. Offering a half surface (list/create without
+         * run) would teach the model to call run_macro where it can only be
+         * refused, so the three answer together.
+         */
+        internal val MACRO_TOOLS: Set<String> = setOf(
+            AgentTools.MACRO_LIST,
+            AgentTools.MACRO_CREATE,
+            AgentTools.MACRO_RUN
         )
 
         /**
