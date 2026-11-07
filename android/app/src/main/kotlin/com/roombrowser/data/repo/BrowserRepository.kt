@@ -8,13 +8,18 @@ import com.roombrowser.data.db.DownloadEntity
 import com.roombrowser.data.db.HistoryEntity
 import com.roombrowser.data.db.IpHistoryEntity
 import com.roombrowser.data.db.NoteEntity
+import com.roombrowser.data.db.MacroEntity
 import com.roombrowser.data.db.SitePermissionEntity
 import com.roombrowser.data.db.SiteSettingEntity
 import com.roombrowser.data.db.TabEntity
+import com.roombrowser.domain.macro.MacroCodec
+import com.roombrowser.domain.macro.MacroDefinition
+import com.roombrowser.domain.macro.MacroSanitizer
 import com.roombrowser.domain.model.PermissionDecision
 import com.roombrowser.domain.model.ProfileId
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import java.util.UUID
 
 enum class DownloadStatus { QUEUED, RUNNING, PAUSED, COMPLETED, FAILED, CANCELLED }
@@ -35,6 +40,7 @@ class BrowserRepository(private val db: AppDatabase) {
     private val ip = db.ipHistoryDao()
     private val stats = db.statsDao()
     private val notes = db.noteDao()
+    private val macros = db.macroDao()
 
     // ---------- Tabs ----------
     fun observeTabs(profileId: ProfileId): Flow<List<TabEntity>> = tabs.observeOpen(profileId.value)
@@ -135,6 +141,68 @@ class BrowserRepository(private val db: AppDatabase) {
     }
 
     suspend fun deleteNote(id: String) = notes.delete(id)
+
+    // ---------- Macros ----------
+
+    fun observeMacros(profileId: ProfileId): Flow<List<MacroEntity>> =
+        macros.observe(profileId.value)
+
+    fun observeMacro(profileId: ProfileId, id: String): Flow<MacroEntity?> =
+        macros.observeById(id).map { rows ->
+            // A row of ANOTHER profile is not this profile's macro; the flow
+            // must never hand it across the profile wall.
+            rows?.takeIf { it.profileId == profileId.value }
+        }
+
+    suspend fun macros(profileId: ProfileId): List<MacroEntity> =
+        macros.allForProfile(profileId.value)
+
+    /**
+     * The decoded macro, or null. An [id] that belongs to ANOTHER profile is
+     * "no such macro" here — same wall as [note].
+     */
+    suspend fun macro(profileId: ProfileId, id: String): MacroDefinition? {
+        val row = macros.byId(id)?.takeIf { it.profileId == profileId.value } ?: return null
+        val def = MacroCodec.decode(row.definitionJson) ?: return null
+        return def.copy(id = row.id, updatedAt = row.updatedAt, createdAt = row.createdAt)
+    }
+
+    /**
+     * Create (id == null) or update (id != null) one macro. Same ownership
+     * rule as [saveNote]: an id that belongs to another profile is treated
+     * as "no such macro" and a fresh row is minted instead. The definition
+     * is sanitized before it is written — no stored macro may carry a
+     * secret-looking value.
+     */
+    suspend fun saveMacro(profileId: ProfileId, definition: MacroDefinition, id: String? = null): String {
+        val now = System.currentTimeMillis()
+        val owned = id?.let { macros.byId(it) }?.takeIf { it.profileId == profileId.value }
+        val macroId = owned?.id ?: UUID.randomUUID().toString()
+        val clean = MacroSanitizer.sanitize(definition).copy(
+            id = macroId,
+            createdAt = owned?.createdAt ?: definition.createdAt.takeIf { it > 0 } ?: now,
+            updatedAt = now
+        )
+        macros.upsert(
+            MacroEntity(
+                id = macroId,
+                profileId = profileId.value,
+                name = clean.name,
+                description = clean.description,
+                category = clean.category,
+                icon = clean.icon,
+                definitionJson = MacroCodec.encode(clean),
+                createdAt = clean.createdAt,
+                updatedAt = clean.updatedAt
+            )
+        )
+        return macroId
+    }
+
+    /** Deletes one macro of this profile. Another profile's id is a silent no-op. */
+    suspend fun deleteMacroFor(profileId: ProfileId, id: String) {
+        macros.byId(id)?.takeIf { it.profileId == profileId.value }?.let { macros.delete(it.id) }
+    }
 
     // ---------- History ----------
     fun observeRecentHistory(profileId: ProfileId, limit: Int = 20): Flow<List<HistoryEntity>> =

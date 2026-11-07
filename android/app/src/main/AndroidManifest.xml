@@ -379,6 +379,32 @@
             android:windowSoftInputMode="adjustResize" />
 
         <!--
+          Per-profile macro library — same shape as the notes screen (its OWN
+          activity, DEFAULT process, no WebView): Room rows via multi-instance
+          invalidation. "Run" does not render here: the macro is handed to the
+          live browser process (BrowserSession) and the activity finishes, so
+          playback happens on the tab the user sees.
+        -->
+        <activity
+            android:name=".browser.ui.MacroActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!--
+          Add/edit ONE macro. Its OWN window so the keyboard resizes a
+          writing surface instead of the list, same default process as the
+          library it reports its result back to. Also the landing spot for
+          the recorder's Stop handoff (a just-recorded seed rides the
+          intent, so the user names and trims before it is stored).
+        -->
+        <activity
+            android:name=".browser.ui.MacroEditorActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!--
           Add/edit ONE note. Its OWN window so the keyboard resizes a writing
           surface instead of the list, same default process as the list it
           reports its result back to.

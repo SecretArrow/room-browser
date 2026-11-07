@@ -573,6 +573,34 @@ data class NoteEntity(
     @ColumnInfo(name = "updated_at") val updatedAt: Long
 )
 
+// =========================================================================
+// PER-PROFILE MACROS — schema v22
+// =========================================================================
+
+/**
+ * One stored macro of a profile. The searchable identity (name, description,
+ * category, icon) rides its own columns so the library lists and groups
+ * without decoding anything; the full [MacroDefinition] JSON lives in
+ * `definition_json`. Scoped to its profile like every other per-profile
+ * table. The sanitizer has already been through the steps before they reach
+ * this row — a stored macro carries no secret values.
+ */
+@Entity(
+    tableName = "macros",
+    indices = [Index("profile_id"), Index("profile_id", "updated_at")]
+)
+data class MacroEntity(
+    @PrimaryKey @ColumnInfo(name = "id") val id: String,
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    @ColumnInfo(name = "name") val name: String,
+    @ColumnInfo(name = "description") val description: String,
+    @ColumnInfo(name = "category") val category: String,
+    @ColumnInfo(name = "icon") val icon: String,
+    @ColumnInfo(name = "definition_json") val definitionJson: String,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long
+)
+
 /**
  * One authenticator account.
  *

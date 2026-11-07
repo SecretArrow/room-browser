@@ -28,6 +28,7 @@ import com.roombrowser.browser.engine.DnsMonitor
 import com.roombrowser.browser.engine.DownloadEngine
 import com.roombrowser.browser.engine.NetworkIdentity
 import com.roombrowser.browser.engine.ProfileEngine
+import com.roombrowser.browser.macro.MacroRecordState
 import com.roombrowser.browser.ui.DevicePickerActivity
 import com.roombrowser.browser.ui.PasswordsActivity
 import com.roombrowser.browser.ui.WalletActivity
@@ -137,6 +138,18 @@ data class ShieldsState(
     val trackersBlocked: Int = 0,
     val httpsUpgrades: Int = 0,
     val shieldsDisabled: Boolean = false
+)
+
+/**
+ * A macro run request handed across activities: which stored macro to run
+ * and the launch variables the user bound in the library's dialog. Simple
+ * enough to cross the process line as plain state on the live ViewModel
+ * (BrowserSession), which is how the library (default process) reaches the
+ * browser (':browser' process).
+ */
+data class MacroRunRequest(
+    val macroId: String,
+    val variables: Map<String, String> = emptyMap()
 )
 
 /**
@@ -271,6 +284,253 @@ class BrowserViewModel(
 
     /** Transient UI messages consumed by the Compose layer. */
     val snackbar = MutableStateFlow<String?>(null)
+
+    // ---------- Macro automation ----------
+
+    /** Recorder state for the indicator + controls the chrome binds to. */
+    var macroRecordState by mutableStateOf(
+        com.roombrowser.browser.macro.MacroRecordState.IDLE
+    )
+        private set
+
+    /** Step count while recording (badge) — bumped by the recorder's listener. */
+    var macroRecordSteps by mutableIntStateOf(0)
+        private set
+
+    /** Runner progress for the playback HUD. */
+    var macroRunProgress by mutableStateOf(com.roombrowser.browser.macro.MacroRunner.Progress())
+        private set
+
+    val macroRecorder = com.roombrowser.browser.macro.MacroRecorderController(
+        viewModelScope, MacroHostBridge()
+    )
+
+    val macroRunner = com.roombrowser.browser.macro.MacroRunner(
+        viewModelScope, MacroHostBridge()
+    )
+
+    init {
+        macroRecorder.addListener { state, count ->
+            macroRecordState = state
+            macroRecordSteps = count
+        }
+        macroRunner.addListener { progress ->
+            macroRunProgress = progress
+        }
+    }
+
+    // ---------- Macro controls (chrome UI entry points) ----------
+
+    /** Starts recording on the active tab; false on the homepage (no page). */
+    fun macroStartRecording(): Boolean {
+        val ok = macroRecorder.start(activeTabId)
+        if (!ok) {
+            emitMessage("Macros record on a web page — open one first")
+        }
+        return ok
+    }
+
+    fun macroPauseOrResumeRecording() {
+        when (macroRecorder.state) {
+            com.roombrowser.browser.macro.MacroRecordState.RECORDING -> macroRecorder.pause()
+            com.roombrowser.browser.macro.MacroRecordState.PAUSED -> macroRecorder.resume()
+            else -> Unit
+        }
+    }
+
+    /** Stop: parks the recording for the editor handoff. */
+    fun macroStopRecording() {
+        macroRecorder.stop { def ->
+            lastRecording = def
+        }
+    }
+
+    fun macroCancelRecording() {
+        macroRecorder.cancel()
+        lastRecording = null
+    }
+
+    /** Runs a stored macro on the active tab (variables bound by the caller). */
+    fun macroRun(def: com.roombrowser.domain.macro.MacroDefinition, variables: Map<String, String>): Boolean {
+        if (macroRunner.isBusy()) {
+            emitMessage("A macro is already running — stop it first")
+            return false
+        }
+        return macroRunner.start(def, variables)
+    }
+
+    fun macroPauseOrResumeRun() {
+        when (macroRunner.state) {
+            com.roombrowser.browser.macro.MacroRunner.State.RUNNING -> macroRunner.pause()
+            com.roombrowser.browser.macro.MacroRunner.State.PAUSED -> macroRunner.resume()
+            else -> Unit
+        }
+    }
+
+    fun macroStopRun() = macroRunner.stop()
+
+    /** True when Back should stop a running macro instead of touching navigation. */
+    fun macroBackHandled(): Boolean {
+        if (macroRunner.state == com.roombrowser.browser.macro.MacroRunner.State.RUNNING ||
+            macroRunner.state == com.roombrowser.browser.macro.MacroRunner.State.PAUSED
+        ) {
+            macroRunner.stop()
+            emitMessage("Macro stopped")
+            return true
+        }
+        return false
+    }
+
+    /**
+     * A run request from the Macro library (a separate process): the id of
+     * the macro to run plus the launch variables the user bound. The screen
+     * consumes it in a LaunchedEffect — once — and clears it through
+     * [takeMacroRunRequest].
+     */
+    var macroRunPending by mutableStateOf<MacroRunRequest?>(null)
+
+    fun takeMacroRunRequest(): MacroRunRequest? {
+        val request = macroRunPending
+        macroRunPending = null
+        return request
+    }
+
+    /** Resolves and runs a library request; reports through the snackbar. */
+    fun macroRunFromLibrary(request: MacroRunRequest) {
+        viewModelScope.launch {
+            val def = browserRepo.macro(profileId, request.macroId)
+            if (def == null) {
+                emitMessage("That macro is gone — it may have been deleted")
+                return@launch
+            }
+            if (!macroRun(def, request.variables)) {
+                emitMessage("Could not start the macro")
+            }
+        }
+    }
+
+    // ---------- Reset settings to default ----------
+
+    /**
+     * Returns THIS profile's preferences to the app defaults.
+     *
+     * What survives on purpose — everything that IS the profile rather than
+     * a preference about it: the fingerprint seed and device id (identity,
+     * not settings — see ProfileManager.create, which mints them), the
+     * theme snapshot, and every byte of browsing data (cookies, sessions,
+     * logins, history, bookmarks, downloads, notes, macros, wallets,
+     * passwords). Only the `settings_json` column of THIS profile's row is
+     * rewritten; no other row is touched and no engine storage is cleared.
+     */
+    fun resetSettingsToDefault() {
+        viewModelScope.launch {
+            val current = profile.settings
+            val defaults = com.roombrowser.domain.model.ProfileSettings(
+                // Identity, not preference: resetting these would hand the
+                // profile a new fingerprint and break the sessions it kept.
+                fingerprintSeed = current.fingerprintSeed,
+                deviceId = current.deviceId
+            )
+            runCatching { updateSettings(defaults) }
+                .onSuccess { emitMessage("Settings reset to default — browsing data untouched") }
+                .onFailure { emitMessage(it.message ?: "Could not reset settings") }
+        }
+    }
+
+    /** Snapshot of the last finished recording, for the editor handoff. */
+    var lastRecording by mutableStateOf<com.roombrowser.domain.macro.MacroDefinition?>(null)
+        private set
+
+    /**
+     * The bridge both macro engines share. Every method answers for the
+     * ACTIVE tab only — a macro (recording or running) is a thing of the
+     * tab the user is looking at, and this is where the app keeps that
+     * promise.
+     */
+    private inner class MacroHostBridge :
+        com.roombrowser.browser.macro.MacroRecorderHost,
+        com.roombrowser.browser.macro.MacroRunnerHost {
+
+        override fun macroEval(script: String, onResult: (String?) -> Unit) {
+            // evaluateJs is main-thread by contract; hop there explicitly so
+            // a recorder pull from any thread cannot touch the engine off
+            // its looper.
+            viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                activeSession?.evaluateJs(script) { onResult(it) }
+            }
+        }
+
+        override fun macroActiveTabId(): String? = activeTabId
+
+        override fun macroTabExists(tabId: String): Boolean =
+            tabs.any { it.id == tabId }
+
+        override fun macroEngineView(): android.view.View? =
+            activeSession?.view
+
+        override fun macroLoadUrl(url: String) {
+            val (_, resolved) = com.roombrowser.domain.engine.UrlIntelligence.classify(
+                url, profileSettings().searchEngineId
+            )
+            if (resolved.isNotBlank()) loadUrl(resolved)
+        }
+
+        override fun macroGoBack() = goBack()
+        override fun macroGoForward() = goForward()
+        override fun macroReload() = reload()
+
+        override fun macroSelectTabIndex(index: Int): Boolean {
+            val open = tabs.filter { !it.isPrivate }
+            val target = open.getOrNull(index) ?: return false
+            if (target.id == activeTabId) return true
+            selectTab(target.id)
+            return true
+        }
+
+        override fun macroTabIndexFor(label: String): Int? {
+            val open = tabs.filter { !it.isPrivate }
+            return open.indexOfFirst {
+                it.title.startsWith(label, ignoreCase = true) || label.startsWith(it.title, ignoreCase = true)
+            }.takeIf { it >= 0 }
+        }
+
+        override fun macroNewTab(url: String) {
+            loadUrl(url, newTab = true)
+        }
+
+        override fun macroCapturePixels(onResult: (android.graphics.Bitmap?) -> Unit) {
+            activeSession?.capturePixels(onResult) ?: onResult(null)
+        }
+
+        override fun macroSaveCheckpoint(name: String, bitmap: android.graphics.Bitmap): String {
+            // Checkpoints land in the app's pictures-adjacent macro dir,
+            // per profile, so they never mix across profiles and never touch
+            // browsing data. A failure answers a plain "(unsaved)" — a
+            // checkpoint is a bonus, never a run-breaking asset.
+            return try {
+                val outDir = java.io.File(
+                    getApplication<Application>().getExternalFilesDir(
+                        android.os.Environment.DIRECTORY_PICTURES
+                    ) ?: getApplication<Application>().filesDir,
+                    "macro-checkpoints/${profileId.safeSuffix}"
+                )
+                outDir.mkdirs()
+                val stamp = java.text.SimpleDateFormat(
+                    "yyyyMMdd-HHmmss", java.util.Locale.US
+                ).format(java.util.Date())
+                val safe = name.replace(Regex("[^A-Za-z0-9-_ ]"), "").take(24).trim()
+                    .ifBlank { "checkpoint" }
+                val file = java.io.File(outDir, "$stamp-$safe.png")
+                java.io.FileOutputStream(file).use { fos ->
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 90, fos)
+                }
+                file.name
+            } catch (e: Exception) {
+                Log.w("MacroRunner", "checkpoint save failed: ${e.message}")
+                "(unsaved)"
+            }
+        }
+    }
 
     /** Set once the persisted-tab restore finished — incoming navigation
      *  requests (EXTRA_INITIAL_URL, QR, share-intents) wait for it so they
@@ -661,6 +921,18 @@ class BrowserViewModel(
             // one (a background tab's load must never repaint this tab).
             val owner = tabManager.idFor(session) ?: return
             Log.d(NAV_TAG, "vm=$navId onPageStarted url=$url active=${session === activeSession}")
+            // Macro capture on the ACTIVE tab: a new document means the
+            // probe's listeners died with the old one — reinstall them so
+            // recording survives same-site navigations (the steps themselves
+            // survive in the page's own sessionStorage; only the listeners
+            // need rearming). NOT recorded as a step here: the page's own
+            // probe pushes its NAVIGATE step on load, and link clicks are
+            // already CLICK steps — a second one here would double-count.
+            if (session === activeSession && macroRecorder.state == MacroRecordState.RECORDING) {
+                session.evaluateJs(
+                    com.roombrowser.browser.macro.MacroRecorderScripts.startJs()
+                ) { }
+            }
             if (session !== activeSession) {
                 // A background tab navigating: the URL belongs to ITS row
                 // (title stays as stored — the new document has none yet).
@@ -1384,6 +1656,15 @@ class BrowserViewModel(
     }
 
     fun loadUrl(url: String, newTab: Boolean = false, isPrivate: Boolean = false) {
+        // Macro capture: an omnibox/bookmark navigation is a chrome action
+        // the page probe cannot see — record it here, before the launch
+        // coroutine parks on the gates (the record is the user's intent,
+        // which exists the moment the call is made).
+        if (newTab) {
+            macroRecorder.recordNewTab(url)
+        } else {
+            macroRecorder.recordNavigate(url)
+        }
         if (url == "about:home" && !newTab) {
             // SAME-tab return to the start page. newTab=true must NEVER take
             // this branch: it used to reset the CURRENT tab's page state
@@ -1593,8 +1874,15 @@ class BrowserViewModel(
         pageError = PageError.Generic(uri.raw, message)
     }
 
-    fun goBack() { activeSession?.goBack() }
-    fun goForward() { activeSession?.goForward() }
+    fun goBack() {
+        macroRecorder.recordBack()
+        activeSession?.goBack()
+    }
+
+    fun goForward() {
+        macroRecorder.recordForward()
+        activeSession?.goForward()
+    }
 
     /**
      * Retry the page whose error surface is on screen.
@@ -1606,6 +1894,7 @@ class BrowserViewModel(
      */
     fun reload() {
         val session = activeSession ?: return
+        macroRecorder.recordReload()
         if (pageError != null) {
             pageError = null
             pageState = pageState.copy(isHomepage = false)
@@ -1860,6 +2149,13 @@ class BrowserViewModel(
     fun selectTab(id: String) {
         if (id == activeTabId && activeSession != null) return
         Log.d(NAV_TAG, "vm=$navId selectTab id=$id same=${id == activeTabId}")
+        // Macro capture: a tab switch is a chrome action. The label the
+        // macro stores is the tab's TITLE (what a user identifies a tab by),
+        // not the row id (a UUID that means nothing next run).
+        tabs.firstOrNull { it.id == id }?.let { tab ->
+            macroRecorder.recordTabSwitch(tab.title.ifBlank { tab.url })
+        }
+        macroRecorder.onActiveTabChanged(id)
         activeTabId = id
         val tab = tabs.firstOrNull { it.id == id } ?: return
         pageState = pageState.copy(
@@ -1966,6 +2262,10 @@ class BrowserViewModel(
             // The inspector goes before the engine does: it holds a handle to
             // the session this call is about to destroy.
             devtools.onTabClosed(id)
+            // A macro recording on the closing tab keeps what it recorded,
+            // but stops being able to add to it until the user returns to a
+            // page (the controller freezes rather than follows the close).
+            macroRecorder.onTabClosed(id)
             // The private-session clear MUST run before the destroy below.
             // destroyEngineQuiet detaches the engine from the tab manager, and
             // a detached engine is unreachable from privateTabs() — so

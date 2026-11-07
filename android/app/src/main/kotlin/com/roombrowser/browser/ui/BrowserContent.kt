@@ -95,7 +95,8 @@ import java.util.Locale
 fun BrowserContent(
     viewModel: BrowserViewModel,
     onShowShields: () -> Unit,
-    onOpenPrivacyDashboard: () -> Unit
+    onOpenPrivacyDashboard: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val page = viewModel.pageState
     val extras = LocalRoomExtras.current
@@ -105,7 +106,7 @@ fun BrowserContent(
         mutableStateOf(TextFieldValue(if (page.isHomepage) "" else UrlIntelligence.displayUrl(page.url)))
     }
     val context = LocalContext.current
-    Column(Modifier.fillMaxSize()) {
+    Column(modifier.fillMaxSize()) {
         // ---------- Omnibox row (floating pill) ---------------------------
         Row(
             Modifier

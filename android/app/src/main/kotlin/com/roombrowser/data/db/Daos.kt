@@ -856,6 +856,33 @@ interface NoteDao {
 }
 
 @Dao
+interface MacroDao {
+    @Upsert
+    suspend fun upsert(entity: MacroEntity)
+
+    /** Most-recently-edited first — the list order the library shows. */
+    @Query("SELECT * FROM macros WHERE profile_id = :profileId ORDER BY updated_at DESC")
+    fun observe(profileId: String): Flow<List<MacroEntity>>
+
+    @Query("SELECT * FROM macros WHERE id = :id")
+    suspend fun byId(id: String): MacroEntity?
+
+    @Query("SELECT * FROM macros WHERE id = :id")
+    fun observeById(id: String): Flow<MacroEntity?>
+
+    @Query("DELETE FROM macros WHERE id = :id")
+    suspend fun delete(id: String)
+
+    /** Profile-deletion cascade. */
+    @Query("DELETE FROM macros WHERE profile_id = :profileId")
+    suspend fun deleteAllForProfile(profileId: String)
+
+    /** Full scan of one profile's rows — feeds export. */
+    @Query("SELECT * FROM macros WHERE profile_id = :profileId")
+    suspend fun allForProfile(profileId: String): List<MacroEntity>
+}
+
+@Dao
 interface TotpDao {
     @Upsert
     suspend fun upsert(entity: TotpEntity)

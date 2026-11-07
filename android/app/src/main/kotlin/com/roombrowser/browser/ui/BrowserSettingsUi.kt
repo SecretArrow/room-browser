@@ -1059,7 +1059,46 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             ClearDataSection(viewModel = viewModel)
         }
 
+        // Reset sits above the danger zone ON PURPOSE: it is the non-
+        // destructive sibling — preferences go home, every byte of data
+        // stays — and a user about to clear data should see the gentler
+        // option first.
+        SectionHeader("Reset")
+        SettingsGroup {
+            ResetSettingsSection(viewModel = viewModel)
+        }
+
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun ResetSettingsSection(viewModel: BrowserViewModel) {
+    var confirm by remember { mutableStateOf(false) }
+
+    SettingActionRow(
+        title = "Reset settings to default",
+        subtitle = "Returns THIS profile's preferences (${viewModel.profile.name}) to the app " +
+            "defaults: search engine, shields, WebRTC policy, appearance, agent toggles and " +
+            "every other setting above. Browsing data is NOT touched — cookies, sessions, " +
+            "logins, history, bookmarks, downloads, notes, macros, wallets and passwords all " +
+            "stay exactly as they are, and other profiles are not affected.",
+        onClick = { confirm = true }
+    )
+
+    if (confirm) {
+        com.roombrowser.main.ui.ConfirmDialog(
+            title = "Reset settings to default?",
+            text = "Only this profile's SETTINGS return to their defaults. " +
+                "Cookies, sessions and logins stay signed in; history, bookmarks, downloads, " +
+                "notes, macros and passwords are not deleted; other profiles are not affected.",
+            confirmLabel = "Reset settings",
+            onDismiss = { confirm = false },
+            onConfirm = {
+                viewModel.resetSettingsToDefault()
+                confirm = false
+            }
+        )
     }
 }
 

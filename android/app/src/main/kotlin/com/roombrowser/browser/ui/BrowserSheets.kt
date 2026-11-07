@@ -30,6 +30,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddToHomeScreen
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -287,6 +288,8 @@ fun PageActionsSheet(
     onOpenBookmarks: () -> Unit,
     onOpenDownloads: () -> Unit,
     onOpenHistory: () -> Unit,
+    onOpenMacro: () -> Unit,
+    onToggleMacroRecording: () -> Unit,
     onOpenNotes: () -> Unit,
     onOpenTwoFactor: () -> Unit,
     onOpenPasswords: () -> Unit,
@@ -302,7 +305,9 @@ fun PageActionsSheet(
                 .verticalScroll(rememberScrollState())
         ) {
             RoomSheetHeader("Page Actions")
-            SheetAction(Icons.AutoMirrored.Filled.ArrowBack, "Back") { viewModel.goBack(); onDismiss() }
+            // Gated like the bottom bar's back arrow: a Back with no history is a
+            // silent no-op there, and it must be here too.
+            SheetAction(Icons.AutoMirrored.Filled.ArrowBack, "Back", enabled = viewModel.pageState.canGoBack) { viewModel.goBack(); onDismiss() }
             SheetAction(Icons.AutoMirrored.Filled.ArrowForward, "Forward") { viewModel.goForward(); onDismiss() }
             SheetAction(Icons.Filled.Add, "New tab") { viewModel.loadUrl("about:home", newTab = true); onDismiss() }
             SheetAction(Icons.Filled.Lock, "New private tab") { viewModel.startPrivateTab(); onDismiss() }
@@ -315,6 +320,16 @@ fun PageActionsSheet(
             SheetAction(Icons.Filled.StarBorder, "Bookmarks") { onOpenBookmarks(); onDismiss() }
             SheetAction(Icons.Filled.History, "History") { onOpenHistory(); onDismiss() }
             SheetAction(Icons.Filled.Download, "Downloads") { onOpenDownloads(); onDismiss() }
+            // Macro sits directly above Notes, per the owner's menu spec:
+            // one row opens the library, one starts a recording on the
+            // active tab (disabled on the homepage — there is no page to
+            // probe there, and the recorder says so itself when refused).
+            SheetAction(Icons.Filled.AutoAwesome, "Macro") { onOpenMacro() }
+            SheetAction(
+                Icons.Filled.FiberManualRecord,
+                if (viewModel.macroRecordState == com.roombrowser.browser.macro.MacroRecordState.IDLE)
+                    "Record macro" else "Macro recording: controls in the bar"
+            ) { onToggleMacroRecording(); onDismiss() }
             SheetAction(Icons.Filled.Description, "Notes") { onOpenNotes() }
             SheetAction(Icons.Filled.Password, "2FA Management") { onOpenTwoFactor() }
             SheetAction(Icons.Filled.Key, "Passwords") { onOpenPasswords() }
@@ -427,6 +442,7 @@ private fun SheetSectionLabel(text: String) {
 private fun SheetAction(
     icon: ImageVector,
     label: String,
+    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     val extras = LocalRoomExtras.current
@@ -434,7 +450,7 @@ private fun SheetAction(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape((extras.radius * 0.7f).dp))
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             // Addressable + announced as one action (TalkBack reads the
             // label instead of raw child texts; UI tests target the row
             // itself, which carries the click action).
@@ -449,10 +465,19 @@ private fun SheetAction(
                 .background(extras.primary.copy(alpha = 0.12f)),
             contentAlignment = Alignment.Center
         ) {
-            Icon(icon, contentDescription = null, tint = extras.primary, modifier = Modifier.size(18.dp))
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = if (enabled) extras.primary else extras.textSecondary,
+                modifier = Modifier.size(18.dp)
+            )
         }
         Spacer(Modifier.width(14.dp))
-        Text(label, style = MaterialTheme.typography.bodyLarge, color = extras.textPrimary)
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = if (enabled) extras.textPrimary else extras.textSecondary
+        )
     }
 }
 

@@ -40,6 +40,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -209,6 +210,42 @@ fun BrowserScreen(
     // konfirmasi dulu").
     var showExitConfirm by remember { mutableStateOf(false) }
 
+    // ---- Internal route back-stack ----
+    // The routes below used to have a FIXED parent mapping (ProfileSettings
+    // and About always returned to Settings), which meant Back could land on
+    // a screen the user never visited. A real stack fixes that: every route
+    // change pushes the route it left, Back pops it, and the fixed mappings
+    // survive only as the fallback for a stack that is empty (deep link,
+    // agent app_open).
+    val routeBackstack = remember { mutableStateListOf<BrowserRoute>() }
+    fun navigateTo(target: BrowserRoute) {
+        if (target == route) return
+        routeBackstack.add(route)
+        route = target
+    }
+    fun navigateBack() {
+        if (routeBackstack.isNotEmpty()) {
+            route = routeBackstack.removeAt(routeBackstack.size - 1)
+        } else {
+            // Fallback for a stack that never got built (external entry):
+            // the parent mapping this activity always had.
+            route = when (route) {
+                BrowserRoute.ProfileSettings, BrowserRoute.About -> BrowserRoute.Settings
+                else -> BrowserRoute.Browser
+            }
+        }
+    }
+
+    // A macro run request handed over by the Macro library (another
+    // process): consume once, then run. LaunchedEffect(keys) guards the
+    // recomposition double-fire the way the chooser launchers above do.
+    val macroRunRequest = viewModel.macroRunPending
+    LaunchedEffect(macroRunRequest) {
+        val request = macroRunRequest ?: return@LaunchedEffect
+        viewModel.takeMacroRunRequest()
+        viewModel.macroRunFromLibrary(request)
+    }
+
     // "Switch Profile" decision from the network warning activity: re-open
     // the quick switcher once the engine resumes (counter, so every new
     // request re-fires the LaunchedEffect).
@@ -276,6 +313,20 @@ fun BrowserScreen(
         NotesActivity.launch(activity, viewModel.profileId.value, viewModel.profile.name)
     }
 
+    fun launchMacro() {
+        MacroActivity.launch(activity, viewModel.profileId.value, viewModel.profile.name)
+    }
+
+    /** The sheet's Record row: start, or — already recording — park the user
+     *  on the recording bar that is already on screen. */
+    fun toggleMacroRecording() {
+        when (viewModel.macroRecordState) {
+            com.roombrowser.browser.macro.MacroRecordState.IDLE ->
+                viewModel.macroStartRecording()
+            else -> Unit // the bar's own controls handle pause/stop/cancel
+        }
+    }
+
     fun launchWhatsMyIp() {
         WhatsMyIpActivity.launch(activity, viewModel.profileId.value)
     }
@@ -332,7 +383,7 @@ fun BrowserScreen(
                             .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
                     ),
                     viewModel = viewModel,
-                    onOpenTabs = { route = BrowserRoute.Tabs },
+                    onOpenTabs = { navigateTo(BrowserRoute.Tabs) },
                     onOpenAgent = { openAgent() },
                     onShowPageActions = { showPageActions = true }
                 )
@@ -366,19 +417,37 @@ fun BrowserScreen(
                 .consumeWindowInsets(WindowInsets.ime)
         ) {
             when (route) {
-                BrowserRoute.Browser -> BrowserContent(
-                    viewModel = viewModel,
-                    onShowShields = { showShields = true },
-                    onOpenPrivacyDashboard = { route = BrowserRoute.PrivacyDashboard }
-                )
-                BrowserRoute.Tabs -> TabGridScreen(viewModel = viewModel, onClose = { route = BrowserRoute.Browser })
-                BrowserRoute.Bookmarks -> BookmarksScreen(viewModel = viewModel, onClose = { route = BrowserRoute.Browser })
-                BrowserRoute.History -> HistoryScreen(viewModel = viewModel, onClose = { route = BrowserRoute.Browser })
-                BrowserRoute.Downloads -> DownloadsScreen(viewModel = viewModel, onClose = { route = BrowserRoute.Browser })
-                BrowserRoute.PrivacyDashboard -> PrivacyDashboardScreen(viewModel = viewModel, onClose = { route = BrowserRoute.Browser })
-                BrowserRoute.Settings -> BrowserSettingsScreen(viewModel = viewModel, onClose = { route = BrowserRoute.Browser })
-                BrowserRoute.ProfileSettings -> ProfileSettingsScreen(viewModel = viewModel, onClose = { route = BrowserRoute.Settings })
-                BrowserRoute.About -> AboutScreen(onClose = { route = BrowserRoute.Settings })
+                BrowserRoute.Browser -> Column(Modifier.fillMaxSize()) {
+                    // The macro surfaces ride ABOVE the page, below the agent
+                    // panel: the recording indicator and the playback HUD are
+                    // chrome state, and they must stay visible through every
+                    // step the engine takes.
+                    MacroRecordingBar(
+                        viewModel = viewModel,
+                        onOpenEditor = {
+                            viewModel.lastRecording?.let { seed ->
+                                MacroEditorActivity.launchWithSeed(
+                                    activity, viewModel.profileId.value, seed
+                                )
+                            }
+                        }
+                    )
+                    MacroRunHud(viewModel = viewModel)
+                    BrowserContent(
+                        viewModel = viewModel,
+                        modifier = Modifier.weight(1f),
+                        onShowShields = { showShields = true },
+                        onOpenPrivacyDashboard = { navigateTo(BrowserRoute.PrivacyDashboard) }
+                    )
+                }
+                BrowserRoute.Tabs -> TabGridScreen(viewModel = viewModel, onClose = { navigateBack() })
+                BrowserRoute.Bookmarks -> BookmarksScreen(viewModel = viewModel, onClose = { navigateBack() })
+                BrowserRoute.History -> HistoryScreen(viewModel = viewModel, onClose = { navigateBack() })
+                BrowserRoute.Downloads -> DownloadsScreen(viewModel = viewModel, onClose = { navigateBack() })
+                BrowserRoute.PrivacyDashboard -> PrivacyDashboardScreen(viewModel = viewModel, onClose = { navigateBack() })
+                BrowserRoute.Settings -> BrowserSettingsScreen(viewModel = viewModel, onClose = { navigateBack() })
+                BrowserRoute.ProfileSettings -> ProfileSettingsScreen(viewModel = viewModel, onClose = { navigateBack() })
+                BrowserRoute.About -> AboutScreen(onClose = { navigateBack() })
             }
 
             // The floating AI agent panel lives above the browsing surface.
@@ -421,17 +490,18 @@ fun BrowserScreen(
     // ------------------------------------------------------------------
     // System Back button — a browser must NEVER die on the first press.
     // Priority (most specific first):
-    //   fullscreen video → reader mode → find-in-page → developer tools →
-    //   agent panel → sub-screen route → web history → exit confirmation →
+    //   fullscreen video → reader mode → find-in-page → a running macro →
+    //   developer tools → agent panel → sub-screen route (REAL back-stack
+    //   now, not a fixed parent map) → web history → exit dialog →
     //   background.
     // ModalBottomSheets/dialogs register their own (later = higher
     // priority) callbacks, so they close themselves before this runs.
-    // The web-history branch actually WORKS now: canGoBack is live-tracked
-    // via doUpdateVisitedHistory, so Back walks pages like a real browser.
-    // When a non-home page has no history left, an explicit confirmation
-    // (Exit / Back to start page / Cancel) stands between the user and
-    // leaving the app. The homepage keeps the instant-background contract
-    // (E2EBrowseFlowTest.system_back_backgrounds_app_without_killing_engine).
+    // The web-history branch WORKS: canGoBack is live-tracked via
+    // doUpdateVisitedHistory, so Back walks pages like a real browser —
+    // session, scroll and form state ride the engine's own history entry.
+    // When no history is left — homepage included — the SAME explicit
+    // choice (Exit / Go to start page / Stay) stands between the user and
+    // leaving the app. No first press ever backgrounds the app alone.
     // ------------------------------------------------------------------
     BackHandler {
         when {
@@ -441,21 +511,30 @@ fun BrowserScreen(
                 viewModel.clearFindInPage()
                 showFindBar = false
             }
+            // A macro in flight owns Back: the user's instinct when
+            // automation misbehaves is Back, and the run must stop before
+            // anything else is navigated.
+            viewModel.macroBackHandled() -> Unit
             // Developer Tools docks in the same slot as the agent panel, so it
             // takes Back first — it is the overlay the user most recently
             // raised and the one covering the page. Only on the browser route,
             // where it is actually composed.
             route == BrowserRoute.Browser && viewModel.devtools.isOpen ->
                 viewModel.devtools.close()
-            agentPanelExpanded -> agentPanelExpanded = false
-            // Sub-screens whose in-app back returns to their PARENT screen
-            // (ProfileSettings / About open from the Settings screen) must
-            // land in the SAME place from the system Back gesture.
-            route == BrowserRoute.ProfileSettings || route == BrowserRoute.About -> route = BrowserRoute.Settings
-            route != BrowserRoute.Browser -> route = BrowserRoute.Browser
+            // The agent panel is composed ONLY on the browser route, so the
+            // Back that collapses it must be scoped the same way — an
+            // unscoped branch used to eat a press on a sub-screen to close a
+            // panel the user could not even see.
+            route == BrowserRoute.Browser && agentPanelExpanded -> agentPanelExpanded = false
+            // Sub-screens pop the route stack (the screen the user actually
+            // came from), falling back to the fixed parent when the stack is
+            // empty (agent app_open, deep entry).
+            route != BrowserRoute.Browser -> navigateBack()
             viewModel.pageState.canGoBack -> viewModel.goBack()
-            !viewModel.pageState.isHomepage -> showExitConfirm = true
-            else -> activity.moveTaskToBack(true) // keep engine + tabs alive
+            // No web history left: the explicit three-way choice, homepage
+            // included — "Back exits straight from the start page" was the
+            // one contract the owner overruled.
+            else -> showExitConfirm = true
         }
     }
 
@@ -468,18 +547,20 @@ fun BrowserScreen(
             onShowFindBar = { showFindBar = true; showPageActions = false },
             onTranslate = { showTranslateDialog = true; showPageActions = false },
             onShowQr = { showQrDialog = true; showPageActions = false },
-            onOpenSettings = { route = BrowserRoute.Settings; showPageActions = false },
-            onOpenProfileSettings = { route = BrowserRoute.ProfileSettings; showPageActions = false },
+            onOpenSettings = { navigateTo(BrowserRoute.Settings); showPageActions = false },
+            onOpenProfileSettings = { navigateTo(BrowserRoute.ProfileSettings); showPageActions = false },
             onOpenWhatsMyIp = { launchWhatsMyIp(); showPageActions = false },
             onOpenGoogleSignInCheck = { launchGoogleSignInCheck(); showPageActions = false },
-            onOpenAbout = { route = BrowserRoute.About; showPageActions = false },
+            onOpenAbout = { navigateTo(BrowserRoute.About); showPageActions = false },
             onOpenAgent = { openAgent(); showPageActions = false },
             onOpenAiTasks = { launchAiTasks(); showPageActions = false },
             onOpenAgentSettings = { launchAgentSettings(); showPageActions = false },
             onOpenAgentSessions = { launchAgentSessions(); showPageActions = false },
-            onOpenBookmarks = { route = BrowserRoute.Bookmarks; showPageActions = false },
-            onOpenDownloads = { route = BrowserRoute.Downloads; showPageActions = false },
-            onOpenHistory = { route = BrowserRoute.History; showPageActions = false },
+            onOpenBookmarks = { navigateTo(BrowserRoute.Bookmarks); showPageActions = false },
+            onOpenDownloads = { navigateTo(BrowserRoute.Downloads); showPageActions = false },
+            onOpenHistory = { navigateTo(BrowserRoute.History); showPageActions = false },
+            onOpenMacro = { launchMacro(); showPageActions = false },
+            onToggleMacroRecording = { toggleMacroRecording() },
             onOpenNotes = { launchNotes(); showPageActions = false },
             onOpenTwoFactor = { launchTwoFactor(); showPageActions = false },
             onOpenPasswords = { launchPasswords(); showPageActions = false },
@@ -638,22 +719,29 @@ fun BrowserScreen(
         )
     }
 
-    // ---------- System-Back exit confirmation (non-home, no history) ------
-    // Fired by the BackHandler's `!isHomepage` branch: the current page has
-    // no back history left, so leaving the app requires an EXPLICIT choice.
-    // "Exit" keeps the engine + tabs alive via moveTaskToBack (same contract
-    // as the homepage back), "Back to start page" returns to about:home with
-    // a clean per-tab history, "Cancel" (or outside-tap) simply stays.
+    // ---------- System-Back exit confirmation (no history left) ----------
+    // Fired by the BackHandler's last branch: the current tab has no back
+    // history left — a fresh page or the start page — so leaving requires an
+    // EXPLICIT choice. "Exit App" keeps the engine + tabs alive via
+    // moveTaskToBack (nothing is killed), "Go to Start Page" returns this
+    // tab to about:home with a clean per-tab history, "Stay Here" (or an
+    // outside-tap) simply stays. The same three choices everywhere: no Back
+    // press ever backgrounds the app on its own.
     if (showExitConfirm) {
         val page = viewModel.pageState
-        val host = UrlIntelligence.hostOf(page.url)?.let { "You are viewing $it." } ?: ""
+        val host = UrlIntelligence.hostOf(page.url)?.let { "You are viewing $it." }
         AlertDialog(
             onDismissRequest = { showExitConfirm = false },
             title = { Text("Exit Room Browser?") },
             text = {
                 Text(
-                    (if (host.isBlank()) "" else "$host ") +
-                        "This page has no back history left. Your tabs and the engine stay alive in the background."
+                    if (host != null) {
+                        "$host This tab has no back history left. Your tabs, sessions and " +
+                            "the engine stay alive in the background."
+                    } else {
+                        "This tab has no back history left. Your tabs, sessions and the " +
+                            "engine stay alive in the background."
+                    }
                 )
             },
             confirmButton = {
@@ -661,8 +749,9 @@ fun BrowserScreen(
                     onClick = {
                         showExitConfirm = false
                         activity.moveTaskToBack(true)
-                    }
-                ) { Text("Exit") }
+                    },
+                    modifier = Modifier.semantics { contentDescription = "exit_app_confirm" }
+                ) { Text("Exit App") }
             },
             dismissButton = {
                 Column {
@@ -670,9 +759,13 @@ fun BrowserScreen(
                         onClick = {
                             showExitConfirm = false
                             viewModel.goHome()
-                        }
-                    ) { Text("Back to start page") }
-                    TextButton(onClick = { showExitConfirm = false }) { Text("Cancel") }
+                        },
+                        modifier = Modifier.semantics { contentDescription = "exit_go_start_page" }
+                    ) { Text("Go to Start Page") }
+                    TextButton(
+                        onClick = { showExitConfirm = false },
+                        modifier = Modifier.semantics { contentDescription = "exit_stay_here" }
+                    ) { Text("Stay Here") }
                 }
             }
         )

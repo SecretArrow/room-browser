@@ -43,13 +43,14 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         WalletActiveNetworkEntity::class,
         AiTaskEntity::class,
         NoteEntity::class,
+        MacroEntity::class,
         TotpEntity::class,
         AgentSiteMemoryEntity::class,
         PluginEntity::class,
         ChatPluginEntity::class,
         AgentSkillEntity::class
     ],
-    version = 21,
+    version = 22,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -72,6 +73,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun walletActivityDao(): WalletActivityDao
     abstract fun aiTaskDao(): AiTaskDao
     abstract fun noteDao(): NoteDao
+    abstract fun macroDao(): MacroDao
     abstract fun totpDao(): TotpDao
     abstract fun agentSiteMemoryDao(): AgentSiteMemoryDao
     abstract fun pluginDao(): PluginDao
@@ -752,6 +754,39 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * v21 -> v22: the macro library. Pure additive CREATE TABLE +
+         * INDEX statements — no existing table is touched, so the migration
+         * is lossless. Mirrors the notes schema (v13) on purpose: same
+         * per-profile scoping, same UUID string key, same updated_at-driven
+         * list order.
+         */
+        internal val MIGRATION_21_22 = object : Migration(21, 22) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `macros` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`profile_id` TEXT NOT NULL, " +
+                        "`name` TEXT NOT NULL, " +
+                        "`description` TEXT NOT NULL, " +
+                        "`category` TEXT NOT NULL, " +
+                        "`icon` TEXT NOT NULL, " +
+                        "`definition_json` TEXT NOT NULL, " +
+                        "`created_at` INTEGER NOT NULL, " +
+                        "`updated_at` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_macros_profile_id` " +
+                        "ON `macros` (`profile_id`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_macros_profile_id_updated_at` " +
+                        "ON `macros` (`profile_id`, `updated_at`)"
+                )
+            }
+        }
+
+        /**
          * Every migration, oldest first — the ONE list. [build] applies it and
          * the migration tests apply it too, so a version bump cannot leave a
          * test registering a subset that stops short of the current version.
@@ -762,7 +797,7 @@ abstract class AppDatabase : RoomDatabase() {
             MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
             MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16,
             MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20,
-            MIGRATION_20_21
+            MIGRATION_20_21, MIGRATION_21_22
         )
 
         @Volatile

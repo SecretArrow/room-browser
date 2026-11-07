@@ -229,11 +229,13 @@ class E2EBrowseFlowTest {
     /**
      * SYSTEM BACK vs the engine (the "menabrak tombol back" regression guard).
      *
-     * Contract (BrowserScreen's BackHandler):
-     *   On the homepage (no web history) the FIRST system Back press must
-     *   move the whole task to the background (moveTaskToBack) — keeping the
-     *   engine process and all tabs alive. It must NEVER finish the engine
-     *   activity back to the profile list on a single press.
+     * Contract (BrowserScreen's BackHandler — owner's revision 2026-11):
+     *   On ANY screen without web history — the homepage included — the
+     *   first Back press now opens the explicit three-way dialog (Exit App /
+     *   Go to Start Page / Stay Here); it never backgrounds the app on its
+     *   own. "Exit App" then moves the whole task to the background —
+     *   keeping the engine process and all tabs alive. It must NEVER finish
+     *   the engine activity back to the profile list.
      */
     @Test
     fun system_back_backgrounds_app_without_killing_engine() {
@@ -242,14 +244,29 @@ class E2EBrowseFlowTest {
         E2eDeterminism.suppressOrganicNetworkWarnings()
         assertTrue("Engine must be reachable from the launcher", openEngineFromLauncher())
 
-        // ---- 1. First Back press: homepage has no history -> background ---
+        // ---- 1. First Back press on the homepage: the DIALOG, not exit ---
         device.pressBack()
+        device.waitForIdle(1_000)
+        assertTrue(
+            "Back on the homepage must open the exit dialog (Exit App / Go to Start Page / Stay Here)",
+            device.wait(Until.hasObject(By.text("Exit Room Browser?")), 4_000)
+        )
+        assertTrue(
+            "The dialog must offer all three choices",
+            device.hasObject(By.text("Exit App")) &&
+                device.hasObject(By.text("Go to Start Page")) &&
+                device.hasObject(By.text("Stay Here"))
+        )
+
+        // ---- 2. "Exit App" backgrounds the task; the engine survives ------
+        val exit = device.findObject(By.text("Exit App")) ?: fail("Exit App button missing")
+        exit.click()
         device.waitForIdle(1_000)
         val backgrounded = waitUntil(4_000) {
             device.currentPackageName != targetContext.packageName
         }
         assertTrue(
-            "First Back must background the app (moveTaskToBack), not stay in-app",
+            "Exit App must background the app (moveTaskToBack), not stay in-app",
             backgrounded
         )
         assertTrue(
@@ -257,7 +274,7 @@ class E2EBrowseFlowTest {
             device.findObjects(By.text("Your profiles")).isEmpty()
         )
 
-        // ---- 2. The engine survives: resume it, UI intact ----------------
+        // ---- 3. The engine survives: resume it, UI intact ------------------
         targetContext.startActivity(
             Intent()
                 .setClassName(targetContext.packageName, "com.roombrowser.browser.BrowserActivity")
