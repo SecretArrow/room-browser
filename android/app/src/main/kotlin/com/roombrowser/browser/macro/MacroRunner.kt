@@ -323,7 +323,7 @@ class MacroRunner(
         if (!step.selector.isNullOrBlank()) {
             val err = jsStep(clickScript(step), "click")
             if (err == null) return null
-            logLine(1, "selector click missed (${err}); falling back to coordinates")
+            logLine(1, "selector click missed ($err); falling back to coordinates")
         }
         val x = step.x ?: return "no selector and no coordinates"
         val y = step.y ?: return "no selector and no coordinates"
@@ -663,4 +663,3 @@ class MacroRunner(
         Log.d(TAG, message)
     }
 }
-

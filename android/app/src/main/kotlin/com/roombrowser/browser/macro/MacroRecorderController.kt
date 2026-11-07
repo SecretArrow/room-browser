@@ -2,8 +2,8 @@ package com.roombrowser.browser.macro
 
 import android.util.Log
 import com.roombrowser.domain.macro.MacroDefinition
-import com.roombrowser.domain.macro.MacroStep
 import com.roombrowser.domain.macro.MacroSanitizer
+import com.roombrowser.domain.macro.MacroStep
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay

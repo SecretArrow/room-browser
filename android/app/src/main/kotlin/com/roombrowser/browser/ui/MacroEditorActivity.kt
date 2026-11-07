@@ -22,7 +22,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.ContentCopy
@@ -52,7 +51,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.roombrowser.RoomBrowserApp
-import com.roombrowser.ui.common.RoomCard
 import com.roombrowser.data.repo.BrowserRepository
 import com.roombrowser.domain.macro.MacroCodec
 import com.roombrowser.domain.macro.MacroDefinition
@@ -61,8 +59,9 @@ import com.roombrowser.domain.macro.MacroStep
 import com.roombrowser.domain.macro.MacroVariable
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.theme.BuiltInThemes
-import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.LocalRoomExtras
+import com.roombrowser.ui.common.RoomBrowserTheme
+import com.roombrowser.ui.common.RoomCard
 import kotlinx.coroutines.launch
 
 /**

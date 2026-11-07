@@ -7,8 +7,8 @@ import com.roombrowser.data.db.CategoryCount
 import com.roombrowser.data.db.DownloadEntity
 import com.roombrowser.data.db.HistoryEntity
 import com.roombrowser.data.db.IpHistoryEntity
-import com.roombrowser.data.db.NoteEntity
 import com.roombrowser.data.db.MacroEntity
+import com.roombrowser.data.db.NoteEntity
 import com.roombrowser.data.db.SitePermissionEntity
 import com.roombrowser.data.db.SiteSettingEntity
 import com.roombrowser.data.db.TabEntity

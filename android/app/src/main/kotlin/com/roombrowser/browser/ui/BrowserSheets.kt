@@ -30,7 +30,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AccountBalanceWallet
-import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddToHomeScreen
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -39,6 +38,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.FindInPage
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.History

@@ -10,10 +10,6 @@ import com.roombrowser.domain.agent.AgentPause
 import com.roombrowser.domain.agent.AgentPlan
 import com.roombrowser.domain.agent.AgentStepVerifier
 import com.roombrowser.domain.agent.AgentTools
-import com.roombrowser.domain.macro.MacroCodec
-import com.roombrowser.domain.macro.MacroDefinition
-import com.roombrowser.domain.macro.MacroRisk
-import com.roombrowser.domain.macro.MacroStep
 import com.roombrowser.domain.agent.ChallengeDetector
 import com.roombrowser.domain.agent.ChallengeHit
 import com.roombrowser.domain.agent.DataTransform
@@ -35,6 +31,10 @@ import com.roombrowser.domain.agent.ToolResult
 import com.roombrowser.domain.agent.UntrustedContent
 import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.engine.UrlIntelligence
+import com.roombrowser.domain.macro.MacroCodec
+import com.roombrowser.domain.macro.MacroDefinition
+import com.roombrowser.domain.macro.MacroRisk
+import com.roombrowser.domain.macro.MacroStep
 import com.roombrowser.domain.oct.OctUri
 import com.roombrowser.domain.plugins.PluginToolNaming
 import com.roombrowser.engine.EngineSession
@@ -45,8 +45,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull

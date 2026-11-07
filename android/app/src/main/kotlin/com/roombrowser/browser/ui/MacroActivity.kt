@@ -18,8 +18,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -31,16 +31,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
-import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -73,18 +70,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
+import com.roombrowser.RoomBrowserApp
 import com.roombrowser.browser.BrowserSession
 import com.roombrowser.browser.MacroRunRequest
-import com.roombrowser.RoomBrowserApp
-import com.roombrowser.ui.common.RoomCard
 import com.roombrowser.data.db.MacroEntity
 import com.roombrowser.data.repo.BrowserRepository
 import com.roombrowser.domain.macro.MacroDefinition
 import com.roombrowser.domain.macro.MacroRisk
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.theme.BuiltInThemes
-import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.LocalRoomExtras
+import com.roombrowser.ui.common.RoomBrowserTheme
+import com.roombrowser.ui.common.RoomCard
 import kotlinx.coroutines.launch
 
 /**
