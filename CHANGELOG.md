@@ -209,6 +209,13 @@ Layar probe identitas kini menilai request yang benar-benar dikirim engine (dise
 - fix(macro): import the systemBars/displayCutout/union extensions the macro list uses
 - style(macro): kotlinx stays in the main import block; java imports go last
 
+## v1.0.208 — 7 November 2026
+
+- docs(changelog): regenerate through v1.0.207 [skip ci]
+- test(macro): automated coverage for the pick-on-page feature
+- test(macro): import MacroStep — the appliedTo tests reference it
+- fix(macro): unwrap the JSON-encoded evaluateJs answer before reading the pick probe
+
 ## Catatan: tag di luar garis sejarah edisi ini
 
 97 tag (v1.0.85 s.d. v1.0.181)
