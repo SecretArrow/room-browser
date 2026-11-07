@@ -73,14 +73,14 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import com.roombrowser.BrowserSession
 import com.roombrowser.RoomBrowserApp
-import com.roombrowser.browser.ui.components.RoomCard
+import com.roombrowser.ui.common.RoomCard
 import com.roombrowser.data.db.MacroEntity
 import com.roombrowser.data.repo.BrowserRepository
 import com.roombrowser.domain.macro.MacroDefinition
 import com.roombrowser.domain.macro.MacroRisk
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.theme.BuiltInThemes
-import com.roombrowser.theme.ui.RoomBrowserTheme
+import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.LocalRoomExtras
 import kotlinx.coroutines.launch
 

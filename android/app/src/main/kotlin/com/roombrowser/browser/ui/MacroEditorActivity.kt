@@ -52,7 +52,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.roombrowser.RoomBrowserApp
-import com.roombrowser.browser.ui.components.RoomCard
+import com.roombrowser.ui.common.RoomCard
 import com.roombrowser.data.repo.BrowserRepository
 import com.roombrowser.domain.macro.MacroCodec
 import com.roombrowser.domain.macro.MacroDefinition
@@ -61,7 +61,7 @@ import com.roombrowser.domain.macro.MacroStep
 import com.roombrowser.domain.macro.MacroVariable
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.theme.BuiltInThemes
-import com.roombrowser.theme.ui.RoomBrowserTheme
+import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.LocalRoomExtras
 import kotlinx.coroutines.launch
 
