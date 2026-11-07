@@ -1,5 +1,14 @@
 package com.roombrowser.domain
 
+import com.roombrowser.domain.macro.MacroCodec
+import com.roombrowser.domain.macro.MacroDefinition
+import com.roombrowser.domain.macro.MacroPlayback
+import com.roombrowser.domain.macro.MacroRisk
+import com.roombrowser.domain.macro.MacroSanitizer
+import com.roombrowser.domain.macro.MacroStep
+import com.roombrowser.domain.macro.MacroVariable
+import com.roombrowser.domain.macro.MacroVariables
+
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 

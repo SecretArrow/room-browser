@@ -100,6 +100,13 @@ class AgentToolForegroundPolicyTest {
         // whether this chat's engine is on screen.
         AgentTools.APP_2FA,
         AgentTools.APP_NOTES,
+        // The macro tools talk to this profile's library (Room rows) and to
+        // the runner owned by the live browser process; listing and saving
+        // never touch a page, so they keep working on a background tab.
+        // run_macro is deliberately NOT here: a playback is a page load
+        // wearing a recorded list, so it sits on MOVES_THE_PAGE.
+        AgentTools.MACRO_LIST,
+        AgentTools.MACRO_CREATE,
         // Wallet tools talk to the wallet engine, never to a page, so they
         // start no navigation and are safe on a background tab.
         AgentTools.WALLET_STATE,

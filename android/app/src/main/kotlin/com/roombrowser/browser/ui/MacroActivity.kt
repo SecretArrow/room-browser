@@ -199,7 +199,7 @@ class MacroActivity : ComponentActivity() {
                     activity = this,
                     profileId = profileId,
                     profileName = profileName,
-                    repo = graph.graph.browserRepo,
+                    repo = graph.browserRepo,
                     editorMessage = editorMessage,
                     onEditorMessageShown = { editorMessage = null },
                     onAdd = { MacroEditorActivity.launch(this, profileId.value, null) },

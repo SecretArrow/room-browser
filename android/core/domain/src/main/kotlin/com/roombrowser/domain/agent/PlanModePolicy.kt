@@ -62,7 +62,13 @@ object PlanModePolicy {
         // skill (skills_list, skills_read) is a read like read_page and stays
         // legal here: a plan is exactly where the instructions matter.
         AgentTools.SKILLS_INSTALL,
-        AgentTools.SKILLS_REMOVE
+        AgentTools.SKILLS_REMOVE,
+        // Running a macro replays whatever the recording (or an earlier turn)
+        // captured — clicks, inputs, navigations — which is work carried out
+        // by definition. Creating one only writes to the profile's library
+        // and stays legal in a plan: a plan that ends with "save these steps
+        // as a macro" is exactly the honest output this mode promises.
+        AgentTools.MACRO_RUN
     )
 
     /**

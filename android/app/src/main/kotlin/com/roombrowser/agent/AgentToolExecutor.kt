@@ -10,6 +10,10 @@ import com.roombrowser.domain.agent.AgentPause
 import com.roombrowser.domain.agent.AgentPlan
 import com.roombrowser.domain.agent.AgentStepVerifier
 import com.roombrowser.domain.agent.AgentTools
+import com.roombrowser.domain.macro.MacroCodec
+import com.roombrowser.domain.macro.MacroDefinition
+import com.roombrowser.domain.macro.MacroRisk
+import com.roombrowser.domain.macro.MacroStep
 import com.roombrowser.domain.agent.ChallengeDetector
 import com.roombrowser.domain.agent.ChallengeHit
 import com.roombrowser.domain.agent.DataTransform
@@ -42,6 +46,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -149,6 +154,13 @@ class AgentToolExecutor(
      * the tool unavailable rather than writing under the wrong profile.
      */
     private val siteMemory: SiteMemoryStore? = null,
+    /**
+     * The macro library surface for create_macro / run_macro / macro_list.
+     * Null — a headless or scheduled run, which has no visible tab for a
+     * playback to own — leaves the tools unavailable rather than pretending
+     * a replay could happen somewhere the user cannot watch.
+     */
+    private val macros: AgentMacroAccess? = null,
     /**
      * The per-profile "Let the agent remember this site" setting, read live.
      * OFF by default: the agent keeps no notes about a site until the user says
@@ -321,6 +333,9 @@ class AgentToolExecutor(
                     AgentTools.WAIT_FOR -> waitFor(str(args, "text"), intOrNull(args, "timeout_ms"))
                     AgentTools.DOWNLOAD_FILE -> downloadFile(str(args, "url"), strOrNull(args, "name"))
                     AgentTools.SAVE_PDF -> savePdf(strOrNull(args, "name"))
+                    AgentTools.MACRO_LIST -> macroList()
+                    AgentTools.MACRO_CREATE -> macroCreate(args)
+                    AgentTools.MACRO_RUN -> macroRun(args)
                     // The agent's own step list: nothing on the page, nothing
                     // stored, and no gate — it changes only what the user reads.
                     AgentTools.PLAN -> AgentPlan.execute(argsJson)
@@ -1400,6 +1415,95 @@ class AgentToolExecutor(
         }
     }
 
+    // ---------- macro automation (library + playback) ----------
+
+    private fun macroList(): ToolResult {
+        val access = macros
+            ?: return ToolResult(false, "macro_list is not available in this run")
+        val rows = access.list()
+        if (rows.isEmpty()) {
+            return ToolResult(true, "No macros saved in this profile's library yet. create_macro can save one from the steps you observed.")
+        }
+        val lines = rows.joinToString("\n") { m ->
+            "${m.id} | ${m.name} | ${m.steps} steps | ${m.category}"
+        }
+        return ToolResult(true, lines)
+    }
+
+    private fun macroCreate(args: Map<String, Any?>): ToolResult {
+        val access = macros
+            ?: return ToolResult(false, "create_macro is not available in this run")
+        val name = nonBlank(str(args, "name"))
+            ?: return ToolResult(false, "missing 'name' argument")
+        val rawSteps = str(args, "steps")
+            ?: return ToolResult(false, "missing 'steps' argument (the JSON array of steps)")
+        val steps = runCatching {
+            MacroCodec.json.decodeFromString(
+                ListSerializer(MacroStep.serializer()),
+                rawSteps
+            )
+        }.getOrElse {
+            return ToolResult(false, "'steps' is not a valid step array: ${it.message ?: "parse error"}")
+        }
+        if (steps.isEmpty()) {
+            return ToolResult(false, "'steps' is empty — a macro needs at least one step")
+        }
+        val definition = MacroDefinition(
+            name = name.trim().take(80),
+            description = nonBlank(str(args, "description"))?.take(200) ?: "",
+            category = nonBlank(str(args, "category"))?.take(40) ?: "General",
+            icon = "🤖",
+            steps = steps,
+            createdAt = System.currentTimeMillis(),
+            updatedAt = System.currentTimeMillis()
+        )
+        val id = runCatching { access.save(definition) }.getOrElse {
+            return ToolResult(false, "saving the macro failed: ${it.message ?: it.javaClass.simpleName}")
+        }
+        val sanitizedNote = if (definition.steps.any { it.note?.contains("withheld") == true }) {
+            " Sensitive-looking values were stripped on save."
+        } else ""
+        return ToolResult(
+            true,
+            "Saved macro \"${definition.name}\" (id=$id, ${steps.size} steps) into this profile's library." +
+                sanitizedNote +
+                " The user can run it from the Macro library, or you can offer run_macro(id)."
+        )
+    }
+
+    private fun macroRun(args: Map<String, Any?>): ToolResult {
+        val access = macros
+            ?: return ToolResult(false, "run_macro is not available in this run")
+        val id = nonBlank(str(args, "id"))
+            ?: return ToolResult(false, "missing 'id' argument (from macro_list)")
+        val def = access.load(id)
+            ?: return ToolResult(false, "no macro with id $id in this profile's library — call macro_list first")
+        val variables = (args["variables"] as? String)?.let { raw ->
+            runCatching {
+                MacroCodec.json.decodeFromString(
+                    kotlinx.serialization.builtins.MapSerializer(
+                        String.serializer(),
+                        String.serializer()
+                    ),
+                    raw
+                )
+            }.getOrNull()
+        } ?: emptyMap()
+        if (access.isBusy()) {
+            return ToolResult(false, "a macro is already running on the visible tab — stop it first")
+        }
+        val warning = if (MacroRisk.isRisky(def)) {
+            " WARNING: its steps look transactional (a submit, a payment or a delete); the launch dialog would have warned the user."
+        } else ""
+        val err = access.startRun(id, variables)
+        if (err != null) return ToolResult(false, err)
+        return ToolResult(
+            true,
+            "Started \"${def.name}\" (${def.steps.size} steps) on the visible tab." + warning +
+                " It runs with the macro's own speed, repeat and error policy; the HUD on screen is the progress surface. verify_page/wait_for can confirm the outcome once it settles."
+        )
+    }
+
     private fun nonBlank(raw: String?): String? = raw?.takeIf { it.isNotBlank() }
 
     private fun parseArgs(argsJson: String): Map<String, Any?> = runCatching {
@@ -1573,7 +1677,11 @@ internal val MOVES_THE_PAGE: Set<String> = setOf(
     // A diagnostic reload IS a page load, and a page patch is a script that can
     // start one — both belong on this list for the same reason as navigate.
     AgentTools.DEVTOOLS_RELOAD,
-    AgentTools.DEVTOOLS_PATCH
+    AgentTools.DEVTOOLS_PATCH,
+    // A macro playback replays recorded navigations, clicks and inputs on the
+    // tab the user is looking at — a page load wearing a recorded list. It
+    // waits for its tab exactly like navigate does.
+    AgentTools.MACRO_RUN
 )
 
 /**

@@ -107,6 +107,17 @@ data class AiTaskPermissions(
             AgentTools.AIRPLANE_MODE -> ToolGroup.APP
             AgentTools.APP_2FA -> ToolGroup.TOTP
             AgentTools.APP_NOTES -> ToolGroup.NOTES
+            // The macro tools: listing the library is a read like read_page;
+            // saving one is a persistent change to the profile's own data —
+            // the APP tier, which unattended runs refuse (nobody is watching
+            // to decide what deserves automating); running one is interaction
+            // in its purest form, though the run's own gates (the headless
+            // executor, the interactive-tool gate) refuse it before this coarse
+            // grant is even consulted, because a playback needs a person
+            // looking at the tab it acts on.
+            AgentTools.MACRO_LIST -> ToolGroup.READ_PAGE
+            AgentTools.MACRO_CREATE -> ToolGroup.APP
+            AgentTools.MACRO_RUN -> ToolGroup.INTERACT
             else -> null
         }
     }

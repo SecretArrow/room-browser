@@ -9,6 +9,7 @@ import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -259,8 +260,9 @@ class E2EBrowseFlowTest {
         )
 
         // ---- 2. "Exit App" backgrounds the task; the engine survives ------
-        val exit = device.findObject(By.text("Exit App")) ?: fail("Exit App button missing")
-        exit.click()
+        val exit = device.wait(Until.findObject(By.text("Exit App")), 2_000)
+        assertTrue("Exit App button missing", exit != null)
+        exit?.click()
         device.waitForIdle(1_000)
         val backgrounded = waitUntil(4_000) {
             device.currentPackageName != targetContext.packageName

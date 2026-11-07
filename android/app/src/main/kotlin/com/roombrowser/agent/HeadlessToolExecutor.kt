@@ -228,6 +228,16 @@ class HeadlessToolExecutor(
                     AgentTools.APP_2FA, AgentTools.APP_NOTES -> profileTools
                         ?.execute(name, argsJson)
                         ?: ToolResult(false, "tool '$name' is not available in this run")
+                    // Macro tools need a tab the user is watching: list/create
+                    // could technically run here, but a playback never could —
+                    // and a half-surface teaches the model to call run_macro in
+                    // a run that can only refuse it. All three answer honestly.
+                    AgentTools.MACRO_LIST,
+                    AgentTools.MACRO_CREATE,
+                    AgentTools.MACRO_RUN -> ToolResult(
+                        false,
+                        "$name is not available in this run: macro playback happens on the tab the user is looking at"
+                    )
                     else -> ToolResult(false, "unknown tool: $name")
                 }
                 if (name in PAGE_TEXT_TOOLS) {

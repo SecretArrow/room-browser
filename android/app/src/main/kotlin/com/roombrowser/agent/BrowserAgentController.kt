@@ -394,7 +394,8 @@ class BrowserAgentController(
     httpClient: OkHttpClient
 ) {
 
-    private val graph = (application as RoomBrowserApp).graph
+    private val app = application as RoomBrowserApp
+    private val graph = app.graph
     private val appContext: android.content.Context = application.applicationContext
     private val repo = graph.agentRepo
     private val pluginRepo = graph.pluginRepo
@@ -1674,6 +1675,10 @@ class BrowserAgentController(
                 runJsApprovalRequired = { vm.profileSettings().agentConsoleApprovalRequired },
                 siteMemory = GraphSiteMemoryStore(graph, profileId),
                 siteMemoryEnabled = { vm.profileSettings().agentSiteMemoryEnabled },
+                // The macro tools run a playback on the tab the user sees and
+                // write to this profile's library — both only honest in a
+                // visible-chat turn, so the headless path simply omits this.
+                macros = GraphAgentMacroAccess(app, profileId, vm),
                 scratchpad = pad,
                 nodeRuntime = AgentNodeRuntime(appContext, vm.profile),
                 nodePackages = AgentNodePackages(appContext),

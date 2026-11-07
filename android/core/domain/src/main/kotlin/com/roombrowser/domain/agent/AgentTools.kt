@@ -106,6 +106,11 @@ object AgentTools {
     const val RELOAD = "reload"
     const val FORWARD = "forward"
 
+    // ---- macro automation: the agent as author and operator ----
+    const val MACRO_LIST = "macro_list"
+    const val MACRO_CREATE = "create_macro"
+    const val MACRO_RUN = "run_macro"
+
     // ---- Developer Tools (the agent reading and driving the real buffers) ----
     const val DEVTOOLS_RELOAD = "devtools_reload"
     const val DEVTOOLS_CONSOLE = "devtools_console"
@@ -148,6 +153,9 @@ object AgentTools {
     private val SCHEMA_DATA_TRANSFORM = """{"type":"object","properties":{"op":{"type":"string","enum":["json_path","csv_rows","aggregate","diff"],"description":"Which transform to run"},"input":{"type":"string","description":"The text to transform"},"path":{"type":"string","description":"For op=json_path: a dotted path into the JSON, e.g. a.b.0.c; omit or leave blank to read the whole document"},"column":{"type":"string","description":"For op=aggregate: the zero-based column index, default 0"},"agg":{"type":"string","enum":["count","sum","min","max","avg"],"description":"For op=aggregate: the operation to apply over the column"},"compare":{"type":"string","description":"For op=diff: the second text to compare against 'input'"},"limit":{"type":"integer","description":"Maximum characters of output to return, default 4000"}},"required":["op","input"]}"""
     private val SCHEMA_SITE_MEMORY = """{"type":"object","properties":{"op":{"type":"string","enum":["remember","recall","forget"],"description":"remember stores or replaces one entry; recall lists what is remembered for this site; forget deletes one entry by key"},"key":{"type":"string","description":"A short name for the entry, e.g. 'checkout steps' or 'pricing selector'"},"value":{"type":"string","description":"For op=remember: the text to remember"},"limit":{"type":"integer","description":"For op=recall: the most entries to return, default 20"}},"required":["op"]}"""
     private val SCHEMA_SELECT_OPTION = """{"type":"object","properties":{"ref":{"type":"integer","description":"<select> element reference number from read_page"},"value":{"type":"string","description":"The option's value, or its visible text"}},"required":["ref","value"]}"""
+    private val SCHEMA_MACRO_LIST = """{"type":"object","properties":{}}"""
+    private val SCHEMA_MACRO_CREATE = """{"type":"object","properties":{"name":{"type":"string","description":"Short name the library will show, e.g. 'Daily report export'"},"description":{"type":"string","description":"One sentence on what the macro does and on which site"},"category":{"type":"string","description":"Library grouping, e.g. 'Work' or 'Shopping'. Default 'General'"},"steps":{"type":"array","items":{"type":"object","properties":{"action":{"type":"string","enum":["CLICK","DBLCLICK","LONG_PRESS","DRAG","SCROLL","INPUT","CHANGE","KEY","NAVIGATE","BACK","FORWARD","RELOAD","TAB_SWITCH","NEW_TAB","WAIT","WAIT_ELEMENT","SCREENSHOT"],"description":"CLICK/DBLCLICK/LONG_PRESS take selector or x/y; INPUT takes selector+value; SCROLL takes dx/dy; NAVIGATE takes url; WAIT_ELEMENT takes selector+timeoutMs; WAIT takes timeoutMs; SCREENSHOT takes note"},"selector":{"type":"string","description":"CSS selector for the target element"},"text":{"type":"string","description":"The element's visible text, a human-readable fallback"},"value":{"type":"string","description":"Text to type (INPUT), the option (CHANGE), the key (KEY: ENTER/TAB/ESCAPE/BACKSPACE/SPACE) or the tab title (TAB_SWITCH)"},"url":{"type":"string","description":"NAVIGATE/NEW_TAB target"},"x":{"type":"number"},"y":{"type":"number"},"dx":{"type":"number"},"dy":{"type":"number"},"delayMs":{"type":"integer","description":"Pause BEFORE this step, ms"},"timeoutMs":{"type":"integer","description":"WAIT length or WAIT_ELEMENT ceiling, ms"},"note":{"type":"string"}},"required":["action"]},"description":"The steps in playback order. Values the model learned on the page are fine; NEVER include passwords, tokens or any secret — sensitive-looking values are stripped on save"}},"required":["name","steps"]}"""
+    private val SCHEMA_MACRO_RUN = """{"type":"object","properties":{"id":{"type":"string","description":"Macro id from macro_list"},"variables":{"type":"object","description":"Optional bindings for the macro's {{variables}}, e.g. site=example.com"}},"required":["id"]}"""
     private val SCHEMA_PRESS_KEYS = """{"type":"object","properties":{"keys":{"type":"string","description":"Key chord: Enter, Escape, Tab, ArrowDown, PageDown, F1-F12, or a combination like Control+a"},"ref":{"type":"integer","description":"Optional element reference to focus first; defaults to whatever is focused"}},"required":["keys"]}"""
     private val SCHEMA_WAIT_FOR = """{"type":"object","properties":{"text":{"type":"string","description":"Text to wait for in the visible page"},"timeout_ms":{"type":"integer","description":"How long to wait, 500-30000, default 10000"}},"required":["text"]}"""
     private val SCHEMA_PLAN = """{"type":"object","properties":{"items":{"type":"array","description":"The COMPLETE step list in order. It replaces the previous one, so steps already finished stay in it, marked done.","items":{"type":"object","properties":{"text":{"type":"string","description":"One short step, in the user's words"},"status":{"type":"string","enum":["pending","in_progress","done"]}},"required":["text","status"]}}},"required":["items"]}"""
@@ -230,7 +238,13 @@ object AgentTools {
         // model's prompt — exactly the class of act the Confirm actions
         // switch exists for. Removing one deletes files, so it rides here too.
         SKILLS_INSTALL,
-        SKILLS_REMOVE
+        SKILLS_REMOVE,
+        // Saving a macro writes into this profile's library (app data, like a
+        // note) and running one replays recorded clicks and inputs on the
+        // tab the user is looking at — both are acts the Confirm actions
+        // switch exists for. macro_list is a read and needs no gate.
+        MACRO_CREATE,
+        MACRO_RUN
     )
 
     /**
@@ -491,6 +505,9 @@ object AgentTools {
         ),
         def(RELOAD, "Reload the page in this chat's tab. The Developer Tools console and network buffers keep working across the reload.", SCHEMA_NO_PARAMS),
         def(FORWARD, "Go forward one step in this chat's tab's history, undoing a back.", SCHEMA_NO_PARAMS),
+            def(MACRO_LIST, "List this profile's saved macros (id, name, steps, category) so run_macro or create_macro can be used against real ids.", SCHEMA_MACRO_LIST),
+            def(MACRO_CREATE, "Save a macro into this profile's Macro library: a named, reusable list of steps the user (or run_macro) can replay on a tab. Build steps from what you observed on the page — selectors and coordinates you actually saw. Secrets are stripped on save. This does NOT run anything.", SCHEMA_MACRO_CREATE),
+            def(MACRO_RUN, "Run one saved macro (id from macro_list) on the tab the user is looking at. It plays back with the macro's own speed, repeat and error policy; confirm with the user first when the steps look like a transaction.", SCHEMA_MACRO_RUN),
         def(
             DEVTOOLS_RELOAD,
             "Reload the page specifically to watch what it does on a fresh load, then read the console. Use it when a bug only shows up on load, or after a change you just made. A plain reload is `reload`; this one announces itself as a diagnostic step.",
@@ -641,6 +658,9 @@ object AgentTools {
             APP_NOTES -> "Notes: ${str("action") ?: "list"}"
             AIRPLANE_MODE -> "Airplane Mode: ${str("action") ?: "read"}${str("state")?.let { " $it" } ?: ""}"
             RELOAD -> "Reload page"
+            MACRO_LIST -> "Macros: list"
+            MACRO_CREATE -> "Macro: save ${str("name") ?: "steps"}"
+            MACRO_RUN -> "Macro: run"
             FORWARD -> "Go forward"
             DEVTOOLS_RELOAD -> "Reload and watch the console"
             DEVTOOLS_CONSOLE -> "Console: ${str("action") ?: "read"}${str("level")?.let { " ($it)" } ?: ""}"
