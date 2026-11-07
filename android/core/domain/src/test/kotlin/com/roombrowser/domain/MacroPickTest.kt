@@ -54,4 +54,88 @@ class MacroPickTest {
         assertThat(MacroPick.KIND_DRAG_START).isEqualTo("DRAG_START")
         assertThat(MacroPick.KIND_DRAG_END).isEqualTo("DRAG_END")
     }
+
+    @Test
+    fun `point pick fills coordinates and element truth`() {
+        val step = MacroStep(action = MacroStep.CLICK)
+        val pick = MacroPick(
+            token = "t",
+            kind = MacroPick.KIND_POINT,
+            x = 120f,
+            y = 88f,
+            selector = "#target",
+            selectorKind = "ID",
+            tagName = "div",
+            text = "PickMe"
+        )
+        val applied = pick.appliedTo(step)
+        assertThat(applied.x).isEqualTo(120f)
+        assertThat(applied.y).isEqualTo(88f)
+        assertThat(applied.selector).isEqualTo("#target")
+        assertThat(applied.selectorKind).isEqualTo("ID")
+        assertThat(applied.text).isEqualTo("PickMe")
+        // a drag endpoint is untouched by a POINT pick
+        assertThat(applied.endX).isNull()
+    }
+
+    @Test
+    fun `point pick overwrites a previous position but keeps unseen element fields`() {
+        val step = MacroStep(
+            action = MacroStep.CLICK,
+            x = 1f,
+            y = 2f,
+            selector = ".old",
+            selectorKind = "STRUCTURAL",
+            text = "old label"
+        )
+        val pick = MacroPick(
+            token = "t",
+            kind = MacroPick.KIND_POINT,
+            x = 300f,
+            y = 400f
+        ) // the probe saw nothing under the finger
+        val applied = pick.appliedTo(step)
+        assertThat(applied.x).isEqualTo(300f)
+        assertThat(applied.y).isEqualTo(400f)
+        assertThat(applied.selector).isEqualTo(".old")
+        assertThat(applied.selectorKind).isEqualTo("STRUCTURAL")
+        assertThat(applied.text).isEqualTo("old label")
+    }
+
+    @Test
+    fun `drag end pick lands only in the endpoint fields`() {
+        val step = MacroStep(
+            action = MacroStep.DRAG,
+            x = 10f,
+            y = 20f,
+            selector = "#handle",
+            selectorKind = "ID"
+        )
+        val pick = MacroPick(
+            token = "t",
+            kind = MacroPick.KIND_DRAG_END,
+            x = 200f,
+            y = 300f,
+            selector = "#dropped",
+            selectorKind = "ID"
+        )
+        val applied = pick.appliedTo(step)
+        assertThat(applied.endX).isEqualTo(200f)
+        assertThat(applied.endY).isEqualTo(300f)
+        // start point and its element truth stay exactly as authored
+        assertThat(applied.x).isEqualTo(10f)
+        assertThat(applied.y).isEqualTo(20f)
+        assertThat(applied.selector).isEqualTo("#handle")
+        assertThat(applied.text).isNull()
+    }
+
+    @Test
+    fun `drag start pick fills the start like a point`() {
+        val step = MacroStep(action = MacroStep.DRAG)
+        val pick = MacroPick(token = "t", kind = MacroPick.KIND_DRAG_START, x = 5f, y = 6f)
+        val applied = pick.appliedTo(step)
+        assertThat(applied.x).isEqualTo(5f)
+        assertThat(applied.y).isEqualTo(6f)
+        assertThat(applied.endX).isNull()
+    }
 }

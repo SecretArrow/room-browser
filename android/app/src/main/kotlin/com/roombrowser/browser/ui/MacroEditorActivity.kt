@@ -218,17 +218,7 @@ private fun MacroEditorRoot(
         if (pick == null) return
         val index = pending.index
         if (index >= steps.size) return
-        val old = steps[index]
-        steps[index] = when (pick.kind) {
-            MacroPick.KIND_DRAG_END -> old.copy(endX = pick.x, endY = pick.y)
-            else -> old.copy(
-                x = pick.x,
-                y = pick.y,
-                selector = pick.selector ?: old.selector,
-                selectorKind = if (pick.selector != null) pick.selectorKind else old.selectorKind,
-                text = pick.text ?: old.text
-            )
-        }
+        steps[index] = pick.appliedTo(steps[index])
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current

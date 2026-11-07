@@ -31,6 +31,23 @@ data class MacroPick(
     /** The element's visible text at pick time (trimmed), or null. */
     val text: String? = null
 ) {
+    /**
+     * Applies this pick to a step: POINT and DRAG_START land in x/y and
+     * carry the element truth the probe saw; DRAG_END lands in endX/endY.
+     * Element fields already on the step are KEPT when the probe saw
+     * nothing — a pick never erases information the editor already had.
+     */
+    fun appliedTo(step: MacroStep): MacroStep = when (kind) {
+        KIND_DRAG_END -> step.copy(endX = x, endY = y)
+        else -> step.copy(
+            x = x,
+            y = y,
+            selector = selector ?: step.selector,
+            selectorKind = if (selector != null) selectorKind else step.selectorKind,
+            text = text ?: step.text
+        )
+    }
+
     companion object {
         const val KIND_POINT = "POINT"
         const val KIND_DRAG_START = "DRAG_START"

@@ -652,7 +652,7 @@ jobs:
           # The smoke subset: full class names, comma-separated, NO spaces —
           # the instrumentation runner splits this argument on the comma
           # only, and the selector below expands to exactly one word.
-          E2E_SMOKE: com.roombrowser.A00WarmupTest,com.roombrowser.GoogleIdentityE2eTest,com.roombrowser.GoogleSignInProbeE2eTest,com.roombrowser.BrowserNavigationE2eTest,com.roombrowser.TabsE2eTest,com.roombrowser.E2EBrowseFlowTest,com.roombrowser.BlobDownloadE2eTest,com.roombrowser.ProfileIsolationTest,com.roombrowser.DesktopModeE2eTest,com.roombrowser.TextScaleE2eTest,com.roombrowser.WhatsMyIpE2eTest,com.roombrowser.TotpIsolationTest
+          E2E_SMOKE: com.roombrowser.A00WarmupTest,com.roombrowser.GoogleIdentityE2eTest,com.roombrowser.GoogleSignInProbeE2eTest,com.roombrowser.BrowserNavigationE2eTest,com.roombrowser.MacroPickE2eTest,com.roombrowser.TabsE2eTest,com.roombrowser.E2EBrowseFlowTest,com.roombrowser.BlobDownloadE2eTest,com.roombrowser.ProfileIsolationTest,com.roombrowser.DesktopModeE2eTest,com.roombrowser.TextScaleE2eTest,com.roombrowser.WhatsMyIpE2eTest,com.roombrowser.TotpIsolationTest
         with:
           api-level: 30
           arch: x86_64
