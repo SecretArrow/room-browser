@@ -433,12 +433,21 @@ fun BrowserScreen(
                         }
                     )
                     MacroRunHud(viewModel = viewModel)
-                    BrowserContent(
-                        viewModel = viewModel,
-                        modifier = Modifier.weight(1f),
-                        onShowShields = { showShields = true },
-                        onOpenPrivacyDashboard = { navigateTo(BrowserRoute.PrivacyDashboard) }
-                    )
+                    Box(Modifier.weight(1f)) {
+                        BrowserContent(
+                            viewModel = viewModel,
+                            modifier = Modifier.fillMaxSize(),
+                            onShowShields = { showShields = true },
+                            onOpenPrivacyDashboard = { navigateTo(BrowserRoute.PrivacyDashboard) }
+                        )
+                        // The pick scrim covers ONLY the page — the recording
+                        // bar and the playback HUD above stay live, and the
+                        // page never receives a tap while picking is armed.
+                        MacroPickOverlay(
+                            viewModel = viewModel,
+                            modifier = Modifier.matchParentSize()
+                        )
+                    }
                 }
                 BrowserRoute.Tabs -> TabGridScreen(viewModel = viewModel, onClose = { navigateBack() })
                 BrowserRoute.Bookmarks -> BookmarksScreen(viewModel = viewModel, onClose = { navigateBack() })

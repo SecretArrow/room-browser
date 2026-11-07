@@ -1,6 +1,9 @@
 package com.roombrowser.browser.ui
 
+import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -24,9 +27,12 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -35,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.macro.MacroRecordState
 import com.roombrowser.browser.macro.MacroRunner
+import com.roombrowser.domain.macro.MacroPick
 import com.roombrowser.ui.common.LocalRoomExtras
 
 /**
@@ -214,6 +221,85 @@ fun MacroRunHud(
                 progress = { pct.coerceIn(0f, 1f) },
                 modifier = Modifier.fillMaxWidth()
             )
+        }
+    }
+}
+
+/**
+ * The tap-to-pick overlay — the editor's "Pick on page" request puts a
+ * scrim over the engine view and every tap is consumed HERE (the page never
+ * sees it) and resolved into a [MacroPick]: coordinates converted to the
+ * page's CSS-viewport scale, the probe naming what sits underneath. The
+ * answer is delivered to the editor (another process) through the one-shot
+ * file the view model writes; this overlay only owns the visuals and the
+ * confirmation toast.
+ */
+@Composable
+fun MacroPickOverlay(
+    viewModel: BrowserViewModel,
+    modifier: Modifier = Modifier
+) {
+    val kind = viewModel.macroPickKind ?: return
+    val context = LocalContext.current
+    val extras = LocalRoomExtras.current
+
+    DisposableEffect(Unit) {
+        viewModel.onMacroPickResolved = { pick ->
+            Toast.makeText(
+                context,
+                "Picked ${pick.x.toInt()}, ${pick.y.toInt()} — back to the editor",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+        onDispose { viewModel.onMacroPickResolved = null }
+    }
+
+    val instruction = when (kind) {
+        MacroPick.KIND_DRAG_START -> "Tap the START point of the swipe"
+        MacroPick.KIND_DRAG_END -> "Tap the END point of the swipe"
+        else -> "Tap the position to capture"
+    }
+
+    Box(
+        modifier
+            .background(Color.Black.copy(alpha = 0.30f))
+            .pointerInput(Unit) {
+                detectTapGestures { offset ->
+                    viewModel.resolveMacroPickAt(offset.x, offset.y)
+                }
+            }
+            .semantics { contentDescription = "macro_pick_overlay" }
+    ) {
+        Surface(
+            color = extras.background,
+            shape = RoundedCornerShape(12.dp),
+            shadowElevation = 6.dp,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(16.dp)
+                .fillMaxWidth()
+        ) {
+            Row(
+                Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Pick on page",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = extras.textPrimary
+                    )
+                    Text(
+                        instruction,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = extras.textSecondary
+                    )
+                }
+                TextButton(onClick = { viewModel.cancelMacroPick() }) {
+                    Text("Cancel", color = extras.primary)
+                }
+            }
         }
     }
 }

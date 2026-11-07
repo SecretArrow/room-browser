@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -39,6 +40,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -48,12 +50,18 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.roombrowser.RoomBrowserApp
+import com.roombrowser.browser.BrowserActivity
 import com.roombrowser.data.repo.BrowserRepository
 import com.roombrowser.domain.macro.MacroCodec
 import com.roombrowser.domain.macro.MacroDefinition
+import com.roombrowser.domain.macro.MacroPick
 import com.roombrowser.domain.macro.MacroPlayback
 import com.roombrowser.domain.macro.MacroStep
 import com.roombrowser.domain.macro.MacroVariable
@@ -62,6 +70,8 @@ import com.roombrowser.domain.theme.BuiltInThemes
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomCard
+import java.io.File
+import java.util.UUID
 import kotlinx.coroutines.launch
 
 /**
@@ -191,6 +201,45 @@ private fun MacroEditorRoot(
     var settingsOpen by remember { mutableStateOf(false) }
     var confirmExit by remember { mutableStateOf(false) }
 
+    // ---- pick-on-page handoff (default process ← :browser process) ----
+    // A pick request survives the process boundary as a one-shot FILE keyed
+    // by token (see MacroPick) — SharedPreferences would go stale across
+    // processes. The editor generates the token, sends the browser to the
+    // front in pick mode, and consumes the answer file when it next resumes.
+    val context = LocalContext.current
+    var pendingPick by remember { mutableStateOf<PendingPick?>(null) }
+
+    fun consumePickResult() {
+        val pending = pendingPick ?: return
+        val file = File(context.filesDir, "macro_pick_${pending.token}.json")
+        val pick = runCatching { MacroPick.decode(file.readText()) }.getOrNull()
+        file.delete()
+        pendingPick = null
+        if (pick == null) return
+        val index = pending.index
+        if (index >= steps.size) return
+        val old = steps[index]
+        steps[index] = when (pick.kind) {
+            MacroPick.KIND_DRAG_END -> old.copy(endX = pick.x, endY = pick.y)
+            else -> old.copy(
+                x = pick.x,
+                y = pick.y,
+                selector = pick.selector ?: old.selector,
+                selectorKind = if (pick.selector != null) pick.selectorKind else old.selectorKind,
+                text = pick.text ?: old.text
+            )
+        }
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) consumePickResult()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     // Load the row (edit mode). A missing row is an honest error, not a blank
     // editor that would silently create a NEW macro on save.
     LaunchedEffect(macroId) {
@@ -268,6 +317,10 @@ private fun MacroEditorRoot(
             Row(
                 Modifier
                     .fillMaxWidth()
+                    // Edge-to-edge: the scaffold places its bottom bar at the
+                    // raw window edge, ON TOP of the system navigation area —
+                    // without this the Save button sits under the gesture bar.
+                    .navigationBarsPadding()
                     .padding(horizontal = 16.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
@@ -427,6 +480,18 @@ private fun MacroEditorRoot(
             StepEditDialog(
                 step = steps[index],
                 onDismiss = { editIndex = null },
+                onPick = { phase ->
+                    // Hand the tap capture to the engine, then come back and
+                    // read the answer file on resume (consumePickResult).
+                    val token = UUID.randomUUID().toString().replace("-", "").take(20)
+                    pendingPick = PendingPick(index = index, token = token)
+                    BrowserActivity.requestPick(
+                        context,
+                        profileId.value,
+                        phase,
+                        token
+                    )
+                },
                 onSave = { updated ->
                     steps[index] = updated
                     editIndex = null
@@ -475,12 +540,15 @@ private fun MacroEditorRoot(
     }
 }
 
-/** The actions a hand-authored step can start from. */
+/** The actions a hand-authored step can start from — friendliest first. */
 private val STEP_ACTIONS = listOf(
-    MacroStep.CLICK to "Click (selector or x/y)",
+    MacroStep.CLICK to "Click a spot",
+    MacroStep.LONG_PRESS to "Long-press a spot",
+    MacroStep.DRAG to "Swipe / drag",
     MacroStep.INPUT to "Type into a field",
+    MacroStep.CHANGE to "Set a field's value",
     MacroStep.NAVIGATE to "Navigate to a URL",
-    MacroStep.SCROLL to "Scroll by dx/dy",
+    MacroStep.SCROLL to "Scroll the page",
     MacroStep.KEY to "Press a key (Enter/Tab…)",
     MacroStep.BACK to "Browser back",
     MacroStep.FORWARD to "Browser forward",
@@ -491,6 +559,9 @@ private val STEP_ACTIONS = listOf(
     MacroStep.WAIT_ELEMENT to "Wait for an element",
     MacroStep.SCREENSHOT to "Screenshot checkpoint"
 )
+
+/** A pick request waiting for its answer file when the editor resumes. */
+private data class PendingPick(val index: Int, val token: String)
 
 @Composable
 private fun StepTypeDialog(onDismiss: () -> Unit, onPick: (String) -> Unit) {
@@ -513,13 +584,20 @@ private fun StepTypeDialog(onDismiss: () -> Unit, onPick: (String) -> Unit) {
 }
 
 @Composable
-private fun StepEditDialog(step: MacroStep, onDismiss: () -> Unit, onSave: (MacroStep) -> Unit) {
+private fun StepEditDialog(
+    step: MacroStep,
+    onDismiss: () -> Unit,
+    onPick: ((String) -> Unit)?,
+    onSave: (MacroStep) -> Unit
+) {
     var value by remember(step) { mutableStateOf(step.value ?: "") }
     var url by remember(step) { mutableStateOf(step.url ?: "") }
     var selector by remember(step) { mutableStateOf(step.selector ?: "") }
     var text by remember(step) { mutableStateOf(step.text ?: "") }
     var x by remember(step) { mutableStateOf(step.x?.toString() ?: "") }
     var y by remember(step) { mutableStateOf(step.y?.toString() ?: "") }
+    var endX by remember(step) { mutableStateOf(step.endX?.toString() ?: "") }
+    var endY by remember(step) { mutableStateOf(step.endY?.toString() ?: "") }
     var dx by remember(step) { mutableStateOf(step.dx?.toString() ?: "") }
     var dy by remember(step) { mutableStateOf(step.dy?.toString() ?: "") }
     var delay by remember(step) { mutableStateOf(step.delayMs.toString()) }
@@ -537,12 +615,42 @@ private fun StepEditDialog(step: MacroStep, onDismiss: () -> Unit, onSave: (Macr
     val usesUrl = step.action in listOf(MacroStep.NAVIGATE, MacroStep.NEW_TAB)
     val usesXY = step.action in listOf(MacroStep.CLICK, MacroStep.DBLCLICK, MacroStep.LONG_PRESS, MacroStep.DRAG)
     val usesDelta = step.action == MacroStep.SCROLL
+    val isDrag = step.action == MacroStep.DRAG
+    val canPick = usesXY && onPick != null
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Step: ${step.action.lowercase().replace('_', ' ')}") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
+                if (canPick) {
+                    Text(
+                        if (isDrag) {
+                            "Pick both points on the page — no numbers to type."
+                        } else {
+                            "Tap the position on the page — coordinates fill in by themselves."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Row(Modifier.padding(vertical = 4.dp)) {
+                        if (isDrag) {
+                            TextButton(
+                                onClick = { onPick?.invoke(MacroPick.KIND_DRAG_START) },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Pick START point") }
+                            TextButton(
+                                onClick = { onPick?.invoke(MacroPick.KIND_DRAG_END) },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Pick END point") }
+                        } else {
+                            TextButton(
+                                onClick = { onPick?.invoke(MacroPick.KIND_POINT) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("Pick on page") }
+                        }
+                    }
+                }
                 if (usesUrl) {
                     OutlinedTextField(value = url, onValueChange = { url = it }, label = { Text("URL") }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp))
                 }
@@ -553,8 +661,15 @@ private fun StepEditDialog(step: MacroStep, onDismiss: () -> Unit, onSave: (Macr
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                     )
                 }
+                if (step.action == MacroStep.KEY) {
+                    Row(Modifier.padding(vertical = 2.dp)) {
+                        listOf("Enter", "Tab", "Escape", "Backspace", "ArrowDown", "ArrowUp").forEach { key ->
+                            TextButton(onClick = { value = key }) { Text(key) }
+                        }
+                    }
+                }
                 if (usesSelector) {
-                    OutlinedTextField(value = selector, onValueChange = { selector = it }, label = { Text("CSS selector") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp))
+                    OutlinedTextField(value = selector, onValueChange = { selector = it }, label = { Text("CSS selector (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp))
                 }
                 if (usesXY) {
                     Row {
@@ -563,11 +678,37 @@ private fun StepEditDialog(step: MacroStep, onDismiss: () -> Unit, onSave: (Macr
                         OutlinedTextField(value = y, onValueChange = { y = it }, label = { Text("y") }, singleLine = true, modifier = Modifier.weight(1f))
                     }
                 }
+                if (isDrag) {
+                    Row {
+                        OutlinedTextField(value = endX, onValueChange = { endX = it }, label = { Text("end x") }, singleLine = true, modifier = Modifier.weight(1f))
+                        Spacer(Modifier.width(8.dp))
+                        OutlinedTextField(value = endY, onValueChange = { endY = it }, label = { Text("end y") }, singleLine = true, modifier = Modifier.weight(1f))
+                    }
+                }
                 if (usesDelta) {
+                    Text(
+                        "How far to scroll, in page pixels:",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Row(Modifier.padding(vertical = 2.dp)) {
+                        TextButton(onClick = { dx = "0"; dy = "300" }) { Text("↓ 300") }
+                        TextButton(onClick = { dx = "0"; dy = "-300" }) { Text("↑ 300") }
+                        TextButton(onClick = { dx = "0"; dy = "800" }) { Text("↓ 800") }
+                        TextButton(onClick = { dx = "300"; dy = "0" }) { Text("→ 300") }
+                        TextButton(onClick = { dx = "-300"; dy = "0" }) { Text("← 300") }
+                    }
                     Row {
                         OutlinedTextField(value = dx, onValueChange = { dx = it }, label = { Text("dx") }, singleLine = true, modifier = Modifier.weight(1f))
                         Spacer(Modifier.width(8.dp))
                         OutlinedTextField(value = dy, onValueChange = { dy = it }, label = { Text("dy") }, singleLine = true, modifier = Modifier.weight(1f))
+                    }
+                }
+                if (step.action == MacroStep.WAIT) {
+                    Row(Modifier.padding(vertical = 2.dp)) {
+                        TextButton(onClick = { timeout = "500" }) { Text("0.5s") }
+                        TextButton(onClick = { timeout = "1000" }) { Text("1s") }
+                        TextButton(onClick = { timeout = "2000" }) { Text("2s") }
+                        TextButton(onClick = { timeout = "5000" }) { Text("5s") }
                     }
                 }
                 OutlinedTextField(value = text, onValueChange = { text = it }, label = { Text("Element text (optional)") }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp))
@@ -578,7 +719,7 @@ private fun StepEditDialog(step: MacroStep, onDismiss: () -> Unit, onSave: (Macr
                 )
                 OutlinedTextField(
                     value = timeout, onValueChange = { timeout = it },
-                    label = { Text("Timeout (ms, optional)") }, singleLine = true,
+                    label = { Text(if (step.action == MacroStep.WAIT) "Wait (ms)" else "Timeout (ms, optional)") }, singleLine = true,
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                 )
                 OutlinedTextField(
@@ -600,6 +741,8 @@ private fun StepEditDialog(step: MacroStep, onDismiss: () -> Unit, onSave: (Macr
                             text = text.ifBlank { null },
                             x = x.toFloatOrNull(),
                             y = y.toFloatOrNull(),
+                            endX = endX.toFloatOrNull(),
+                            endY = endY.toFloatOrNull(),
                             dx = dx.toFloatOrNull(),
                             dy = dy.toFloatOrNull(),
                             delayMs = delay.toLongOrNull() ?: 0L,

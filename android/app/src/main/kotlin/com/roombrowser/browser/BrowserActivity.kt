@@ -1,6 +1,7 @@
 package com.roombrowser.browser
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
@@ -106,6 +107,7 @@ class BrowserActivity : FragmentActivity() {
         val initialUrl = intent.getStringExtra(EXTRA_INITIAL_URL)
             ?: savedInstanceState?.getString(EXTRA_INITIAL_URL)
         if (intent.getBooleanExtra(AgentActivity.EXTRA_OPEN_AGENT, false)) openAgentSignal++
+        readMacroPickRequest(intent)
 
         if (fromIntent != null) {
             startBoundProfile(ProfileId(fromIntent), initialUrl)
@@ -291,6 +293,19 @@ class BrowserActivity : FragmentActivity() {
             launchRequest = LaunchRequest(url, System.nanoTime())
         }
         if (intent.getBooleanExtra(AgentActivity.EXTRA_OPEN_AGENT, false)) openAgentSignal++
+        readMacroPickRequest(intent)
+    }
+
+    /**
+     * A pick request the macro editor (default process) sent along: bring it
+     * to the bound engine's view model. Arrives here on re-launch of the
+     * running engine (the normal path — the activity is singleTask) and in
+     * [onCreate]'s intent read when the engine had to cold-start.
+     */
+    private fun readMacroPickRequest(intent: Intent) {
+        val kind = intent.getStringExtra(EXTRA_MACRO_PICK) ?: return
+        val token = intent.getStringExtra(EXTRA_PICK_TOKEN) ?: return
+        browserViewModel?.beginMacroPick(kind, token)
     }
 
     override fun onResume() {
@@ -600,5 +615,24 @@ class BrowserActivity : FragmentActivity() {
         private const val TAG = "RoomGate"
         const val EXTRA_PROFILE_ID = "com.roombrowser.extra.PROFILE_ID"
         const val EXTRA_INITIAL_URL = "com.roombrowser.extra.INITIAL_URL"
+        const val EXTRA_MACRO_PICK = "com.roombrowser.extra.MACRO_PICK"
+        const val EXTRA_PICK_TOKEN = "com.roombrowser.extra.PICK_TOKEN"
+
+        /**
+         * Asks the running browser for a pick: the engine comes to the front
+         * in tap-to-pick mode and answers through the one-shot file keyed by
+         * [token] (see MacroPick). Called from the macro editor, which lives
+         * in another process — result codes cannot cross that boundary. The
+         * profile id rides along so a COLD start (engine was dead) binds the
+         * same profile instead of landing on the picker.
+         */
+        fun requestPick(context: Context, profileId: String, kind: String, token: String) {
+            context.startActivity(
+                Intent(context, BrowserActivity::class.java)
+                    .putExtra(EXTRA_PROFILE_ID, profileId)
+                    .putExtra(EXTRA_MACRO_PICK, kind)
+                    .putExtra(EXTRA_PICK_TOKEN, token)
+            )
+        }
     }
 }

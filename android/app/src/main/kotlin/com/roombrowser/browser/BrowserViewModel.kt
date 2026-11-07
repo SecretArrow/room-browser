@@ -359,6 +359,88 @@ class BrowserViewModel(
         return macroRunner.start(def, variables)
     }
 
+    // ---------- Macro pick (tap-to-place coordinates for the editor) ----------
+
+    /**
+     * Active pick request, or null. "POINT" captures one tap; "DRAG_START"
+     * and "DRAG_END" capture the two endpoints of a swipe. The chrome shows
+     * the pick overlay while this is non-null.
+     */
+    var macroPickKind by mutableStateOf<String?>(null)
+        private set
+
+    private var macroPickToken: String? = null
+
+    /** Set by the chrome to observe a resolved pick (it owns the toast). */
+    var onMacroPickResolved: ((com.roombrowser.domain.macro.MacroPick) -> Unit)? = null
+
+    /** The editor (default process) asked for a pick; carry the token through. */
+    fun beginMacroPick(kind: String, token: String) {
+        macroPickToken = token
+        macroPickKind = kind
+    }
+
+    fun cancelMacroPick() {
+        macroPickKind = null
+        macroPickToken = null
+    }
+
+    /**
+     * A tap inside the pick overlay. View pixels → CSS pixels (the scale
+     * MacroStep carries and the runner converts back from), then the page
+     * probe names what sits there. The answer goes back to the editor as a
+     * one-shot file keyed by the request token — a fresh file per request
+     * cannot go stale the way a cross-process SharedPreferences cache does.
+     */
+    fun resolveMacroPickAt(viewX: Float, viewY: Float) {
+        val kind = macroPickKind ?: return
+        val token = macroPickToken ?: return
+        val bridge = MacroHostBridge()
+        val view = bridge.macroEngineView() ?: run { cancelMacroPick(); return }
+        bridge.macroEval(com.roombrowser.browser.macro.MacroPickProbe.viewportWidthJs()) { widthRaw ->
+            val viewWidth = view.width.toFloat().coerceAtLeast(1f)
+            val vw = widthRaw?.toFloatOrNull()?.takeIf { it > 0f } ?: viewWidth
+            val cssX = (viewX * vw / viewWidth).toInt().coerceIn(0, vw.toInt().coerceAtLeast(1) - 1)
+            val cssY = (viewY * vw / viewWidth).toInt()
+            bridge.macroEval(com.roombrowser.browser.macro.MacroPickProbe.probeJs(cssX, cssY)) { raw ->
+                var selector: String? = null
+                var pickedKind = "NONE"
+                var tag: String? = null
+                var text: String? = null
+                if (!raw.isNullOrBlank()) {
+                    runCatching {
+                        val obj = JSONObject(raw)
+                        if (obj.optBoolean("ok", false)) {
+                            selector = obj.optString("selector", "").ifBlank { null }
+                            pickedKind = obj.optString("selectorKind", "NONE")
+                            tag = obj.optString("tag", "").ifBlank { null }
+                            text = obj.optString("text", "").ifBlank { null }
+                        }
+                    }
+                }
+                val pick = com.roombrowser.domain.macro.MacroPick(
+                    token = token,
+                    kind = kind,
+                    x = cssX.toFloat(),
+                    y = cssY.toFloat(),
+                    selector = selector,
+                    selectorKind = if (selector == null) "NONE" else pickedKind,
+                    tagName = tag,
+                    text = text
+                )
+                runCatching {
+                    java.io.File(
+                        getApplication<Application>().filesDir,
+                        "macro_pick_$token.json"
+                    ).writeText(com.roombrowser.domain.macro.MacroPick.encode(pick))
+                }
+                macroPickKind = null
+                macroPickToken = null
+                onMacroPickResolved?.invoke(pick)
+            }
+        }
+    }
+
     fun macroPauseOrResumeRun() {
         when (macroRunner.state) {
             com.roombrowser.browser.macro.MacroRunner.State.RUNNING -> macroRunner.pause()
