@@ -73,7 +73,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
-import com.roombrowser.BrowserSession
+import com.roombrowser.browser.BrowserSession
 import com.roombrowser.browser.MacroRunRequest
 import com.roombrowser.RoomBrowserApp
 import com.roombrowser.ui.common.RoomCard
@@ -106,7 +106,7 @@ class MacroActivity : ComponentActivity() {
     ) { uri ->
         if (uri != null) {
             exportRequest = uri
-            doExport(profileIdValue!!, graphHolder!!)
+            doExport(com.roombrowser.domain.model.ProfileId(profileIdValue!!), graphHolder!!)
         }
     }
 
@@ -115,7 +115,7 @@ class MacroActivity : ComponentActivity() {
     ) { uri ->
         if (uri != null) {
             importRequest = uri
-            doImport(profileIdValue!!, graphHolder!!)
+            doImport(com.roombrowser.domain.model.ProfileId(profileIdValue!!), graphHolder!!)
         }
     }
 
@@ -128,7 +128,7 @@ class MacroActivity : ComponentActivity() {
 
     private fun doExport(profileId: com.roombrowser.domain.model.ProfileId, graph: com.roombrowser.RoomBrowserApp) {
         lifecycleScope.launch {
-            val rows = runCatching { graph.browserRepo.macros(profileId) }.getOrDefault(emptyList())
+            val rows = runCatching { graph.graph.browserRepo.macros(profileId) }.getOrDefault(emptyList())
             val uri = exportRequest ?: return@launch
             exportRequest = null
             val exported = MacroExportWriter.writeAll(rows)
@@ -160,7 +160,7 @@ class MacroActivity : ComponentActivity() {
             var saved = 0
             for (def in imported) {
                 runCatching {
-                    graph.browserRepo.saveMacro(profileId, def.copy(id = ""))
+                    graph.graph.browserRepo.saveMacro(profileId, def.copy(id = ""))
                     saved++
                 }
             }
@@ -199,7 +199,7 @@ class MacroActivity : ComponentActivity() {
                     activity = this,
                     profileId = profileId,
                     profileName = profileName,
-                    repo = graph.browserRepo,
+                    repo = graph.graph.browserRepo,
                     editorMessage = editorMessage,
                     onEditorMessageShown = { editorMessage = null },
                     onAdd = { MacroEditorActivity.launch(this, profileId.value, null) },
