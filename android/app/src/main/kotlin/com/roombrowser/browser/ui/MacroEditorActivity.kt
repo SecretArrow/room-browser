@@ -504,7 +504,7 @@ private fun StepTypeDialog(onDismiss: () -> Unit, onPick: (String) -> Unit) {
                     TextButton(
                         onClick = { onPick(action) },
                         modifier = Modifier.fillMaxWidth()
-                    ) { Text(label, modifier = Modifier.align(Alignment.Start)) }
+                    ) { Text(label) }
                 }
             }
         },

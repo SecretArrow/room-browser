@@ -284,9 +284,12 @@ class MacroRecorderController(
     /** The number of steps recorded so far — the indicator badge. */
     fun stepCount(): Int = steps.size
 
-    /** Raw recorded steps — feeds tests and the "record again" preview. */
-    fun recordedSteps(): List<MacroRecorderStep> = steps.toList()
+    /** Number of steps the page itself dropped (the CAP tail). */
+    fun droppedByPage(): Int = droppedByPage
 }
+
+/** The editor-friendly ceiling on a recorded gap (dead air is trimmed). */
+private const val MAX_DELAY_MS = 5_000L
 
 /** Page-step → macro-step: delay is the editor-friendly trim of the recorded gaps. */
 private fun MacroRecorderStep.toMacroStep(index: Int, all: List<MacroRecorderStep>): MacroStep {

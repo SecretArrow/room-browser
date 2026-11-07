@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -28,6 +29,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ContentCopy
@@ -72,6 +74,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import com.roombrowser.BrowserSession
+import com.roombrowser.browser.MacroRunRequest
 import com.roombrowser.RoomBrowserApp
 import com.roombrowser.ui.common.RoomCard
 import com.roombrowser.data.db.MacroEntity
@@ -100,14 +103,70 @@ class MacroActivity : ComponentActivity() {
 
     private val exportLauncher = registerForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
-    ) { uri -> uri?.let { pendingExport = it } }
+    ) { uri ->
+        if (uri != null) {
+            exportRequest = uri
+            doExport(profileIdValue!!, graphHolder!!)
+        }
+    }
 
     private val importLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
-    ) { uri -> uri?.let { importUri = it } }
+    ) { uri ->
+        if (uri != null) {
+            importRequest = uri
+            doImport(profileIdValue!!, graphHolder!!)
+        }
+    }
 
-    private var pendingExport by mutableStateOf<Uri?>(null)
-    private var importUri by mutableStateOf<Uri?>(null)
+    // Late fields so the launchers' callbacks can reach the profile + graph
+    // (registerForAdapterFactory runs before onCreate assigns them).
+    private var exportRequest by mutableStateOf<Uri?>(null)
+    private var importRequest by mutableStateOf<Uri?>(null)
+    private var profileIdValue: String? = null
+    private var graphHolder: com.roombrowser.RoomBrowserApp? = null
+
+    private fun doExport(profileId: com.roombrowser.domain.model.ProfileId, graph: com.roombrowser.RoomBrowserApp) {
+        lifecycleScope.launch {
+            val rows = runCatching { graph.browserRepo.macros(profileId) }.getOrDefault(emptyList())
+            val uri = exportRequest ?: return@launch
+            exportRequest = null
+            val exported = MacroExportWriter.writeAll(rows)
+            val ok = runCatching {
+                contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(exported.toByteArray(Charsets.UTF_8))
+                }
+            }.isSuccess
+            editorMessage = if (ok) "Exported ${rows.size} macro(s)" else "Export failed"
+        }
+    }
+
+    private fun doImport(profileId: com.roombrowser.domain.model.ProfileId, graph: com.roombrowser.RoomBrowserApp) {
+        lifecycleScope.launch {
+            val uri = importRequest ?: return@launch
+            importRequest = null
+            val text = runCatching {
+                contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+            }.getOrNull()
+            if (text == null) {
+                editorMessage = "Import failed"
+                return@launch
+            }
+            val imported = MacroExportReader.readAll(text)
+            if (imported.isEmpty()) {
+                editorMessage = "No macros found in that file"
+                return@launch
+            }
+            var saved = 0
+            for (def in imported) {
+                runCatching {
+                    graph.browserRepo.saveMacro(profileId, def.copy(id = ""))
+                    saved++
+                }
+            }
+            editorMessage = "Imported $saved macro(s)"
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -117,6 +176,8 @@ class MacroActivity : ComponentActivity() {
             finish()
             return
         }
+        this.profileIdValue = profileIdValue
+        this.graphHolder = application as RoomBrowserApp
         val profileId = ProfileId(profileIdValue)
         val profileName = intent.getStringExtra(EXTRA_PROFILE_NAME).orEmpty()
         val graph = (application as RoomBrowserApp).graph
@@ -124,47 +185,6 @@ class MacroActivity : ComponentActivity() {
             ActivityResultContracts.StartActivityForResult()
         ) { result ->
             editorMessage = result.data?.getStringExtra(MacroEditorActivity.EXTRA_RESULT_MESSAGE)
-        }
-
-        // Export/import run on the activity's own scope: they touch content
-        // resolvers, not compose state.
-        LaunchedEffect(pendingExport) {
-            val uri = pendingExport ?: return@LaunchedEffect
-            pendingExport = null
-            val rows = runCatching { graph.browserRepo.macros(profileId) }.getOrDefault(emptyList())
-            val exported = MacroExportWriter.writeAll(rows)
-            val ok = runCatching {
-                contentResolver.openOutputStream(uri)?.use { out ->
-                    out.write(exported.toByteArray(Charsets.UTF_8))
-                }
-            }.isSuccess
-            editorMessage = if (ok) "Exported ${rows.size} macro(s)" else "Export failed"
-        }
-        LaunchedEffect(importUri) {
-            val uri = importUri ?: return@LaunchedEffect
-            importUri = null
-            val text = runCatching {
-                contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
-            }.getOrNull()
-            if (text == null) {
-                editorMessage = "Import failed"
-                return@LaunchedEffect
-            }
-            val imported = MacroExportReader.readAll(text)
-            if (imported.isEmpty()) {
-                editorMessage = "No macros found in that file"
-                return@LaunchedEffect
-            }
-            var saved = 0
-            for (def in imported) {
-                // A fresh id per import: two imports of one file are two
-                // libraries' worth of rows, never an overwrite of the first.
-                runCatching {
-                    graph.browserRepo.saveMacro(profileId, def.copy(id = ""))
-                    saved++
-                }
-            }
-            editorMessage = "Imported $saved macro(s)"
         }
 
         setContent {
