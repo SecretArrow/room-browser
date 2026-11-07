@@ -140,11 +140,15 @@ class OllamaDtosTest {
     // ---------- OllamaModelPresets ----------
 
     @Test
-    fun `presets list the 19 curated tags in order`() {
-        assertThat(OllamaModelPresets.PRESETS).hasSize(19)
+    fun `presets list the 31 curated tags in order`() {
+        assertThat(OllamaModelPresets.PRESETS).hasSize(31)
         assertThat(OllamaModelPresets.PRESETS.map { it.tag }).containsExactly(
-            "smollm2:360m", "gemma3:270m", "qwen2.5:0.5b", "qwen3:0.6b", "tinyllama", "gemma3:1b",
-            "qwen2.5:1.5b", "qwen3:1.7b", "deepseek-r1:1.5b", "llama3.2:1b", "gemma2:2b",
+            "smollm2:360m", "gemma3:270m", "reader-lm:0.5b", "qwen2.5:0.5b",
+            "qwen2.5-coder:0.5b", "qwen3:0.6b", "tinyllama", "gemma3:1b",
+            "bonsai-2:2b", "reader-lm:1.5b", "qwen2.5:1.5b", "qwen2.5-coder:1.5b",
+            "qwen3.5:0.8b-q8_0", "smollm2:1.7b-instruct-q4_K_M", "qwen3:1.7b",
+            "lfm3:1.7b", "deepseek-r1:1.5b", "llama3.2:1b", "granite4:1b-h",
+            "openbmb/minicpm5-2b:q4_K_M", "gemma2:2b", "granite4:3b-h", "qwen3.5:2b-q4_K_M",
             "qwen2.5:3b", "llama3.2:3b", "phi3.5", "qwen3:4b", "gemma3:4b",
             "deepseek-r1:7b", "qwen2.5:7b", "llama3.1:8b"
         ).inOrder()
@@ -168,15 +172,27 @@ class OllamaDtosTest {
         val expected = mapOf(
             "smollm2:360m" to Triple(269, 3, 4096),
             "gemma3:270m" to Triple(313, 3, 32768),
+            "reader-lm:0.5b" to Triple(352, 3, 256000),
             "qwen2.5:0.5b" to Triple(397, 3, 32768),
+            "qwen2.5-coder:0.5b" to Triple(398, 3, 32768),
             "qwen3:0.6b" to Triple(522, 3, 32768),
             "tinyllama" to Triple(608, 3, 2048),
             "gemma3:1b" to Triple(815, 3, 32768),
+            "bonsai-2:2b" to Triple(911, 3, 262144),
+            "reader-lm:1.5b" to Triple(935, 4, 256000),
             "qwen2.5:1.5b" to Triple(986, 4, 32768),
+            "qwen2.5-coder:1.5b" to Triple(986, 4, 32768),
+            "qwen3.5:0.8b-q8_0" to Triple(1019, 3, 262144),
+            "smollm2:1.7b-instruct-q4_K_M" to Triple(1056, 4, 8192),
             "qwen3:1.7b" to Triple(1100, 4, 32768),
+            "lfm3:1.7b" to Triple(1100, 4, 262144),
             "deepseek-r1:1.5b" to Triple(1113, 4, 32768),
             "llama3.2:1b" to Triple(1328, 4, 131072),
+            "granite4:1b-h" to Triple(1559, 4, 131072),
+            "openbmb/minicpm5-2b:q4_K_M" to Triple(1561, 4, 131072),
             "gemma2:2b" to Triple(1612, 4, 8192),
+            "granite4:3b-h" to Triple(1943, 4, 131072),
+            "qwen3.5:2b-q4_K_M" to Triple(1946, 4, 262144),
             "qwen2.5:3b" to Triple(1900, 6, 32768),
             "llama3.2:3b" to Triple(2010, 6, 131072),
             "phi3.5" to Triple(2163, 6, 131072),
@@ -203,6 +219,11 @@ class OllamaDtosTest {
         val byTag = OllamaModelPresets.PRESETS.associateBy { it.tag }
         assertThat(byTag.getValue("smollm2:360m").tier).isEqualTo(OllamaPresetTier.ULTRALIGHT)
         assertThat(byTag.getValue("gemma3:1b").tier).isEqualTo(OllamaPresetTier.ULTRALIGHT)
+        assertThat(byTag.getValue("reader-lm:0.5b").tier).isEqualTo(OllamaPresetTier.ULTRALIGHT)
+        assertThat(byTag.getValue("bonsai-2:2b").tier).isEqualTo(OllamaPresetTier.LIGHT)
+        assertThat(byTag.getValue("qwen3.5:0.8b-q8_0").tier).isEqualTo(OllamaPresetTier.LIGHT)
+        assertThat(byTag.getValue("openbmb/minicpm5-2b:q4_K_M").tier).isEqualTo(OllamaPresetTier.LIGHT)
+        assertThat(byTag.getValue("granite4:3b-h").tier).isEqualTo(OllamaPresetTier.LIGHT)
         assertThat(byTag.getValue("gemma2:2b").tier).isEqualTo(OllamaPresetTier.LIGHT)
         assertThat(byTag.getValue("phi3.5").tier).isEqualTo(OllamaPresetTier.BALANCED)
         assertThat(byTag.getValue("llama3.1:8b").tier).isEqualTo(OllamaPresetTier.HEAVY)
@@ -217,6 +238,12 @@ class OllamaDtosTest {
         assertThat(byTag.getValue("tinyllama").indonesianFriendly).isFalse()
         assertThat(byTag.getValue("qwen2.5:0.5b").indonesianFriendly).isTrue()
         assertThat(byTag.getValue("llama3.2:1b").indonesianFriendly).isTrue()
+        assertThat(byTag.getValue("qwen3.5:0.8b-q8_0").indonesianFriendly).isTrue()
+        assertThat(byTag.getValue("smollm2:1.7b-instruct-q4_K_M").indonesianFriendly).isFalse()
+        assertThat(byTag.getValue("reader-lm:1.5b").indonesianFriendly).isFalse()
+        assertThat(byTag.getValue("qwen3.5:0.8b-q8_0").label).isEqualTo("Qwen 3.5 · 0.8B")
+        assertThat(byTag.getValue("lfm3:1.7b").params).isEqualTo("1.7B")
+        assertThat(byTag.getValue("bonsai-2:2b").params).isEqualTo("2.0B")
     }
 
     @Test
@@ -226,8 +253,8 @@ class OllamaDtosTest {
             assertThat(inTier).isNotEmpty()
             assertThat(inTier.filter { it.recommended }).hasSize(1)
         }
-        assertThat(OllamaModelPresets.byTier(OllamaPresetTier.ULTRALIGHT)).hasSize(6)
-        assertThat(OllamaModelPresets.byTier(OllamaPresetTier.LIGHT)).hasSize(5)
+        assertThat(OllamaModelPresets.byTier(OllamaPresetTier.ULTRALIGHT)).hasSize(8)
+        assertThat(OllamaModelPresets.byTier(OllamaPresetTier.LIGHT)).hasSize(15)
         assertThat(OllamaModelPresets.byTier(OllamaPresetTier.BALANCED)).hasSize(5)
         assertThat(OllamaModelPresets.byTier(OllamaPresetTier.HEAVY)).hasSize(3)
     }
@@ -236,7 +263,7 @@ class OllamaDtosTest {
     fun `recommended flags match the curation`() {
         val recommended = OllamaModelPresets.PRESETS.filter { it.recommended }.map { it.tag }
         assertThat(recommended).containsExactly(
-            "gemma3:1b", "qwen3:1.7b", "qwen2.5:3b", "llama3.1:8b"
+            "gemma3:1b", "qwen3.5:0.8b-q8_0", "qwen2.5:3b", "llama3.1:8b"
         ).inOrder()
     }
 

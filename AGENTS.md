@@ -2,6 +2,12 @@
 
 This repository is ONE of TWO sibling projects. Read this before touching anything.
 
+Which practices we adopt from `github.com/android/skills` (testing, Compose
+performance, intent/IPC security, a11y-tree automation semantics) — and which
+are already verified in this codebase — are recorded in
+`docs/android-skills-adoption.md`. Read it before adding Compose surfaces or
+instrumented tests.
+
 | | This repo | Sibling repo |
 |---|---|---|
 | Directory | `/home/dev/room-browser/room-browser-webview` | `/home/dev/room-browser/room-browser-geckoview` |

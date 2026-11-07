@@ -287,10 +287,22 @@ object OllamaModelPresets {
             tier = OllamaPresetTier.ULTRALIGHT, indonesianFriendly = true
         ),
         OllamaModelPreset(
+            tag = "reader-lm:0.5b", label = "Reader LM · 0.5B", params = "0.5B",
+            sizeMb = 352, minRamGb = 3, contextTokens = 256000,
+            strengths = "HTML→Markdown specialist — offline Reader Mode",
+            tier = OllamaPresetTier.ULTRALIGHT
+        ),
+        OllamaModelPreset(
             tag = "qwen2.5:0.5b", label = "Qwen 2.5 · 0.5B", params = "0.5B",
             sizeMb = 397, minRamGb = 3, contextTokens = 32768,
             strengths = "Fastest starter with decent multilingual skills",
             tier = OllamaPresetTier.ULTRALIGHT, indonesianFriendly = true
+        ),
+        OllamaModelPreset(
+            tag = "qwen2.5-coder:0.5b", label = "Qwen 2.5 Coder · 0.5B", params = "0.5B",
+            sizeMb = 398, minRamGb = 3, contextTokens = 32768,
+            strengths = "Tiny coder — quick page-script and snippet fixes",
+            tier = OllamaPresetTier.ULTRALIGHT
         ),
         OllamaModelPreset(
             tag = "qwen3:0.6b", label = "Qwen 3 · 0.6B", params = "0.6B",
@@ -312,16 +324,52 @@ object OllamaModelPresets {
         ),
         // LIGHT — 1–2 GB download, comfortable on 4–6 GB RAM phones.
         OllamaModelPreset(
+            tag = "bonsai-2:2b", label = "Bonsai 2 · 2B", params = "2.0B",
+            sizeMb = 911, minRamGb = 3, contextTokens = 262144,
+            strengths = "Ternary bonsai — vision and tools under 1 GB",
+            tier = OllamaPresetTier.LIGHT
+        ),
+        OllamaModelPreset(
+            tag = "reader-lm:1.5b", label = "Reader LM · 1.5B", params = "1.5B",
+            sizeMb = 935, minRamGb = 4, contextTokens = 256000,
+            strengths = "Cleaner Markdown from messy pages — Reader Mode",
+            tier = OllamaPresetTier.LIGHT
+        ),
+        OllamaModelPreset(
             tag = "qwen2.5:1.5b", label = "Qwen 2.5 · 1.5B", params = "1.5B",
             sizeMb = 986, minRamGb = 4, contextTokens = 32768,
             strengths = "Proven speed/quality balance for phones",
             tier = OllamaPresetTier.LIGHT, indonesianFriendly = true
         ),
         OllamaModelPreset(
+            tag = "qwen2.5-coder:1.5b", label = "Qwen 2.5 Coder · 1.5B", params = "1.5B",
+            sizeMb = 986, minRamGb = 4, contextTokens = 32768,
+            strengths = "The reliable small coder — best code quality per MB",
+            tier = OllamaPresetTier.LIGHT
+        ),
+        OllamaModelPreset(
+            tag = "qwen3.5:0.8b-q8_0", label = "Qwen 3.5 · 0.8B", params = "0.8B",
+            sizeMb = 1019, minRamGb = 3, contextTokens = 262144,
+            strengths = "Newest Qwen generation — vision, tools, thinking, 256K ctx",
+            tier = OllamaPresetTier.LIGHT, recommended = true, indonesianFriendly = true
+        ),
+        OllamaModelPreset(
+            tag = "smollm2:1.7b-instruct-q4_K_M", label = "SmolLM 2 · 1.7B", params = "1.7B",
+            sizeMb = 1056, minRamGb = 4, contextTokens = 8192,
+            strengths = "HuggingFace's compact chat — very fast, English-centric",
+            tier = OllamaPresetTier.LIGHT
+        ),
+        OllamaModelPreset(
             tag = "qwen3:1.7b", label = "Qwen 3 · 1.7B", params = "1.7B",
             sizeMb = 1100, minRamGb = 4, contextTokens = 32768,
             strengths = "Latest compact Qwen — thinking mode, best new small model",
-            tier = OllamaPresetTier.LIGHT, recommended = true, indonesianFriendly = true
+            tier = OllamaPresetTier.LIGHT, indonesianFriendly = true
+        ),
+        OllamaModelPreset(
+            tag = "lfm3:1.7b", label = "LFM 3 · 1.7B", params = "1.7B",
+            sizeMb = 1100, minRamGb = 4, contextTokens = 262144,
+            strengths = "LiquidAI's on-device agent — tool-native, 256K ctx",
+            tier = OllamaPresetTier.LIGHT
         ),
         OllamaModelPreset(
             tag = "deepseek-r1:1.5b", label = "DeepSeek R1 · 1.5B", params = "1.5B",
@@ -336,10 +384,34 @@ object OllamaModelPresets {
             tier = OllamaPresetTier.LIGHT, indonesianFriendly = true
         ),
         OllamaModelPreset(
+            tag = "granite4:1b-h", label = "Granite 4 · 1B", params = "1.0B",
+            sizeMb = 1559, minRamGb = 4, contextTokens = 131072,
+            strengths = "IBM's hybrid Granite — long documents, tool calling",
+            tier = OllamaPresetTier.LIGHT
+        ),
+        OllamaModelPreset(
+            tag = "openbmb/minicpm5-2b:q4_K_M", label = "MiniCPM 5 · 2B", params = "2.0B",
+            sizeMb = 1561, minRamGb = 4, contextTokens = 131072,
+            strengths = "OpenBMB's on-device flagship — thinking mode, 128K ctx",
+            tier = OllamaPresetTier.LIGHT
+        ),
+        OllamaModelPreset(
             tag = "gemma2:2b", label = "Gemma 2 · 2B", params = "2.6B",
             sizeMb = 1612, minRamGb = 4, contextTokens = 8192,
             strengths = "Balanced Google model with clean prose",
             tier = OllamaPresetTier.LIGHT, indonesianFriendly = true
+        ),
+        OllamaModelPreset(
+            tag = "granite4:3b-h", label = "Granite 4 · 3B", params = "3.0B",
+            sizeMb = 1943, minRamGb = 4, contextTokens = 131072,
+            strengths = "Largest Granite that still fits a 4 GB phone",
+            tier = OllamaPresetTier.LIGHT
+        ),
+        OllamaModelPreset(
+            tag = "qwen3.5:2b-q4_K_M", label = "Qwen 3.5 · 2B", params = "2.0B",
+            sizeMb = 1946, minRamGb = 4, contextTokens = 262144,
+            strengths = "Strongest Qwen 3.5 within a 2 GB download",
+            tier = OllamaPresetTier.LIGHT
         ),
         // BALANCED — 2–4 GB download, best quality on 6–8 GB RAM phones.
         OllamaModelPreset(

@@ -183,6 +183,21 @@ Layar probe identitas kini menilai request yang benar-benar dikirim engine (dise
 
 - identity: the check screen finally grades the request the engine actually sends
 
+## v1.0.205 — 7 November 2026
+
+- docs: the changelog since the first build, and the dsh redirect post-mortem
+- feat(macro+reset+back): macro automation, reset settings, and the honest Back
+- fix(macro): the theme and card composables live in ui.common, not browser.ui.components
+- fix(macro): compile round 2 — launcher callbacks off the composables, visibility, align
+- fix(macro): compile round 3 — BrowserSession's real package, the graph hop, ProfileId construction
+- feat(agent): create_macro / run_macro / macro_list — the chat agent authors and operates macros
+- style(e2e): ktlint — drop the unused fail import, order MacroE2eTest imports
+- style(e2e): order MacroE2eTest imports (ktlint, take 2)
+- style: ktlint format over the macro surfaces (imports, braces, blanks)
+- style(test): ktlint order MacroModelsTest imports (:core:domain test source set)
+- test(headless): classify the macro tools — a new MACRO_TOOLS side with one honest refusal
+- test(e2e): align the smoke suite with the new exit-dialog contract and the once-per-process bind
+
 ## Catatan: tag di luar garis sejarah edisi ini
 
 97 tag (v1.0.85 s.d. v1.0.181)
