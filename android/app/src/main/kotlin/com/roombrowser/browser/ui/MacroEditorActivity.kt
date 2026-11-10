@@ -51,6 +51,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -369,6 +371,11 @@ private fun MacroEditorRoot(
                     modifier = Modifier
                         .weight(1f)
                         .padding(vertical = 4.dp)
+                        // The e2e suite types into this field BY DESC
+                        // (MacroE2eTest.kt:74). It was missing, so the
+                        // helper fell back to "first EditText on screen",
+                        // which happened to be the Icon field.
+                        .semantics { contentDescription = "macro_name_field" }
                 )
             }
             OutlinedTextField(

@@ -86,9 +86,11 @@ import com.roombrowser.domain.macro.MacroDefinition
 import com.roombrowser.domain.macro.MacroRisk
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.theme.BuiltInThemes
+import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomCard
+import com.roombrowser.ui.common.rememberRoomHaptics
 import kotlinx.coroutines.launch
 
 /**
@@ -396,30 +398,25 @@ private fun MacroLibraryRoot(
                     .semantics { contentDescription = "macro_search_field" }
             )
             if (visible.isEmpty()) {
+                // One shared EmptyState, not a bespoke emoji block: the
+                // title is the EXACT "Nothing matches" the e2e suite
+                // asserts (the query rides in the subtitle), and the look
+                // is the same as every other list in the app.
                 Column(
                     Modifier
                         .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                        .padding(24.dp),
+                        .verticalScroll(rememberScrollState()),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
-                    Text("⚙️", fontSize = 40.sp)
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        if (macros.isEmpty()) "No macros yet" else "Nothing matches \"$search\"",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        if (macros.isEmpty()) {
+                    EmptyState(
+                        title = if (macros.isEmpty()) "No macros yet" else "Nothing matches",
+                        subtitle = if (macros.isEmpty()) {
                             "Record a macro from the browser's Macro menu — it runs on the tab " +
                                 "you record it on, for \"${profileName.ifBlank { "this profile" }}\"."
-                        } else "Try a different search.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        } else {
+                            "Try a different search — nothing matches \"$search\"."
+                        }
                     )
                     if (macros.isEmpty()) {
                         Spacer(Modifier.height(12.dp))
@@ -665,6 +662,7 @@ private fun MacroRow(
     onDelete: () -> Unit
 ) {
     val extras = LocalRoomExtras.current
+    val haptics = rememberRoomHaptics()
     RoomCard(
         Modifier
             .fillMaxWidth()
@@ -703,26 +701,43 @@ private fun MacroRow(
                     color = extras.textSecondary
                 )
             }
+            // Run is the one COLORED action on the row (filled tone); the
+            // three management icons share the quiet icon tint, so the eye
+            // lands on Play first and mis-taps cost less. A light haptic
+            // marks each management tap — deleting should feel like it
+            // pressed something.
             IconButton(
-                onClick = onRun,
+                onClick = {
+                    haptics.confirm()
+                    onRun()
+                },
                 modifier = Modifier.semantics { contentDescription = "Run macro ${macro.name}" }
             ) {
-                Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = extras.icon)
+                Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = extras.primary)
             }
             IconButton(
-                onClick = onRename,
+                onClick = {
+                    haptics.tick()
+                    onRename()
+                },
                 modifier = Modifier.semantics { contentDescription = "Rename macro" }
             ) {
                 Icon(Icons.Filled.DriveFileRenameOutline, contentDescription = null, tint = extras.icon)
             }
             IconButton(
-                onClick = onDuplicate,
+                onClick = {
+                    haptics.tick()
+                    onDuplicate()
+                },
                 modifier = Modifier.semantics { contentDescription = "Duplicate macro" }
             ) {
                 Icon(Icons.Filled.ContentCopy, contentDescription = null, tint = extras.icon)
             }
             IconButton(
-                onClick = onDelete,
+                onClick = {
+                    haptics.knock()
+                    onDelete()
+                },
                 modifier = Modifier.semantics { contentDescription = "Delete macro" }
             ) {
                 Icon(Icons.Filled.Delete, contentDescription = null, tint = extras.icon)

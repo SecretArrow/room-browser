@@ -2,7 +2,6 @@ package com.roombrowser.ui.common
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -388,7 +387,7 @@ fun LoadingBar(visible: Boolean, progress: Int) {
     if (!visible) return
     val animated by animateFloatAsState(
         targetValue = progress.coerceIn(1, 100) / 100f,
-        animationSpec = if (extras.reducedMotion) snap() else tween(durationMillis = 240),
+        animationSpec = if (extras.reducedMotion) snap() else RoomMotion.smooth(),
         label = "pageProgress"
     )
     Box(

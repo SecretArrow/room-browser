@@ -1,6 +1,11 @@
 package com.roombrowser.browser.ui
 
 import android.content.Intent
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -103,6 +108,8 @@ import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.ProfileAvatar
 import com.roombrowser.ui.common.RoomBottomSheetShape
 import com.roombrowser.ui.common.RoomSheetHeader
+import com.roombrowser.ui.common.RoomMotion
+import com.roombrowser.ui.common.rememberRoomHaptics
 import kotlinx.coroutines.launch
 
 /**
@@ -142,6 +149,7 @@ fun BrowserBottomBar(
 ) {
     val context = LocalContext.current
     val extras = LocalRoomExtras.current
+    val haptics = rememberRoomHaptics()
     val page = viewModel.pageState
     GlassBar(
         modifier = modifier
@@ -157,7 +165,10 @@ fun BrowserBottomBar(
         ) {
             // Web-history back — mirrors the system Back gesture.
             IconButton(
-                onClick = { viewModel.goBack() },
+                onClick = {
+                    haptics.tick()
+                    viewModel.goBack()
+                },
                 enabled = page.canGoBack,
                 modifier = Modifier.semantics { contentDescription = "Go back" }
             ) {
@@ -169,7 +180,10 @@ fun BrowserBottomBar(
             }
             // Web-history forward.
             IconButton(
-                onClick = { viewModel.goForward() },
+                onClick = {
+                    haptics.tick()
+                    viewModel.goForward()
+                },
                 enabled = page.canGoForward,
                 modifier = Modifier.semantics { contentDescription = "Go forward" }
             ) {
@@ -186,21 +200,39 @@ fun BrowserBottomBar(
             // row already carries an identical Reload / Stop.
             if (viewModel.agent.settings.showAgentButton) {
                 IconButton(
-                    onClick = { if (page.loading) viewModel.stopLoading() else viewModel.reload() },
+                    onClick = {
+                        haptics.tick()
+                        if (page.loading) viewModel.stopLoading() else viewModel.reload()
+                    },
                     enabled = !page.isHomepage,
                     modifier = Modifier.semantics {
                         contentDescription = if (page.loading) "Stop loading" else "Reload page"
                     }
                 ) {
-                    Icon(
-                        if (page.loading) Icons.Filled.Close else Icons.Filled.Refresh,
-                        contentDescription = null,
-                        tint = if (page.isHomepage) extras.icon.copy(alpha = 0.35f) else extras.icon
-                    )
+                    // Crossfade between Stop and Reload instead of a hard glyph
+                    // swap. Finite 160ms both ways, so UiAutomator's
+                    // waitForIdle still settles; the descs stay on the button.
+                    AnimatedContent(
+                        targetState = page.loading,
+                        transitionSpec = {
+                            fadeIn(tween(RoomMotion.FADE_MS)) togetherWith
+                                fadeOut(tween(RoomMotion.FADE_MS))
+                        },
+                        label = "refreshStop"
+                    ) { loading ->
+                        Icon(
+                            if (loading) Icons.Filled.Close else Icons.Filled.Refresh,
+                            contentDescription = null,
+                            tint = if (page.isHomepage) extras.icon.copy(alpha = 0.35f) else extras.icon
+                        )
+                    }
                 }
             } else {
                 IconButton(
-                    onClick = onOpenAgent,
+                    onClick = {
+                        haptics.tick()
+                        onOpenAgent()
+                    },
                     modifier = Modifier.semantics { contentDescription = "Open Room Agent" }
                 ) {
                     Icon(
@@ -213,7 +245,10 @@ fun BrowserBottomBar(
             // Tabs with live count badge
             Box {
                 IconButton(
-                    onClick = onOpenTabs,
+                    onClick = {
+                        haptics.tick()
+                        onOpenTabs()
+                    },
                     modifier = Modifier.semantics { contentDescription = "Open tab grid" }
                 ) {
                     Icon(Icons.Filled.Tab, contentDescription = null, tint = extras.icon)
@@ -243,6 +278,7 @@ fun BrowserBottomBar(
             // away. The wallet has no other entry point.
             IconButton(
                 onClick = {
+                    haptics.tick()
                     WalletActivity.launch(
                         context,
                         profileId = viewModel.profileId.value,
@@ -258,7 +294,10 @@ fun BrowserBottomBar(
                 )
             }
             IconButton(
-                onClick = onShowPageActions,
+                onClick = {
+                    haptics.tick()
+                    onShowPageActions()
+                },
                 modifier = Modifier.semantics { contentDescription = "Page actions and settings" }
             ) {
                 Icon(Icons.Filled.MoreHoriz, contentDescription = null, tint = extras.icon)

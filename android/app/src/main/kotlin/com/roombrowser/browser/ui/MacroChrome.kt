@@ -1,6 +1,12 @@
 package com.roombrowser.browser.ui
 
 import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
@@ -15,6 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
@@ -28,9 +35,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
@@ -43,12 +54,18 @@ import com.roombrowser.browser.macro.MacroRecordState
 import com.roombrowser.browser.macro.MacroRunner
 import com.roombrowser.domain.macro.MacroPick
 import com.roombrowser.ui.common.LocalRoomExtras
+import com.roombrowser.ui.common.RoomMotion
+import com.roombrowser.ui.common.rememberRoomHaptics
+import com.roombrowser.ui.common.roomEnter
+import com.roombrowser.ui.common.roomExit
+import kotlinx.coroutines.launch
 
 /**
  * The recording indicator — a compact always-visible bar the browser shows
  * while a macro recording is armed. Recording is a state the page does not
  * own, so the chrome must carry the sign: the user is never left guessing
- * whether their taps are being captured.
+ * whether their taps are being captured. It now ARRIVES (rises + fades on
+ * the shared spring) instead of snapping over the page.
  */
 @Composable
 fun MacroRecordingBar(
@@ -57,73 +74,98 @@ fun MacroRecordingBar(
     modifier: Modifier = Modifier
 ) {
     val state = viewModel.macroRecordState
-    if (state == MacroRecordState.IDLE) return
     val recording = state == MacroRecordState.RECORDING
     val extras = LocalRoomExtras.current
+    val haptics = rememberRoomHaptics()
 
-    Surface(
-        color = if (recording) Color(0xFFB3261E) else Color(0xFF6750A4),
-        shape = RoundedCornerShape(12.dp),
-        shadowElevation = 4.dp,
+    AnimatedVisibility(
+        visible = state != MacroRecordState.IDLE,
+        enter = roomEnter(extras.reducedMotion),
+        exit = roomExit(extras.reducedMotion),
         modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp)
-            .semantics { contentDescription = "macro_recording_bar" }
     ) {
-        Row(
-            Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
+        Surface(
+            // Recording stays urgent — solid error red. Paused goes calm:
+            // a tonal primary wash with an outline, the modern reading of
+            // "armed, but not capturing". Theme roles, not hardcodes, so
+            // every profile theme recolors this bar like the rest of the UI.
+            color = if (recording) MaterialTheme.colorScheme.error
+            else extras.primary.copy(alpha = 0.14f),
+            border = if (recording) null
+            else BorderStroke(1.dp, extras.primary.copy(alpha = 0.45f)),
+            shape = RoundedCornerShape(extras.radius.dp),
+            shadowElevation = 4.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+                .semantics { contentDescription = "macro_recording_bar" }
         ) {
-            // The classic REC dot: pulsing would need an animation scope; a
-            // solid dot reads at any glance speed and stays cheap.
-            androidx.compose.foundation.layout.Box(
-                Modifier
-                    .size(10.dp)
-                    .background(Color.White, CircleShape)
-            )
-            Spacer(Modifier.width(8.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    if (recording) "Recording macro — ${viewModel.macroRecordSteps} steps" else "Recording paused",
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+            Row(
+                Modifier.padding(start = 12.dp, top = 6.dp, end = 4.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // The classic REC dot: solid reads at any glance speed and
+                // stays cheap — a pulsing loop would never let the e2e
+                // suites' waitForIdle settle.
+                Box(
+                    Modifier
+                        .size(10.dp)
+                        .background(
+                            if (recording) Color.White else extras.primary,
+                            CircleShape
+                        )
                 )
-                Text(
-                    "This tab only • secrets are never stored",
-                    color = Color.White.copy(alpha = 0.85f),
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1
-                )
-            }
-            TextButton(
-                onClick = { viewModel.macroPauseOrResumeRecording() },
-                modifier = Modifier.semantics {
-                    contentDescription = if (recording) "macro_recording_pause" else "macro_recording_resume"
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (recording) "Recording macro — ${viewModel.macroRecordSteps} steps" else "Recording paused",
+                        color = if (recording) Color.White else extras.textPrimary,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        "This tab only • secrets are never stored",
+                        color = if (recording) Color.White.copy(alpha = 0.85f) else extras.textSecondary,
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1
+                    )
                 }
-            ) {
-                Icon(
-                    if (recording) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                    contentDescription = null,
-                    tint = Color.White
-                )
-            }
-            TextButton(
-                onClick = {
-                    viewModel.macroStopRecording()
-                    onOpenEditor()
-                },
-                modifier = Modifier.semantics { contentDescription = "macro_recording_stop" }
-            ) {
-                Icon(Icons.Filled.Stop, contentDescription = null, tint = Color.White)
-            }
-            TextButton(
-                onClick = { viewModel.macroCancelRecording() },
-                modifier = Modifier.semantics { contentDescription = "macro_recording_cancel" }
-            ) {
-                Text("✕", color = Color.White)
+                IconButton(
+                    onClick = {
+                        haptics.tick()
+                        viewModel.macroPauseOrResumeRecording()
+                    },
+                    modifier = Modifier.semantics {
+                        contentDescription = if (recording) "macro_recording_pause" else "macro_recording_resume"
+                    }
+                ) {
+                    Icon(
+                        if (recording) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        contentDescription = null,
+                        tint = if (recording) Color.White else extras.primary
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        haptics.knock()
+                        viewModel.macroStopRecording()
+                        onOpenEditor()
+                    },
+                    modifier = Modifier.semantics { contentDescription = "macro_recording_stop" }
+                ) {
+                    Icon(Icons.Filled.Stop, contentDescription = null, tint = if (recording) Color.White else extras.primary)
+                }
+                IconButton(
+                    onClick = {
+                        haptics.tick()
+                        viewModel.macroCancelRecording()
+                    },
+                    modifier = Modifier.semantics { contentDescription = "macro_recording_cancel" }
+                ) {
+                    Icon(Icons.Filled.Close, contentDescription = null, tint = if (recording) Color.White else extras.primary)
+                }
             }
         }
     }
@@ -132,7 +174,9 @@ fun MacroRecordingBar(
 /**
  * The playback HUD — the always-visible progress surface while a macro
  * runs. Play/pause, stop, restart; the current step, the iteration and the
- * ETA. Stopping is ALWAYS one tap away, per the macro contract.
+ * ETA. Stopping is ALWAYS one tap away, per the macro contract. Arrives and
+ * leaves on the shared chrome motion; the step progress fills smoothly
+ * instead of jumping.
  */
 @Composable
 fun MacroRunHud(
@@ -140,87 +184,110 @@ fun MacroRunHud(
     modifier: Modifier = Modifier
 ) {
     val progress = viewModel.macroRunProgress
-    if (progress.state == MacroRunner.State.IDLE) return
     val extras = LocalRoomExtras.current
+    val haptics = rememberRoomHaptics()
     val running = progress.state == MacroRunner.State.RUNNING
-    val pct = if (progress.stepCount > 0 && progress.stepIndex >= 0) {
+    val pctTarget = if (progress.stepCount > 0 && progress.stepIndex >= 0) {
         (progress.stepIndex + 1).toFloat() / progress.stepCount
-    } else 0f
+    } else {
+        0f
+    }
+    val pct by animateFloatAsState(
+        targetValue = pctTarget.coerceIn(0f, 1f),
+        animationSpec = if (extras.reducedMotion) snap() else RoomMotion.smooth(),
+        label = "macroRunProgress"
+    )
 
-    Surface(
-        color = extras.background,
-        shape = RoundedCornerShape(12.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, extras.primary.copy(alpha = 0.4f)),
-        shadowElevation = 4.dp,
+    AnimatedVisibility(
+        visible = progress.state != MacroRunner.State.IDLE,
+        enter = roomEnter(extras.reducedMotion),
+        exit = roomExit(extras.reducedMotion),
         modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp)
-            .semantics { contentDescription = "macro_run_hud" }
     ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    if (running) Icons.Filled.PlayArrow else Icons.Filled.Pause,
-                    contentDescription = null,
-                    tint = extras.primary,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(Modifier.width(8.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "${progress.macroName} — step ${progress.stepIndex + 1}/${progress.stepCount} " +
-                            if (progress.totalIterations > 1 || progress.totalIterations == 0) {
-                                "(run ${progress.iteration}${if (progress.totalIterations > 0) "/${progress.totalIterations}" else ""})"
-                            } else "",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        color = extras.textPrimary
-                    )
-                    Text(
-                        buildString {
-                            append(progress.currentAction.lowercase().replace('_', ' '))
-                            if (progress.etaMs > 1_000) {
-                                append(" • ~${progress.etaMs / 1000}s left")
-                            }
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = extras.textSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                IconButton(
-                    onClick = { viewModel.macroPauseOrResumeRun() },
-                    modifier = Modifier.semantics {
-                        contentDescription = if (running) "macro_run_pause" else "macro_run_resume"
-                    }
-                ) {
+        Surface(
+            color = extras.background,
+            shape = RoundedCornerShape(extras.radius.dp),
+            border = BorderStroke(1.dp, extras.primary.copy(alpha = 0.4f)),
+            shadowElevation = 4.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+                .semantics { contentDescription = "macro_run_hud" }
+        ) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        if (running) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        if (running) Icons.Filled.PlayArrow else Icons.Filled.Pause,
                         contentDescription = null,
-                        tint = extras.icon
+                        tint = extras.primary,
+                        modifier = Modifier.size(18.dp)
                     )
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "${progress.macroName} — step ${progress.stepIndex + 1}/${progress.stepCount} " +
+                                if (progress.totalIterations > 1 || progress.totalIterations == 0) {
+                                    "(run ${progress.iteration}${if (progress.totalIterations > 0) "/${progress.totalIterations}" else ""})"
+                                } else "",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = extras.textPrimary
+                        )
+                        Text(
+                            buildString {
+                                append(progress.currentAction.lowercase().replace('_', ' '))
+                                if (progress.etaMs > 1_000) {
+                                    append(" • ~${progress.etaMs / 1000}s left")
+                                }
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = extras.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    IconButton(
+                        onClick = {
+                            haptics.tick()
+                            viewModel.macroPauseOrResumeRun()
+                        },
+                        modifier = Modifier.semantics {
+                            contentDescription = if (running) "macro_run_pause" else "macro_run_resume"
+                        }
+                    ) {
+                        Icon(
+                            if (running) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                            contentDescription = null,
+                            tint = extras.icon
+                        )
+                    }
+                    IconButton(
+                        onClick = {
+                            haptics.tick()
+                            viewModel.macroRunner.restart(emptyMap())
+                        },
+                        modifier = Modifier.semantics { contentDescription = "macro_run_restart" }
+                    ) {
+                        Icon(Icons.Filled.Replay, contentDescription = null, tint = extras.icon)
+                    }
+                    IconButton(
+                        onClick = {
+                            haptics.knock()
+                            viewModel.macroStopRun()
+                        },
+                        modifier = Modifier.semantics { contentDescription = "macro_run_stop" }
+                    ) {
+                        Icon(Icons.Filled.Stop, contentDescription = null, tint = extras.icon)
+                    }
                 }
-                IconButton(
-                    onClick = { viewModel.macroRunner.restart(emptyMap()) },
-                    modifier = Modifier.semantics { contentDescription = "macro_run_restart" }
-                ) {
-                    Icon(Icons.Filled.Replay, contentDescription = null, tint = extras.icon)
-                }
-                IconButton(
-                    onClick = { viewModel.macroStopRun() },
-                    modifier = Modifier.semantics { contentDescription = "macro_run_stop" }
-                ) {
-                    Icon(Icons.Filled.Stop, contentDescription = null, tint = extras.icon)
-                }
+                Spacer(Modifier.height(4.dp))
+                LinearProgressIndicator(
+                    progress = { pct },
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
-            Spacer(Modifier.height(4.dp))
-            LinearProgressIndicator(
-                progress = { pct.coerceIn(0f, 1f) },
-                modifier = Modifier.fillMaxWidth()
-            )
         }
     }
 }
@@ -233,6 +300,11 @@ fun MacroRunHud(
  * answer is delivered to the editor (another process) through the one-shot
  * file the view model writes; this overlay only owns the visuals and the
  * confirmation toast.
+ *
+ * The overlay ENTERS animated — scrim fades in, banner drops on the arrive
+ * spring — and leaves composition the instant the pick resolves (a snappy
+ * disappearance; there is nothing to animate out). Both entrance animations
+ * are one-shot and finite; reduced motion snaps both.
  */
 @Composable
 fun MacroPickOverlay(
@@ -242,6 +314,7 @@ fun MacroPickOverlay(
     val kind = viewModel.macroPickKind ?: return
     val context = LocalContext.current
     val extras = LocalRoomExtras.current
+    val haptics = rememberRoomHaptics()
 
     DisposableEffect(Unit) {
         viewModel.onMacroPickResolved = { pick ->
@@ -254,6 +327,18 @@ fun MacroPickOverlay(
         onDispose { viewModel.onMacroPickResolved = null }
     }
 
+    val scrim = remember { Animatable(0f) }
+    val bannerDrop = remember { Animatable(-48f) }
+    LaunchedEffect(extras.reducedMotion) {
+        if (extras.reducedMotion) {
+            scrim.snapTo(1f)
+            bannerDrop.snapTo(0f)
+        } else {
+            launch { scrim.animateTo(1f, tween(RoomMotion.FADE_MS)) }
+            launch { bannerDrop.animateTo(0f, RoomMotion.arrive()) }
+        }
+    }
+
     val instruction = when (kind) {
         MacroPick.KIND_DRAG_START -> "Tap the START point of the swipe"
         MacroPick.KIND_DRAG_END -> "Tap the END point of the swipe"
@@ -262,9 +347,10 @@ fun MacroPickOverlay(
 
     Box(
         modifier
-            .background(Color.Black.copy(alpha = 0.30f))
+            .background(Color.Black.copy(alpha = 0.30f * scrim.value))
             .pointerInput(Unit) {
                 detectTapGestures { offset ->
+                    haptics.confirm()
                     viewModel.resolveMacroPickAt(offset.x, offset.y)
                 }
             }
@@ -272,12 +358,16 @@ fun MacroPickOverlay(
     ) {
         Surface(
             color = extras.background,
-            shape = RoundedCornerShape(12.dp),
+            shape = RoundedCornerShape(extras.radius.dp),
             shadowElevation = 6.dp,
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .padding(16.dp)
                 .fillMaxWidth()
+                .graphicsLayer {
+                    translationY = bannerDrop.value
+                    alpha = scrim.value
+                }
         ) {
             Row(
                 Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -296,7 +386,10 @@ fun MacroPickOverlay(
                         color = extras.textSecondary
                     )
                 }
-                TextButton(onClick = { viewModel.cancelMacroPick() }) {
+                TextButton(onClick = {
+                    haptics.tick()
+                    viewModel.cancelMacroPick()
+                }) {
                     Text("Cancel", color = extras.primary)
                 }
             }

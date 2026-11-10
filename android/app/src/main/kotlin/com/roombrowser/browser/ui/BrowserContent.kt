@@ -3,6 +3,9 @@ package com.roombrowser.browser.ui
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -57,6 +60,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.PointerInputScope
@@ -81,7 +85,9 @@ import com.roombrowser.ui.common.LoadingBar
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomCard
 import com.roombrowser.ui.common.RoomCardShape
+import com.roombrowser.ui.common.RoomMotion
 import com.roombrowser.ui.common.StatTile
+import com.roombrowser.ui.common.rememberRoomHaptics
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -106,6 +112,7 @@ fun BrowserContent(
         mutableStateOf(TextFieldValue(if (page.isHomepage) "" else UrlIntelligence.displayUrl(page.url)))
     }
     val context = LocalContext.current
+    val haptics = rememberRoomHaptics()
     Column(modifier.fillMaxSize()) {
         // ---------- Omnibox row (floating pill) ---------------------------
         Row(
@@ -128,12 +135,23 @@ fun BrowserContent(
             // up to its nearest clickable ancestor — `clickSmart` does — hit
             // that button instead of the field, leaving the sheet over the
             // page for the rest of the test.)
+            //
+            // FOCUS FEEDBACK: the border brightens toward the accent while
+            // the field is focused (160ms tween, snap under reduced motion).
+            // The caret is still the working feedback; this is the glance
+            // one, so the pill visibly "wakes up" when it becomes editable.
+            var omniFocused by remember { mutableStateOf(false) }
+            val omniBorder by animateColorAsState(
+                targetValue = if (omniFocused) extras.primary else extras.border,
+                animationSpec = if (extras.reducedMotion) snap() else tween(RoomMotion.FADE_MS),
+                label = "omniBorder"
+            )
             Row(
                 modifier = Modifier
                     .weight(1f)
                     .clip(RoundedCornerShape(extras.radius.dp))
                     .background(extras.addressBar)
-                    .border(0.5.dp, extras.border, RoundedCornerShape(extras.radius.dp))
+                    .border(0.5.dp, omniBorder, RoundedCornerShape(extras.radius.dp))
                     .heightIn(min = 46.dp)
                     // No vertical padding: the 48dp site-controls target
                     // below now sets this pill's height. The 11.dp that used
@@ -218,11 +236,15 @@ fun BrowserContent(
                         cursorBrush = SolidColor(extras.primary),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                         keyboardActions = KeyboardActions(
-                            onGo = { viewModel.onOmniBoxInput(omniInput.text) }
+                            onGo = {
+                                haptics.tick()
+                                viewModel.onOmniBoxInput(omniInput.text)
+                            }
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
                             .focusRequester(omniFocus)
+                            .onFocusChanged { omniFocused = it.isFocused }
                     )
                 }
                 if (!page.isHomepage) {

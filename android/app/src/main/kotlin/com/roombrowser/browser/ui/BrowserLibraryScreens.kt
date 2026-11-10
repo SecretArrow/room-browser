@@ -232,7 +232,11 @@ fun TabGridScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 gridItems(tabs, key = { it.id }) { tab ->
+                    // Card motion: closing a tab fades its card out and the
+                    // rest slide into place. The placement springs settle on
+                    // their own, so the e2e suites' waitForIdle still does.
                     TabCard(
+                        modifier = Modifier.animateItem(),
                         title = tab.title.ifBlank { tab.url },
                         url = tab.url,
                         isPrivate = tab.isPrivate,
@@ -256,13 +260,14 @@ fun TabGridScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                listItems(tabs, key = { it.id }) { tab ->
-                    // The app's one card radius (RoomCardShape), not a second
-                    // 0.9-of-the-theme-radius scale of its own.
-                    val rowShape = RoomCardShape
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
+                    listItems(tabs, key = { it.id }) { tab ->
+                        // The app's one card radius (RoomCardShape), not a second
+                        // 0.9-of-the-theme-radius scale of its own.
+                        val rowShape = RoomCardShape
+                        Row(
+                            Modifier
+                                .animateItem()
+                                .fillMaxWidth()
                             .clip(rowShape)
                             .background(extras.surface)
                             .border(
@@ -341,6 +346,7 @@ fun TabGridScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
 
 @Composable
 private fun TabCard(
+    modifier: Modifier = Modifier,
     title: String,
     url: String,
     isPrivate: Boolean,
@@ -359,7 +365,7 @@ private fun TabCard(
     // Same card radius as the tab list row and every other card surface.
     val shape = RoomCardShape
     Column(
-        Modifier
+        modifier
             .clip(shape)
             .background(extras.surface)
             .border(
