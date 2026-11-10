@@ -107,8 +107,8 @@ import com.roombrowser.ui.common.GlassBar
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.ProfileAvatar
 import com.roombrowser.ui.common.RoomBottomSheetShape
-import com.roombrowser.ui.common.RoomSheetHeader
 import com.roombrowser.ui.common.RoomMotion
+import com.roombrowser.ui.common.RoomSheetHeader
 import com.roombrowser.ui.common.rememberRoomHaptics
 import kotlinx.coroutines.launch
 
