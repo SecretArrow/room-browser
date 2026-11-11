@@ -216,6 +216,24 @@ Layar probe identitas kini menilai request yang benar-benar dikirim engine (dise
 - test(macro): import MacroStep — the appliedTo tests reference it
 - fix(macro): unwrap the JSON-encoded evaluateJs answer before reading the pick probe
 
+## v1.0.209 — 11 November 2026
+
+- docs(changelog): regenerate through v1.0.208 [skip ci]
+- Modernize feel: shared motion + haptics + theme-aware macro chrome
+- fix(lint): lexicographic import order in BrowserSheets + MacroEditorActivity
+- fix(2fa+e2e): resolve the 2FA lock policy before any early return; make MacroE2eTest self-sufficient; discover an uncovered LocalAi family
+- fix(e2e): UiObject2.setText is void in this uiautomator — verify via read-back, not the return value
+- fix(e2e): judge sheet navigation by the destination, and match sheet rows by text
+
+## v1.0.210 — 11 November 2026
+
+- feat(assistant): Ask this page — a grounded one-shot AI assistant; verified duplicate/delete + a deeper reset sweep in MacroE2eTest
+- fix(assistant): import the compose delegate getValue/setValue the state properties rely on
+- fix(assistant): AgentSettings.defaultModel is nullable — safe-call before takeIf
+- style(test): ktlint — collapse the aligned whitespace in PageAssistantPromptsTest
+- fix(e2e): type into FRESH field nodes with an exact read-back; verify the reset-dialog click
+- fix(assistant): collapse per line and drop empty lines — the JVM test caught interior blanks surviving the old regex chain
+
 ## Catatan: tag di luar garis sejarah edisi ini
 
 97 tag (v1.0.85 s.d. v1.0.181)
