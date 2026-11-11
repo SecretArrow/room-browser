@@ -59,6 +59,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.FragmentActivity
 import com.roombrowser.browser.AgentActivity
 import com.roombrowser.browser.BrowserViewModel
+import com.roombrowser.domain.assistant.PageContext
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.security.BiometricGate
@@ -209,6 +210,8 @@ fun BrowserScreen(
     // "kalau yang dibuka bukan url dasar jangan keluarkan app, cukup tampilkan
     // konfirmasi dulu").
     var showExitConfirm by remember { mutableStateOf(false) }
+    var showPageAssistant by remember { mutableStateOf(false) }
+    var pageAssistantPage by remember { mutableStateOf<PageContext?>(null) }
 
     // ---- Internal route back-stack ----
     // The routes below used to have a FIXED parent mapping (ProfileSettings
@@ -303,6 +306,10 @@ fun BrowserScreen(
         com.roombrowser.agent.ui.AgentSettingsActivity.launch(
             activity, viewModel.profileId.value
         )
+    }
+
+    fun launchLocalAi() {
+        com.roombrowser.agent.ui.LocalAiActivity.launch(activity, viewModel.profileId.value)
     }
 
     fun launchAiTasks() {
@@ -565,6 +572,13 @@ fun BrowserScreen(
             onOpenAiTasks = { launchAiTasks(); showPageActions = false },
             onOpenAgentSettings = { launchAgentSettings(); showPageActions = false },
             onOpenAgentSessions = { launchAgentSessions(); showPageActions = false },
+            onOpenPageAssistant = {
+                showPageAssistant = true
+                showPageActions = false
+                // Capture the grounding fresh: the sheet may sit open while
+                // the page is still loading.
+                viewModel.assistantPageContext { pageAssistantPage = it }
+            },
             onOpenBookmarks = { navigateTo(BrowserRoute.Bookmarks); showPageActions = false },
             onOpenDownloads = { navigateTo(BrowserRoute.Downloads); showPageActions = false },
             onOpenHistory = { navigateTo(BrowserRoute.History); showPageActions = false },
@@ -576,6 +590,23 @@ fun BrowserScreen(
             onShowQuickSwitcher = { showQuickSwitcher = true; showPageActions = false },
             onShowShields = { showShields = true; showPageActions = false },
             onOpenDeveloperTools = { viewModel.toggleDeveloperTools(); showPageActions = false }
+        )
+    }
+
+    // The page assistant re-reads providers on the controller's refresh()
+    // (called from the sheet's own LaunchedEffect below) — Room's
+    // cross-process ping can lag behind the settings screens — and its
+    // answer dies with the sheet: the next open starts honest.
+    if (showPageAssistant) {
+        PageAssistantSheet(
+            controller = viewModel.pageAssistant,
+            page = pageAssistantPage,
+            onDismiss = {
+                showPageAssistant = false
+                viewModel.pageAssistant.reset()
+            },
+            onOpenAgentSettings = { launchAgentSettings(); showPageAssistant = false },
+            onOpenLocalAi = { launchLocalAi(); showPageAssistant = false }
         )
     }
 

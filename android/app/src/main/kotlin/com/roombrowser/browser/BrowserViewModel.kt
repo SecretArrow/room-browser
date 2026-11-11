@@ -703,6 +703,47 @@ class BrowserViewModel(
         application, profileId, this, OkHttpClient()
     )
 
+    /** "Ask this page" — the one-shot page-grounded assistant. */
+    val pageAssistant: PageAssistantController by lazy {
+        PageAssistantController(application, OkHttpClient())
+    }
+
+    /**
+     * Captures the ACTIVE tab's visible text for the page assistant, through
+     * the same main-thread evaluateJs hop the macro host uses. evaluateJs
+     * answers with the JSON-ENCODED form of the script's value (see the
+     * macro pick probe), so a JSON string literal is decoded back; anything
+     * else passes through raw. [onReady] fires with title/url even when the
+     * capture comes back empty — the controller then refuses the ask with an
+     * honest message instead of letting the model invent a page.
+     */
+    fun assistantPageContext(onReady: (com.roombrowser.domain.assistant.PageContext) -> Unit) {
+        val session = activeSession ?: return
+        val url = pageState.url
+        val title = pageState.title
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+            session.evaluateJs("document.body ? (document.body.innerText || '') : ''") { raw ->
+                onReady(
+                    com.roombrowser.domain.assistant.PageContext(
+                        title = title,
+                        url = url,
+                        text = decodeEvaluatedString(raw)
+                    )
+                )
+            }
+        }
+    }
+
+    /** evaluateJs returns the JSON-ENCODED answer: a JSON string literal
+     *  decodes to the text itself, anything else passes through raw. */
+    private fun decodeEvaluatedString(raw: String?): String {
+        if (raw.isNullOrBlank() || raw == "null" || raw == "undefined") return ""
+        return runCatching {
+            (kotlinx.serialization.json.Json.parseToJsonElement(raw)
+                as? kotlinx.serialization.json.JsonPrimitive)?.content
+        }.getOrNull() ?: raw
+    }
+
     /** Site-settings snapshot for the interception thread (thread-safe). */
     @Volatile
     private var siteSettingsSnapshot: Map<String, SiteSettingEntity> = emptyMap()

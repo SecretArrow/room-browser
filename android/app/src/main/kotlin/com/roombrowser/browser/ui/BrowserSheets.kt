@@ -60,6 +60,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.QuestionAnswer
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SafetyCheck
 import androidx.compose.material.icons.filled.Schedule
@@ -324,6 +325,7 @@ fun PageActionsSheet(
     onOpenAiTasks: () -> Unit,
     onOpenAgentSettings: () -> Unit,
     onOpenAgentSessions: () -> Unit,
+    onOpenPageAssistant: () -> Unit,
     onOpenBookmarks: () -> Unit,
     onOpenDownloads: () -> Unit,
     onOpenHistory: () -> Unit,
@@ -432,6 +434,12 @@ fun PageActionsSheet(
             // wrapping the label on a narrow screen — for no information.
             SheetAction(Icons.Filled.SmartToy, "AI Agent Settings") { onOpenAgentSettings() }
             SheetAction(Icons.Filled.Forum, "AI Agent chats") { onOpenAgentSessions() }
+            // "Ask this page": a one-shot assistant grounded in THIS page's
+            // own text — summarize, key points, plain-language explain,
+            // translate, or a free-form question. It rides the same provider
+            // the Room Agent uses; with none configured the sheet says so
+            // and offers the setup doors instead of guessing.
+            SheetAction(Icons.Filled.QuestionAnswer, "Ask this page") { onOpenPageAssistant() }
 
             SheetSectionLabel("Settings")
             SheetAction(Icons.Filled.Settings, "Browser settings") { onOpenSettings() }

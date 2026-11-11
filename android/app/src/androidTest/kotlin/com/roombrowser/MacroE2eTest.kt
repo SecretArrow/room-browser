@@ -164,17 +164,44 @@ class MacroE2eTest {
         )
         typeIntoField("macro_search_field", "E2E")
 
-        // ---- Duplicate + rename + delete -----------------------------------
-        device.findObject(By.desc("Duplicate macro"))?.click()
-        device.wait(Until.hasObject(By.text("Duplicate")), 2_000)
-        device.findObject(By.text("Duplicate"))?.click()
+        // ---- Duplicate + delete: every hop VERIFIED, retried ----------------
+        // The dialog round-trip was the silent killer (#718): a null-safe
+        // click on the row, on "Duplicate", or a confirm that lost the race
+        // with the dialog's entrance animation all no-op'd without a trace.
+        var duplicated = false
+        for (round in 1..3) {
+            if (device.hasObject(By.textContains("(copy)"))) { duplicated = true; break }
+            if (!device.hasObject(By.text("Duplicate macro?"))) {
+                val dupRow = device.wait(Until.findObject(By.desc("Duplicate macro")), 3_000)
+                dupRow?.click()
+                device.waitForIdle(800)
+            }
+            val confirm = device.wait(Until.findObject(By.text("Duplicate")), 2_500)
+            confirm?.click()
+            device.waitForIdle(800)
+            if (device.wait(Until.hasObject(By.textContains("(copy)")), 3_000)) duplicated = true
+        }
         assertTrue(
-            "Duplicate lands as (copy)",
-            device.wait(Until.hasObject(By.textContains("(copy)")), 4_000)
+            "Duplicate must land as (copy); visible: ${visibleTexts()}",
+            duplicated
         )
-        device.findObject(By.desc("Delete macro"))?.click()
-        device.wait(Until.hasObject(By.text("Delete")), 2_000)
-        device.findObject(By.text("Delete"))?.click()
+        var deleted = false
+        for (round in 1..3) {
+            if (!device.hasObject(By.textContains("(copy)"))) { deleted = true; break }
+            if (!device.hasObject(By.text("Delete macro?"))) {
+                val delRow = device.wait(Until.findObject(By.desc("Delete macro")), 3_000)
+                delRow?.click()
+                device.waitForIdle(800)
+            }
+            val confirm = device.wait(Until.findObject(By.text("Delete")), 2_500)
+            confirm?.click()
+            device.waitForIdle(800)
+            if (!device.wait(Until.hasObject(By.textContains("(copy)")), 3_000)) deleted = true
+        }
+        assertTrue(
+            "The (copy) must be deletable; visible: ${visibleTexts()}",
+            deleted
+        )
 
         // ---- Run: hands off to the browser, HUD appears, stop works --------
         // (Run targets the live browser process; the library finishes.)
@@ -204,16 +231,29 @@ class MacroE2eTest {
                 verify = { device.hasObject(By.textContains("Profile Settings —")) }
             )
         )
-        // The reset row sits under its own section near the bottom of a long
-        // screen; drag to it and report how far it took.
+        // The reset row sits deep in a long settings screen — UiAutomator only
+        // matches VISIBLE nodes in a scrolling container, so the drag has to
+        // actually travel there. Quarter-swipes go DOWN until found; if the
+        // row was overshot, a downward sweep brings it back before failing.
         var resetRow = device.findObject(By.text("Reset settings to default"))
         var swipes = 0
-        while (resetRow == null && swipes < 10) {
+        while (resetRow == null && swipes < 30) {
             swipeUpQuarter()
             resetRow = device.findObject(By.text("Reset settings to default"))
             swipes++
         }
-        assertTrue("Reset row must exist in Profile Settings (swipes=$swipes)", resetRow != null)
+        if (resetRow == null) {
+            for (i in 1..6) {
+                swipeDownQuarter()
+                resetRow = device.findObject(By.text("Reset settings to default"))
+                if (resetRow != null) break
+            }
+        }
+        assertTrue(
+            "Reset row must exist in Profile Settings (down-swipes=$swipes; " +
+                "visible now: ${visibleTexts()})",
+            resetRow != null
+        )
         resetRow?.click()
         assertTrue(
             "The confirmation dialog must spell out what stays",
@@ -301,6 +341,25 @@ class MacroE2eTest {
         )
         device.waitForIdle(400)
     }
+
+    /** One quarter-screen drag downward, then settle (the undo of a search). */
+    private fun swipeDownQuarter() {
+        device.swipe(
+            device.displayWidth / 2, (device.displayHeight * 0.35).toInt(),
+            device.displayWidth / 2, (device.displayHeight * 0.75).toInt(), 40
+        )
+        device.waitForIdle(400)
+    }
+
+    /** What is actually on screen — a failure that names its own viewport. */
+    private fun visibleTexts(): String = runCatching {
+        device.findObjects(By.textContains(""))
+            .mapNotNull { runCatching { it.text }.getOrNull() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .take(24)
+            .toString()
+    }.getOrDefault("viewport dump failed")
 
     private fun hasTextContains(text: String, timeoutMs: Long = 1_000): Boolean =
         waitUntil(timeoutMs) { device.hasObject(By.textContains(text)) }
