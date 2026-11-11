@@ -80,8 +80,17 @@ class MacroE2eTest {
         nameField.click()
         device.waitForIdle(400)
         val name = "Macro${android.os.SystemClock.elapsedRealtime() % 100000}"
-        val written = runCatching { nameField.setText(name) }.getOrDefault(false)
-        if (!written) device.executeShellCommand("input text $name")
+        runCatching { nameField.setText(name) }
+        // SET_TEXT travels the a11y layer; verify it landed, else the shell
+        // burst (this name has no special characters, so input text is safe).
+        if (!waitUntil(3_000) {
+                device.findObjects(By.clazz("android.widget.EditText"))
+                    .any { it.text == name }
+            }
+        ) {
+            device.executeShellCommand("input text $name")
+            device.waitForIdle(600)
+        }
         device.waitForIdle(1_000)
         // Confirm = the dialog's own button: same row as Cancel, rightmost
         // (the picker's opener shares the label but sits on another row).
@@ -129,8 +138,7 @@ class MacroE2eTest {
         // into spaces, so it is only a fallback.
         val urlField = device.wait(Until.findObject(By.clazz("android.widget.EditText")), 3_000)
         assertTrue("The step dialog's URL field must exist", urlField != null)
-        val urlWritten = runCatching { urlField!!.setText(dataUrl) }.getOrDefault(false)
-        if (!urlWritten) device.executeShellCommand("input text ${shellSafe(dataUrl)}")
+        runCatching { urlField!!.setText(dataUrl) }
         device.waitForIdle(300)
         assertTrue(
             "The URL field must carry the data: page",
@@ -246,8 +254,17 @@ class MacroE2eTest {
         device.waitForIdle(400)
         runCatching { field.clear() }
         device.waitForIdle(200)
-        val written = runCatching { field.setText(text) }.getOrDefault(false)
-        if (!written) device.executeShellCommand("input text ${shellSafe(text)}")
+        runCatching { field.setText(text) }
+        // SET_TEXT first; the read-back below decides — if it never landed,
+        // the shell burst gets one round before the assert fails honestly.
+        if (!waitUntil(3_000) {
+                device.findObjects(By.clazz("android.widget.EditText"))
+                    .any { runCatching { it.text }.getOrNull()?.contains(text) == true }
+            }
+        ) {
+            device.executeShellCommand("input text ${shellSafe(text)}")
+            device.waitForIdle(600)
+        }
         device.waitForIdle(300)
         assertTrue(
             "Field $desc must contain '$text'",
