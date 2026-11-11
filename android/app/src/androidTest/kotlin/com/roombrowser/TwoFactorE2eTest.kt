@@ -521,7 +521,13 @@ class TwoFactorE2eTest {
         // rowOrderInSheet drags before each read.)
         assertTrue(
             "The 2FA Management row must be clickable and open its screen\n${uiTree()}",
-            clickTextScrollableVerified("2FA Management") { waitGone("Page Actions", 1_500) }
+            clickTextScrollableVerified("2FA Management") {
+                // Verdict on the DESTINATION's own texts, not on the sheet
+                // header leaving: a drag scrolls the header off-screen while
+                // the sheet stays open, and the old verifier then blessed a
+                // click that never navigated (#712/#716).
+                hasText("No 2FA accounts yet", 500) || hasText("Add 2FA", 500)
+            }
         )
         assertTrue(
             "The sheet must be dismissed before the 2FA screen is asserted\n${uiTree()}",

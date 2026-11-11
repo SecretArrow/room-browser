@@ -114,12 +114,14 @@ class MacroE2eTest {
 
         // ---- Library opens from the page actions sheet -------------------
         openPageActions()
-        val macroItem = device.wait(Until.hasObject(By.desc("Macro")), 4_000)
-        assertTrue("Macro row must be present in the page-actions sheet", macroItem)
-        device.findObject(By.desc("Macro"))?.click()
+        // The sheet rows expose their LABELS as text; UiAutomator does not
+        // resolve the rows' contentDescription inside the ModalBottomSheet's
+        // dialog window (the pill's desc in the main window works fine). And
+        // success is judged by the DESTINATION — a header that merely
+        // scrolled off is not a dismissed sheet (#716's false positive).
         assertTrue(
-            "Macro library must open",
-            device.wait(Until.hasObject(By.text("Macro")), 4_000)
+            "Macro library must open from the sheet's Macro row",
+            clickSheetText("Macro", verify = { device.hasObject(By.desc("New macro")) })
         )
 
         // ---- Create a macro by hand: navigate + wait ---------------------
@@ -195,10 +197,13 @@ class MacroE2eTest {
         // "Browser settings" / "Profile settings"), so every later step
         // no-op'd silently and the swipes ran on the browser screen.
         openPageActions()
-        val profileRow = device.wait(Until.findObject(By.desc("Profile settings")), 5_000)
-        assertTrue("Profile settings row must be present in the sheet", profileRow != null)
-        profileRow!!.click()
-        device.waitForIdle(800)
+        assertTrue(
+            "Profile settings screen must open from the sheet row",
+            clickSheetText(
+                "Profile settings",
+                verify = { device.hasObject(By.textContains("Profile Settings —")) }
+            )
+        )
         // The reset row sits under its own section near the bottom of a long
         // screen; drag to it and report how far it took.
         var resetRow = device.findObject(By.text("Reset settings to default"))
@@ -295,5 +300,31 @@ class MacroE2eTest {
             device.displayWidth / 2, (device.displayHeight * 0.35).toInt(), 40
         )
         device.waitForIdle(400)
+    }
+
+    private fun hasTextContains(text: String, timeoutMs: Long = 1_000): Boolean =
+        waitUntil(timeoutMs) { device.hasObject(By.textContains(text)) }
+
+    /**
+     * Scrolls the sheet until [text] is on-screen and clicks it; [verify] —
+     * judged on a marker UNIQUE to the destination — decides success. A
+     * click that only scrolled the sheet returns false and the loop tries
+     * again: a header that scrolled away is not a dismissed sheet.
+     */
+    private fun clickSheetText(text: String, verify: () -> Boolean, attempts: Int = 10): Boolean {
+        for (i in 1..attempts) {
+            if (verify()) return true
+            val node = device.wait(Until.findObject(By.text(text)), 1_500)
+            if (node != null) {
+                val bounds = runCatching { node.visibleBounds }.getOrNull()
+                if (bounds != null && bounds.top >= 0 && bounds.bottom <= device.displayHeight) {
+                    runCatching { node.click() }
+                    device.waitForIdle(1_000)
+                    if (verify()) return true
+                }
+            }
+            swipeUpQuarter()
+        }
+        return verify()
     }
 }
