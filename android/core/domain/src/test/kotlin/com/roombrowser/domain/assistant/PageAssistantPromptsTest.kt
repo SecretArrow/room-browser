@@ -29,8 +29,8 @@ class PageAssistantPromptsTest {
 
     @Test
     fun `long text keeps head and tail with the elision mark`() {
-        val head = "HEAD ".repeat(300).trim()          // 1499 chars
-        val tail = "TAIL ".repeat(300).trim()          // 1499 chars
+        val head = "HEAD ".repeat(300).trim() // 1499 chars
+        val tail = "TAIL ".repeat(300).trim() // 1499 chars
         val raw = head + "\n" + "MIDDLE ".repeat(3000) + "\n" + tail
         val out = PageAssistantPrompts.pageTextForPrompt(raw, maxChars = 1200)
         assertThat(out.length).isAtMost(1200)
