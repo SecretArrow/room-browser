@@ -48,12 +48,17 @@ object PageAssistantPrompts {
      */
     fun pageTextForPrompt(raw: String?, maxChars: Int = MAX_PROMPT_CHARS): String {
         if (raw.isNullOrBlank()) return ""
+        // Collapse per line (innerText carries the DOM's blank runs), drop
+        // the lines that end up empty, and rejoin: a whitespace-only line
+        // killed by the per-line trim must not leave interior blank lines
+        // behind — the JVM test caught exactly that.
         val collapsed = raw
             .replace("\r\n", "\n")
             .replace(Regex("[ \\t\\x0B\\f]+"), " ")
-            .replace(Regex("\\n{2,}"), "\n")
-            .replace(Regex("(?m)^\\s+$"), "")
-            .trim()
+            .split('\n')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .joinToString("\n")
         if (collapsed.isEmpty()) return ""
         if (collapsed.length <= maxChars) return collapsed
         val keep = maxChars - ELISION_MARK.length - 2
