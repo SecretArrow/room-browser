@@ -1,7 +1,9 @@
 package com.roombrowser.browser
 
 import android.app.Application
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.roombrowser.RoomBrowserApp
 import com.roombrowser.agent.AgentGateways
 import com.roombrowser.agent.KeyStoreCrypto
