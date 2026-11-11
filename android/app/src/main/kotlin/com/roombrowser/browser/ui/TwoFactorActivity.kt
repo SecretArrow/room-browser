@@ -252,14 +252,21 @@ private fun TwoFactorRoot(
     var pinStatus by remember { mutableStateOf<WalletLockStatus>(WalletLockStatus.Ready) }
     var pinError by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(biometricsAvailable, profileId) {
+        // Resolve the PIN policy FIRST, before any early return. When the
+        // store is ALREADY unlocked — TotpIsolationTest unlocked it earlier
+        // in this process, or the wallet screen did — the old code returned
+        // before the read, leaving pinEnabled null, and the gate then chose
+        // PIN (fail closed) while unlocked=true skipped the pane. The screen
+        // rendered bare: the UNPROTECTED banner — the whole contract on a
+        // device with no screen lock — never appeared.
+        pinEnabled = runCatching { lockManager.policy(profileId.value) }.getOrNull()?.pinEnabled
+        pinStatus = runCatching { lockManager.status(profileId.value) }
+            .getOrDefault(WalletLockStatus.Ready)
         if (repo.isUnlocked.value) return@LaunchedEffect
         if (biometricsAvailable) {
             onUnlockRequest()
             return@LaunchedEffect
         }
-        pinEnabled = runCatching { lockManager.policy(profileId.value) }.getOrNull()?.pinEnabled
-        pinStatus = runCatching { lockManager.status(profileId.value) }
-            .getOrDefault(WalletLockStatus.Ready)
         if (pinEnabled == false) repo.unlock()
     }
 

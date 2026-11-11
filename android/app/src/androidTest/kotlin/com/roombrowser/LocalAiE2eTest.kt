@@ -42,10 +42,10 @@ import java.util.concurrent.atomic.AtomicInteger
  *   same fake server):
  *     -> GET /library?sort=newest → structurally faithful HTML slice
  *     -> preset-covered families (llama3.2) and embedding-only families
- *        (bge-m3) stay hidden; the new phone-suitable family (qwen3.5,
+ *        (bge-m3) stay hidden; the new phone-suitable family (lfm2,
  *        badges 0.8b/2b/27b) is discovered
  *     -> tapping its 0.8b Install button resolves the tag on the fake REGISTRY
- *        (GET /v2/library/qwen3.5/manifests/0.8b → the model layer) and
+ *        (GET /v2/library/lfm2/manifests/1.2b → the model layer) and
  *        downloads that blob (GET /v2/…/blobs/…) onto the ON-DEVICE engine,
  *        so the card flips to the Installed chip
  *
@@ -91,7 +91,7 @@ class LocalAiE2eTest {
      * Structurally faithful slice of ollama.com/library (see OllamaDtosTest
      * for the full-fidelity parser tests). Three families on purpose:
      *  - llama3.2 — covered by the curated presets → hidden from discovery
-     *  - qwen3.5 — NEW phone-suitable family (0.8b/2b fit; 27b too big)
+     *  - lfm2 — NEW phone-suitable family (0.5b/1.2b/2.6b fit; 10b too big)
      *  - bge-m3  — embedding-only → filtered out of discovery
      */
     private val libraryHtml = """
@@ -112,17 +112,18 @@ class LocalAiE2eTest {
           </a>
         </li>
         <li  class="flex items-baseline border-b border-neutral-200 py-6">
-          <a href="/library/qwen3.5" class="group w-full space-y-5">
-            <div  title="qwen3.5" class="flex flex-col">
-              <p class="max-w-lg break-words text-neutral-800 text-md">Qwen 3.5 is a family of open-source multimodal models.</p>
+          <a href="/library/lfm2" class="group w-full space-y-5">
+            <div  title="lfm2" class="flex flex-col">
+              <p class="max-w-lg break-words text-neutral-800 text-md">LFM2 is a family of efficient on-device models.</p>
             </div>
             <div class="flex flex-col space-y-2">
               <div class="flex flex-wrap space-x-2">
                 <span  class="inline-flex items-center rounded-md bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-600 sm:text-[13px]">tools</span>
                 <span  class="inline-flex items-center rounded-md bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-600 sm:text-[13px]">thinking</span>
-                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">0.8b</span>
-                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">2b</span>
-                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">27b</span>
+                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">0.5b</span>
+                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">1.2b</span>
+                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">2.6b</span>
+                <span  class="inline-flex items-center rounded-md bg-[#ddf4ff] px-2 py-0.5 text-xs font-medium text-blue-600 sm:text-[13px]">10b</span>
               </div>
               <span><span class="hidden sm:flex">Updated&nbsp;</span><span >3 weeks ago</span></span>
             </div>
@@ -1123,7 +1124,7 @@ class LocalAiE2eTest {
             }
             if (fake.libraryHits.get() > 0) sawLibraryRequest = true
             // Proof tier 2: the discovered card (scrolls away from the button).
-            if (hasTextWithScroll("qwen3.5", attempts = 16)) {
+            if (hasTextWithScroll("lfm2", attempts = 16)) {
                 qwenFound = true
                 break
             }
@@ -1141,7 +1142,7 @@ class LocalAiE2eTest {
             sawLibraryRequest
         )
         assertTrue(
-            "Discovered family qwen3.5 must be listed (caption after tap: $lastCaption); " +
+            "Discovered family lfm2 must be listed (caption after tap: $lastCaption); " +
                 screenSummary(),
             qwenFound
         )
@@ -1159,7 +1160,7 @@ class LocalAiE2eTest {
         // honest proof is the Installed chip flipping — which only happens
         // once the bytes are on disk and the store has been re-listed.
         // VERIFICATION-DRIVEN like every other tap here: retry if it was lost.
-        val tag = "qwen3.5:0.8b"
+        val tag = "lfm2:1.2b"
         val installDesc = "localai_install_$tag"
         var installed = false
         // Whether the Install button was ever FOUND — the counter that
