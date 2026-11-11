@@ -13,7 +13,7 @@ enum class AskKind(val chipLabel: String) {
     KEY_POINTS("Key points"),
     EXPLAIN("Explain simply"),
     TRANSLATE("Translate"),
-    ASK("Ask");
+    ASK("Ask")
 }
 
 /** The page the assistant is grounded in, captured on the engine thread. */

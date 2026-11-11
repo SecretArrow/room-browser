@@ -254,11 +254,21 @@ class MacroE2eTest {
                 "visible now: ${visibleTexts()})",
             resetRow != null
         )
-        resetRow?.click()
+        // Click verified at every hop: a click during the list's fling
+        // settle lands nowhere (#726), so re-find, click, and re-check the
+        // dialog before giving up — and name the viewport when it fails.
+        var dialogUp = false
+        for (round in 1..3) {
+            device.findObject(By.text("Reset settings to default"))?.click()
+            device.waitForIdle(800)
+            if (device.wait(Until.hasObject(By.text("Reset settings to default?")), 3_000)) {
+                dialogUp = true
+                break
+            }
+        }
         assertTrue(
-            "The confirmation dialog must spell out what stays",
-            device.wait(Until.hasObject(By.text("Reset settings to default?")), 3_000) &&
-                device.hasObject(By.textContains("Cookies, sessions and logins stay signed in"))
+            "The confirmation dialog must spell out what stays; visible: ${visibleTexts()}",
+            dialogUp && device.hasObject(By.textContains("Cookies, sessions and logins stay signed in"))
         )
         device.findObject(By.text("Reset settings"))?.click()
         assertTrue(
@@ -284,41 +294,53 @@ class MacroE2eTest {
     }
 
     /**
-     * Types [text] into the field with [desc] and reads it back.
+     * Types [text] into the field with [desc] and reads it back EXACTLY.
      *
-     * Clears first — the search field is typed twice in this test, and a
-     * burst that appends to the previous round's text filters the list into
-     * a state the next step cannot see. SET_TEXT travels the accessibility
-     * layer and needs no IME focus; the shell burst is the fallback, and the
-     * read-back gate catches whichever path failed.
+     * Two traps this helper has already caught (#726's viewport dump): a text
+     * change RECOMPOSES the field, so SET_TEXT against the node found before
+     * the click is silently dropped; and a shell burst types at the CURSOR,
+     * so without a real clear it splices into the middle of the old value
+     * ("nothing-matcE2Ehes-this"). Both are caught by the exact read-back —
+     * never by a thrown exception.
      */
     private fun typeIntoField(desc: String, text: String) {
         val field = device.wait(Until.findObject(By.desc(desc)), 4_000)
         assertTrue("Field $desc must exist", field != null)
         field!!.click()
         device.waitForIdle(400)
-        runCatching { field.clear() }
-        device.waitForIdle(200)
-        runCatching { field.setText(text) }
-        // SET_TEXT first; the read-back below decides — if it never landed,
-        // the shell burst gets one round before the assert fails honestly.
-        if (!waitUntil(3_000) {
-                device.findObjects(By.clazz("android.widget.EditText"))
-                    .any { runCatching { it.text }.getOrNull()?.contains(text) == true }
+        for (round in 1..3) {
+            val fresh = device.findObject(By.desc(desc))
+            if (fresh != null) {
+                runCatching { fresh.setText(text) }
+                device.waitForIdle(300)
             }
-        ) {
-            device.executeShellCommand("input text ${shellSafe(text)}")
-            device.waitForIdle(600)
+            if (exactTextPresent(desc, text)) return
+            // SET_TEXT did not stick: clear for real, then the shell burst
+            // at a clean cursor.
+            device.findObject(By.desc(desc))?.let { runCatching { it.clear() } }
+            device.waitForIdle(300)
+            if (exactTextPresent(desc, "")) {
+                device.executeShellCommand("input text ${shellSafe(text)}")
+                device.waitForIdle(300)
+            } else {
+                device.executeShellCommand("input keyevent --longpress KEYCODE_MOVE_END")
+                repeat(40) { device.executeShellCommand("input keyevent KEYCODE_DEL") }
+                device.executeShellCommand("input text ${shellSafe(text)}")
+                device.waitForIdle(300)
+            }
+            if (exactTextPresent(desc, text)) return
         }
-        device.waitForIdle(300)
-        assertTrue(
-            "Field $desc must contain '$text'",
-            waitUntil(4_000) {
-                device.findObjects(By.clazz("android.widget.EditText"))
-                    .any { runCatching { it.text }.getOrNull()?.contains(text) == true }
-            }
-        )
+        assertTrue("Field $desc must contain exactly '$text'; visible: ${visibleTexts()}", false)
     }
+
+    /** The field's content equals [text] — the only honest read-back. */
+    private fun exactTextPresent(desc: String, text: String): Boolean =
+        waitUntil(2_500) {
+            device.findObjects(By.clazz("android.widget.EditText"))
+                .any { runCatching { it.text }.getOrNull() == text } ||
+                device.findObjects(By.desc(desc))
+                    .any { runCatching { it.text }.getOrNull() == text }
+        }
 
     private fun shellSafe(text: String): String =
         text.replace(" ", "%s").replace("'", "").replace(":", "%s").replace("/", "%s").replace("<", "%s").replace(">", "%s")
