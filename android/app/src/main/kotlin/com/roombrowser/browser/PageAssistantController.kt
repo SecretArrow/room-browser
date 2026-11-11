@@ -105,7 +105,7 @@ class PageAssistantController(application: Application, httpClient: OkHttpClient
         provider: AgentProviderEntity,
         gateway: com.roombrowser.domain.agent.AgentGateway
     ): String {
-        settings.defaultModel.takeIf { it.isNotBlank() }?.let { return it }
+        settings.defaultModel?.takeIf { it.isNotBlank() }?.let { return it }
         provider.defaultModel.takeIf { it.isNotBlank() }?.let { return it }
         return gateway.listModels().firstOrNull()
             ?: throw IllegalStateException("The provider lists no models to ask.")
