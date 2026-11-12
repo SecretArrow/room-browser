@@ -561,7 +561,10 @@ fun BookmarksScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                         }
                     }
                     listItems(items, key = { it.id }) { bookmark ->
+                        // Same placement spring as the tab grid: deletions
+                        // and reorders settle instead of teleporting.
                         LibraryListRow(
+                            modifier = Modifier.animateItem(),
                             icon = Icons.Filled.Star,
                             title = bookmark.title.ifBlank { bookmark.url },
                             url = bookmark.url,
@@ -600,6 +603,7 @@ fun HistoryScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             ) {
                 listItems(history, key = { it.id }) { entry ->
                     LibraryListRow(
+                        modifier = Modifier.animateItem(),
                         icon = Icons.Filled.History,
                         title = entry.title.ifBlank { entry.url },
                         url = entry.url,
@@ -633,10 +637,11 @@ private fun LibraryListRow(
     url: String,
     onClick: () -> Unit,
     onDelete: () -> Unit,
-    deleteContentDescription: String
+    deleteContentDescription: String,
+    modifier: Modifier = Modifier
 ) {
     val extras = LocalRoomExtras.current
-    RoomCard(Modifier.fillMaxWidth(), withGradient = false) {
+    RoomCard(modifier.fillMaxWidth(), withGradient = false) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -717,6 +722,7 @@ fun DownloadsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                     DownloadRow(
                         download = download,
                         speed = speeds[download.id],
+                        modifier = Modifier.animateItem(),
                         onPause = { viewModel.pauseDownload(download.id) },
                         onResume = { viewModel.resumeDownload(download.id) },
                         onCancel = { viewModel.cancelDownload(download.id) },
@@ -796,7 +802,8 @@ private fun DownloadRow(
     onShare: () -> Unit,
     onCopyLink: () -> Unit,
     onDelete: () -> Unit,
-    onDetails: () -> Unit
+    onDetails: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val extras = LocalRoomExtras.current
     val status = download.status
@@ -804,7 +811,7 @@ private fun DownloadRow(
     val total = download.totalBytes
     var menuOpen by remember { mutableStateOf(false) }
 
-    RoomCard(Modifier.fillMaxWidth(), withGradient = false) {
+    RoomCard(modifier.fillMaxWidth(), withGradient = false) {
         Column(
             Modifier
                 .fillMaxWidth()

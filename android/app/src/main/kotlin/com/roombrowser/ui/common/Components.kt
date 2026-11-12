@@ -23,6 +23,7 @@ import androidx.compose.material.icons.automirrored.filled.NavigateBefore
 import androidx.compose.material.icons.automirrored.filled.NavigateNext
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.BottomSheetDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -153,10 +154,14 @@ fun SettingSwitchRow(
     onCheckedChange: (Boolean) -> Unit
 ) {
     val extras = LocalRoomExtras.current
+    val haptics = rememberRoomHaptics()
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) }
+            .clickable {
+                haptics.tick()
+                onCheckedChange(!checked)
+            }
             .padding(horizontal = 16.dp, vertical = 12.dp)
             .semantics { contentDescription = "$title switch, ${if (checked) "on" else "off"}" },
         verticalAlignment = Alignment.CenterVertically
@@ -175,7 +180,12 @@ fun SettingSwitchRow(
         Spacer(Modifier.width(12.dp))
         Switch(
             checked = checked,
-            onCheckedChange = onCheckedChange,
+            // Toggling from the switch itself (not the row) still gets the
+            // same tick — the two affordances fire mutually exclusively.
+            onCheckedChange = {
+                haptics.tick()
+                onCheckedChange(it)
+            },
             colors = SwitchDefaults.colors(
                 checkedTrackColor = extras.primary,
                 checkedThumbColor = extras.onButton,
@@ -196,10 +206,14 @@ fun SettingActionRow(
     onClick: () -> Unit
 ) {
     val extras = LocalRoomExtras.current
+    val haptics = rememberRoomHaptics()
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable {
+                haptics.tick()
+                onClick()
+            }
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -405,10 +419,22 @@ fun LoadingBar(visible: Boolean, progress: Int) {
     }
 }
 
+/**
+ * Indeterminate spinner with one shared look. Only ever placed inside
+ * surfaces that are already ephemeral (a sheet's thinking row): a spinner
+ * on permanent chrome would never let UiAutomator's waitForIdle settle.
+ */
+@Composable
+fun RoomLoadingSpinner(size: androidx.compose.ui.unit.Dp = 16.dp) {
+    CircularProgressIndicator(
+        strokeWidth = if (size <= 20.dp) 2.dp else 3.dp,
+        modifier = Modifier.size(size)
+    )
+}
+
 /** Empty-state message. */
 @Composable
-fun EmptyState(title: String, subtitle: String? = null) {
-    val extras = LocalRoomExtras.current
+fun EmptyState(title: String, subtitle: String? = null) {    val extras = LocalRoomExtras.current
     Column(
         modifier = Modifier
             .fillMaxWidth()

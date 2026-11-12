@@ -493,11 +493,15 @@ private fun SheetAction(
     onClick: () -> Unit
 ) {
     val extras = LocalRoomExtras.current
+    val haptics = rememberRoomHaptics()
     Row(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape((extras.radius * 0.7f).dp))
-            .clickable(enabled = enabled, onClick = onClick)
+            .clickable(enabled = enabled) {
+                haptics.tick()
+                onClick()
+            }
             // Addressable + announced as one action (TalkBack reads the
             // label instead of raw child texts; UI tests target the row
             // itself, which carries the click action).
@@ -818,6 +822,7 @@ fun FindInPageBar(
     onClose: () -> Unit
 ) {
     val extras = LocalRoomExtras.current
+    val haptics = rememberRoomHaptics()
     var query by remember { mutableStateOf("") }
     Column(
         Modifier
@@ -844,8 +849,22 @@ fun FindInPageBar(
                 shape = RoundedCornerShape((extras.radius * 0.75f).dp),
                 modifier = Modifier.weight(1f)
             )
-            IconButton(onClick = { onPrevious(query) }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Previous match", tint = extras.icon) }
-            IconButton(onClick = { onNext(query) }) { Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Next match", tint = extras.icon) }
+            // Empty query has nothing to navigate between: the arrows stay
+            // enabled-looking-but-dead otherwise, which reads as broken.
+            IconButton(
+                onClick = {
+                    haptics.tick()
+                    onPrevious(query)
+                },
+                enabled = query.isNotBlank()
+            ) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Previous match", tint = extras.icon) }
+            IconButton(
+                onClick = {
+                    haptics.tick()
+                    onNext(query)
+                },
+                enabled = query.isNotBlank()
+            ) { Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Next match", tint = extras.icon) }
             IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close find bar", tint = extras.icon) }
         }
     }
