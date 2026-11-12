@@ -234,6 +234,20 @@ Layar probe identitas kini menilai request yang benar-benar dikirim engine (dise
 - fix(e2e): type into FRESH field nodes with an exact read-back; verify the reset-dialog click
 - fix(assistant): collapse per line and drop empty lines — the JVM test caught interior blanks surviving the old regex chain
 
+## v1.0.211 — 11 November 2026
+
+- docs(changelog): regenerate through v1.0.210 [skip ci]
+
+## v1.0.212 — 12 November 2026
+
+- polish(ui): assistant sheet crossfades its states, retries and copies answers; haptic ticks app-wide; 48dp ask targets; library lists animate
+- style(ui): unmerge the EmptyState signature line the previous edit collapsed
+
+## v1.0.213 — 12 November 2026
+
+- fix(macro): the editor survives the pick handoff in its own task and the browser returns it via a one-shot return intent
+- style(macro): the deprecation suppression gets its own line
+
 ## Catatan: tag di luar garis sejarah edisi ini
 
 97 tag (v1.0.85 s.d. v1.0.181)
