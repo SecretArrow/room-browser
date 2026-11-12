@@ -434,7 +434,8 @@ fun RoomLoadingSpinner(size: androidx.compose.ui.unit.Dp = 16.dp) {
 
 /** Empty-state message. */
 @Composable
-fun EmptyState(title: String, subtitle: String? = null) {    val extras = LocalRoomExtras.current
+fun EmptyState(title: String, subtitle: String? = null) {
+    val extras = LocalRoomExtras.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
