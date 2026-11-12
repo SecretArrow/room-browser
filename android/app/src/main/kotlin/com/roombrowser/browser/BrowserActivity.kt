@@ -309,7 +309,8 @@ class BrowserActivity : FragmentActivity() {
         val returnIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra(EXTRA_PICK_RETURN, Intent::class.java)
         } else {
-            @Suppress("DEPRECATION") intent.getParcelableExtra(EXTRA_PICK_RETURN)
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(EXTRA_PICK_RETURN)
         }
         browserViewModel?.beginMacroPick(kind, token)
         if (returnIntent != null) {
