@@ -153,9 +153,13 @@ class PageAssistantE2eTest {
             device.hasObject(By.textContains("No AI provider is configured yet")) ||
                 device.hasObject(By.text("Summarize"))
         }
+        // The sheet crossfades its states — under full-suite load the first
+        // verify can sample mid-fade. The click already happened; poll the
+        // state for a grace period before judging it failed.
         assertTrue(
             "The assistant sheet must open from the 'Ask this page' row",
-            clickSheetText("Ask this page", verify = assistantState)
+            clickSheetText("Ask this page", verify = assistantState) ||
+                waitUntil(10_000) { assistantState() }
         )
 
         // Either reality is honest: no provider (the message + setup doors)
