@@ -100,6 +100,16 @@ class MacroEditorActivity : ComponentActivity() {
         val profileId = ProfileId(profileIdValue)
         val macroId = intent.getStringExtra(EXTRA_MACRO_ID)
         val seedJson = intent.getStringExtra(EXTRA_SEED_JSON)
+        // A pick answer can arrive after this editor was cold-reopened by
+        // the browser's return launch (engine killed the editor task) — the
+        // return intent carries exactly what the handoff armed.
+        val pendingIndex = intent.getIntExtra(EXTRA_PENDING_INDEX, -1)
+        val pendingToken = intent.getStringExtra(EXTRA_PENDING_TOKEN)
+        val initialPending = if (pendingIndex >= 0 && !pendingToken.isNullOrBlank()) {
+            PendingPick(index = pendingIndex, token = pendingToken)
+        } else {
+            null
+        }
         val graph = (application as RoomBrowserApp).graph
 
         setContent {
@@ -115,6 +125,7 @@ class MacroEditorActivity : ComponentActivity() {
                     macroId = macroId,
                     seed = seedJson?.let { MacroCodec.decode(it) },
                     repo = graph.browserRepo,
+                    initialPending = initialPending,
                     onSaved = { message ->
                         setResult(
                             RESULT_OK,
@@ -133,6 +144,8 @@ class MacroEditorActivity : ComponentActivity() {
         const val EXTRA_MACRO_ID = "macro_id"
         const val EXTRA_RESULT_MESSAGE = "result_message"
         const val EXTRA_SEED_JSON = "seed_json"
+        const val EXTRA_PENDING_INDEX = "pending_pick_index"
+        const val EXTRA_PENDING_TOKEN = "pending_pick_token"
 
         /** Edit an existing macro (id != null) or create one (id == null). */
         fun launch(context: Context, profileId: String, macroId: String?) {
@@ -166,6 +179,7 @@ private fun MacroEditorRoot(
     macroId: String?,
     seed: MacroDefinition?,
     repo: BrowserRepository,
+    initialPending: PendingPick?,
     onSaved: (String) -> Unit,
     onCancel: () -> Unit
 ) {
@@ -209,7 +223,9 @@ private fun MacroEditorRoot(
     // processes. The editor generates the token, sends the browser to the
     // front in pick mode, and consumes the answer file when it next resumes.
     val context = LocalContext.current
-    var pendingPick by remember { mutableStateOf<PendingPick?>(null) }
+    // Armed either by the in-app handoff (onPick below) or, on a cold
+    // re-open, by the browser's return intent (initialPending).
+    var pendingPick by remember { mutableStateOf(initialPending) }
 
     fun consumePickResult() {
         val pending = pendingPick ?: return
@@ -486,7 +502,18 @@ private fun MacroEditorRoot(
                         context,
                         profileId.value,
                         phase,
-                        token
+                        token,
+                        // The browser answers by re-launching THIS editor:
+                        // the macro screens live in their own task (never
+                        // destroyed by the engine's singleTask routing), so
+                        // the return launch resumes the live instance with
+                        // its unsaved steps and this armed pick intact. The
+                        // extras cover the cold re-open instead.
+                        Intent(context, MacroEditorActivity::class.java)
+                            .putExtra(MacroEditorActivity.EXTRA_PROFILE_ID, profileId.value)
+                            .putExtra(MacroEditorActivity.EXTRA_MACRO_ID, macroId)
+                            .putExtra(MacroEditorActivity.EXTRA_PENDING_INDEX, index)
+                            .putExtra(MacroEditorActivity.EXTRA_PENDING_TOKEN, token)
                     )
                 },
                 onSave = { updated ->

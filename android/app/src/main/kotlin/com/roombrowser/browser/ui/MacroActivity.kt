@@ -231,6 +231,13 @@ class MacroActivity : ComponentActivity() {
                 Intent(context, MacroActivity::class.java)
                     .putExtra(EXTRA_PROFILE_ID, profileId)
                     .putExtra(EXTRA_PROFILE_NAME, profileName)
+                    // The macro library lives in its OWN task: the pick
+                    // handoff re-routes the engine's singleTask activity,
+                    // and that routing clears everything ABOVE it in ITS
+                    // task — which used to include this library and the
+                    // editor sitting on top of it. A separate task keeps
+                    // the editing session alive behind the pick.
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             )
         }
     }

@@ -388,6 +388,7 @@
         <activity
             android:name=".browser.ui.MacroActivity"
             android:exported="false"
+            android:taskAffinity="com.roombrowser.macros"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode"
             android:windowSoftInputMode="adjustResize" />
 
@@ -401,6 +402,7 @@
         <activity
             android:name=".browser.ui.MacroEditorActivity"
             android:exported="false"
+            android:taskAffinity="com.roombrowser.macros"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode"
             android:windowSoftInputMode="adjustResize" />
 

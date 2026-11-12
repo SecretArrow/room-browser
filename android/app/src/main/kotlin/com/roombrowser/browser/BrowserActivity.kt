@@ -3,6 +3,7 @@ package com.roombrowser.browser
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
@@ -305,7 +306,29 @@ class BrowserActivity : FragmentActivity() {
     private fun readMacroPickRequest(intent: Intent) {
         val kind = intent.getStringExtra(EXTRA_MACRO_PICK) ?: return
         val token = intent.getStringExtra(EXTRA_PICK_TOKEN) ?: return
+        val returnIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(EXTRA_PICK_RETURN, Intent::class.java)
+        } else {
+            @Suppress("DEPRECATION") intent.getParcelableExtra(EXTRA_PICK_RETURN)
+        }
         browserViewModel?.beginMacroPick(kind, token)
+        if (returnIntent != null) {
+            // The editor's round trip: the moment the answer file lands,
+            // bring the editor task back to the front (NEW_TASK routes into
+            // the existing macro task; SINGLE_TOP resumes the live editor
+            // instead of stacking a second one, so its unsaved steps and
+            // the pending pick survive). One-shot: a later pick the
+            // recorder started on its own must not re-open the editor.
+            browserViewModel?.onMacroPickResolved = {
+                browserViewModel?.onMacroPickResolved = null
+                runCatching {
+                    startActivity(
+                        Intent(returnIntent)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    )
+                }
+            }
+        }
     }
 
     override fun onResume() {
@@ -617,6 +640,7 @@ class BrowserActivity : FragmentActivity() {
         const val EXTRA_INITIAL_URL = "com.roombrowser.extra.INITIAL_URL"
         const val EXTRA_MACRO_PICK = "com.roombrowser.extra.MACRO_PICK"
         const val EXTRA_PICK_TOKEN = "com.roombrowser.extra.PICK_TOKEN"
+        const val EXTRA_PICK_RETURN = "com.roombrowser.extra.PICK_RETURN"
 
         /**
          * Asks the running browser for a pick: the engine comes to the front
@@ -626,12 +650,19 @@ class BrowserActivity : FragmentActivity() {
          * profile id rides along so a COLD start (engine was dead) binds the
          * same profile instead of landing on the picker.
          */
-        fun requestPick(context: Context, profileId: String, kind: String, token: String) {
+        fun requestPick(
+            context: Context,
+            profileId: String,
+            kind: String,
+            token: String,
+            returnIntent: Intent? = null
+        ) {
             context.startActivity(
                 Intent(context, BrowserActivity::class.java)
                     .putExtra(EXTRA_PROFILE_ID, profileId)
                     .putExtra(EXTRA_MACRO_PICK, kind)
                     .putExtra(EXTRA_PICK_TOKEN, token)
+                    .putExtra(EXTRA_PICK_RETURN, returnIntent)
             )
         }
     }
