@@ -331,8 +331,8 @@ fun PageActionsSheet(
             // Horizontal circle row — Brave-style quick actions. Back and
             // Forward (web history) live here now they left the bottom bar;
             // Reload mirrors the bottom-bar slot; Share mirrors the list
-            // below. Each circle is a 48dp tinted chip with the icon + a
-            // 11sp label beneath, addressable as one action.
+            // below. Icon-only 48dp chips — no text labels (they clipped on
+            // narrow screens), the label lives in the semantics desc.
             CircleActionRow(
                 viewModel = viewModel,
                 context = context,
@@ -1034,10 +1034,12 @@ fun ReaderScreen(
  * Brave-style horizontal circle row at the top of [PageActionsSheet].
  *
  * Four quick actions — Back, Forward, Reload, Share — sit as 48dp tinted
- * chips with an 11sp label beneath. Back/Forward moved here from the
- * bottom bar (replaced by profile-switch + reload/stop there); Reload and
- * Share mirror the bottom-bar slot and the list row below. Each chip is
- * addressable as one action so TalkBack and UI tests target it directly.
+ * icon-only chips (text labels clipped on narrow screens, so they went;
+ * each chip keeps its label as the semantics contentDescription).
+ * Back/Forward moved here from the bottom bar (replaced by profile-switch
+ * + reload/stop there); Reload and Share mirror the bottom-bar slot and
+ * the list row below. Each chip is addressable as one action so TalkBack
+ * and UI tests target it directly.
  */
 @Composable
 private fun CircleActionRow(
@@ -1105,36 +1107,25 @@ private fun CircleAction(
     onClick: () -> Unit
 ) {
     val extras = LocalRoomExtras.current
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
+    // Icon-only chip: the visible label clipped on narrow screens, so the
+    // name lives solely in the semantics desc (TalkBack + UI tests).
+    Box(
+        Modifier
+            .size(48.dp)
             .clip(CircleShape)
-            .clickable(enabled = enabled) { onClick() }
-            .semantics { contentDescription = label }
-            .padding(horizontal = 4.dp, vertical = 6.dp)
-    ) {
-        Box(
-            Modifier
-                .size(48.dp)
-                .clip(CircleShape)
-                .background(
-                    if (enabled) extras.primary.copy(alpha = 0.12f)
-                    else extras.primary.copy(alpha = 0.06f)
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                icon,
-                contentDescription = null,
-                tint = if (enabled) extras.primary else extras.textSecondary,
-                modifier = Modifier.size(22.dp)
+            .background(
+                if (enabled) extras.primary.copy(alpha = 0.12f)
+                else extras.primary.copy(alpha = 0.06f)
             )
-        }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            color = if (enabled) extras.textPrimary else extras.textSecondary
+            .clickable(enabled = enabled) { onClick() }
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = if (enabled) extras.primary else extras.textSecondary,
+            modifier = Modifier.size(22.dp)
         )
     }
 }
