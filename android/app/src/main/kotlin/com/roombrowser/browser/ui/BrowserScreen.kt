@@ -391,6 +391,7 @@ fun BrowserScreen(
                     ),
                     viewModel = viewModel,
                     onOpenTabs = { navigateTo(BrowserRoute.Tabs) },
+                    onOpenAgent = { openAgent() },
                     onShowPageActions = { showPageActions = true },
                     onShowQuickSwitcher = { showQuickSwitcher = true }
                 )

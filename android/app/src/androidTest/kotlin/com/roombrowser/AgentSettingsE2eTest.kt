@@ -1241,17 +1241,19 @@ class AgentSettingsE2eTest {
             !hasDesc("AI Agent", 4_000)
         )
 
-        // ---- 8b. The agent's entry with the pill off ----------------------
-        // With the pill off there is no floating button, and the bottom bar
-        // no longer hosts the agent (reload owns that slot unconditionally
-        // now). The agent is reached through the Page Actions sheet's
-        // "AI Agents" row instead — one extra tap, but a predictable bar
-        // beats a slot that swaps identity with a setting.
+        // ---- 8b. The agent's seat in the bottom bar ------------------------
+        // The agent button between Reload and Tabs is UNCONDITIONAL now: the
+        // pill setting governs only the floating pill, never this seat. With
+        // the pill off this is the one-tap way in; assert the seat exists
+        // and opens the panel rather than assuming it.
         assertTrue(
-            "With the pill off, the agent must open from Page Actions; UI:\n" + uiTree(),
-            openSheetEntry("AI Agents") {
-                hasDesc("agent_model", 10_000) || hasText("Room Agent", 10_000)
-            }
+            "With the pill off, the bottom bar must still offer the agent; UI:\n" + uiTree(),
+            hasDesc("Open Room Agent", 8_000)
+        )
+        assertTrue(
+            "That seat must open the agent panel",
+            clickDesc("Open Room Agent", 6_000) &&
+                (hasDesc("agent_model", 10_000) || hasText("Room Agent", 10_000))
         )
         device.pressBack()
         device.waitForIdle(1_000)

@@ -118,26 +118,28 @@ import kotlinx.coroutines.launch
  * tab-count badge) + the redesigned action sheets. All colors follow the
  * per-profile theme.
  *
- * Modern navigation bar: Switch profile / Reload / Tabs / Wallet /
- * More — 5 × 48dp touch targets. Web-history Back/Forward moved UP
- * into the Page Actions sheet as a horizontal circle row (Brave-style),
- * keeping the bar lean while the back/forward affordance stays one tap
- * away.
+ * Modern navigation bar: Switch profile / Reload / AI Agent / Tabs /
+ * Wallet / More — 6 × 48dp touch targets. Web-history Back/Forward
+ * moved UP into the Page Actions sheet as a horizontal circle row
+ * (Brave-style), keeping the bar lean while the back/forward affordance
+ * stays one tap away.
  *
  * The reload slot doubles as a STOP control while a page is loading
  * (the standard browser pattern), and greys out on the start page
  * where there is nothing to reload. The slot's previous home beside
  * the omnibox was removed so reload has ONE home, not two.
  *
- * The agent is no longer a bottom-bar slot: its home is the floating
- * pill, and pill-off falls back to the Page Actions sheet's "AI
- * Agents" row. A navigation slot that changes identity with a setting
- * was worse than one that is predictable, so the swap is gone.
+ * The agent slot is UNCONDITIONAL: the pill setting only governs the
+ * floating pill, never this button. A slot that swaps identity with a
+ * setting was worse than one that is predictable — the agent now has a
+ * permanent seat between Reload and Tabs, and the pill (when enabled)
+ * is a second, floating way in.
  */
 @Composable
 fun BrowserBottomBar(
     viewModel: BrowserViewModel,
     onOpenTabs: () -> Unit,
+    onOpenAgent: () -> Unit,
     onShowPageActions: () -> Unit,
     onShowQuickSwitcher: () -> Unit,
     modifier: Modifier = Modifier
@@ -206,6 +208,22 @@ fun BrowserBottomBar(
                         tint = if (page.isHomepage) extras.icon.copy(alpha = 0.35f) else extras.icon
                     )
                 }
+            }
+            // The agent's permanent seat: pill on or off, this button is
+            // always here — one predictable tap to the panel straight from
+            // the bar, independent of the floating pill's setting.
+            IconButton(
+                onClick = {
+                    haptics.tick()
+                    onOpenAgent()
+                },
+                modifier = Modifier.semantics { contentDescription = "Open Room Agent" }
+            ) {
+                Icon(
+                    Icons.Filled.AutoAwesome,
+                    contentDescription = null,
+                    tint = extras.icon
+                )
             }
             // Tabs with live count badge
             Box {
