@@ -119,29 +119,25 @@ import kotlinx.coroutines.launch
  * per-profile theme.
  *
  * Modern navigation bar: Switch profile / Reload / Tabs / Wallet /
- * More — 5 × 48dp touch targets (240dp) + 2×10dp outer + 4×6dp inner
- * padding. Web-history Back/Forward moved UP into the Page Actions
- * sheet as a horizontal circle row (Brave-style), keeping the bar
- * lean while the back/forward affordance stays one tap away.
+ * More — 5 × 48dp touch targets. Web-history Back/Forward moved UP
+ * into the Page Actions sheet as a horizontal circle row (Brave-style),
+ * keeping the bar lean while the back/forward affordance stays one tap
+ * away.
  *
  * The reload slot doubles as a STOP control while a page is loading
  * (the standard browser pattern), and greys out on the start page
  * where there is nothing to reload. The slot's previous home beside
  * the omnibox was removed so reload has ONE home, not two.
  *
- * IT IS ALSO THE AGENT'S SLOT WHEN THE PILL IS OFF. With "Show AI Agent
- * button" switched off there is no floating pill, and the agent would
- * have no entry point inside the page at all — so this one slot becomes
- * the way in, carrying the pill's own icon. The swap follows the
- * setting alone rather than the pill's live visibility (`showAgentButton ||
- * running`), because a slot that changes identity mid-task is worse than
- * one that is predictable.
+ * The agent is no longer a bottom-bar slot: its home is the floating
+ * pill, and pill-off falls back to the Page Actions sheet's "AI
+ * Agents" row. A navigation slot that changes identity with a setting
+ * was worse than one that is predictable, so the swap is gone.
  */
 @Composable
 fun BrowserBottomBar(
     viewModel: BrowserViewModel,
     onOpenTabs: () -> Unit,
-    onOpenAgent: () -> Unit,
     onShowPageActions: () -> Unit,
     onShowQuickSwitcher: () -> Unit,
     modifier: Modifier = Modifier
@@ -179,50 +175,35 @@ fun BrowserBottomBar(
                 )
             }
             // Reload — becomes Stop while a page is loading; disabled on
-            // the start page (nothing to reload there). It yields the slot to
-            // the agent whenever the floating pill is switched off (see the
-            // header comment): one entry point has to exist.
-            if (viewModel.agent.settings.showAgentButton) {
-                IconButton(
-                    onClick = {
-                        haptics.tick()
-                        if (page.loading) viewModel.stopLoading() else viewModel.reload()
-                    },
-                    enabled = !page.isHomepage,
-                    modifier = Modifier.semantics {
-                        contentDescription = if (page.loading) "Stop loading" else "Reload page"
-                    }
-                ) {
-                    // Crossfade between Stop and Reload instead of a hard glyph
-                    // swap. Finite 160ms both ways, so UiAutomator's
-                    // waitForIdle still settles; the descs stay on the button.
-                    AnimatedContent(
-                        targetState = page.loading,
-                        transitionSpec = {
-                            fadeIn(tween(RoomMotion.FADE_MS)) togetherWith
-                                fadeOut(tween(RoomMotion.FADE_MS))
-                        },
-                        label = "refreshStop"
-                    ) { loading ->
-                        Icon(
-                            if (loading) Icons.Filled.Close else Icons.Filled.Refresh,
-                            contentDescription = null,
-                            tint = if (page.isHomepage) extras.icon.copy(alpha = 0.35f) else extras.icon
-                        )
-                    }
+            // the start page (nothing to reload there). The slot is always
+            // reload/stop now the agent left the bar (the pill is the
+            // agent's home; pill off falls back to the Page Actions sheet's
+            // "AI Agents" row, not to stealing a navigation slot).
+            IconButton(
+                onClick = {
+                    haptics.tick()
+                    if (page.loading) viewModel.stopLoading() else viewModel.reload()
+                },
+                enabled = !page.isHomepage,
+                modifier = Modifier.semantics {
+                    contentDescription = if (page.loading) "Stop loading" else "Reload page"
                 }
-            } else {
-                IconButton(
-                    onClick = {
-                        haptics.tick()
-                        onOpenAgent()
+            ) {
+                // Crossfade between Stop and Reload instead of a hard glyph
+                // swap. Finite 160ms both ways, so UiAutomator's
+                // waitForIdle still settles; the descs stay on the button.
+                AnimatedContent(
+                    targetState = page.loading,
+                    transitionSpec = {
+                        fadeIn(tween(RoomMotion.FADE_MS)) togetherWith
+                            fadeOut(tween(RoomMotion.FADE_MS))
                     },
-                    modifier = Modifier.semantics { contentDescription = "Open Room Agent" }
-                ) {
+                    label = "refreshStop"
+                ) { loading ->
                     Icon(
-                        Icons.Filled.AutoAwesome,
+                        if (loading) Icons.Filled.Close else Icons.Filled.Refresh,
                         contentDescription = null,
-                        tint = extras.icon
+                        tint = if (page.isHomepage) extras.icon.copy(alpha = 0.35f) else extras.icon
                     )
                 }
             }
