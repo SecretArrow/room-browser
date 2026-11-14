@@ -258,22 +258,10 @@ fun BrowserContent(
                 }
             }
             Spacer(Modifier.width(4.dp))
-            // Reload / Stop — same dual role as the bottom-bar refresh
-            // slot: Stop while loading, Reload otherwise; nothing to do on
-            // the start page so it greys out there.
-            IconButton(
-                onClick = { if (page.loading) viewModel.stopLoading() else viewModel.reload() },
-                enabled = !page.isHomepage,
-                modifier = Modifier.semantics {
-                    contentDescription = if (page.loading) "Stop loading" else "Reload"
-                }
-            ) {
-                Icon(
-                    if (page.loading) Icons.Filled.Close else Icons.Filled.Refresh,
-                    contentDescription = null,
-                    tint = if (page.isHomepage) extras.icon.copy(alpha = 0.35f) else extras.icon
-                )
-            }
+            // Reload/Stop left the omnibox: it has ONE home now (the bottom
+            // bar's second slot, and the Page Actions circle row). Removing
+            // the duplicate here reclaims width for the address text and
+            // removes a second identical target that confused TalkBack.
             AnimatedVisibility(visible = !page.isHomepage) {
                 IconButton(
                     onClick = { viewModel.toggleBookmark() },

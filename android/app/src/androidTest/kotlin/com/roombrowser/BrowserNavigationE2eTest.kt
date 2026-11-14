@@ -29,9 +29,9 @@ import java.util.concurrent.atomic.AtomicInteger
  *   BrowserActivity (':browser' process), cold-started with EXTRA_INITIAL_URL
  *     -> http://localhost:PORT/page1 (local MockWebServer, cleartext allowed)
  *     -> click the in-page link -> /page2 (real WebView navigation)
- *     -> bottom-bar "Go back" (desc) -> page ONE is visible again
- *     -> bottom-bar "Go forward" (desc) -> page TWO is visible again
- *     -> omnibox "Reload" (desc) -> server hit counter for /page2 rises
+ *     -> Page Actions sheet circle row "Back" (desc) -> page ONE is visible again
+ *     -> Page Actions sheet circle row "Forward" (desc) -> page TWO is visible again
+ *     -> bottom-bar "Reload page" (desc) -> server hit counter for /page2 rises
  *     -> SYSTEM Back on a page with no back history left:
  *        "Exit Room Browser?" confirmation appears (app does NOT leave)
  *        -> "Cancel" -> still on page TWO, dialog gone
@@ -269,10 +269,11 @@ class BrowserNavigationE2eTest {
                             "'ROOM-E2E-PAGE-ONE'" to By.text("ROOM-E2E-PAGE-ONE"),
                             "'ROOM-E2E-PAGE-TWO'" to By.text("ROOM-E2E-PAGE-TWO"),
                             "'Goto page 2' link" to By.text("Goto page 2"),
-                            "'Go back' button" to By.desc("Go back"),
+                            "'Go back' button" to By.desc("Back"),
                             "'Wallet' button" to By.desc("Wallet"),
-                            "'Go forward' button" to By.desc("Go forward"),
-                            "'Reload' button (omnibox row)" to By.desc("Reload"),
+                            "'Go forward' button" to By.desc("Forward"),
+                            "'Reload page' button (bottom bar)" to By.desc("Reload page"),
+                            "'Switch profile' button" to By.desc("Switch profile"),
                             "'Open Room Agent' button" to By.desc("Open Room Agent"),
                             "'Exit Room Browser?' dialog" to By.text("Exit Room Browser?"),
                             "'Back to start page' action" to By.text("Back to start page"),
@@ -541,20 +542,34 @@ class BrowserNavigationE2eTest {
             hasText("ROOM-E2E-PAGE-TWO", 15_000)
         )
 
-        // ---- 3. Bottom-bar Back: TWO -> ONE (the old always-grey bug) -----
+        // ---- 3. Back: TWO -> ONE (the old always-grey bug) -----------------
+        // Back/Forward left the bottom bar (replaced by profile-switch and
+        // reload/stop) and now live as the horizontal circle row at the top
+        // of the Page Actions sheet. The circle chips carry their label as
+        // contentDescription.
         assertTrue(
-            "Bottom-bar 'Go back' must be clickable\n${uiTree()}",
-            clickDesc("Go back", 10_000)
+            "Page Actions sheet must open\n${uiTree()}",
+            clickDesc("Page actions and settings", 10_000) &&
+                device.wait(Until.hasObject(By.text("Page Actions")), 8_000)
+        )
+        assertTrue(
+            "Page Actions 'Back' circle must be clickable\n${uiTree()}",
+            clickDesc("Back", 10_000)
         )
         assertTrue(
             "Back must return to page ONE\n${uiTree()}",
             hasText("ROOM-E2E-PAGE-ONE", 20_000)
         )
 
-        // ---- 4. Bottom-bar Forward: ONE -> TWO ----------------------------
+        // ---- 4. Forward: ONE -> TWO ---------------------------------------
         assertTrue(
-            "Bottom-bar 'Go forward' must be clickable\n${uiTree()}",
-            clickDesc("Go forward", 10_000)
+            "Page Actions sheet must open\n${uiTree()}",
+            clickDesc("Page actions and settings", 10_000) &&
+                device.wait(Until.hasObject(By.text("Page Actions")), 8_000)
+        )
+        assertTrue(
+            "Page Actions 'Forward' circle must be clickable\n${uiTree()}",
+            clickDesc("Forward", 10_000)
         )
         assertTrue(
             "Forward must return to page TWO\n${uiTree()}",
@@ -562,17 +577,15 @@ class BrowserNavigationE2eTest {
         )
 
         // ---- 5. Reload: the server must see a fresh hit -------------------
-        // NOT the bottom-bar slot any more: that slot belongs to the agent
-        // whenever "Show AI Agent button" is off, which is the default and
-        // therefore this run's state (the pill has no other entry point
-        // inside the page). What the step verifies is unchanged — a reload
-        // re-requests the page — so it drives the control that is always
-        // there, the one in the omnibox row. Same dual role as the bar's:
-        // it reads "Stop loading" while a load is in flight.
+        // The omnibox reload is gone; reload's single home is the bottom
+        // bar's second slot. Same dual role as before: it reads "Stop
+        // loading" while a load is in flight, so the assertion tolerates
+        // the brief loading window by polling the hit counter rather than
+        // the desc.
         val hitsBefore = page2Hits.get()
         assertTrue(
-            "Reload must be clickable\n${uiTree()}",
-            clickDesc("Reload", 10_000)
+            "Reload page must be clickable\n${uiTree()}",
+            clickDesc("Reload page", 10_000)
         )
         assertTrue(
             "Reload must re-request /page2 (hits before=$hitsBefore, now=${page2Hits.get()})\n${uiTree()}",

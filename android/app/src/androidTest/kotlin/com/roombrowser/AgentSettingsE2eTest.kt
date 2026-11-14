@@ -1243,9 +1243,10 @@ class AgentSettingsE2eTest {
 
         // ---- 8b. The agent's slot in the bottom bar ------------------------
         // With the pill off there is no floating button, so the bottom bar's
-        // refresh slot becomes the way in — the pill's own icon, one tap to
-        // the panel. A toggle that removes the only entry point is worse than
-        // no toggle, so the swap is asserted rather than assumed.
+        // second slot (reload/stop) becomes the way in — the pill's own
+        // icon, one tap to the panel. A toggle that removes the only entry
+        // point is worse than no toggle, so the swap is asserted rather
+        // than assumed.
         assertTrue(
             "With the pill off, the bottom bar must offer the agent; UI:\n" + uiTree(),
             hasDesc("Open Room Agent", 8_000)

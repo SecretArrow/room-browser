@@ -118,27 +118,24 @@ import kotlinx.coroutines.launch
  * tab-count badge) + the redesigned action sheets. All colors follow the
  * per-profile theme.
  *
- * Brave-style navigation bar: Back / Forward / Refresh / Tabs / Wallet /
- * More — 6 × 48dp touch targets (288dp) + 2×10dp outer + 2×6dp inner
- * padding = exactly 320dp, the smallest common screen width; 360dp
- * screens get comfortable ~8dp gaps between buttons. Bookmarks and
- * profile switching moved into the Page Actions sheet so the bar stays
- * lean while the omnibox above reclaims the width the nav arrows used
- * to eat.
+ * Modern navigation bar: Switch profile / Reload / Tabs / Wallet /
+ * More — 5 × 48dp touch targets (240dp) + 2×10dp outer + 4×6dp inner
+ * padding. Web-history Back/Forward moved UP into the Page Actions
+ * sheet as a horizontal circle row (Brave-style), keeping the bar
+ * lean while the back/forward affordance stays one tap away.
  *
- * The refresh slot doubles as a STOP control while a page is loading
- * (the standard browser pattern), and greys out on the start page where
- * there is nothing to reload.
+ * The reload slot doubles as a STOP control while a page is loading
+ * (the standard browser pattern), and greys out on the start page
+ * where there is nothing to reload. The slot's previous home beside
+ * the omnibox was removed so reload has ONE home, not two.
  *
  * IT IS ALSO THE AGENT'S SLOT WHEN THE PILL IS OFF. With "Show AI Agent
- * button" switched off there is no floating pill, and the agent would have
- * no entry point inside the page at all — so this one slot becomes the way
- * in, carrying the pill's own icon. Reload is not lost with it: the omnibox
- * row above has carried the same Reload / Stop control all along, so the
- * only thing that moves is which thumb reaches it. The swap follows the
+ * button" switched off there is no floating pill, and the agent would
+ * have no entry point inside the page at all — so this one slot becomes
+ * the way in, carrying the pill's own icon. The swap follows the
  * setting alone rather than the pill's live visibility (`showAgentButton ||
- * running`), because a slot that changes identity mid-task is worse than one
- * that is predictable.
+ * running`), because a slot that changes identity mid-task is worse than
+ * one that is predictable.
  */
 @Composable
 fun BrowserBottomBar(
@@ -146,6 +143,7 @@ fun BrowserBottomBar(
     onOpenTabs: () -> Unit,
     onOpenAgent: () -> Unit,
     onShowPageActions: () -> Unit,
+    onShowQuickSwitcher: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -164,41 +162,26 @@ fun BrowserBottomBar(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Web-history back — mirrors the system Back gesture.
+            // Switch profile — the most identity-defining action a browser
+            // can take, now first under the thumb. Back/Forward live one
+            // tap away in the Page Actions sheet's horizontal circle row.
             IconButton(
                 onClick = {
                     haptics.tick()
-                    viewModel.goBack()
+                    onShowQuickSwitcher()
                 },
-                enabled = page.canGoBack,
-                modifier = Modifier.semantics { contentDescription = "Go back" }
+                modifier = Modifier.semantics { contentDescription = "Switch profile" }
             ) {
                 Icon(
-                    Icons.AutoMirrored.Filled.ArrowBack,
+                    Icons.Filled.Person,
                     contentDescription = null,
-                    tint = if (page.canGoBack) extras.icon else extras.icon.copy(alpha = 0.35f)
+                    tint = extras.icon
                 )
             }
-            // Web-history forward.
-            IconButton(
-                onClick = {
-                    haptics.tick()
-                    viewModel.goForward()
-                },
-                enabled = page.canGoForward,
-                modifier = Modifier.semantics { contentDescription = "Go forward" }
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowForward,
-                    contentDescription = null,
-                    tint = if (page.canGoForward) extras.icon else extras.icon.copy(alpha = 0.35f)
-                )
-            }
-            // Refresh — becomes Stop while a page is loading; disabled on
+            // Reload — becomes Stop while a page is loading; disabled on
             // the start page (nothing to reload there). It yields the slot to
             // the agent whenever the floating pill is switched off (see the
-            // header comment): one entry point has to exist, and the omnibox
-            // row already carries an identical Reload / Stop.
+            // header comment): one entry point has to exist.
             if (viewModel.agent.settings.showAgentButton) {
                 IconButton(
                     onClick = {
@@ -346,10 +329,17 @@ fun PageActionsSheet(
                 .verticalScroll(rememberScrollState())
         ) {
             RoomSheetHeader("Page Actions")
-            // Gated like the bottom bar's back arrow: a Back with no history is a
-            // silent no-op there, and it must be here too.
-            SheetAction(Icons.AutoMirrored.Filled.ArrowBack, "Back", enabled = viewModel.pageState.canGoBack) { viewModel.goBack(); onDismiss() }
-            SheetAction(Icons.AutoMirrored.Filled.ArrowForward, "Forward") { viewModel.goForward(); onDismiss() }
+            // Horizontal circle row — Brave-style quick actions. Back and
+            // Forward (web history) live here now they left the bottom bar;
+            // Reload mirrors the bottom-bar slot; Share mirrors the list
+            // below. Each circle is a 48dp tinted chip with the icon + a
+            // 11sp label beneath, addressable as one action.
+            CircleActionRow(
+                viewModel = viewModel,
+                context = context,
+                onDismiss = onDismiss
+            )
+            SheetSectionLabel("Tabs")
             SheetAction(Icons.Filled.Add, "New tab") { viewModel.loadUrl("about:home", newTab = true); onDismiss() }
             SheetAction(Icons.Filled.Lock, "New private tab") { viewModel.startPrivateTab(); onDismiss() }
 
@@ -1038,5 +1028,114 @@ fun ReaderScreen(
             OutlinedButton(onClick = { lineSpacing = if (lineSpacing < 1.8f) 1.8f else 1.4f }) { Text("Spacing") }
             Button(onClick = onClose) { Text("Exit") }
         }
+    }
+}
+
+/**
+ * Brave-style horizontal circle row at the top of [PageActionsSheet].
+ *
+ * Four quick actions — Back, Forward, Reload, Share — sit as 48dp tinted
+ * chips with an 11sp label beneath. Back/Forward moved here from the
+ * bottom bar (replaced by profile-switch + reload/stop there); Reload and
+ * Share mirror the bottom-bar slot and the list row below. Each chip is
+ * addressable as one action so TalkBack and UI tests target it directly.
+ */
+@Composable
+private fun CircleActionRow(
+    viewModel: BrowserViewModel,
+    context: android.content.Context,
+    onDismiss: () -> Unit
+) {
+    val extras = LocalRoomExtras.current
+    val haptics = rememberRoomHaptics()
+    val page = viewModel.pageState
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CircleAction(
+            icon = Icons.AutoMirrored.Filled.ArrowBack,
+            label = "Back",
+            enabled = page.canGoBack,
+            onClick = { haptics.tick(); viewModel.goBack(); onDismiss() }
+        )
+        CircleAction(
+            icon = Icons.AutoMirrored.Filled.ArrowForward,
+            label = "Forward",
+            enabled = page.canGoForward,
+            onClick = { haptics.tick(); viewModel.goForward(); onDismiss() }
+        )
+        CircleAction(
+            icon = if (page.loading) Icons.Filled.Close else Icons.Filled.Refresh,
+            label = if (page.loading) "Stop" else "Reload",
+            enabled = !page.isHomepage,
+            onClick = {
+                haptics.tick()
+                if (page.loading) viewModel.stopLoading() else viewModel.reload()
+                onDismiss()
+            }
+        )
+        CircleAction(
+            icon = Icons.Filled.Share,
+            label = "Share",
+            enabled = page.url != "about:home",
+            onClick = {
+                haptics.tick()
+                val url = page.url
+                if (url != "about:home") {
+                    val share = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, url)
+                    }
+                    context.startActivity(Intent.createChooser(share, "Share"))
+                }
+                onDismiss()
+            }
+        )
+    }
+}
+
+@Composable
+private fun CircleAction(
+    icon: ImageVector,
+    label: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    val extras = LocalRoomExtras.current
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .clip(CircleShape)
+            .clickable(enabled = enabled) { onClick() }
+            .semantics { contentDescription = label }
+            .padding(horizontal = 4.dp, vertical = 6.dp)
+    ) {
+        Box(
+            Modifier
+                .size(48.dp)
+                .clip(CircleShape)
+                .background(
+                    if (enabled) extras.primary.copy(alpha = 0.12f)
+                    else extras.primary.copy(alpha = 0.06f)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = if (enabled) extras.primary else extras.textSecondary,
+                modifier = Modifier.size(22.dp)
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (enabled) extras.textPrimary else extras.textSecondary
+        )
     }
 }
