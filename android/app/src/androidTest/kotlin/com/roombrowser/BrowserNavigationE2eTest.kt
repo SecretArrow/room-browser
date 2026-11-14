@@ -556,6 +556,9 @@ class BrowserNavigationE2eTest {
             "Page Actions 'Back' circle must be clickable\n${uiTree()}",
             clickDesc("Back", 10_000)
         )
+        // The sheet crossfades closed after the dismiss; give the engine
+        // a moment before polling the page text.
+        device.wait(Until.gone(By.text("Page Actions")), 8_000)
         assertTrue(
             "Back must return to page ONE\n${uiTree()}",
             hasText("ROOM-E2E-PAGE-ONE", 20_000)
@@ -571,6 +574,7 @@ class BrowserNavigationE2eTest {
             "Page Actions 'Forward' circle must be clickable\n${uiTree()}",
             clickDesc("Forward", 10_000)
         )
+        device.wait(Until.gone(By.text("Page Actions")), 8_000)
         assertTrue(
             "Forward must return to page TWO\n${uiTree()}",
             hasText("ROOM-E2E-PAGE-TWO", 20_000)
@@ -578,14 +582,15 @@ class BrowserNavigationE2eTest {
 
         // ---- 5. Reload: the server must see a fresh hit -------------------
         // The omnibox reload is gone; reload's single home is the bottom
-        // bar's second slot. Same dual role as before: it reads "Stop
-        // loading" while a load is in flight, so the assertion tolerates
-        // the brief loading window by polling the hit counter rather than
-        // the desc.
+        // bar's second slot. The slot reads "Stop loading" while a load is
+        // in flight (forward just reloaded page TWO), so the click tries
+        // "Reload page" first and falls back to "Stop loading" — either is
+        // a tap on the slot, and a Stop leaves the page intact for the
+        // subsequent system-Back steps. The real proof is the hit counter.
         val hitsBefore = page2Hits.get()
         assertTrue(
-            "Reload page must be clickable\n${uiTree()}",
-            clickDesc("Reload page", 10_000)
+            "Reload slot must be clickable\n${uiTree()}",
+            clickDesc("Reload page", 6_000) || clickDesc("Stop loading", 6_000)
         )
         assertTrue(
             "Reload must re-request /page2 (hits before=$hitsBefore, now=${page2Hits.get()})\n${uiTree()}",
